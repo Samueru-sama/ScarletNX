@@ -81,8 +81,12 @@ For deeper investigation, recompile a game with `--hook-direct-calls`. This opt-
 guest calls through `CPU.disp` too, so the NVN wrappers can observe direct calls. It requires a new game module; the
 default recompiler path keeps direct C calls. A list can otherwise contain commands or lifecycle transitions that
 bypass the recorder, even when every handle lookup succeeds. The diagnostic's zero-miss counts prove handle
-correlation for observed calls, not complete command coverage. Direct-call mode still needs game validation before
-its counts can be treated as complete.
+correlation for observed calls, not complete command coverage. A 120-frame Catherine build with `--hook-direct-calls`
+rendered the network prompt and completed with 123 submitted lists found, no opaque lists, no dropped operations, and
+zero texture-handle verification mismatches. This validates the opt-in dispatch path for Catherine's boot, not TotK's
+secondary-list coverage or full-game command completeness. The recorder now filters calls by its selected NVN API names
+even when `SNX_NVN_TRACE=1` wraps all resolved functions; otherwise unrelated calls were misclassified as command-buffer
+activity.
 
 ## Migration boundaries
 

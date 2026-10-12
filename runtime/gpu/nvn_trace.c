@@ -51,7 +51,8 @@ static NvProc* proc_slot(u64 addr) {
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_slot(entry);
     u64 command_buffer = c->x[0];
-    if (recording) nvn_record_before(c, p->name);
+    int record_call = recording && nvn_record_wants(p->name);
+    if (record_call) nvn_record_before(c, p->name);
     int submit = tracing && !strcmp(p->name, "nvnQueueSubmitCommands");
     int queue_op = tracing && (!strcmp(p->name, "nvnQueueFlush") || !strcmp(p->name, "nvnQueueFenceSync") ||
                                !strcmp(p->name, "nvnQueuePresentTexture") || !strcmp(p->name, "nvnQueueWaitSync"));
@@ -81,7 +82,7 @@ static void proc_trace(CPU* c, u64 entry) {
         }
     }
     p->original(c, entry);
-    if (recording) nvn_record_after(c, p->name, command_buffer);
+    if (record_call) nvn_record_after(c, p->name, command_buffer);
     if (submit || queue_op)
         LOG("nvn-%s: GPFIFO submissions during call=%llu\n", p->name,
             (unsigned long long)(__atomic_load_n(&g_gpu_submits, __ATOMIC_RELAXED) - gpu_before));
