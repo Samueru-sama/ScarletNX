@@ -731,17 +731,16 @@ void vk_tex_frame(void) {
     if (g_vk_present % 60 == 0 && g_vk_present > 600) vk_surf_evict(g_vk_present - 600);
 }
 
-/* a texture whose layers or levels were drawn as render targets of their own (Tears of the Kingdom draws its
-   environment cube maps face by face and its glow chain level by level) is copied from those targets on the GPU: they
-   are never written back to its memory. Only a target that is exactly one of its layers and levels, drawn this frame
-   or the last: an older one may share memory the game has reused since (Catherine draws a target where its copyright
+/* a texture whose layers, levels or 3D slices were drawn as render targets of their own is copied from those targets
+   on the GPU: they are never written back to its memory. Only a target matching one subresource, drawn this frame or
+   the last: an older one may share memory the game has reused since (Catherine draws a target where its copyright
    text later goes) */
 static void tex_take_drawn(Surf* t) {
-    if (!t || t->is_rt || t->f.conv || t->f.depth || t->type == VK_IMAGE_VIEW_TYPE_3D) return;
+    if (!t || t->is_rt || t->f.conv || t->f.depth) return;
     Surf* small[32];
     Surf** d = small;
     u64 stride = t->layer_size;
-    u64 hi = t->gva + (stride ? stride * t->layers : 1);
+    u64 hi = t->gva + t->size;
     int n = vk_rt_drawn_in(t->gva, hi, d, 32);
     if (n > 32) {
         d = malloc((size_t)n * sizeof *d);
@@ -754,9 +753,73 @@ static void tex_take_drawn(Surf* t) {
     }
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
-        if (s->f.depth || s->f.bpp != t->f.bpp || s->sw != s->w || s->sh != s->h) continue;
+        if (s->f.depth || s->f.bpp != t->f.bpp) continue;
         if (s->copy_dst == t && s->copy_wgen == s->wgen && s->copy_tgen == t->wgen) continue;
         u64 off = s->gva - t->gva;
+        if (t->type == VK_IMAGE_VIEW_TYPE_3D) {
+            /* A 3D block-linear texture can be built a Z slice at a time through 2D targets. The target may be
+               wider than the texture: its rows include the 64-byte GOB padding of a narrow slice. */
+            if (!t->bl || !s->bl || t->f.bw != 1 || s->f.vk != t->f.vk) continue;
+            u64 lo = 0;
+            for (u32 l = 0; l < t->levels; l++) {
+                u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
+                u32 ld = t->depth3d >> l ? t->depth3d >> l : 1, lbh, lbd;
+                u64 size = bl_level_size(t->w, t->h, t->depth3d, &t->f, t->bh, t->bd, l, &lbh, &lbd);
+                u32 padded = (ld + (1u << lbd) - 1) & ~((1u << lbd) - 1);
+                u64 slice = size / padded;
+                u32 rowb = lw * t->f.bpp, gobs_x = (rowb + 63) / 64;
+                u32 gobs_y = ((lh + 7) / 8 + (1u << lbh) - 1) >> lbh;
+                /* With block depth, Z slices are interleaved across multiple GOB planes rather than contiguous. */
+                if (lbd && (gobs_x != 1 || gobs_y != 1)) {
+                    lo += size;
+                    continue;
+                }
+                u32 sbh;
+                u64 source_size = bl_level_size(s->w, s->h, 1, &s->f, s->bh, 0, 0, &sbh, NULL);
+                if (off >= lo && off - lo < slice * ld && (off - lo) % slice == 0 && s->w >= lw && s->h == lh &&
+                    sbh == lbh && source_size == slice && vk_rt_drawn_fresh(s)) {
+                    int scaled = s->sw != s->w || s->sh != s->h;
+                    VkFormatProperties p = {0};
+                    if (scaled) {
+                        vkGetPhysicalDeviceFormatProperties(g_vk.phys, t->f.vk, &p);
+                        VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+                        if ((p.optimalTilingFeatures & need) != need) break;
+                    }
+                    vk_render_end();
+                    VkCommandBuffer cb = vk_cmd();
+                    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                                VK_ACCESS_2_TRANSFER_READ_BIT);
+                    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
+                                VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                    u32 z = (u32)((off - lo) / slice);
+                    if (!scaled) {
+                        VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1},
+                                         .dstOffset = {0, 0, (i32)z},
+                                         .extent = {lw, lh, 1}};
+                        vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+                    } else {
+                        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                         .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(lw), (i32)vk_sc(lh), 1}},
+                                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1},
+                                         .dstOffsets = {{0, 0, (i32)z}, {(i32)lw, (i32)lh, (i32)z + 1}}};
+                        VkFilter filter = p.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+                                              ? VK_FILTER_LINEAR
+                                              : VK_FILTER_NEAREST;
+                        vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, filter);
+                    }
+                    s->copy_dst = t;
+                    s->copy_wgen = s->wgen;
+                    s->copy_tgen = t->wgen;
+                    break;
+                }
+                lo += size;
+            }
+            continue;
+        }
+        if (s->sw != s->w || s->sh != s->h) continue;
         u32 layer = stride ? (u32)(off / stride) : 0;
         u64 rem = off - (u64)layer * stride, lo = 0;
         for (u32 l = 0; l < t->levels && layer < t->layers; l++) {
