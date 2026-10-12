@@ -10,14 +10,15 @@
 /* Texture metadata and pool generations only. Storage layout and contents remain owned by the guest SDK. */
 typedef struct {
     u64 key, pool, offset, pool_generation;
-    u32 flags, target, width, height, depth, levels, format, samples;
-    u8 alive;
+    u32 flags, target, width, height, depth, levels, format, samples, storage_size;
+    u8 alive, size_known;
 } Texture;
 #define TEXTURE_SLOTS 32768
 static Texture textures[TEXTURE_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 initialized, failed, finalized, live, reinitialized, invalid_builders, table_full;
 static u64 no_pool, untracked_pools, offset_outside_pool, unknown_finalizes;
+static u64 sizes_known, sizes_unavailable, footprint_outside_pool;
 
 static Texture* texture_slot(u64 key, int create) {
     if (!key) return NULL;
@@ -102,14 +103,22 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                 t->levels = call->levels;
                 t->format = call->format;
                 t->samples = call->samples;
+                t->storage_size = call->storage_size;
+                t->size_known = call->size_known;
                 t->alive = 1;
                 initialized++;
+                if (call->size_known)
+                    sizes_known++;
+                else
+                    sizes_unavailable++;
                 if (!call->pool)
                     no_pool++;
                 else if (!pool_found)
                     untracked_pools++;
                 else if (call->offset >= pool.size)
                     offset_outside_pool++;
+                else if (call->size_known && call->storage_size > pool.size - call->offset)
+                    footprint_outside_pool++;
             }
         }
     } else {
@@ -134,5 +143,8 @@ void nvn_texture_report(void) {
     LOG("nvn-texture: no-pool=%llu untracked-pools=%llu offset-outside-pool=%llu unknown-finalizes=%llu\n",
         (unsigned long long)no_pool, (unsigned long long)untracked_pools, (unsigned long long)offset_outside_pool,
         (unsigned long long)unknown_finalizes);
+    LOG("nvn-texture: sizes-known=%llu sizes-unavailable=%llu footprint-outside-pool=%llu\n",
+        (unsigned long long)sizes_known, (unsigned long long)sizes_unavailable,
+        (unsigned long long)footprint_outside_pool);
     pm_unlock(&lock);
 }

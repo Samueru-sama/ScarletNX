@@ -138,13 +138,18 @@ that all guest resource accesses have been intercepted.
 
 `SNX_NVN_TEXTURE=1` captures texture builder metadata at `nvnTextureInitialize` and enables pool tracking. It records
 the pool generation, offset, flags, target, dimensions, levels, format, and sample count for successful textures,
-then retires them at `nvnTextureFinalize`. For pool-backed textures, the offset must start within the pool, but this
-diagnostic does not calculate the full storage footprint. Tiled, compressed, multisample, and mipmapped textures need
-the SDK's layout
-rules before a host front end can safely create images or validate overlap. A zero pool pointer is reported separately
-because externally backed textures can use one.
-Opt-in boot runs reached 255 frames and 3,142 tracked textures in TotK, and 120 frames and 109 textures in Catherine.
-Neither run reported a missing pool or an offset outside its pool.
+then retires them at `nvnTextureFinalize`. Immediately after a successful initialization, the runtime calls the
+resolved, pure guest `nvnTextureGetStorageSize` on a copy of the CPU state. That delegates tiled, compressed,
+multisample, and mipmapped footprint calculation to the title's SDK without changing the guest call's return state.
+The inspected TotK getter reads size from texture offset `+0x5a`; Catherine reads it from `+0x78`. The result checks
+the entire `[pool offset, pool offset + storage size)` range with overflow-safe subtraction. A zero pool pointer is
+reported separately because externally backed textures can use one. This remains a diagnostic check, not a host
+texture allocation or a replacement for guest memory coherence.
+
+In a 250-frame TotK boot, the getter provided sizes for all 3,097 initialized textures and no footprint extended
+outside a tracked pool. Catherine reached 120 frames with sizes for all 109 textures and likewise no out-of-range
+footprints. Earlier runs tracked 3,142 TotK textures at 255 frames and 109 Catherine textures at 120 frames, with no
+missing pools or offsets outside pools.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

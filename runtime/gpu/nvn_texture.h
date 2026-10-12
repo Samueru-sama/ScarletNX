@@ -7,6 +7,8 @@
 typedef struct {
     u64 texture, pool, offset;
     u32 flags, target, width, height, depth, levels, format, samples;
+    u32 storage_size;
+    int size_known;
     int valid;
 } NvnTextureCall;
 

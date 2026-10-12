@@ -16,6 +16,8 @@
 
 static GuestFn bootstrap_original;
 static GuestFn getproc_original;
+static GuestFn texture_size_original;
+static u64 texture_size_entry;
 static int tracing, hle, verify, recording, pools, buffers, textures;
 static u64 verify_failures;
 typedef struct {
@@ -94,6 +96,18 @@ static void proc_trace(CPU* c, u64 entry) {
         }
     }
     p->original(c, entry);
+    if (texture_call && !strcmp(p->name, "nvnTextureInitialize") && c->x[0] && texture.valid) {
+        GuestFn texture_get_size = __atomic_load_n(&texture_size_original, __ATOMIC_ACQUIRE);
+        if (texture_get_size) {
+            /* Query the successful guest object through its own pure SDK getter. The inspected SDKs store this value
+           at different offsets, so reading an assumed object field would silently mismeasure one of them. */
+            CPU query = *c;
+            query.x[0] = texture.texture;
+            texture_get_size(&query, __atomic_load_n(&texture_size_entry, __ATOMIC_RELAXED));
+            texture.storage_size = (u32)query.x[0];
+            texture.size_known = 1;
+        }
+    }
     if (pool_call) nvn_pool_after(c, p->name, &pool);
     if (buffer_call) nvn_buffer_after(c, p->name, &buffer);
     if (texture_call) nvn_texture_after(c, p->name, &texture);
@@ -124,8 +138,16 @@ static void getproc_trace(CPU* c, u64 entry) {
         if (tracing) LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
         if (tracing || (hle && nvn_hle_supported(name)) || (recording && nvn_record_wants(name)) ||
             (pools && nvn_pool_wants(name)) || (buffers && nvn_buffer_wants(name)) ||
-            (textures && nvn_texture_wants(name)))
+            (textures && (nvn_texture_wants(name) || !strcmp(name, "nvnTextureGetStorageSize"))))
             trace_proc(c->x[0], name);
+        if (textures && !strcmp(name, "nvnTextureGetStorageSize") && c->x[0] >= g_code_lo && c->x[0] < g_code_hi &&
+            !(c->x[0] & 3)) {
+            NvProc* getter = proc_slot(c->x[0]);
+            if (getter->addr == c->x[0]) {
+                __atomic_store_n(&texture_size_entry, c->x[0], __ATOMIC_RELAXED);
+                __atomic_store_n(&texture_size_original, getter->original, __ATOMIC_RELEASE);
+            }
+        }
     }
 }
 
