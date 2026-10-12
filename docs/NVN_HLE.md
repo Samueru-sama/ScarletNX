@@ -110,6 +110,19 @@ record and do not inflate its implicit-begin count.
 
 ## Migration boundaries
 
+`SNX_NVN_POOL=1` now records memory-pool lifetimes alongside guest execution. At the exported
+`nvnMemoryPoolInitialize` boundary it snapshots the builder's flags, backing pointer, and size, so inlined builder
+setters are covered too. Only a successful initialization creates or advances a pool record. Finalize retires it;
+Map and GetBufferAddress attach the returned CPU and GPU addresses. The bounded table reports failed initialization,
+invalid builders, reuse without finalize, capacity loss, and operations on untracked pools. It does not own the backing
+memory or change rendering. The backing pointer is intentionally not required to be CPU-readable: GPU-only and virtual
+pools can be valid. A later resource front end can use the pool generation and address mapping to resolve buffers and
+textures without assuming that copying a texture once preserves aliasing or coherence.
+In instrumented boot runs, TotK reached 511 frames with 1,820 successful pool initializations, 112 finalizations,
+1,134 maps, and 98 GPU-address queries. Catherine reached 120 frames with 139 initializations and 133 GPU-address
+queries. Neither run reported an invalid builder, capacity loss, or a Map/GetBufferAddress call on an untracked pool.
+These observations validate the exported lifecycle path during boot, not complete resource coverage in gameplay.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
