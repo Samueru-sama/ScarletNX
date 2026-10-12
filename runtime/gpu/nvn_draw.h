@@ -24,7 +24,11 @@ enum {
     NVN_DRAW_SAMPLER_FAILED = 256,
     NVN_DRAW_TEXTURE_HEADER_READY = 512,
     NVN_DRAW_TEXTURE_HEADER_MISSING = 1024,
-    NVN_DRAW_TEXTURE_HEADER_UNSUPPORTED = 2048
+    NVN_DRAW_TEXTURE_HEADER_UNSUPPORTED = 2048,
+    NVN_DRAW_TEXTURE_IMAGE_READY = 4096,
+    NVN_DRAW_TEXTURE_IMAGE_FAILED = 8192,
+    NVN_DRAW_TEXTURE_IMAGE_DEPTH = 16384,
+    NVN_DRAW_TEXTURE_IMAGE_MISSING = 32768
 };
 typedef struct {
     u64 address, size;
@@ -65,5 +69,6 @@ typedef struct {
     i32 base_vertex;
     u16 vertex_bound;
     u8 indexed, program_known, shader_refs_known;
+    u8 load_textures;
 } NvnDrawCommand;
 #endif

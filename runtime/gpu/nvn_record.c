@@ -115,6 +115,7 @@ static int descriptor_replay;
 static int shader_transport;
 static int clear_execute;
 static int draw_prepare;
+static int texture_load;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
@@ -141,6 +142,8 @@ static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_tar
     draw_target_size, draw_target_view;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
 static u64 draw_texture_header_ready, draw_texture_header_missing, draw_texture_header_unsupported;
+static u64 draw_texture_image_ready, draw_texture_image_failed;
+static u64 draw_texture_image_depth, draw_texture_image_missing;
 static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bind_invalid;
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
@@ -194,6 +197,10 @@ void nvn_record_enable_descriptor_replay(void) { descriptor_replay = 1; }
 void nvn_record_enable_shader_transport(void) { shader_transport = 1; }
 void nvn_record_enable_clear_execute(void) { clear_execute = 1; }
 void nvn_record_enable_draw_prepare(void) { draw_prepare = 1; }
+void nvn_record_enable_texture_load(void) {
+    draw_prepare = 1;
+    texture_load = 1;
+}
 
 static ReplayQueue* replay_queue_slot(u64 key) {
     if (!key) return NULL;
@@ -474,6 +481,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                    !strcmp(op->name, "nvnCommandBufferDrawElementsBaseVertex") ||
                    !strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
             NvnDrawCommand draw = {0};
+            draw.load_textures = texture_load;
             draw.program_bound = state->program_bound;
             memcpy(draw.program, state->program, sizeof draw.program);
             draw.program_known = !!state->program_bound;
@@ -1086,6 +1094,11 @@ static void execute_nvn_batch(void* arg) {
             __atomic_fetch_add(&draw_texture_header_missing, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_TEXTURE_HEADER_UNSUPPORTED)
             __atomic_fetch_add(&draw_texture_header_unsupported, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_IMAGE_READY) __atomic_fetch_add(&draw_texture_image_ready, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_IMAGE_FAILED) __atomic_fetch_add(&draw_texture_image_failed, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_IMAGE_DEPTH) __atomic_fetch_add(&draw_texture_image_depth, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_IMAGE_MISSING)
+            __atomic_fetch_add(&draw_texture_image_missing, 1, __ATOMIC_RELAXED);
     }
     free(batch->clears);
     free(batch->draws);
@@ -1301,6 +1314,12 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_texture_header_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_header_missing, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_header_unsupported, __ATOMIC_RELAXED));
+        if (texture_load)
+            LOG("nvn-draw-texture-image: ready=%llu failed=%llu depth-memory=%llu missing=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_texture_image_ready, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_image_failed, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_image_depth, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_image_missing, __ATOMIC_RELAXED));
         LOG("nvn-uniform-snapshot: ranges=%llu failed=%llu invalid-binds=%llu\n",
             (unsigned long long)uniform_range_snapshots, (unsigned long long)uniform_range_snapshot_failures,
             (unsigned long long)uniform_bind_invalid);

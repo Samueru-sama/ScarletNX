@@ -195,6 +195,30 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             }
         }
     if (has_texture && !texture_status) texture_status = NVN_DRAW_TEXTURE_HEADER_READY;
+    if (command->load_textures && texture_status == NVN_DRAW_TEXTURE_HEADER_READY) {
+        int ready = 1, failure = 0;
+        /* This callback runs between queued GPU jobs, before an HLE draw would allocate descriptor sets. The
+           existing loader may land pending GPU writes, so it must run before draw setup rather than from it. */
+        for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && ready; stage++)
+            for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
+                if (!(command->texture_bound[stage] & (1u << i))) continue;
+                Surf* surf = vk_tex_from_tic(command->texture_descriptor[stage][i].tic);
+                if (!surf || (surf->f.depth && surf->f.stencil && !surf->is_rt)) {
+                    failure = !surf ? NVN_DRAW_TEXTURE_IMAGE_MISSING : NVN_DRAW_TEXTURE_IMAGE_DEPTH;
+                    if (failure == NVN_DRAW_TEXTURE_IMAGE_DEPTH) {
+                        const u32* tic = command->texture_descriptor[stage][i].tic;
+                        LOG_LIMIT(
+                            1,
+                            "nvn-texture-depth-memory: tic-format=%x vk-format=%u width=%u height=%u levels=%u address=%llx\n",
+                            tic[0] & 0x7f, surf->f.vk, (tic[4] & 0xffff) + 1, (tic[5] & 0xffff) + 1,
+                            ((tic[3] >> 28) & 15) + 1, (unsigned long long)surf->gva);
+                    }
+                    ready = 0;
+                    break;
+                }
+            }
+        texture_status |= ready ? NVN_DRAW_TEXTURE_IMAGE_READY : NVN_DRAW_TEXTURE_IMAGE_FAILED | failure;
+    }
     int resource_status = sampler_status | texture_status;
     int has_target = command->color_target_mask || command->depth_target_bound;
     if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED | resource_status;

@@ -226,6 +226,19 @@ uploading texels or changing image contents. In later boots, all 3,707 Catherine
 that reached GPU-thread preparation passed this check. This does not establish that the source memory is coherent with
 earlier GPU writes or that the image can be safely uploaded during draw setup.
 
+`SNX_NVN_TEXTURE_LOAD=1` additionally imports each bound TIC through the existing Vulkan texture cache in the
+GPU-thread callback, before a future HLE draw would allocate descriptor sets. The loader reconciles pending guest
+memory writes and reuses matching render targets. Depth-only D16 and D32F textures now follow the same deswizzle and
+upload path as color textures, using a [single depth aspect for Vulkan copies](https://docs.vulkan.org/spec/latest/chapters/copies.html).
+An incomplete upload is rejected and retried when the texture is requested again.
+When a recently drawn depth target occupies one subresource of a sampled texture, that subresource can be copied on
+the GPU instead of read from stale guest memory. Packed depth/stencil images still use the loader's cleared fallback
+and are reported as unavailable for HLE texture use. In separate eight-second Catherine and twenty-two-second TotK
+boots, all 3,847 and 3,166 draw callbacks completed image loading without a missing or packed-depth result.
+This is a shadow import after guest GPFIFO execution. It observes the state at the end of that guest batch, so it
+does not prove the image contents that an earlier draw in the same batch would have sampled. Direct HLE still needs
+ordered image ownership shared by clears, copies, draws, and presentation before guest submissions can be removed.
+
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported

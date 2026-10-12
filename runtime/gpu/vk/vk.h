@@ -172,6 +172,7 @@ typedef struct Surf {
     SurfView sv[6];
     int nsv;
     u64 size, hash, shash;
+    int upload_valid; /* textures: every subresource initialized (packed depth/stencil still uses a fallback) */
     u32 checked, next_check, stable, tfull;
     u32 wseen; /* write-tracking clock when it last matched memory */
     /* copies of regions of this render target for texture headers or feedback draws, one per size, linked through next

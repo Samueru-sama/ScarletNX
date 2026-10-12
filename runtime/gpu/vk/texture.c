@@ -102,28 +102,28 @@ static u64 level_out_size(const VkFmt* f, u32 lw, u32 lh, u32 ld, u32 rowb) {
 }
 
 static u32 g_tex_upload_gen;
-static void tex_upload(Surf* t) {
+static int tex_upload(Surf* t) {
     const VkFmt* f = &t->f;
+    t->upload_valid = 0;
     t->wgen = ++g_tex_upload_gen; /* even a new texture at a reused address invalidates an old target's copy */
     vk_render_end();              /* copies and clears happen outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    if (f->depth) {
-        LOG_LIMIT(1,
-                  "vulkan: depth textures from memory aren't loaded yet, they read as 1.0 (only depth render targets "
-                  "are sampled)\n");
+    if (f->depth && f->stencil) {
+        LOG_LIMIT(1, "vulkan: packed depth/stencil textures from memory aren't loaded yet, they read as 1.0\n");
         /* defined contents rather than whatever the image's memory held: far, so shadow tests pass */
         VkClearDepthStencilValue far = {1.0f, 0};
         VkImageSubresourceRange all = {vk_aspect(f), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         vkCmdClearDepthStencilImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far, 1, &all);
-        return;
+        return t->upload_valid = 1;
     }
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
     VkBufferImageCopy* reg = calloc((size_t)layers * t->levels, sizeof *reg);
-    if (!reg) return;
+    if (!reg) return 0;
     u32 nreg = 0;
+    int complete = 1;
     VkBuffer buf = VK_NULL_HANDLE, regbuf = VK_NULL_HANDLE;
     u64 off = 0;
     for (u32 layer = 0; layer < layers; layer++) {
@@ -140,11 +140,20 @@ static void tex_upload(Surf* t) {
             u8* tmp = NULL;
             if (!src) {
                 tmp = malloc(lsz ? lsz : 1);
+                if (!tmp) {
+                    complete = 0;
+                    goto done;
+                }
                 gmem_read(t->gva + at, tmp, lsz);
                 src = tmp;
             }
             u64 lin_size = (u64)rowb * th * ld;
             u8* lin = malloc(lin_size ? lin_size : 1);
+            if (!lin) {
+                free(tmp);
+                complete = 0;
+                goto done;
+            }
             if (t->bl) {
                 /* a row's 16-byte pieces: the row's place (bl_offset at x 0), then a block of GOBs per 64 bytes, and
                    within a GOB's row 32-byte halves 256 bytes apart and 16-byte quarters 32 apart */
@@ -175,16 +184,22 @@ static void tex_upload(Surf* t) {
                 }
                 regbuf = buf;
                 level_convert(f, lin, lw, lh, ld, rowb, p);
-                reg[nreg++] = (VkBufferImageCopy){.bufferOffset = off,
-                                                  .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
-                                                  .imageExtent = {lw, lh, ld}};
+                reg[nreg++] = (VkBufferImageCopy){
+                    .bufferOffset = off,
+                    .imageSubresource = {f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                    .imageExtent = {lw, lh, ld}};
+            } else {
+                complete = 0;
             }
             free(lin);
+            if (!complete) goto done;
             at += lsz;
         }
     }
+done:
     if (nreg) vkCmdCopyBufferToImage(cb, regbuf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nreg, reg);
     free(reg);
+    return t->upload_valid = complete;
 }
 
 /* change checks: a hash of the whole texture when it is contiguous in host memory, else of 64 bytes of each page
@@ -204,9 +219,8 @@ static u64 mem_hash(u64 gva, u64 size) {
 static int tex_rehash(Surf* t) {
     t->gw = gpu_mem_generation();
     u64 hh = mem_hash(t->gva, t->size);
-    if (hh == t->hash) return 0;
-    t->hash = hh;
-    tex_upload(t);
+    if (hh == t->hash && t->upload_valid) return 0;
+    if (tex_upload(t)) t->hash = hh;
     return 1;
 }
 
@@ -501,6 +515,10 @@ static Surf* tex_from_tic(const u32* tic) {
             t->bd != bd || t->pitch != pitch || t->layer_size != stride)
             continue;
         t->last_used = g_vk_present;
+        if (!t->upload_valid) {
+            tex_rehash(t);
+            if (!t->upload_valid) return NULL;
+        }
         /* the GPU front end wrote its memory (DMA, I2M, 2D, compute results): checked now, whatever the schedule
            below says, as writes within a frame have to show in the same frame. Not written: it still matches as of
            now, which keeps the next check's walk of the write log short */
@@ -565,8 +583,7 @@ static Surf* tex_from_tic(const u32* tic) {
     t->hash = mem_hash(gva, t->size);
     t->checked = g_vk_present;
     t->next_check = g_vk_present + 4;
-    tex_upload(t);
-    return t;
+    return tex_upload(t) ? t : NULL;
 }
 
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map) {
@@ -782,7 +799,7 @@ void vk_tex_frame(void) {
    the last: an older one may share memory the game has reused since (Catherine draws a target where its copyright
    text later goes) */
 static void tex_take_drawn(Surf* t) {
-    if (!t || t->is_rt || t->f.conv || t->f.depth) return;
+    if (!t || t->is_rt || t->f.conv || t->f.stencil) return;
     Surf* small[32];
     Surf** d = small;
     u64 stride = t->layer_size;
@@ -799,10 +816,12 @@ static void tex_take_drawn(Surf* t) {
     }
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
-        if (s->f.depth || s->f.bpp != t->f.bpp) continue;
+        if (s->f.depth != t->f.depth || s->f.stencil || s->f.bpp != t->f.bpp || (t->f.depth && s->f.vk != t->f.vk))
+            continue;
         if (s->copy_dst == t && s->copy_wgen == s->wgen && s->copy_tgen == t->wgen) continue;
         u64 off = s->gva - t->gva;
         if (t->type == VK_IMAGE_VIEW_TYPE_3D) {
+            if (t->f.depth) continue;
             /* A 3D block-linear texture can be built a Z slice at a time through 2D targets. The target may be
                wider than the texture: its rows include the 64-byte GOB padding of a narrow slice. */
             if (!t->bl || !s->bl || t->f.bw != 1 || s->f.vk != t->f.vk) continue;
@@ -878,11 +897,14 @@ static void tex_take_drawn(Surf* t) {
                             VK_ACCESS_2_TRANSFER_READ_BIT);
                 vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                             VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                VkImageAspectFlags aspect = t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+                VkImageCopy c = {.srcSubresource = {aspect, 0, 0, 1},
+                                 .dstSubresource = {aspect, l, layer, 1},
                                  .extent = {lw, lh, 1}};
                 vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+                if (t->f.depth)
+                    LOG_LIMIT(1, "vulkan: sampled depth texture imports a drawn subresource from its render target\n");
                 s->copy_dst = t;
                 s->copy_wgen = s->wgen;
                 s->copy_tgen = t->wgen;
@@ -896,6 +918,7 @@ static void tex_take_drawn(Surf* t) {
 }
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic);
+    if (t && !t->is_rt && !t->upload_valid) return NULL;
     tex_take_drawn(t);
     return t;
 }
