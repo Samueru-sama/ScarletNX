@@ -277,6 +277,13 @@ packet cap are probe limits, not a completed HLE resource manager. In an eight-s
 were issued with zero renderer rejections; in a fourteen-second TotK run, 281 were issued with zero rejections.
 The next work is coherent NVN image storage and complete-list scheduling: a queue submission can switch only when
 every command and synchronization effect in that submission has an HLE implementation.
+Queue replay now conservatively preflights each flushed batch. It only labels a batch observed-clear-only when every
+recorded list and nested call is present and non-opaque and contains only render-target bindings, clears, and command
+memory setup. An unresolved clear or any other observed operation makes it mixed. This is a necessary condition for
+replacement, not sufficient proof: the SDK may emit inlined operations beyond the intercepted APIs, and the renderer
+still needs matching guest-memory and synchronization effects. In eight seconds of Catherine, all 375 flushed batches
+were mixed. In fourteen seconds of TotK, 252 were mixed and one contained no clear. Neither boot offers a clear-only
+batch to replace, so the next visual HLE milestone needs draw and state support inside mixed lists.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

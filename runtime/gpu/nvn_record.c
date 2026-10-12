@@ -75,6 +75,8 @@ typedef struct {
 typedef struct {
     u64 key;
     ReplayState state;
+    u32 pending_roots, pending_clears;
+    u8 observed_clear_only;
     u64 shader_code[8];
     u8 shader_count;
     NvnClearCommand clears[8];
@@ -103,6 +105,7 @@ static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missi
     replay_depth_stale_target;
 static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
 static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported;
+static u64 preflight_batches, preflight_clear_only, preflight_mixed, preflight_no_clears, preflight_clear_commands;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -154,17 +157,24 @@ static ReplayQueue* replay_queue_slot(u64 key) {
 static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
         replay_depth_limit++;
+        if (queue) queue->observed_clear_only = 0;
         return;
     }
     NvnList* list = list_slot(handle, 0);
     if (!list) {
         replay_missing_lists++;
+        if (queue) queue->observed_clear_only = 0;
         return;
     }
     replay_lists++;
     if (list->opaque) replay_opaque++;
+    if (queue && (list->opaque || list->truncated)) queue->observed_clear_only = 0;
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
+        if (queue && op->kind != OP_MEMORY && strcmp(op->name, "nvnCommandBufferSetRenderTargets") &&
+            strcmp(op->name, "nvnCommandBufferClearColor") && strcmp(op->name, "nvnCommandBufferClearDepthStencil") &&
+            strcmp(op->name, "nvnCommandBufferCallCommands"))
+            queue->observed_clear_only = 0;
         if (!strcmp(op->name, "nvnCommandBufferSetRenderTargets")) {
             if (op->payload)
                 state->targets = *(const NvnTargets*)op->payload;
@@ -176,9 +186,11 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             if (!clear || !state->targets.valid || clear->index >= state->targets.count ||
                 !state->targets.color[clear->index]) {
                 replay_color_missing_target++;
+                if (queue) queue->observed_clear_only = 0;
             } else if ((state->targets.color_views & (1u << clear->index)) &&
                        !state->targets.color_view[clear->index].valid) {
                 replay_color_view_unknown++;
+                if (queue) queue->observed_clear_only = 0;
             } else {
                 const NvnView* view = &state->targets.color_view[clear->index];
                 NvnTextureTarget target;
@@ -187,6 +199,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     (state->targets.color_views & (1u << clear->index)) ? &view->selection : NULL, &target);
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_color_target_resolved++;
+                    if (queue) queue->pending_clears++;
                     if (clear_execute && queue) {
                         if (queue->clear_count == 8) {
                             clear_stage_full++;
@@ -205,13 +218,16 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     replay_target_bad_view++;
                 else
                     replay_color_stale_target++;
+                if (queue && result != NVN_TARGET_RESOLVED) queue->observed_clear_only = 0;
             }
         } else if (!strcmp(op->name, "nvnCommandBufferClearDepthStencil")) {
             replay_depth_clears++;
             if (!op->payload || !state->targets.valid || !state->targets.depth) {
                 replay_depth_missing_target++;
+                if (queue) queue->observed_clear_only = 0;
             } else if (state->targets.depth_view && !state->targets.depth_view_data.valid) {
                 replay_depth_view_unknown++;
+                if (queue) queue->observed_clear_only = 0;
             } else {
                 NvnTextureTarget target;
                 NvnTargetResult result = nvn_texture_resolve_target(
@@ -219,6 +235,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     &target);
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_depth_target_resolved++;
+                    if (queue) queue->pending_clears++;
                     if (clear_execute && queue) {
                         if (queue->clear_count == 8) {
                             clear_stage_full++;
@@ -242,6 +259,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     replay_target_bad_view++;
                 else
                     replay_depth_stale_target++;
+                if (queue && result != NVN_TARGET_RESOLVED) queue->observed_clear_only = 0;
             }
         } else if (!strcmp(op->name, "nvnCommandBufferSetTexturePool")) {
             state->texture_pool = op->args[0];
@@ -301,7 +319,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 replay_program_missing++;
             }
         } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
-            if (op->refs_truncated) replay_truncated_refs++;
+            if (op->refs_truncated) {
+                replay_truncated_refs++;
+                if (queue) queue->observed_clear_only = 0;
+            }
             for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], state, queue, depth + 1);
         }
     }
@@ -473,19 +494,27 @@ void nvn_record_before(const CPU* c, const char* name) {
         if (count > 4096 || (count && !readable_range(ptr, (u64)count * 8))) {
             pm_lock(&lock);
             invalid_arrays++;
+            ReplayQueue* queue = descriptor_replay ? replay_queue_slot(c->x[0]) : NULL;
+            if (queue && queue->key == c->x[0]) queue->observed_clear_only = 0;
             pm_unlock(&lock);
             return;
         }
         pm_lock(&lock);
         ReplayQueue* queue = descriptor_replay ? replay_queue_slot(c->x[0]) : NULL;
+        if (queue && !queue->key) {
+            queue->key = c->x[0];
+            queue->observed_clear_only = 1;
+        }
         ReplayState state = queue && queue->key ? queue->state : (ReplayState){0};
         if (descriptor_replay && !queue) replay_queue_full++;
+        if (queue) queue->pending_roots += count;
         for (u32 i = 0; i < count; i++) {
             u64 handle = gr64(ptr + (u64)i * 8);
             NvnList* list = list_slot(handle, 0);
             submitted++;
             if (!list) {
                 submitted_missing++;
+                if (queue) queue->observed_clear_only = 0;
                 continue;
             }
             submitted_found++;
@@ -603,13 +632,25 @@ static void execute_clear_batch(void* arg) {
 
 void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
     if (!strcmp(name, "nvnQueueFlush") || !strcmp(name, "nvnQueuePresentTexture")) {
-        if (!shader_transport && !clear_execute) return;
+        if (!descriptor_replay) return;
         u64 codes[8];
         u32 count = 0;
         NvnClearBatch batch = {0};
         pm_lock(&lock);
         ReplayQueue* queue = replay_queue_slot(command_buffer);
         if (queue && queue->key == command_buffer) {
+            if (queue->pending_roots) {
+                preflight_batches++;
+                if (!queue->pending_clears)
+                    preflight_no_clears++;
+                else if (queue->observed_clear_only) {
+                    preflight_clear_only++;
+                    preflight_clear_commands += queue->pending_clears;
+                } else
+                    preflight_mixed++;
+                queue->pending_roots = queue->pending_clears = 0;
+                queue->observed_clear_only = 1;
+            }
             if (shader_transport) {
                 count = queue->shader_count;
                 memcpy(codes, queue->shader_code, (size_t)count * sizeof(u64));
@@ -739,6 +780,10 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&clear_issued, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&clear_unsupported, __ATOMIC_RELAXED),
                 (unsigned long long)clear_stage_full);
+        LOG("nvn-preflight: batches=%llu observed-clear-only=%llu mixed=%llu no-clears=%llu clear-commands=%llu\n",
+            (unsigned long long)preflight_batches, (unsigned long long)preflight_clear_only,
+            (unsigned long long)preflight_mixed, (unsigned long long)preflight_no_clears,
+            (unsigned long long)preflight_clear_commands);
     }
     pm_unlock(&lock);
 }
