@@ -93,10 +93,20 @@ recorder found all 283 submitted lists and all 1,464 referenced secondary lists,
 texture-handle verification mismatches. Yet all 1,464 secondary references remained opaque: only 284 exported
 `BeginRecording` calls were observed against 9,649 `EndRecording` calls, and 6,493 command buffers first appeared
 through another selected operation. Direct calls to resolved exports therefore do not explain the missing starts.
-Disassembly of this SDK's exported begin function shows it initializes the command buffer's recording state, while
-the exported end function checks that state. An internal or inlined begin path is a plausible explanation, but the
-trace alone does not identify it. A replayable HLE path cannot assume every list starts through the exported begin
-entry point.
+The missing starts are inlined in TotK's game code. At `0x8714394` and `0x87164ac`, the game writes the same recording
+flag and command-buffer fields as the exported begin function at `0xd15a480`. A temporary caller probe saw opaque
+`EndRecording` calls from game sites `0x88e29c4` and `0x8716e34`; the command buffer's recording flag was set before
+each end call. The probe was removed after this check. A replayable HLE path cannot assume every list starts through
+the exported begin entry point. It must either recognize the inlined producer or take over at a later boundary where
+its command stream and resource state can be recovered.
+
+TotK calls the exported `AddControlMemory` and `AddCommandMemory` functions immediately before at least one inlined
+begin sequence. The diagnostic recorder now retains those calls as memory-preparation events, separate from command
+state and draw operations. They identify supplied command/control storage but do not prove that all subsequent
+operations were observed or make an opaque list replayable. In a later 25-second TotK run it retained 24,926
+memory-preparation events in 12,463 opaque ended lists, with no dropped operations or missing submitted or referenced
+lists. Catherine's preparation calls occur before its exported begins; these are discarded when the begin resets the
+record and do not inflate its implicit-begin count.
 
 ## Migration boundaries
 

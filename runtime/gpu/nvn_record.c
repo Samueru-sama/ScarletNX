@@ -8,7 +8,19 @@
 #include <string.h>
 
 /* Diagnostic sidecar only. The guest SDK still executes every command and owns rendering. */
-enum { OP_DRAW, OP_CLEAR, OP_DISPATCH, OP_CALL, OP_STATE, OP_TRANSFER, OP_BARRIER, OP_SYNC, OP_OTHER, OP_COUNT };
+enum {
+    OP_DRAW,
+    OP_CLEAR,
+    OP_DISPATCH,
+    OP_CALL,
+    OP_STATE,
+    OP_MEMORY,
+    OP_TRANSFER,
+    OP_BARRIER,
+    OP_SYNC,
+    OP_OTHER,
+    OP_COUNT
+};
 typedef struct {
     u8 kind;
     u8 ref_count, refs_truncated;
@@ -20,7 +32,7 @@ typedef struct {
     u64 key;
     NvnOp* ops;
     u16 count, capacity;
-    u8 truncated, opaque;
+    u8 truncated, opaque, implicit_counted;
 } NvnList;
 #define ACTIVE_SLOTS 8192
 #define LIST_SLOTS   32768
@@ -86,6 +98,7 @@ static int readable_range(u64 addr, u64 size) {
 
 static int kind(const char* name) {
     const char* op = name + strlen("nvnCommandBuffer");
+    if (!strcmp(op, "AddCommandMemory") || !strcmp(op, "AddControlMemory")) return OP_MEMORY;
     if (!strncmp(op, "Draw", 4)) return OP_DRAW;
     if (!strncmp(op, "Clear", 5)) return OP_CLEAR;
     if (!strncmp(op, "Dispatch", 8)) return OP_DISPATCH;
@@ -153,7 +166,10 @@ void nvn_record_before(const CPU* c, const char* name) {
             reset(r);
             r->key = c->x[0];
             r->opaque = 1; /* command-buffer activity without a visible BeginRecording */
+        }
+        if (r->opaque && !r->implicit_counted && op_kind != OP_MEMORY) {
             implicit_begins++;
+            r->implicit_counted = 1;
         }
         if (op_kind == OP_CALL) {
             calls++;
@@ -243,13 +259,13 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
 }
 
 static void report_ops(const char* stage, const u64 counts[OP_COUNT]) {
-    LOG("nvn-record: %s draw=%llu clear=%llu dispatch=%llu call=%llu state=%llu transfer=%llu barrier=%llu "
+    LOG("nvn-record: %s draw=%llu clear=%llu dispatch=%llu call=%llu state=%llu memory=%llu transfer=%llu barrier=%llu "
         "sync=%llu other=%llu\n",
         stage, (unsigned long long)counts[OP_DRAW], (unsigned long long)counts[OP_CLEAR],
         (unsigned long long)counts[OP_DISPATCH], (unsigned long long)counts[OP_CALL],
-        (unsigned long long)counts[OP_STATE], (unsigned long long)counts[OP_TRANSFER],
-        (unsigned long long)counts[OP_BARRIER], (unsigned long long)counts[OP_SYNC],
-        (unsigned long long)counts[OP_OTHER]);
+        (unsigned long long)counts[OP_STATE], (unsigned long long)counts[OP_MEMORY],
+        (unsigned long long)counts[OP_TRANSFER], (unsigned long long)counts[OP_BARRIER],
+        (unsigned long long)counts[OP_SYNC], (unsigned long long)counts[OP_OTHER]);
 }
 
 void nvn_record_report(void) {
