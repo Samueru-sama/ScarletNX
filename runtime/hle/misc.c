@@ -2,7 +2,7 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* the smaller services, most of which answer success: apm, lm, pctl, nifm, friend, ns, bsd, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, audin */
+/* the smaller services, most of which answer success: apm, lm, pctl, nifm, friend, ns, bsd, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin */
 #include "hle/services_int.h"
 /* ================================================================ apm and misc */
 static int apm_session(SvcObj* o, IpcCtx* c) {
@@ -542,6 +542,32 @@ static int spl_disp(SvcObj* o, IpcCtx* c) {
     return stub_ok(o, c);
 }
 SvcObj* new_spl(void) { return svcobj_new("spl:", spl_disp, 0); }
+
+/* btm:u GetCore returns an interface object, which the SDK requires during initialization. */
+static int btmu_core(SvcObj* o, IpcCtx* c) {
+    const char* event = NULL;
+    switch (c->cmd) {
+        case 0: event = "btm BLE scan"; break;
+        case 17: event = "btm BLE connection"; break;
+        case 21: event = "btm BLE pairing"; break;
+        case 26: event = "btm BLE service discovery"; break;
+        case 33: event = "btm BLE MTU"; break;
+    }
+    if (event) { /* BLE operations are not emulated; expose an unsignaled event with the required success flag. */
+        out8(c, 1);
+        out_copy_h(c, ev_handle(kevent_new(event)));
+        return 0;
+    }
+    return stub_ok(o, c);
+}
+static int btmu_disp(SvcObj* o, IpcCtx* c) {
+    if (c->cmd == 0) {
+        out_obj(c, svcobj_new("IBtmUserCore", btmu_core, 0));
+        return 0;
+    }
+    return stub_ok(o, c);
+}
+SvcObj* new_btmu(void) { return svcobj_new("btm:u", btmu_disp, 0); }
 /* audin:u (IAudioInManager): no microphones. 0 ListAudioIns, 2 ListAudioInsAuto, 4 ListAudioInsAutoFiltered answer
    a count of 0, so the game opens none */
 static int audin_disp(SvcObj* o, IpcCtx* c) {

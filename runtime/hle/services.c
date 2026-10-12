@@ -86,4 +86,5 @@ void svc_core_init(void) {
     svc_register("ectx:aw", new_ectx);
     svc_register("spl:", new_spl);
     svc_register("spl:mig", new_spl);
+    svc_register("btm:u", new_btmu);
 }
