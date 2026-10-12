@@ -88,6 +88,16 @@ secondary-list coverage or full-game command completeness. The recorder now filt
 even when `SNX_NVN_TRACE=1` wraps all resolved functions; otherwise unrelated calls were misclassified as command-buffer
 activity.
 
+An opt-in TotK module compiled with `--hook-direct-calls -O 1` ran for 25 seconds and presented 281 frames. The
+recorder found all 283 submitted lists and all 1,464 referenced secondary lists, with no dropped operations or
+texture-handle verification mismatches. Yet all 1,464 secondary references remained opaque: only 284 exported
+`BeginRecording` calls were observed against 9,649 `EndRecording` calls, and 6,493 command buffers first appeared
+through another selected operation. Direct calls to resolved exports therefore do not explain the missing starts.
+Disassembly of this SDK's exported begin function shows it initializes the command buffer's recording state, while
+the exported end function checks that state. An internal or inlined begin path is a plausible explanation, but the
+trace alone does not identify it. A replayable HLE path cannot assume every list starts through the exported begin
+entry point.
+
 ## Migration boundaries
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
