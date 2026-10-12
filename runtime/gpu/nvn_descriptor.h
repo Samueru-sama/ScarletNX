@@ -13,4 +13,6 @@ int nvn_descriptor_wants(const char* name);
 void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* call);
 void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCall* call);
 void nvn_descriptor_report(void);
+/* 1 = live texture, 0 = missing pool/descriptor, -1 = stale texture. */
+int nvn_descriptor_check(u64 pool, u64 handle);
 #endif

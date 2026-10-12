@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_record.h"
+#include "gpu/nvn_descriptor.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -43,6 +44,15 @@ static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_fou
 static u64 calls, call_refs, call_ref_missing, call_ref_opaque, truncated_refs;
 static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, invalid_arrays, allocation_failures;
 static u64 captured[OP_COUNT], ended_ops[OP_COUNT], submitted_ops[OP_COUNT], referenced_ops[OP_COUNT];
+typedef struct {
+    u64 key, texture_pool;
+} ReplayQueue;
+#define REPLAY_QUEUE_SLOTS 1024
+static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
+static int descriptor_replay;
+static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
+static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
+static u64 replay_queue_full;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -74,6 +84,55 @@ static NvnList* list_slot(u64 key, int create) {
     if (!create) return NULL;
     list_collisions++; /* fixed storage is full: evict one diagnostic record */
     return &lists[home];
+}
+
+void nvn_record_enable_descriptor_replay(void) { descriptor_replay = 1; }
+
+static ReplayQueue* replay_queue_slot(u64 key) {
+    if (!key) return NULL;
+    u32 home = slot(key, REPLAY_QUEUE_SLOTS - 1);
+    for (u32 step = 0; step < REPLAY_QUEUE_SLOTS; step++) {
+        ReplayQueue* q = &replay_queues[(home + step) & (REPLAY_QUEUE_SLOTS - 1)];
+        if (q->key == key || !q->key) return q;
+    }
+    return NULL;
+}
+
+/* Walk a diagnostic list in GPU command order. Secondary lists inherit the caller's texture-pool selection. */
+static void replay_list(u64 handle, u64* texture_pool, u32 depth) {
+    if (depth == 32) {
+        replay_depth_limit++;
+        return;
+    }
+    NvnList* list = list_slot(handle, 0);
+    if (!list) {
+        replay_missing_lists++;
+        return;
+    }
+    replay_lists++;
+    if (list->opaque) replay_opaque++;
+    for (u32 i = 0; i < list->count; i++) {
+        const NvnOp* op = &list->ops[i];
+        if (!strcmp(op->name, "nvnCommandBufferSetTexturePool")) {
+            *texture_pool = op->args[0];
+        } else if (!strcmp(op->name, "nvnCommandBufferBindTexture")) {
+            replay_binds++;
+            if (!*texture_pool) {
+                replay_missing_pool++;
+            } else {
+                int result = nvn_descriptor_check(*texture_pool, op->args[2]);
+                if (result == 1)
+                    replay_resolved++;
+                else if (result == -1)
+                    replay_stale++;
+                else
+                    replay_missing_descriptor++;
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
+            if (op->refs_truncated) replay_truncated_refs++;
+            for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], texture_pool, depth + 1);
+        }
+    }
 }
 
 static void reset(NvnList* r) {
@@ -132,6 +191,9 @@ void nvn_record_before(const CPU* c, const char* name) {
             return;
         }
         pm_lock(&lock);
+        ReplayQueue* queue = descriptor_replay ? replay_queue_slot(c->x[0]) : NULL;
+        u64 texture_pool = queue && queue->key ? queue->texture_pool : 0;
+        if (descriptor_replay && !queue) replay_queue_full++;
         for (u32 i = 0; i < count; i++) {
             u64 handle = gr64(ptr + (u64)i * 8);
             NvnList* list = list_slot(handle, 0);
@@ -143,6 +205,14 @@ void nvn_record_before(const CPU* c, const char* name) {
             submitted_found++;
             if (list->opaque) submitted_opaque++;
             for (u32 j = 0; j < list->count; j++) submitted_ops[list->ops[j].kind]++;
+            if (descriptor_replay) {
+                replay_roots++;
+                replay_list(handle, &texture_pool, 0);
+            }
+        }
+        if (queue) {
+            queue->key = c->x[0];
+            queue->texture_pool = texture_pool;
         }
         pm_unlock(&lock);
         return;
@@ -286,5 +356,15 @@ void nvn_record_report(void) {
         (unsigned long long)calls, (unsigned long long)active_collisions, (unsigned long long)list_collisions,
         (unsigned long long)truncated_lists, (unsigned long long)dropped_ops, (unsigned long long)invalid_arrays,
         (unsigned long long)allocation_failures);
+    if (descriptor_replay) {
+        LOG("nvn-replay: roots=%llu lists=%llu opaque=%llu missing-lists=%llu truncated-refs=%llu depth-limit=%llu queue-full=%llu\n",
+            (unsigned long long)replay_roots, (unsigned long long)replay_lists, (unsigned long long)replay_opaque,
+            (unsigned long long)replay_missing_lists, (unsigned long long)replay_truncated_refs,
+            (unsigned long long)replay_depth_limit, (unsigned long long)replay_queue_full);
+        LOG("nvn-replay: binds=%llu resolved=%llu missing-pool=%llu missing-descriptor=%llu stale=%llu\n",
+            (unsigned long long)replay_binds, (unsigned long long)replay_resolved,
+            (unsigned long long)replay_missing_pool, (unsigned long long)replay_missing_descriptor,
+            (unsigned long long)replay_stale);
+    }
     pm_unlock(&lock);
 }

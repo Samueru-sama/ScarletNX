@@ -8,4 +8,5 @@ int nvn_record_wants(const char* name);
 void nvn_record_before(const CPU* c, const char* name);
 void nvn_record_after(const CPU* c, const char* name, u64 command_buffer);
 void nvn_record_report(void);
+void nvn_record_enable_descriptor_replay(void);
 #endif

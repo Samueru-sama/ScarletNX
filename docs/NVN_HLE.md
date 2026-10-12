@@ -176,6 +176,19 @@ unique-pool inference. Catherine resolved all 1,513 binds from observed pool sel
 zero missing descriptors, stale textures, invalid IDs, and table losses. The TotK inference remains conditional on
 there being exactly one live texture pool; it does not prove correct state propagation through secondary lists.
 
+`SNX_NVN_DESC_REPLAY=1` enables command recording and descriptor observation together, then walks submitted lists in
+recorded order. `SetTexturePool` changes queue texture-pool state; `CallCommands` recursively executes secondary list
+records with the caller's state; each single `BindTexture` checks its descriptor, texture generation, and backing pool
+generation against that state. Queue state carries
+across submitted lists. The report separates resolved binds from missing pool state, descriptors, stale textures,
+opaque or missing lists, truncated references, and recursion depth limits. This is a diagnostic walk of observed NVN
+calls, not a substitute for executing the guest command stream or proof that inlined operations were captured.
+In a 120-frame Catherine run, all 1,511 replayed binds resolved across 122 submitted lists, with no opaque or missing
+lists. In a 25-second TotK run, all 61,586 replayed binds resolved across 337 submitted roots and 2,263 opaque
+secondary-list visits, with no missing lists, truncated references, depth-limit hits, or stale pool generations. The
+69,205 eager TotK bind calls include work not yet submitted during that interval; the replay count measures submitted
+list executions rather than calls made while building lists.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

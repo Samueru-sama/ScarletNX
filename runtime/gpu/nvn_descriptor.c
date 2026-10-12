@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_descriptor.h"
+#include "gpu/nvn_pool.h"
 #include "gpu/nvn_texture.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -31,6 +32,14 @@ static u64 initialized, failed, finalized, registered, binds, resolved, live_poo
 static u64 inferred_bind_pools, resolved_inferred;
 static u64 unknown_pools, invalid_ids, untracked_textures, missing_bind_pools, missing_descriptors, stale_textures;
 static u64 pool_table_full, descriptor_table_full, command_table_full;
+
+static int texture_current(const Descriptor* d) {
+    NvnTextureSnapshot texture = {0};
+    if (!nvn_texture_snapshot(d->texture, &texture) || texture.generation != d->texture_generation) return 0;
+    if (!texture.pool) return 1;
+    NvnPoolSnapshot pool = {0};
+    return nvn_pool_snapshot(texture.pool, &pool) && pool.generation == texture.pool_generation;
+}
 
 static u32 hash(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -177,8 +186,7 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
             if (!d || d->pool_generation != p->generation) {
                 missing_descriptors++;
             } else {
-                NvnTextureSnapshot current = {0};
-                if (!nvn_texture_snapshot(d->texture, &current) || current.generation != d->texture_generation)
+                if (!texture_current(d))
                     stale_textures++;
                 else {
                     resolved++;
@@ -204,4 +212,14 @@ void nvn_descriptor_report(void) {
         (unsigned long long)pool_table_full, (unsigned long long)descriptor_table_full,
         (unsigned long long)command_table_full);
     pm_unlock(&lock);
+}
+
+int nvn_descriptor_check(u64 pool, u64 handle) {
+    pm_lock(&lock);
+    TexturePool* p = pool_slot(pool, 0);
+    Descriptor* d = p && p->alive ? descriptor_slot(pool, (u32)handle & 0xfffff, 0) : NULL;
+    int result = 0;
+    if (d && d->pool_generation == p->generation) { result = texture_current(d) ? 1 : -1; }
+    pm_unlock(&lock);
+    return result;
 }

@@ -20,7 +20,7 @@ static GuestFn bootstrap_original;
 static GuestFn getproc_original;
 static GuestFn texture_size_original;
 static u64 texture_size_entry;
-static int tracing, hle, verify, recording, pools, buffers, textures, aliases, descriptors;
+static int tracing, hle, verify, recording, pools, buffers, textures, aliases, descriptors, descriptor_replay;
 static u64 verify_failures;
 typedef struct {
     u64 addr, calls;
@@ -183,16 +183,19 @@ void nvn_trace_init(void) {
     const char* texture_env = getenv("SNX_NVN_TEXTURE");
     const char* alias_env = getenv("SNX_NVN_ALIAS");
     const char* descriptor_env = getenv("SNX_NVN_DESCRIPTOR");
+    const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
     verify = hle && verify_env && !strcmp(verify_env, "1");
-    recording = record_env && !strcmp(record_env, "1");
+    descriptor_replay = replay_env && !strcmp(replay_env, "1");
+    recording = descriptor_replay || (record_env && !strcmp(record_env, "1"));
     aliases = alias_env && !strcmp(alias_env, "1");
-    descriptors = descriptor_env && !strcmp(descriptor_env, "1");
+    descriptors = descriptor_replay || (descriptor_env && !strcmp(descriptor_env, "1"));
     buffers = aliases || (buffer_env && !strcmp(buffer_env, "1"));
     textures = aliases || descriptors || (texture_env && !strcmp(texture_env, "1"));
     pools = buffers || textures || (pool_env && !strcmp(pool_env, "1"));
     if (aliases) nvn_alias_enable();
+    if (descriptor_replay) nvn_record_enable_descriptor_replay();
     if (!tracing && !hle && !recording && !pools) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
