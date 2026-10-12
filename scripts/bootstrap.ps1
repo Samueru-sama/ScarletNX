@@ -1,28 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Sets up a Windows machine for ScarletNX with nothing installed: downloads the toolchain into deps\tools, each file
-# pinned and checked against its SHA-256. The third-party libraries come with the CMake build (cmake\dependencies.cmake).
-#
-#   powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
-#
-# Afterwards, in each PowerShell window, `Set-ExecutionPolicy -Scope Process Bypass` (Windows runs no scripts by
-# default) and then `. scripts\env.ps1` put the tools on PATH.
-#
-#   llvm-mingw 20261006   Clang, lld and the MinGW-w64 headers and libraries
-#   CMake 4.4.4, Ninja 1.13.2
-#   NASM 3.02             FFmpeg's assembly
-#   Python 3.15.0         scarletnx and the scripts (the embeddable distribution)
-#   w64devkit 2.10.0      only its sh (busybox) and GNU make, which FFmpeg's configure and Makefiles need
+# powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+# -> deps\tools: pinned, SHA-256-checked toolchain; no system install.
+# Each shell: Set-ExecutionPolicy -Scope Process Bypass; . scripts\env.ps1
+# Runtime deps: CMake/CPM (cmake/dependencies.cmake). Toolchain pins below.
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is many times slower with its progress bar
+$ProgressPreference = 'SilentlyContinue'  # Avoid Invoke-WebRequest progress overhead
 
 $repo = Split-Path -Parent $PSScriptRoot
 $tools = Join-Path $repo 'deps\tools'
 $downloads = Join-Path $tools 'downloads'
 New-Item -ItemType Directory -Force -Path $downloads | Out-Null
 
-# Bin is the folder, inside Dir, that env.ps1 puts on PATH. The order is PATH's: w64devkit last, so its GCC, CMake and
-# Ninja never come first (FFmpeg's build only needs its sh and make)
+# PATH order: Dir/Bin. Keep w64devkit last; use only its sh/make, not its GCC/CMake/Ninja.
 $packages = @(
     @{ Name = 'llvm-mingw'; Dir = 'llvm-mingw-20261006-ucrt-x86_64'; Bin = 'bin'; Kind = 'zip'
        Url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-x86_64.zip'
@@ -44,55 +34,54 @@ $packages = @(
        Sha256 = '18d0a4c71a166f8401ab6305781bec5882b40b5e06ba9807c61cb5f3b3c6325e' }
 )
 
-# Windows 10 and 11 ship bsdtar, which unpacks zip files much faster than Expand-Archive
+# Win10/11 bsdtar: faster ZIP extraction than Expand-Archive.
 $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
 
 foreach ($p in $packages) {
     $dest = Join-Path $tools $p.Dir
     $marker = Join-Path $dest '.sha256'
     if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $p.Sha256)) {
-        Write-Host "$($p.Name) is up to date"
+        Write-Host "$($p.Name): cached"
         continue
     }
     $file = Join-Path $downloads ([IO.Path]::GetFileName($p.Url))
     if (-not (Test-Path $file) -or (Get-FileHash -Algorithm SHA256 $file).Hash -ne $p.Sha256) {
-        Write-Host "Downloading $($p.Name)"
+        Write-Host "Download: $($p.Name)"
         Invoke-WebRequest -Uri $p.Url -OutFile $file -UseBasicParsing
     }
     $hash = (Get-FileHash -Algorithm SHA256 $file).Hash
     if ($hash -ne $p.Sha256) {
         Remove-Item $file
-        throw "$($p.Name): the download's SHA-256 is $hash, expected $($p.Sha256). Not using it."
+        throw "$($p.Name): SHA-256 mismatch ($hash; expected $($p.Sha256)); download removed."
     }
-    Write-Host "Unpacking $($p.Name)"
+    Write-Host "Unpack: $($p.Name)"
     if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
     switch ($p.Kind) {
         'sfx' {
-            # A 7-Zip self-extracting archive: -o is the folder it unpacks into (quoted, since Start-Process joins
-            # the arguments with spaces and quotes nothing), -y answers yes to everything
+            # Quote -o explicitly: Start-Process joins ArgumentList without quoting.
             $proc = Start-Process -FilePath $file -ArgumentList '-y', "-o`"$tools`"" -Wait -PassThru -NoNewWindow
-            if ($proc.ExitCode -ne 0) { throw "$($p.Name) did not unpack (exit $($proc.ExitCode))" }
+            if ($proc.ExitCode -ne 0) { throw "$($p.Name): unpack failed (exit $($proc.ExitCode))" }
         }
-        'zip' { & $tar -xf $file -C $tools; if ($LASTEXITCODE) { throw "$($p.Name) did not unpack" } }
+        'zip' { & $tar -xf $file -C $tools; if ($LASTEXITCODE) { throw "$($p.Name): unpack failed (exit $LASTEXITCODE)" } }
         'zip-flat' {
             New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            & $tar -xf $file -C $dest; if ($LASTEXITCODE) { throw "$($p.Name) did not unpack" }
+            & $tar -xf $file -C $dest; if ($LASTEXITCODE) { throw "$($p.Name): unpack failed (exit $LASTEXITCODE)" }
         }
     }
-    if (-not (Test-Path $dest)) { throw "$($p.Name) did not unpack into $dest" }
+    if (-not (Test-Path $dest)) { throw "$($p.Name): output missing: $dest" }
     Set-Content -Path $marker -Value $p.Sha256
 }
 
-# The embeddable Python searches only the folders its ._pth file lists, not the current one, so `python -m
-# scarletnx` (scripts\recomp.py runs it) needs the repository root listed, relative to deps\tools\python
+# Embedded Python needs the checkout in ._pth for snx-recomp's `python -m scarletnx`.
 $pth = Get-ChildItem -Path (Join-Path $tools 'python') -Filter 'python*._pth' | Select-Object -First 1
-if (-not $pth) { throw 'The embeddable Python has no ._pth file' }
+if (-not $pth) { throw 'Python: ._pth missing in deps\tools\python' }
 $root = '..\..\..'
 if (@(Get-Content $pth.FullName) -notcontains $root) { Add-Content -Path $pth.FullName -Value $root }
 
-# The folders env.ps1 puts on PATH, in order, relative to deps\tools
+# env.ps1 PATH entries, relative to deps\tools.
 $packages | ForEach-Object { if ($_.Bin) { "$($_.Dir)\$($_.Bin)" } else { $_.Dir } } |
     Set-Content -Path (Join-Path $tools 'path.txt')
 
-Write-Host ('Done. In a new PowerShell window, run `Set-ExecutionPolicy -Scope Process Bypass` and `. scripts\env.ps1`, ' +
-            'then build with `cmake --preset default` and `cmake --build --preset default`.')
+Write-Host ("Tools: $tools`n" +
+            'Next shell: Set-ExecutionPolicy -Scope Process Bypass; . scripts\env.ps1' + "`n" +
+            'Build: cmake --preset default; cmake --build --preset default')

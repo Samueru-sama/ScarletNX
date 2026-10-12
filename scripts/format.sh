@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Formats the C and C++ sources with clang-format 23 and the Python sources with ruff (through uvx, pinned below).
-#
-#   scripts/format.sh            format the repository
-#   scripts/format.sh --check    list what is not formatted, exit 1 if anything is
-#   scripts/format.sh DIR        format another tree with this repository's settings (import-upstream.sh does this)
-#
-# Formatted: the C and C++ files under runtime/ and tools/, and the Python files up to two folders deep plus the Claude
-# Code hooks. Left alone: third-party code (.cache/cpm), and in upstream trees the font bitmap in overlay_font.h and
-# the GL function list in glfn.h, an X-macro list clang-format can't lay out stably.
+# scripts/format.sh [DIR]         -> format sources (default: checkout)
+# scripts/format.sh --check [DIR] -> list mismatches; exit 1 if any
+# Requires clang-format 23 + uvx/ruff (pinned below); always uses checkout styles.
+# Scope: C/C++ in runtime/, tools/; Python <=2 levels deep + .claude/hooks/.
+# Excludes third-party trees, overlay_font.h + glfn.h (unstable X-macro formatting).
 set -euo pipefail
 
 CLANG_FORMAT_MAJOR=23
@@ -21,23 +17,23 @@ root=$repo
 for arg in "$@"; do
     case $arg in
         --check) check=1 ;;
-        -*) echo "usage: $0 [--check] [DIR]" >&2; exit 2 ;;
+        -*) echo "Usage: $0 [--check] [DIR]" >&2; exit 2 ;;
         *) root=$(cd "$arg" && pwd) ;;
     esac
 done
 
 if ! command -v clang-format >/dev/null; then
-    echo "clang-format $CLANG_FORMAT_MAJOR is required and is not on PATH" >&2
+    echo "clang-format $CLANG_FORMAT_MAJOR not on PATH" >&2
     exit 1
 fi
 version=$(clang-format --version | sed -n 's/.*version \([0-9]*\)\..*/\1/p')
 if [ "$version" != "$CLANG_FORMAT_MAJOR" ]; then
-    echo "clang-format $CLANG_FORMAT_MAJOR is required (found ${version:-none}): another version formats differently" >&2
+    echo "clang-format: need $CLANG_FORMAT_MAJOR, found ${version:-unknown}" >&2
     exit 1
 fi
 
 cd "$root"
-# An upstream tree has no tools/ or .claude/hooks/
+# Upstream imports may lack tools/ + .claude/hooks/.
 c_dirs=()
 for d in runtime tools; do [ -d "$d" ] && c_dirs+=("$d"); done
 py_extra=()
@@ -50,7 +46,7 @@ fi
 mapfile -t py_files < <( (find . -maxdepth 2 -name '*.py' -not -path './third_party/*' -not -path './.cache/*' \
     -not -path './build*' -not -path './python/*'; [ ${#py_extra[@]} -eq 0 ] || find "${py_extra[@]}" -name '*.py') | sort)
 
-# cksum is POSIX (sha1sum is missing on FreeBSD); it only has to tell whether a pass changed anything
+# Portable change detector; FreeBSD lacks sha1sum.
 digest() { cat "${c_files[@]}" | cksum; }
 
 status=0
@@ -61,18 +57,17 @@ if [ $check = 1 ]; then
     if [ ${#py_files[@]} -gt 0 ]; then
         uvx -q "$RUFF" format --no-cache --config "$repo/pyproject.toml" --check "${py_files[@]}" || status=1
     fi
-    [ $status = 0 ] || echo "Not formatted: run scripts/format.sh" >&2
+    [ $status = 0 ] || echo "Formatting differs; run scripts/format.sh \"$root\"" >&2
 else
-    # clang-format is not idempotent here (trailing comments after a closing brace realign on a second pass), so
-    # repeat until nothing changes: the result is then stable, and --check agrees with it. With no files, cat and
-    # clang-format would read stdin and ruff would format the whole folder: skip them
+    # Repeat until stable: trailing comments may realign on pass 2.
+    # Skip empty input to avoid stdin reads or whole-tree formatting.
     if [ ${#c_files[@]} -gt 0 ]; then
         for pass in 1 2 3 4 5; do
             before=$(digest)
             clang-format --style="file:$repo/.clang-format" -i "${c_files[@]}"
             [ "$(digest)" = "$before" ] && break
             if [ $pass = 5 ]; then
-                echo "clang-format did not settle after 5 passes" >&2
+                echo "clang-format unstable after 5 passes" >&2
                 exit 1
             fi
         done
