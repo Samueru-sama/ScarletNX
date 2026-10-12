@@ -144,6 +144,7 @@ static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
 static u64 draw_with_texture, draw_without_texture;
 static u64 draw_texture_descriptors_complete, draw_texture_descriptors_incomplete;
+static u64 draw_texture_tics_complete, draw_texture_tics_incomplete;
 static u64 draw_texture_views_complete, draw_texture_views_incomplete;
 static u64 draw_sampler_descriptors_complete, draw_sampler_descriptors_incomplete;
 static u64 draw_sampler_filter_wrap_complete, draw_sampler_filter_wrap_incomplete;
@@ -532,8 +533,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
             memcpy(draw.texture, state->texture, sizeof draw.texture);
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
-            int descriptors_complete = 1, views_complete = 1, samplers_complete = 1, filter_wrap_complete = 1,
-                has_texture = 0;
+            int descriptors_complete = 1, tics_complete = 1, views_complete = 1, samplers_complete = 1,
+                filter_wrap_complete = 1, has_texture = 0;
             for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
                 for (u32 index = 0; index < NVN_DRAW_TEXTURE_SLOTS; index++) {
                     if (!(draw.texture_bound[stage] & (1u << index))) continue;
@@ -542,8 +543,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                                 &draw.texture_descriptor[stage][index]) == 1) {
                         draw.texture_descriptor_valid[stage] |= 1u << index;
                         if (!draw.texture_descriptor[stage][index].view_known) views_complete = 0;
+                        if (!draw.texture_descriptor[stage][index].tic_valid) tics_complete = 0;
                     } else {
                         descriptors_complete = 0;
+                        tics_complete = 0;
                         views_complete = 0;
                     }
                     if (nvn_sampler_descriptor_snapshot(state->sampler_pool, draw.texture[stage][index],
@@ -563,6 +566,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     draw_texture_descriptors_complete++;
                 else
                     draw_texture_descriptors_incomplete++;
+                if (tics_complete)
+                    draw_texture_tics_complete++;
+                else
+                    draw_texture_tics_incomplete++;
                 if (views_complete)
                     draw_texture_views_complete++;
                 else
@@ -1280,6 +1287,8 @@ void nvn_record_report(void) {
         LOG("nvn-texture-draw: descriptors-complete=%llu incomplete=%llu\n",
             (unsigned long long)draw_texture_descriptors_complete,
             (unsigned long long)draw_texture_descriptors_incomplete);
+        LOG("nvn-texture-tic-draw: complete=%llu incomplete=%llu\n", (unsigned long long)draw_texture_tics_complete,
+            (unsigned long long)draw_texture_tics_incomplete);
         LOG("nvn-texture-view-draw: complete=%llu incomplete=%llu\n", (unsigned long long)draw_texture_views_complete,
             (unsigned long long)draw_texture_views_incomplete);
         LOG("nvn-sampler-draw: descriptors-complete=%llu incomplete=%llu\n",

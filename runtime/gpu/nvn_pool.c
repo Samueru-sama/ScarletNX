@@ -148,6 +148,7 @@ int nvn_pool_snapshot(u64 pool, NvnPoolSnapshot* out) {
         out->size = p->size;
         out->generation = p->generation;
         out->gpu_address = p->gpu_address;
+        out->storage = p->storage;
         out->gpu_seen = p->gpu_seen;
     }
     pm_unlock(&lock);

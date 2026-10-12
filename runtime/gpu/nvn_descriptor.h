@@ -7,6 +7,8 @@
 
 typedef struct {
     u64 object, pool, texture, view, handle;
+    u64 memory_pool;
+    i64 memory_offset;
     u32 index, count;
     NvnTextureViewSelection view_selection;
     u8 view_known;
@@ -14,7 +16,9 @@ typedef struct {
 typedef struct {
     u64 texture, view, texture_generation, pool_generation;
     NvnTextureViewSelection view_selection;
+    u32 tic[8];
     u8 view_known;
+    u8 tic_valid;
 } NvnDescriptorSnapshot;
 
 int nvn_descriptor_wants(const char* name);

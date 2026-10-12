@@ -11,7 +11,7 @@ typedef struct {
 } NvnPoolCall;
 
 typedef struct {
-    u64 size, generation, gpu_address;
+    u64 size, generation, gpu_address, storage;
     int gpu_seen;
 } NvnPoolSnapshot;
 

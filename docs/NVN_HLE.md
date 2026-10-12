@@ -165,7 +165,12 @@ pairs in that boot scene. Neither run lost records or reported an invalid interv
 `nvnTexturePoolRegisterTexture` mappings from descriptor index to a texture object generation. It follows
 `nvnCommandBufferSetTexturePool` on each command buffer, decodes the low 20-bit texture ID in single
 `nvnCommandBufferBindTexture` handles, and checks that the bound descriptor still names a live texture generation.
-This connects an observed bind to the tracked texture footprint without reading or replacing descriptor memory.
+This connects an observed bind to the tracked texture footprint. Registration also copies the 32-byte hardware TIC
+from the texture pool's CPU backing when that memory is readable, or from its mapped GPU address as a fallback. The
+copy is accepted only when its encoded GPU address matches the registered texture's observed address. A pool or
+texture object generation change invalidates the corresponding binding snapshot. Draw packets carry accepted TIC
+bytes with their texture and view identities. This is descriptor transport, not texture upload or guest-memory
+coherence for HLE rendering.
 When a command buffer has no observed pool selection and exactly one texture pool is live, the observer can use that
 unique pool for a diagnostic lookup; it reports these binds separately. This does not establish command-list state
 inheritance, which requires replaying pool-selection operations in queue submission order.
@@ -175,6 +180,10 @@ In a 166-frame TotK boot, all 26,775 observed single-texture binds resolved to l
 unique-pool inference. Catherine resolved all 1,513 binds from observed pool selections in 120 frames. Both runs had
 zero missing descriptors, stale textures, invalid IDs, and table losses. The TotK inference remains conditional on
 there being exactly one live texture pool; it does not prove correct state propagation through secondary lists.
+In later draw-preparation boots, Catherine copied all 199 registered TICs from CPU backing and carried a valid TIC
+on all 3,597 texture-using draws. TotK copied all 7,163 registered TICs and carried one on all 3,650 texture-using
+draws, with no missing backing or address mismatch.
+The descriptor pool did not expose a GPU base in either run, so CPU backing was essential to capture them.
 
 `SNX_NVN_DESC_REPLAY=1` enables command recording and descriptor observation together, then walks submitted lists in
 recorded order. `SetTexturePool` and `SetSamplerPool` change queue descriptor-pool state; `CallCommands` recursively
