@@ -127,6 +127,8 @@ static int load_one(const SnxModInfo* mi) {
     mem_set_state(t0, ((mi->text_size + 0xFFF) & ~0xFFFu), MS_CODE, PERM_RX);
     mem_set_state(r0, ((mi->ro_size + 0xFFF) & ~0xFFFu), MS_CODE, PERM_R);
     mem_set_state(d0, size - (d0 - mi->base), MS_CODEDATA, PERM_RW);
+    /* Account the loaded image, including data and BSS, but not the unmapped inter-module guard pages. */
+    g_code_memory += (size + 0xFFF) & ~0xFFFull;
     LOG("module %-8s at %010llx (%.1f MB)\n", mi->name, (unsigned long long)mi->base, (double)size / 1048576.0);
     return 0;
 }

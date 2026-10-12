@@ -68,50 +68,46 @@ u32 svc_unmap_memory(u64 dst, u64 src, u64 size) {
     mem_set_state(src, size, 0xFFFFFFFFu, PERM_RW);
     return 0;
 }
-/* svcSetHeapSize: 2 MB steps inside the heap region, and no further than the memory the resource limit gives the
-   process. The SDK sizes its heap from GetInfo's total and used memory, so it gets what memory_gb sets */
+/* Single application process: its image, main stack and private system-resource reservation are charged before
+   any heap or physical pages. Alias views of heap pages must not be charged a second time. */
+static u64 process_memory(void) { return g_code_memory + g_main_stack_size; }
+static u64 dynamic_budget(void) {
+    u64 fixed = process_memory() + g_sysres_size, total = mem_total();
+    return fixed < total ? total - fixed : 0;
+}
+static u32 memory_result(int r) {
+    return r == MEM_LIMIT ? R_LIMIT : r == MEM_NOMEM ? R_OUTOFMEM : r ? R_BADMEMSTATE : 0;
+}
+/* svcSetHeapSize: validate the request here, but reserve/map/account under the memory lock shared with physical
+   mappings. A fixed-size startup request need not retry after failure. */
 u32 svc_set_heap_size(u64 size) {
     u32 r = 0;
-    if (size & 0x1FFFFF)
+    if ((size & 0x1FFFFF) || size >= 0x200000000ull)
         r = R_BADSIZE;
-    else if (size > HEAP_SIZE || (g_heap_max && size > g_heap_max))
+    else if (process_memory() > HEAP_SIZE || size > HEAP_SIZE - process_memory() || (g_heap_max && size > g_heap_max))
         r = R_OUTOFMEM;
-    else if (size > g_heap_size && size - g_heap_size + used_memory() > mem_total())
-        r = R_LIMIT;
-    else if (!mem_heap_set(size))
-        r = R_OUTOFMEM;
-    /* the SDK sizes its heap from GetInfo and retries smaller on failure: the log shows which size it got */
-    LOG("heap: %llu MB requested%s\n", (unsigned long long)(size >> 20), r ? ", refused" : "");
+    else
+        r = memory_result(mem_heap_set(size, dynamic_budget()));
+    LOG("heap: %llu MB requested%s (result %x)\n", (unsigned long long)(size >> 20), r ? ", refused" : "", r);
     return r;
 }
-/* svcMapPhysicalMemory: backs the holes of a range of the alias region with memory, which counts as used */
-u32 svc_map_physical(u64 a, u64 s) {
-    u32 r = check_range(a, s);
-    if (r) return r;
+/* Physical mapping needs the process's private system resource. Its overflow result differs from the other
+   memory SVCs, so keep its argument checks separate. */
+static u32 check_physical(u64 a, u64 s) {
+    if (a & 0xFFF) return R_BADADDR;
+    if (!s || (s & 0xFFF)) return R_BADSIZE;
+    if (s > ~a) return R_BADREGION;
+    if (!g_sysres_size) return R_BADSTATE;
     if (a < ALIAS_BASE || a + s > ALIAS_BASE + ALIAS_SIZE) return R_BADREGION;
-    u64 n = mem_map_holes(a, s, MS_NORMAL, PERM_RW);
-    if (n == ~0ull) return R_OUTOFMEM;
-    __atomic_add_fetch(&g_phys_mapped, n, __ATOMIC_SEQ_CST);
     return 0;
 }
+u32 svc_map_physical(u64 a, u64 s) {
+    u32 r = check_physical(a, s);
+    return r ? r : memory_result(mem_map_physical(a, s, dynamic_budget()));
+}
 u32 svc_unmap_physical(u64 a, u64 s) {
-    u32 r = check_range(a, s);
-    if (r) return r;
-    if (a < ALIAS_BASE || a + s > ALIAS_BASE + ALIAS_SIZE) return R_BADREGION;
-    u64 n = 0;
-    for (u64 p = a; p < a + s;) {
-        MemBlock b;
-        mem_query(p, &b);
-        u64 e = b.addr + b.size;
-        if (e > a + s) e = a + s;
-        if (b.state == MS_NORMAL) n += e - p;
-        p = e;
-    }
-    mem_unmap(a, s);
-    u64 cur = __atomic_load_n(&g_phys_mapped, __ATOMIC_SEQ_CST);
-    while (!__atomic_compare_exchange_n(&g_phys_mapped, &cur, cur > n ? cur - n : 0, 0, __ATOMIC_SEQ_CST,
-                                        __ATOMIC_SEQ_CST)) {}
-    return 0;
+    u32 r = check_physical(a, s);
+    return r ? r : memory_result(mem_unmap_physical(a, s));
 }
 static void shm_destroy(KObj* o) {
     KShmem* s = (KShmem*)o;
@@ -184,20 +180,23 @@ void tmem_destroy(KObj* o) {
 }
 
 /* ============================================================ GetInfo */
-/* application memory size: the console's 3285 MB, or more with memory_gb 6 or 8 (the layouts yuzu calls extended
-   memory). Games that need more than the console gives, like Tears of the Kingdom, need memory_gb=6 */
+/* Application pools for the retail 4/6/8 GB arrangements. This runtime models one application, not a shared
+   resource limit or a default application system-resource pool. See docs/MEMORY_ACCOUNTING.md. */
 int g_opt_mem_gb;
 u64 mem_total(void) {
-    if (g_opt_mem_gb >= 8) return 0x1CD500000ull;
-    if (g_opt_mem_gb >= 6) return 0x14D500000ull;
-    return 0xCD500000ull;
+    if (g_opt_mem_gb >= 8) return 6964ull << 20;
+    if (g_opt_mem_gb >= 6) return 4916ull << 20;
+    return 3285ull << 20;
 }
-/* svcMapPhysicalMemory pages count as used, like on hw */
-u64 g_phys_mapped;
-u64 used_memory(void) { return g_heap_size + __atomic_load_n(&g_phys_mapped, __ATOMIC_SEQ_CST) + 0x10000000ull; }
+static u64 used_non_system_memory(void) {
+    return process_memory() + __atomic_load_n(&g_heap_size, __ATOMIC_SEQ_CST) +
+           __atomic_load_n(&g_phys_mapped, __ATOMIC_SEQ_CST);
+}
+u64 used_memory(void) { return used_non_system_memory() + g_sysres_size; }
 void mem_report(char* out, int n) {
     snprintf(out, n, "heap %llu MB, mapped physical memory %llu MB, used %llu MB of %llu MB",
-             (unsigned long long)(g_heap_size >> 20), (unsigned long long)(g_phys_mapped >> 20),
+             (unsigned long long)(__atomic_load_n(&g_heap_size, __ATOMIC_SEQ_CST) >> 20),
+             (unsigned long long)(__atomic_load_n(&g_phys_mapped, __ATOMIC_SEQ_CST) >> 20),
              (unsigned long long)(used_memory() >> 20), (unsigned long long)(mem_total() >> 20));
 }
 /* the npdm's ThreadInfo capability sets them (main.c). These are the values before it was read */
@@ -260,8 +259,8 @@ static u32 svc_get_info_(u32 id0, u32 h, u64 id1, u64* out) {
             pm_unlock(&g_klock);
             return 0;
         }
-        case 21: *out = mem_total(); return 0;
-        case 22: *out = used_memory(); return 0;
+        case 21: *out = mem_total() > g_sysres_size ? mem_total() - g_sysres_size : 0; return 0;
+        case 22: *out = used_non_system_memory(); return 0;
         case 23: *out = 1; return 0;
         case 24: { /* FreeThreadCount: Unity skips its job threads if this is 0 */
             int live = kthread_live_count();

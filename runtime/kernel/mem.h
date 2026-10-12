@@ -49,15 +49,20 @@ typedef struct {
 } MemBlock;
 void mem_init(void);
 int mem_map(u64 addr, u64 size, u32 state, u32 perm); /* 0 ok, -1 not free, -2 no host memory */
-u64 mem_map_holes(u64 addr, u64 size, u32 state, u32 perm);
+/* Heap and physical-memory changes share the memory lock and a combined byte budget. */
+enum { MEM_BADSTATE = -1, MEM_NOMEM = -2, MEM_LIMIT = -3 };
+int mem_map_physical(u64 addr, u64 size, u64 budget);
+int mem_unmap_physical(u64 addr, u64 size);
 int mem_unmap(u64 addr, u64 size);
 void mem_query(u64 addr, MemBlock* out);
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm);
 int mem_set_attr(u64 addr, u64 size, u32 mask, u32 attr);
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align);
 u64 kmem_alloc(u64 size, u32 state, u32 perm); /* reserved for the kernel */
-u64 mem_heap_set(u64 size);
-extern u64 g_heap_size, g_heap_max; /* g_heap_max: heap_max_mb's cap, 0 = none */
+int mem_heap_set(u64 size, u64 budget);        /* 0 or MEM_*; failed changes leave the heap intact */
+extern u64 g_heap_size, g_phys_mapped;         /* atomic snapshots; mutations hold the memory lock */
+extern u64 g_heap_max;                         /* heap_max_mb's cap, 0 = none */
+extern u64 g_code_memory, g_main_stack_size;   /* charged once, before starting guest threads */
 #define GP(a) (g_mem + (u64)(a))
 static inline u32 gr32(u64 a) {
     u32 v;

@@ -202,10 +202,14 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
         fatal("The game's main thread asks for CPU core %d, which its own settings don't allow", core);
     g_default_core = core;
     stack_size = (stack_size + 0xFFF) & ~0xFFFull;
+    u64 used = used_memory();
+    if (used > mem_total() || stack_size > mem_total() - used)
+        fatal("The game's image, system resource and main stack exceed its memory limit");
     u64 st = mem_find_free(STACK_BASE, STACK_BASE + STACK_SIZE, stack_size + 0x2000, 0x1000);
     if (!st || mem_map(st + 0x1000, stack_size, MS_STACK, PERM_RW))
         fatal("Could not map the game's main thread stack (%llu KB)", (unsigned long long)(stack_size >> 10));
-    st += 0x1000; /* a free page on each side */
+    g_main_stack_size = stack_size; /* the main stack is charged separately from the heap */
+    st += 0x1000;                   /* a free page on each side */
     KThread* t = kthread_create(entry, 0, st + stack_size, prio, core);
     g_main = t;
     strcpy(t->name, "main");

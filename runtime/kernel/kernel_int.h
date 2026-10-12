@@ -88,7 +88,6 @@ u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm);
 u32 svc_unmap_shm(u32 h, u64 addr, u64 size);
 void tmem_destroy(KObj* o);
 u64 mem_total(void);
-extern u64 g_phys_mapped; /* atomic */
 u64 used_memory(void);
 u32 svc_set_heap_size(u64 size);
 u32 svc_map_physical(u64 addr, u64 size);

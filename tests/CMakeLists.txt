@@ -89,6 +89,14 @@ endforeach()
 add_test(NAME filesystem_raw
     COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
 
+if(UNIX)
+    add_executable(snx-test-memory memory_accounting.c
+        "${PROJECT_SOURCE_DIR}/runtime/kernel/mem.c" "${PROJECT_SOURCE_DIR}/runtime/kernel/svc_mem.c")
+    snx_test_target(snx-test-memory 11)
+    add_test(NAME memory_accounting COMMAND snx-test-memory)
+    set_tests_properties(memory_accounting PROPERTIES TIMEOUT 60)
+endif()
+
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)

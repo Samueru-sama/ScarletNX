@@ -8,11 +8,13 @@
 #include "gpu/gpu.h"
 #include "platform/log.h"
 #include "platform/plat.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
 u8* g_mem;
-u64 g_heap_size, g_heap_max; /* heap_max_mb's cap, 0 = none */
+u64 g_heap_size, g_heap_max, g_phys_mapped;
+u64 g_code_memory, g_main_stack_size;
 static MemBlock* blk;
 static int nblk, capblk;
 static PMutex g_memlock;
@@ -36,11 +38,20 @@ void mem_init(void) {
     plat_vm_commit(g_mem, 0x10000);
 }
 
+static int reserve_blocks(int extra) {
+    if (extra < 0 || extra > INT_MAX - nblk) return 0;
+    int need = nblk + extra;
+    if (need <= capblk) return 1;
+    int cap = need < 256 ? 256 : need;
+    if (capblk <= INT_MAX / 2 && cap < capblk * 2) cap = capblk * 2;
+    MemBlock* p = realloc(blk, sizeof *blk * (size_t)cap);
+    if (!p) return 0;
+    blk = p;
+    capblk = cap;
+    return 1;
+}
 static void ins_at(int i, MemBlock b) {
-    if (nblk == capblk) {
-        capblk = capblk ? capblk * 2 : 256;
-        blk = realloc(blk, sizeof(MemBlock) * capblk);
-    }
+    if (!reserve_blocks(1)) fatal("Out of memory tracking guest mappings");
     memmove(blk + i + 1, blk + i, sizeof(MemBlock) * (nblk - i));
     blk[i] = b;
     nblk++;
@@ -93,8 +104,8 @@ static void ins_sorted_nl(MemBlock b) {
     merge();
 }
 static int map_nl(u64 a, u64 s, u32 state, u32 perm) {
-    if (!is_free_nl(a, s)) return -1;
-    if (plat_vm_commit(GP(a), s)) return -2;
+    if (!is_free_nl(a, s)) return MEM_BADSTATE;
+    if (!reserve_blocks(1) || plat_vm_commit(GP(a), s)) return MEM_NOMEM;
     ins_sorted_nl((MemBlock){a, s, state, perm, 0, 0, 0});
     return 0;
 }
@@ -109,41 +120,63 @@ int mem_map(u64 a, u64 s, u32 state, u32 perm) {
     return r;
 }
 
-/* maps the free parts of [a, a+s) in one hold of the lock. The bytes mapped, ~0 when the host had no memory */
-u64 mem_map_holes(u64 a, u64 s, u32 state, u32 perm) {
-    if (!in_as(a, s)) return ~0ull;
-    u64 n = 0;
+/* Charge heap and alias pages together. The caller holds g_memlock, including through the host mapping. */
+static int budget_fits(u64 heap, u64 physical, u64 budget) { return heap <= budget && physical <= budget - heap; }
+
+/* Commit only holes, charging each page once. Delay the block-list updates so a failed host commit can undo
+   only this call's new pages without touching pre-existing mappings, including adjacent ones. */
+int mem_map_physical(u64 a, u64 s, u64 budget) {
+    if (!in_as(a, s)) return MEM_BADSTATE;
     memlock();
-    for (u64 p = a; p < a + s;) {
-        u64 e = a + s; /* the hole ends at the next block, or the next block starts here */
-        int used = 0;
-        for (int i = 0; i < nblk; i++) {
-            MemBlock* b = &blk[i];
-            if (b->addr <= p && p < b->addr + b->size) {
-                e = b->addr + b->size < e ? b->addr + b->size : e;
-                used = 1;
-                break;
-            }
-            if (b->addr > p && b->addr < e) e = b->addr;
-        }
-        if (!used) {
-            if (map_nl(p, e - p, state, perm)) {
-                memunlock();
-                return ~0ull;
-            }
-            n += e - p;
-        }
-        p = e;
+    u64 end = a + s, p = a, added = 0;
+    int count = 0;
+    MemBlock* holes = calloc((size_t)nblk + 1, sizeof *holes);
+    if (!holes) {
+        memunlock();
+        return MEM_NOMEM;
     }
+    for (int i = 0; i < nblk && p < end; i++) {
+        MemBlock* b = &blk[i];
+        if (b->addr + b->size <= p) continue;
+        u64 e = b->addr < end ? b->addr : end;
+        if (e > p) {
+            holes[count++] = (MemBlock){p, e - p, MS_NORMAL, PERM_RW, 0, 0, 0};
+            added += e - p;
+        }
+        p = b->addr + b->size;
+    }
+    if (p < end) {
+        holes[count++] = (MemBlock){p, end - p, MS_NORMAL, PERM_RW, 0, 0, 0};
+        added += end - p;
+    }
+    int r = 0;
+    if (added && (!budget_fits(g_heap_size, g_phys_mapped, budget) || added > budget - g_heap_size - g_phys_mapped))
+        r = MEM_LIMIT;
+    else if (!reserve_blocks(count))
+        r = MEM_NOMEM;
+    int committed = 0;
+    while (!r && committed < count) {
+        MemBlock* h = &holes[committed];
+        if (plat_vm_commit(GP(h->addr), h->size))
+            r = MEM_NOMEM;
+        else
+            committed++;
+    }
+    if (r) {
+        for (int i = 0; i < committed; i++) {
+            plat_vm_decommit(GP(holes[i].addr), holes[i].size);
+            gpu_mem_changed(holes[i].addr, holes[i].size);
+        }
+    } else {
+        for (int i = 0; i < count; i++) ins_sorted_nl(holes[i]);
+        __atomic_add_fetch(&g_phys_mapped, added, __ATOMIC_SEQ_CST);
+    }
+    free(holes);
     memunlock();
-    return n;
+    return r;
 }
 
-int mem_unmap(u64 a, u64 s) {
-    a &= ~0xFFFull;
-    s = (s + 0xFFF) & ~0xFFFull;
-    if (!in_as(a, s)) return -1;
-    memlock();
+static void unmap_nl(u64 a, u64 s) {
     split_at(a);
     split_at(a + s);
     for (int i = 0; i < nblk;) {
@@ -156,8 +189,42 @@ int mem_unmap(u64 a, u64 s) {
     plat_vm_decommit(GP(a), s);
     /* the pages read as zero now, and no write the GPU caches' write tracking sees zeroed them */
     gpu_mem_changed(a, s);
+}
+
+int mem_unmap(u64 a, u64 s) {
+    a &= ~0xFFFull;
+    s = (s + 0xFFF) & ~0xFFFull;
+    if (!in_as(a, s)) return MEM_BADSTATE;
+    memlock();
+    unmap_nl(a, s);
     memunlock();
     return 0;
+}
+
+int mem_unmap_physical(u64 a, u64 s) {
+    if (!in_as(a, s)) return MEM_BADSTATE;
+    memlock();
+    u64 n = 0;
+    int r = 0;
+    for (int i = 0; i < nblk; i++) {
+        MemBlock* b = &blk[i];
+        if (b->addr >= a + s || b->addr + b->size <= a) continue;
+        if (b->state != MS_NORMAL || b->attr) {
+            r = MEM_BADSTATE;
+            break;
+        }
+        u64 lo = b->addr > a ? b->addr : a;
+        u64 hi = b->addr + b->size < a + s ? b->addr + b->size : a + s;
+        n += hi - lo;
+    }
+    if (!r && n > g_phys_mapped) r = MEM_BADSTATE;
+    if (!r && !reserve_blocks(2)) r = MEM_NOMEM;
+    if (!r && n) {
+        unmap_nl(a, s);
+        __atomic_sub_fetch(&g_phys_mapped, n, __ATOMIC_SEQ_CST);
+    }
+    memunlock();
+    return r;
 }
 
 int mem_set_state(u64 a, u64 s, u32 state, u32 perm) {
@@ -273,27 +340,37 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     return a + 0x1000;
 }
 
-/* 0 when the host has no memory for it. The checks the console makes are svc_set_heap_size's */
-u64 mem_heap_set(u64 size) {
-    if (size > HEAP_SIZE) return 0;
+/* Budget checks, mapping and accounting share the physical-memory transaction's lock. In particular, a
+   concurrent physical map cannot spend the same last pages as a heap extension. */
+int mem_heap_set(u64 size, u64 budget) {
+    if (size > HEAP_SIZE) return MEM_NOMEM;
     memlock();
     u64 cur = g_heap_size;
+    int r = 0;
     if (size > cur) {
-        u64 add = size - cur;
-        if (plat_vm_commit(GP(HEAP_BASE + cur), add)) {
-            memunlock();
-            return 0;
-        }
-        /* a fresh block: the one ending at the heap's end can be MapMemory's locked source, merge() joins the
-           rest */
-        ins_sorted_nl((MemBlock){HEAP_BASE + cur, add, MS_NORMAL, PERM_RW, 0, 0, 0});
-        g_heap_size = size;
-        memunlock();
+        if (!budget_fits(size, g_phys_mapped, budget))
+            r = MEM_LIMIT;
+        else
+            r = map_nl(HEAP_BASE + cur, size - cur, MS_NORMAL, PERM_RW);
     } else if (size < cur) {
-        g_heap_size = size;
-        memunlock();
-        mem_unmap(HEAP_BASE + size, cur - size);
-    } else
-        memunlock();
-    return HEAP_BASE;
+        /* Locked, shared or otherwise changed heap pages cannot be discarded by shrinking the heap. */
+        u64 lo = HEAP_BASE + size, end = HEAP_BASE + cur, covered = 0;
+        for (int i = 0; i < nblk; i++) {
+            MemBlock* b = &blk[i];
+            if (b->addr >= end || b->addr + b->size <= lo) continue;
+            if (b->state != MS_NORMAL || b->perm != PERM_RW || b->attr || b->ipc || b->dev) {
+                r = MEM_BADSTATE;
+                break;
+            }
+            u64 a = b->addr > lo ? b->addr : lo;
+            u64 e = b->addr + b->size < end ? b->addr + b->size : end;
+            covered += e - a;
+        }
+        if (!r && covered != cur - size) r = MEM_BADSTATE;
+        if (!r && !reserve_blocks(2)) r = MEM_NOMEM;
+        if (!r) unmap_nl(lo, cur - size);
+    }
+    if (!r) __atomic_store_n(&g_heap_size, size, __ATOMIC_SEQ_CST);
+    memunlock();
+    return r;
 }
