@@ -135,7 +135,8 @@ static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_i
 static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
     draw_with_shader_refs;
 static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_staged, draw_stage_full, draw_flushed;
-static u64 draw_prepared, draw_prepare_unsupported;
+static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_target_no_surf, draw_target_format,
+    draw_target_size, draw_target_view;
 static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bind_invalid;
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
@@ -1015,10 +1016,16 @@ static void execute_clear_batch(void* arg) {
 static void execute_draw_prepare_batch(void* arg) {
     NvnDrawBatch* batch = arg;
     for (u32 i = 0; i < batch->count; i++) {
-        if (g_renderer->nvn_draw_prepare(&batch->commands[i]))
+        int result = g_renderer->nvn_draw_prepare(&batch->commands[i]);
+        if (result & NVN_DRAW_PREPARED)
             __atomic_fetch_add(&draw_prepared, 1, __ATOMIC_RELAXED);
         else
             __atomic_fetch_add(&draw_prepare_unsupported, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_SHARED_TARGET) __atomic_fetch_add(&draw_shared_target, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TARGET_NO_SURFACE) __atomic_fetch_add(&draw_target_no_surf, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TARGET_FORMAT) __atomic_fetch_add(&draw_target_format, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TARGET_SIZE) __atomic_fetch_add(&draw_target_size, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TARGET_VIEW) __atomic_fetch_add(&draw_target_view, 1, __ATOMIC_RELAXED);
     }
     free(batch);
 }
@@ -1205,9 +1212,16 @@ void nvn_record_report(void) {
         LOG("nvn-draw-stage: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)draw_staged,
             (unsigned long long)draw_flushed, (unsigned long long)draw_stage_full);
         if (draw_prepare)
-            LOG("nvn-draw-prepare: prepared=%llu unsupported=%llu\n",
+            LOG("nvn-draw-prepare: prepared=%llu unsupported=%llu shared-target=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_prepared, __ATOMIC_RELAXED),
-                (unsigned long long)__atomic_load_n(&draw_prepare_unsupported, __ATOMIC_RELAXED));
+                (unsigned long long)__atomic_load_n(&draw_prepare_unsupported, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_shared_target, __ATOMIC_RELAXED));
+        if (draw_prepare)
+            LOG("nvn-draw-target: no-surface=%llu format=%llu size=%llu view=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_target_no_surf, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_target_format, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_target_size, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_target_view, __ATOMIC_RELAXED));
         LOG("nvn-uniform-snapshot: ranges=%llu failed=%llu invalid-binds=%llu\n",
             (unsigned long long)uniform_range_snapshots, (unsigned long long)uniform_range_snapshot_failures,
             (unsigned long long)uniform_bind_invalid);

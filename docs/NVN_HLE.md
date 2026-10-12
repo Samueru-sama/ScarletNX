@@ -341,6 +341,15 @@ sixteen-second TotK run captured and flushed all 1,582 observed draws with no st
 preparation and none had been rejected at report time. The prepared count can lag the flushed count because callbacks
 run asynchronously. These results demonstrate buffer transport, not render correctness: texture descriptors, image
 coherence, shader binding, and draw execution are still outstanding.
+The same opt-in probe compares each resolved draw target with the renderer's existing guest-addressed surface cache.
+All 3,727 completed Catherine draws in one eight-second run found matching surfaces. In TotK, initially only 465 of
+4,090 completed draws matched because the probe lacked mappings for NVN R32F (`0x0a`), RGBA16F (`0x29`), and RGBA8
+sRGB (`0x38`); those enum values are defined by the [NVN format header](https://code.botw.link/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html).
+After adding the three Vulkan format mappings, a twenty-two-second TotK run prepared 3,298 draws with no rejected
+buffers. Of those, 2,925 found matching existing surfaces, 223 first differed in depth target size, and 150 selected
+a non-base texture layer. No target lacked a surface at its GPU address, and no format mismatch remained in that run.
+This is a compatibility probe, not an image-coherence guarantee: the existing `Surf` cache represents one base layer
+per image, while NVN targets may name other layers or a differently sized view of the same pool address.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

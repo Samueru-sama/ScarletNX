@@ -10,6 +10,14 @@
 #define NVN_DRAW_SHADER_STAGES 6
 #define NVN_DRAW_UNIFORM_SLOTS 16
 #define NVN_DRAW_TEXTURE_SLOTS 32
+enum {
+    NVN_DRAW_PREPARED = 1,
+    NVN_DRAW_SHARED_TARGET = 2,
+    NVN_DRAW_TARGET_NO_SURFACE = 4,
+    NVN_DRAW_TARGET_FORMAT = 8,
+    NVN_DRAW_TARGET_SIZE = 16,
+    NVN_DRAW_TARGET_VIEW = 32
+};
 typedef struct {
     u64 address, size;
 } NvnBufferRange;

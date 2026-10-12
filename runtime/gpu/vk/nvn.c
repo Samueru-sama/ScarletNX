@@ -3,6 +3,7 @@
 /* First NVN-owned render images. They are deliberately separate from guest Maxwell surfaces until whole-list
    replacement and guest-memory coherence are implemented. Only complete, full 2D clears are accepted. */
 #include "gpu/vk/vk.h"
+#include "platform/log.h"
 #include <string.h>
 
 #define NVN_IMAGE_SLOTS 16
@@ -17,11 +18,14 @@ static NvnImage images[NVN_IMAGE_SLOTS];
 
 static VkFmt nvn_format(u32 format) {
     switch (format) {
-        case 0x25: return vk_rt_format(0xd5); /* RGBA8 */
-        case 0x3f: return vk_rt_format(0xe0); /* R11G11B10F */
-        case 0x32: return vk_zt_format(0x13); /* D16 */
-        case 0x34: return vk_zt_format(0x0a); /* D32F */
-        case 0x35: return vk_zt_format(0x14); /* D24S8 */
+        case 0x0a: return (VkFmt){.vk = VK_FORMAT_R32_SFLOAT, .bpp = 4};          /* R32F */
+        case 0x25: return vk_rt_format(0xd5);                                     /* RGBA8 */
+        case 0x29: return (VkFmt){.vk = VK_FORMAT_R16G16B16A16_SFLOAT, .bpp = 8}; /* RGBA16F */
+        case 0x38: return (VkFmt){.vk = VK_FORMAT_R8G8B8A8_SRGB, .bpp = 4};       /* RGBA8 SRGB */
+        case 0x3f: return vk_rt_format(0xe0);                                     /* R11G11B10F */
+        case 0x32: return vk_zt_format(0x13);                                     /* D16 */
+        case 0x34: return vk_zt_format(0x0a);                                     /* D32F */
+        case 0x35: return vk_zt_format(0x14);                                     /* D24S8 */
         default: return (VkFmt){0};
     }
 }
@@ -155,5 +159,50 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                    &offset))
                 return 0;
     if (index_bytes && !vk_buf_get_strict(command->index_address, index_bytes, &buffer, &offset)) return 0;
-    return 1;
+    int has_target = command->color_target_mask || command->depth_target_bound;
+    if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED;
+    for (u32 i = 0; i < 8; i++) {
+        if (!(command->color_target_mask & (1u << i))) continue;
+        const NvnTextureTarget* target = &command->color_target[i];
+        const Surf* surf = vk_rt_find(target->gpu_address);
+        VkFmt format = nvn_format(target->format);
+        if (!surf) return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_NO_SURFACE;
+        if (!format.vk || surf->f.vk != format.vk) {
+            LOG_LIMIT(8, "nvn-draw-target-format: color nvn=%x vk=%u surf-vk=%u surf-key=%x\n", target->format,
+                      format.vk, surf->f.vk, surf->fkey);
+            return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_FORMAT;
+        }
+        if (surf->w != target->width || surf->h != target->height) {
+            LOG_LIMIT(8, "nvn-draw-target-size: color nvn=%ux%u surf=%ux%u\n", target->width, target->height, surf->w,
+                      surf->h);
+            return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_SIZE;
+        }
+        if (target->view.base_level || target->view.first_layer) {
+            LOG_LIMIT(8, "nvn-draw-target-view: color level=%u layer=%u\n", target->view.base_level,
+                      target->view.first_layer);
+            return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_VIEW;
+        }
+    }
+    if (command->depth_target_bound) {
+        const NvnTextureTarget* target = &command->depth_target;
+        const Surf* surf = vk_rt_find(target->gpu_address);
+        VkFmt format = nvn_format(target->format);
+        if (!surf) return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_NO_SURFACE;
+        if (!format.vk || surf->f.vk != format.vk) {
+            LOG_LIMIT(8, "nvn-draw-target-format: depth nvn=%x vk=%u surf-vk=%u surf-key=%x\n", target->format,
+                      format.vk, surf->f.vk, surf->fkey);
+            return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_FORMAT;
+        }
+        if (surf->w != target->width || surf->h != target->height) {
+            LOG_LIMIT(8, "nvn-draw-target-size: depth nvn=%ux%u surf=%ux%u\n", target->width, target->height, surf->w,
+                      surf->h);
+            return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_SIZE;
+        }
+        if (target->view.base_level || target->view.first_layer) {
+            LOG_LIMIT(8, "nvn-draw-target-view: depth level=%u layer=%u\n", target->view.base_level,
+                      target->view.first_layer);
+            return NVN_DRAW_PREPARED | NVN_DRAW_TARGET_VIEW;
+        }
+    }
+    return NVN_DRAW_PREPARED | NVN_DRAW_SHARED_TARGET;
 }
