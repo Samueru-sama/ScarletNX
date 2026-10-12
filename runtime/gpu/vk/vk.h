@@ -25,6 +25,7 @@
 #include "abi/cpu.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_clear.h"
+#include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
@@ -34,6 +35,8 @@
 #define VK_SC_MAX 16 /* swapchain images */
 
 int vk_nvn_clear(const NvnClearCommand* command);
+int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command);
+void vk_nvn_batch_begin(void);
 int vk_nvn_draw_prepare(const NvnDrawCommand* command);
 
 typedef struct {
@@ -223,6 +226,7 @@ VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkCompone
 VkImageView vk_null_view(VkImageViewType type, int num);
 VkSampler vk_sampler(const u32* tsc);
 int vk_tex_tic_supported(const u32* tic);
+int vk_tex_tic_single_2d(const u32* tic, u64* gva, u32* width, u32* height, VkFormat* format);
 void vk_tex_frame(void); /* a frame was presented: evicts what wasn't used for a while */
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */

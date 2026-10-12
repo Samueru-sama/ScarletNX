@@ -71,9 +71,20 @@ static void vkr_clear(GpuChannel* ch, u32 v) {
     vk_render_clear(ch, v);
     vk_unlock();
 }
+static void vkr_nvn_batch_begin(void) {
+    vk_lock();
+    vk_nvn_batch_begin();
+    vk_unlock();
+}
 static int vkr_nvn_clear(const NvnClearCommand* command) {
     vk_lock();
     int result = vk_nvn_clear(command);
+    vk_unlock();
+    return result;
+}
+static int vkr_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
+    vk_lock();
+    int result = vk_nvn_copy_buffer_texture(command);
     vk_unlock();
     return result;
 }
@@ -395,7 +406,9 @@ const Renderer vk_renderer = {
     .start = vkr_start,
     .async_submit = vkr_async_submit,
     .clear = vkr_clear,
+    .nvn_batch_begin = vkr_nvn_batch_begin,
     .nvn_clear = vkr_nvn_clear,
+    .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,
     .nvn_draw_prepare = vkr_nvn_draw_prepare,
     .draw = vkr_draw,
     .cb_bind = vkr_cb_bind,

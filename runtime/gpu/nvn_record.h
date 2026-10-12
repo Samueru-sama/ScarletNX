@@ -11,6 +11,7 @@ void nvn_record_report(void);
 void nvn_record_enable_descriptor_replay(void);
 void nvn_record_enable_shader_transport(void);
 void nvn_record_enable_clear_execute(void);
+void nvn_record_enable_copy_execute(void);
 void nvn_record_enable_draw_prepare(void);
 void nvn_record_enable_texture_load(void);
 void nvn_record_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction);

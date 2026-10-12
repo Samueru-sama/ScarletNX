@@ -20,7 +20,12 @@ static void null_clear(GpuChannel* ch, u32 v) {
     (void)ch;
     (void)v;
 }
+static void null_nvn_batch_begin(void) {}
 static int null_nvn_clear(const NvnClearCommand* command) {
+    (void)command;
+    return 0;
+}
+static int null_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     (void)command;
     return 0;
 }
@@ -88,7 +93,9 @@ const Renderer null_renderer = {
     .start = null_start,
     .async_submit = null_async_submit,
     .clear = null_clear,
+    .nvn_batch_begin = null_nvn_batch_begin,
     .nvn_clear = null_nvn_clear,
+    .nvn_copy_buffer_texture = null_nvn_copy_buffer_texture,
     .nvn_draw_prepare = null_nvn_draw_prepare,
     .draw = null_draw,
     .cb_bind = null_cb_bind,

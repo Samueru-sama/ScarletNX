@@ -431,6 +431,18 @@ static int tic_header(const u32* tic, TicHeader* out) {
     return 1;
 }
 
+int vk_tex_tic_single_2d(const u32* tic, u64* gva, u32* width, u32* height, VkFormat* format) {
+    TicHeader header = {0};
+    if (!tic_header(tic, &header) || header.d != 1 || header.glevels != 1 ||
+        tic_view_type(header.type, header.d) != VK_IMAGE_VIEW_TYPE_2D || (tic[7] & 0xff) || ((tic[7] >> 8) & 0xf))
+        return 0;
+    *gva = header.gva;
+    *width = header.w;
+    *height = header.h;
+    *format = header.f.vk;
+    return 1;
+}
+
 int vk_tex_tic_supported(const u32* tic) {
     TicHeader header = {0};
     if (!tic_header(tic, &header)) return 0;

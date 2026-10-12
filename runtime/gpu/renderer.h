@@ -9,6 +9,7 @@
 #include "abi/cpu.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_clear.h"
+#include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
 
 typedef struct Renderer {
@@ -21,7 +22,9 @@ typedef struct Renderer {
     /* the 3D engine (maxwell3d.c) */
     void (*clear)(GpuChannel* ch, u32 v);
     /* Opt-in semantic NVN probes. Guest GPFIFO rendering remains authoritative. */
+    void (*nvn_batch_begin)(void);
     int (*nvn_clear)(const NvnClearCommand* command);
+    int (*nvn_copy_buffer_texture)(const NvnCopyBufferTextureCommand* command);
     /* NVN_DRAW_* result bits from gpu/nvn_draw.h. */
     int (*nvn_draw_prepare)(const NvnDrawCommand* command);
     void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,

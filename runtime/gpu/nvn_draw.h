@@ -28,7 +28,8 @@ enum {
     NVN_DRAW_TEXTURE_IMAGE_READY = 4096,
     NVN_DRAW_TEXTURE_IMAGE_FAILED = 8192,
     NVN_DRAW_TEXTURE_IMAGE_DEPTH = 16384,
-    NVN_DRAW_TEXTURE_IMAGE_MISSING = 32768
+    NVN_DRAW_TEXTURE_IMAGE_MISSING = 32768,
+    NVN_DRAW_TEXTURE_IMAGE_SEMANTIC = 65536
 };
 typedef struct {
     u64 address, size;
@@ -46,6 +47,7 @@ typedef struct {
 } NvnVertexStream;
 typedef struct {
     u64 sequence;
+    u64 last_unmodeled_write; /* earlier operations whose image effects are not in the semantic stream */
     NvnStageProgram program[NVN_DRAW_SHADER_STAGES];
     u8 program_bound;
     NvnBufferRange vertex[NVN_DRAW_VERTEX_SLOTS];

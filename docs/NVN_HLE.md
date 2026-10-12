@@ -239,6 +239,18 @@ This is a shadow import after guest GPFIFO execution. It observes the state at t
 does not prove the image contents that an earlier draw in the same batch would have sampled. Direct HLE still needs
 ordered image ownership shared by clears, copies, draws, and presentation before guest submissions can be removed.
 
+`SNX_NVN_COPY_EXECUTE=1` now snapshots `nvnCommandBufferCopyBufferToTexture` source addresses, destination texture
+and view, [six-field copy region](https://codeviewer.zeldamods.org/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html),
+flags, and the active row and image strides. Full base-level 2D copies with tightly packed rows execute on the GPU
+thread into the same NVN-owned image cache as clears. The copy path covers R8, RG8, RGBA8, BC1, BC2, and BC3,
+plus the existing scalar and half-float formats. It checks source page mappings and bounds each
+image allocation; old images are retired after GPU use when the 128-slot, 256 MiB cache fills. Clear, copy, and draw
+packets run in their original replay order. A draw may use a matching image written earlier in its batch only when no
+unmodeled image writer intervened; all other textures continue through the guest texture cache. Catherine's boot
+recorded and executed 157/157 buffer-to-texture copies with no rejected copies. TotK recorded no such copies in its
+boot run. Neither boot observed a draw sampling a semantic image in the same batch. The source bytes are still read
+after guest GPFIFO execution, so this shadow path does not establish historical texture contents at each NVN command.
+
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported
