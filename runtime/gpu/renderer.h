@@ -8,6 +8,7 @@
 #define SNX_RENDERER_H
 #include "abi/cpu.h"
 #include "gpu/gpu.h"
+#include "gpu/nvn_clear.h"
 
 typedef struct Renderer {
     const char* name;
@@ -18,6 +19,8 @@ typedef struct Renderer {
     int (*async_submit)(u64* e, u32 n, u32 syncpt, u32 incs);
     /* the 3D engine (maxwell3d.c) */
     void (*clear)(GpuChannel* ch, u32 v);
+    /* A semantic NVN command, only called after a whole submission has been selected for host execution. */
+    int (*nvn_clear)(const NvnClearCommand* command);
     void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                  u32 instances);
     void (*cb_bind)(GpuChannel* ch, int stage, u32 v);

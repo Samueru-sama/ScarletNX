@@ -3,9 +3,11 @@
 #include "gpu/nvn_program.h"
 #include "kernel/mem.h"
 #include "gpu/gpu.h"
+#ifdef SNX_VULKAN
 #include "gpu/shader/shader.h"
 #include "gpu/nvn_shader.h"
 #include "gpu/vk/spirv.h"
+#endif
 #include "platform/log.h"
 #include "platform/plat.h"
 #include <stdlib.h>
@@ -27,6 +29,7 @@ static u64 refs_captured, refs_invalid, refs_oversized, zero_code_addresses, zer
 static u32 shader_translate_queued;
 static int shader_translate_enabled;
 static u64 shader_translate_ok, shader_translate_failed, shader_translate_unknown_stage, shader_translate_bad_blob;
+#ifdef SNX_VULKAN
 static void shader_translate_probe(void* ptr);
 
 static int reserve_shader_slot(void) {
@@ -90,6 +93,9 @@ static void shader_translate_probe(void* ptr) {
     }
     free(ptr);
 }
+#else
+void nvn_program_translate_async(u64 code_address) { (void)code_address; }
+#endif
 
 void nvn_program_enable_translation(void) { shader_translate_enabled = 1; }
 

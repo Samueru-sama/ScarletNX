@@ -213,7 +213,9 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
     if ((selection.flags & 2) && (selection.first_layer >= t.depth ||
                                   (selection.layer_count && selection.layer_count > t.depth - selection.first_layer)))
         return NVN_TARGET_BAD_VIEW;
-    *out = (NvnTextureTarget){.gpu_address = t.gpu_address,
+    *out = (NvnTextureTarget){.texture = texture,
+                              .pool = t.pool,
+                              .gpu_address = t.gpu_address,
                               .texture_generation = t.generation,
                               .pool_generation = t.pool_generation,
                               .width = t.width,

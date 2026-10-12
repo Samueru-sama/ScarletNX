@@ -265,6 +265,19 @@ none disagreed with a known pool base, and 1,143 submitted depth clears resolved
 replay, 3,108 texture addresses were known with no pool disagreement; 414 color clears resolved targets. No guest
 rendering was replaced in these runs. NVN format and tiling still need a direct image path in the renderer.
 
+`SNX_NVN_CLEAR_EXECUTE=1` enables an opt-in execution probe. Submitted clear packets carry their selected NVN texture,
+view, GPU address, and scalar clear arguments through queue replay. After the guest flushes, the first eight packets
+per queue batch run on the GPU thread behind guest GPFIFO work. The renderer owns separate Vulkan images keyed by
+texture and pool generation; it creates a 2D image and issues `vkCmdClearColorImage` or
+`vkCmdClearDepthStencilImage` for supported full clears. The initial format set covers NVN RGBA8, R11G11B10F,
+D16, D32F, and D24S8. Unsupported dimensions, masks, views, and formats return without modifying an image. These
+images are intentionally separate from the guest's Maxwell surfaces and are not yet read back or presented, so the
+probe exercises host command execution without replacing the displayed frame. The bounded image cache and per-batch
+packet cap are probe limits, not a completed HLE resource manager. In an eight-second Catherine run, 1,137 clears
+were issued with zero renderer rejections; in a fourteen-second TotK run, 281 were issued with zero rejections.
+The next work is coherent NVN image storage and complete-list scheduling: a queue submission can switch only when
+every command and synchronization effect in that submission has an HLE implementation.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

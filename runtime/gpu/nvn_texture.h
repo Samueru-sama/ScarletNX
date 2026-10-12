@@ -28,7 +28,7 @@ typedef struct {
 } NvnTextureViewSelection;
 
 typedef struct {
-    u64 gpu_address, texture_generation, pool_generation;
+    u64 texture, pool, gpu_address, texture_generation, pool_generation;
     u32 width, height, depth, levels, format, target, samples, flags;
     NvnTextureViewSelection view;
 } NvnTextureTarget;

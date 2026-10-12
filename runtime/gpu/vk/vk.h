@@ -24,12 +24,15 @@
 #define SNX_VK_H
 #include "abi/cpu.h"
 #include "gpu/gpu.h"
+#include "gpu/nvn_clear.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include "gpu/shader/shader.h"
 
 #define VK_FRAMES 2  /* frames in flight */
 #define VK_SC_MAX 16 /* swapchain images */
+
+int vk_nvn_clear(const NvnClearCommand* command);
 
 typedef struct {
     VkInstance instance;
