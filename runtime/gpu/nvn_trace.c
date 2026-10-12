@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_trace.h"
+#include "gpu/gpu.h"
+#include "gpu/nvn_hle.h"
 #include "core/loader.h"
 #include "kernel/kernel.h"
 #include "kernel/mem.h"
@@ -10,6 +12,8 @@
 
 static GuestFn bootstrap_original;
 static GuestFn getproc_original;
+static int tracing, hle, verify;
+static u64 verify_failures;
 typedef struct {
     u64 addr, calls;
     GuestFn original;
@@ -45,8 +49,38 @@ static NvProc* proc_slot(u64 addr) {
 
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_slot(entry);
-    __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
+    int submit = tracing && !strcmp(p->name, "nvnQueueSubmitCommands");
+    int queue_op = tracing && (!strcmp(p->name, "nvnQueueFlush") || !strcmp(p->name, "nvnQueueFenceSync") ||
+                               !strcmp(p->name, "nvnQueuePresentTexture") || !strcmp(p->name, "nvnQueueWaitSync"));
+    u64 gpu_before = submit || queue_op ? __atomic_load_n(&g_gpu_submits, __ATOMIC_RELAXED) : 0;
+    if (tracing) {
+        __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
+        if (submit) {
+            u64 list = 0, ptr = c->x[2];
+            if (c->x[1] && ptr < AS_SIZE - 8 && readable(ptr) && readable(ptr + 7)) memcpy(&list, GP(ptr), 8);
+            LOG("nvn-submit: queue=%llx count=%u lists=%llx first=%llx\n", (unsigned long long)c->x[0], (u32)c->x[1],
+                (unsigned long long)ptr, (unsigned long long)list);
+        }
+    }
+    if (hle) {
+        CPU expected;
+        if (verify) expected = *c;
+        if (nvn_hle_try(c, p->name)) {
+            if (verify) {
+                p->original(&expected, entry);
+                if (memcmp(c, &expected, sizeof expected)) {
+                    __atomic_fetch_add(&verify_failures, 1, __ATOMIC_RELAXED);
+                    WARN_LIMIT(8, "nvn-hle: register mismatch in %s, using the guest result\n", p->name);
+                    *c = expected;
+                }
+            }
+            return;
+        }
+    }
     p->original(c, entry);
+    if (submit || queue_op)
+        LOG("nvn-%s: GPFIFO submissions during call=%llu\n", p->name,
+            (unsigned long long)(__atomic_load_n(&g_gpu_submits, __ATOMIC_RELAXED) - gpu_before));
 }
 
 static void trace_proc(u64 addr, const char* name) {
@@ -67,8 +101,8 @@ static void getproc_trace(CPU* c, u64 entry) {
     int valid = read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
     getproc_original(c, entry);
     if (valid) {
-        LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
-        trace_proc(c->x[0], name);
+        if (tracing) LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
+        if (tracing || (hle && nvn_hle_supported(name))) trace_proc(c->x[0], name);
     }
 }
 
@@ -77,7 +111,7 @@ static void bootstrap_trace(CPU* c, u64 entry) {
     int valid = read_name(c->x[0], name); /* nvnBootstrapLoader(name) */
     bootstrap_original(c, entry);
     if (!valid) return;
-    LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
+    if (tracing) LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
     if (strcmp(name, "nvnDeviceGetProcAddress")) return;
     u64 resolver = c->x[0];
     if (resolver < g_code_lo || resolver >= g_code_hi || (resolver & 3)) return;
@@ -88,8 +122,13 @@ static void bootstrap_trace(CPU* c, u64 entry) {
 }
 
 void nvn_trace_init(void) {
-    const char* enabled = getenv("SNX_NVN_TRACE");
-    if (!enabled || strcmp(enabled, "1")) return;
+    const char* trace_env = getenv("SNX_NVN_TRACE");
+    const char* hle_env = getenv("SNX_NVN_HLE");
+    const char* verify_env = getenv("SNX_NVN_HLE_VERIFY");
+    tracing = trace_env && !strcmp(trace_env, "1");
+    hle = hle_env && !strcmp(hle_env, "1");
+    verify = hle && verify_env && !strcmp(verify_env, "1");
+    if (!tracing && !hle) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
         WARN("nvn: bootstrap loader symbol is unavailable\n");
@@ -102,11 +141,15 @@ void nvn_trace_init(void) {
     }
     bootstrap_original = *slot;
     *slot = bootstrap_trace;
-    LOG("nvn: tracing bootstrap function requests\n");
+    LOG("nvn: %s bootstrap function requests\n", tracing ? "tracing" : "intercepting");
 }
 
 void nvn_trace_report(void) {
-    if (!bootstrap_original) return;
+    if (hle) {
+        nvn_hle_report();
+        if (verify) LOG("nvn-hle: %llu verification mismatches\n", (unsigned long long)verify_failures);
+    }
+    if (!tracing || !bootstrap_original) return;
     u32 used = 0;
     for (u32 i = 0; i < NVN_PROC_SLOTS; i++) {
         if (!procs[i].addr) continue;

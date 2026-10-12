@@ -26,6 +26,30 @@ overlap on 143 names. These are boot samples, so they cannot establish full-game
 without a crash. The frequently called shared functions include buffer-address lookup, texture-handle lookup and
 binding, blend and vertex state setup, and command-buffer operations.
 
+## Direct-call proof
+
+`SNX_NVN_HLE=1` intercepts `nvnDeviceGetTextureHandle` after the guest resolves it and computes its result in the
+runtime. This is a pure query, so it does not mix host recording with a guest command list. With
+`SNX_NVN_HLE_VERIFY=1`, the runtime also runs the original SDK function on a copy of the CPU state and compares the
+full register state. A mismatch restores the guest result and is reported. In 180-frame boots, Catherine made 1,985
+verified direct calls and Tears of the Kingdom made 72,130, with zero mismatches or crashes. Screenshot hashes are
+not a reliable equality check for these boot scenes: repeated unmodified fixed-frame runs produced different hashes.
+
+This proves the guest-call interception and fallback mechanism. It does not bypass Maxwell rendering yet.
+
+## Queue submission boundary
+
+The trace also records the queue, list count, first list handle, and the number of GPFIFO submissions that occurred
+during each NVN queue call. In Catherine's 120-frame boot, `WaitSync`, `SubmitCommands`, and `FenceSync` each issued
+zero GPFIFO submissions during the observed calls; `PresentTexture` issued one each time. TotK likewise issued zero
+inside `SubmitCommands` and `FenceSync`, but issued one inside each `QueueFlush` and `PresentTexture`. These are
+per-call observations, not a guarantee that the SDK always flushes at those points.
+
+The inspected SDK queue code stages command-list handles, then walks a tagged control stream containing GPU work and
+sync operations. A direct front end therefore needs to record semantic command-buffer calls, keep list lifetimes,
+and submit them at queue flush or present boundaries. Merely forwarding `nvnQueueSubmitCommands` to the current GPU
+thread would lose the delayed submission behavior.
+
 ## Migration boundaries
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
