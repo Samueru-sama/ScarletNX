@@ -17,9 +17,21 @@ typedef struct {
     NvnProgramSnapshot snapshot;
 } NvnStageProgram;
 typedef struct {
+    u32 format, offset, stream;
+    u8 enabled;
+} NvnVertexAttrib;
+typedef struct {
+    u32 stride, divisor;
+} NvnVertexStream;
+typedef struct {
     NvnStageProgram program[NVN_DRAW_SHADER_STAGES];
     u8 program_bound;
     NvnBufferRange vertex[NVN_DRAW_VERTEX_SLOTS];
+    u32 vertex_attrib_raw[NVN_DRAW_VERTEX_SLOTS];
+    u64 vertex_stream_raw[NVN_DRAW_VERTEX_SLOTS];
+    NvnVertexAttrib vertex_attrib[NVN_DRAW_VERTEX_SLOTS];
+    NvnVertexStream vertex_stream[NVN_DRAW_VERTEX_SLOTS];
+    u8 vertex_attrib_count, vertex_stream_count;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];

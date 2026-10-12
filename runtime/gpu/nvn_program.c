@@ -30,6 +30,8 @@ static u32 shader_translate_queued;
 static int shader_translate_enabled;
 static u64 shader_translate_ok, shader_translate_failed, shader_translate_unknown_stage, shader_translate_bad_blob;
 #ifdef SNX_VULKAN
+static PMutex translate_lock = PMUTEX_INIT;
+static u64 translated_codes[8192];
 static void shader_translate_probe(void* ptr);
 
 static int reserve_shader_slot(void) {
@@ -44,9 +46,28 @@ static int reserve_shader_slot(void) {
 
 void nvn_program_translate_async(u64 code_address) {
     if (!shader_translate_enabled || !code_address || !reserve_shader_slot()) return;
+    pm_lock(&translate_lock);
+    u32 home = (u32)(code_address * 2654435761u) & (8192 - 1);
+    u32 step = 0;
+    int fresh = 0;
+    for (; step < 8192; step++) {
+        u64* slot = &translated_codes[(home + step) & (8192 - 1)];
+        if (*slot == code_address) break;
+        if (!*slot) {
+            *slot = code_address;
+            fresh = 1;
+            break;
+        }
+    }
+    pm_unlock(&translate_lock);
+    if (!fresh) {
+        __atomic_fetch_sub(&shader_translate_queued, 1, __ATOMIC_RELAXED);
+        return;
+    }
     u64* address = malloc(sizeof *address);
     if (!address) {
         __atomic_fetch_add(&shader_translate_failed, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_sub(&shader_translate_queued, 1, __ATOMIC_RELAXED);
         return;
     }
     *address = code_address;
@@ -82,8 +103,8 @@ static void shader_translate_probe(void* ptr) {
                 __atomic_fetch_add(&shader_translate_ok, 1, __ATOMIC_RELAXED);
             else
                 __atomic_fetch_add(&shader_translate_failed, 1, __ATOMIC_RELAXED);
-            LOG("nvn-shader-translate: stage=%d unsupported=%d spirv-words=%zu error=%s\n", meta.stage,
-                info.unsupported, words, spirv ? "" : err);
+            LOG("nvn-shader-translate: code=%llx stage=%d inputs=%08x unsupported=%d spirv-words=%zu error=%s\n",
+                (unsigned long long)address, meta.stage, info.in_mask, info.unsupported, words, spirv ? "" : err);
             free(spirv);
             free(glsl);
         }
@@ -92,6 +113,7 @@ static void shader_translate_probe(void* ptr) {
         __atomic_fetch_add(&shader_translate_failed, 1, __ATOMIC_RELAXED);
     }
     free(ptr);
+    __atomic_fetch_sub(&shader_translate_queued, 1, __ATOMIC_RELAXED);
 }
 #else
 void nvn_program_translate_async(u64 code_address) { (void)code_address; }

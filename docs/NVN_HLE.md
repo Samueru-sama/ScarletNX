@@ -311,6 +311,18 @@ sampler state remain part of that implementation.
 for each stage. A later partial bind updates only its selected stages instead of erasing the others. Draw diagnostics
 report vertex and fragment program coverage independently. The packet still needs a validated mapping from each NVN
 shader record to the exact host shader stage before it can create a graphics pipeline.
+The two inspected SDKs agree on vertex-state packing: an attribute uses one 32-bit word with an enable bit,
+five-bit stream index, 14-bit byte offset, and ten-bit format; a stream uses two 32-bit words for stride and
+divisor. Replay copies these small arrays before the caller can reuse them and normalizes their fields in each draw
+packet. In an eight-second Catherine run, 8,205 enabled attributes across 3,927 draws all referenced a present
+stream and bound vertex buffer. TotK exposed twelve indexed instanced draws whose saved attribute state references
+an unbound stream. Their draw counts are nonzero, so they remain an unresolved binding or shader-use case rather
+than evidence that the vertex path is complete.
+An opt-in translation probe on eight of those TotK vertex programs found seven with no generic attribute reads and
+one that reads attribute zero. The host draw path must preserve the guest GPU's value for an unbound attribute rather
+than assuming every enabled attribute requires a bound vertex buffer. The shader probe previously stopped forever
+after its first eight jobs because its in-flight counter was never released. It now releases each slot after a job
+and skips code addresses already inspected, allowing later shaders to be checked without repeated compilation.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
