@@ -4,6 +4,7 @@
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_sampler_descriptor.h"
 #include "gpu/nvn_program.h"
+#include "gpu/nvn_texture.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -30,7 +31,20 @@ typedef struct {
     const char* name; /* stable name in the resolver's process-lifetime table */
     u64 args[7];      /* x1..x7 at the NVN call boundary */
     u64 refs[8];      /* CallCommands list handles, copied before the guest may reuse its array */
+    void* payload;    /* owned snapshot for pointer arguments used by semantic replay */
 } NvnOp;
+typedef struct {
+    u32 count;
+    u8 color_views, depth_view, valid;
+    u64 color[8], depth;
+} NvnTargets;
+typedef struct {
+    u32 color[4];
+    u32 index, mask;
+} NvnClearColor;
+typedef struct {
+    u32 depth, stencil, depth_mask, stencil_mask;
+} NvnClearDepth;
 typedef struct {
     u64 key;
     NvnOp* ops;
@@ -48,6 +62,7 @@ static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, inv
 static u64 captured[OP_COUNT], ended_ops[OP_COUNT], submitted_ops[OP_COUNT], referenced_ops[OP_COUNT];
 typedef struct {
     u64 texture_pool, sampler_pool;
+    NvnTargets targets;
 } ReplayState;
 typedef struct {
     u64 key;
@@ -67,6 +82,11 @@ static u64 replay_sampler_resolved, replay_sampler_missing_pool, replay_sampler_
 static u64 replay_program_binds, replay_program_resolved, replay_program_missing, replay_program_unconfigured;
 static u64 replay_program_refs_known, replay_program_shader_refs;
 static u64 replay_queue_full;
+static u64 clear_snapshots, clear_snapshot_failures, depth_snapshots, target_snapshots, target_snapshot_failures;
+static u64 replay_color_clears, replay_color_ready, replay_color_missing_target, replay_color_view_unknown,
+    replay_color_stale_target;
+static u64 replay_depth_clears, replay_depth_ready, replay_depth_missing_target, replay_depth_view_unknown,
+    replay_depth_stale_target;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -128,7 +148,40 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     if (list->opaque) replay_opaque++;
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
-        if (!strcmp(op->name, "nvnCommandBufferSetTexturePool")) {
+        if (!strcmp(op->name, "nvnCommandBufferSetRenderTargets")) {
+            if (op->payload)
+                state->targets = *(const NvnTargets*)op->payload;
+            else
+                memset(&state->targets, 0, sizeof state->targets);
+        } else if (!strcmp(op->name, "nvnCommandBufferClearColor")) {
+            replay_color_clears++;
+            const NvnClearColor* clear = op->payload;
+            if (!clear || !state->targets.valid || clear->index >= state->targets.count ||
+                !state->targets.color[clear->index]) {
+                replay_color_missing_target++;
+            } else if (state->targets.color_views & (1u << clear->index)) {
+                replay_color_view_unknown++;
+            } else {
+                NvnTextureSnapshot target;
+                if (nvn_texture_snapshot(state->targets.color[clear->index], &target))
+                    replay_color_ready++;
+                else
+                    replay_color_stale_target++;
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferClearDepthStencil")) {
+            replay_depth_clears++;
+            if (!op->payload || !state->targets.valid || !state->targets.depth) {
+                replay_depth_missing_target++;
+            } else if (state->targets.depth_view) {
+                replay_depth_view_unknown++;
+            } else {
+                NvnTextureSnapshot target;
+                if (nvn_texture_snapshot(state->targets.depth, &target))
+                    replay_depth_ready++;
+                else
+                    replay_depth_stale_target++;
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferSetTexturePool")) {
             state->texture_pool = op->args[0];
         } else if (!strcmp(op->name, "nvnCommandBufferSetSamplerPool")) {
             state->sampler_pool = op->args[0];
@@ -193,6 +246,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
 }
 
 static void reset(NvnList* r) {
+    for (u32 i = 0; i < r->count; i++) free(r->ops[i].payload);
     free(r->ops);
     memset(r, 0, sizeof *r);
 }
@@ -210,6 +264,64 @@ static int readable_range(u64 addr, u64 size) {
         addr = next < end ? next : end;
     }
     return 1;
+}
+
+/* The SDK consumes these pointers immediately. Copy them before the caller can reuse its stack. */
+static void snapshot_semantic(NvnOp* op, const CPU* c) {
+    if (!strcmp(op->name, "nvnCommandBufferClearColor")) {
+        if (!readable_range(op->args[1], 16)) {
+            clear_snapshot_failures++;
+            return;
+        }
+        NvnClearColor* clear = malloc(sizeof *clear);
+        if (!clear) {
+            allocation_failures++;
+            clear_snapshot_failures++;
+            return;
+        }
+        for (u32 i = 0; i < 4; i++) clear->color[i] = gr32(op->args[1] + (u64)i * 4);
+        clear->index = (u32)op->args[0];
+        clear->mask = (u32)op->args[2];
+        op->payload = clear;
+        clear_snapshots++;
+    } else if (!strcmp(op->name, "nvnCommandBufferClearDepthStencil")) {
+        NvnClearDepth* clear = malloc(sizeof *clear);
+        if (!clear) {
+            allocation_failures++;
+            clear_snapshot_failures++;
+            return;
+        }
+        clear->depth = c->v[0].s[0];
+        clear->stencil = (u32)op->args[0];
+        clear->depth_mask = (u32)op->args[1];
+        clear->stencil_mask = (u32)op->args[2];
+        op->payload = clear;
+        depth_snapshots++;
+    } else if (!strcmp(op->name, "nvnCommandBufferSetRenderTargets")) {
+        u32 count = (u32)op->args[0];
+        u64 colors = op->args[1], views = op->args[2];
+        if (count > 8 || (count && !readable_range(colors, (u64)count * 8)) ||
+            (count && views && !readable_range(views, (u64)count * 8))) {
+            target_snapshot_failures++;
+            return;
+        }
+        NvnTargets* targets = calloc(1, sizeof *targets);
+        if (!targets) {
+            allocation_failures++;
+            target_snapshot_failures++;
+            return;
+        }
+        targets->count = count;
+        targets->valid = 1;
+        for (u32 i = 0; i < count; i++) {
+            targets->color[i] = gr64(colors + (u64)i * 8);
+            if (views && gr64(views + (u64)i * 8)) targets->color_views |= 1u << i;
+        }
+        targets->depth = op->args[3];
+        targets->depth_view = !!op->args[4];
+        op->payload = targets;
+        target_snapshots++;
+    }
 }
 
 static int kind(const char* name) {
@@ -343,6 +455,7 @@ void nvn_record_before(const CPU* c, const char* name) {
                     op->kind = op_kind;
                     op->name = name;
                     memcpy(op->args, &c->x[1], sizeof op->args);
+                    snapshot_semantic(op, c);
                     if (op_kind == OP_CALL && (u32)c->x[1] <= 4096 &&
                         (!(u32)c->x[1] || readable_range(c->x[2], (u64)(u32)c->x[1] * 8))) {
                         u32 count = (u32)c->x[1];
@@ -433,6 +546,18 @@ void nvn_record_report(void) {
         (unsigned long long)truncated_lists, (unsigned long long)dropped_ops, (unsigned long long)invalid_arrays,
         (unsigned long long)allocation_failures);
     if (descriptor_replay) {
+        LOG("nvn-clear-snapshot: color=%llu depth=%llu failed=%llu targets=%llu failed-targets=%llu\n",
+            (unsigned long long)clear_snapshots, (unsigned long long)depth_snapshots,
+            (unsigned long long)clear_snapshot_failures, (unsigned long long)target_snapshots,
+            (unsigned long long)target_snapshot_failures);
+        LOG("nvn-clear-replay: color=%llu ready=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
+            (unsigned long long)replay_color_clears, (unsigned long long)replay_color_ready,
+            (unsigned long long)replay_color_missing_target, (unsigned long long)replay_color_view_unknown,
+            (unsigned long long)replay_color_stale_target);
+        LOG("nvn-depth-replay: clears=%llu ready=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
+            (unsigned long long)replay_depth_clears, (unsigned long long)replay_depth_ready,
+            (unsigned long long)replay_depth_missing_target, (unsigned long long)replay_depth_view_unknown,
+            (unsigned long long)replay_depth_stale_target);
         LOG("nvn-replay: roots=%llu lists=%llu opaque=%llu missing-lists=%llu truncated-refs=%llu depth-limit=%llu queue-full=%llu\n",
             (unsigned long long)replay_roots, (unsigned long long)replay_lists, (unsigned long long)replay_opaque,
             (unsigned long long)replay_missing_lists, (unsigned long long)replay_truncated_refs,

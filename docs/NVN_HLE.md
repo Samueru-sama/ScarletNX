@@ -233,6 +233,20 @@ observer cannot assign that entry to a shader stage safely, so these lists must 
 first direct NVN-to-host shader execution path, while command recording, resource binding, synchronization, and
 presentation still run through the guest SDK.
 
+Descriptor replay now also snapshots the scalar values of `ClearColor` and `ClearDepthStencil`, including the depth
+float passed in an ARM SIMD register, and copies `SetRenderTargets` texture-handle arrays before the caller can reuse
+them. It carries the selected targets through secondary lists and checks clear commands against live texture records.
+An optional texture view is kept as an unresolved requirement: a handle alone does not identify the selected mip or
+layer. In an eight-second TotK boot, all 135 submitted color clears had a target and all 135 used a view. In an
+eight-second Catherine boot, all 1,104 submitted depth clears had a target and all 1,104 used a view. Neither run
+lost a clear or render-target snapshot. Consequently no clear is yet eligible for host execution, and the guest SDK
+still executes every clear. The next implementation step is to snapshot and decode view selection, then add a semantic
+clear operation to the renderer interface and switch only complete submissions to HLE.
+The view representation itself differs between the two inspected SDKs: TotK's `TextureViewSetDefaults` clears 16 bytes
+and its setters pack selection and override flags into that object, while Catherine's clears 36 bytes and stores
+separate flag and value fields. An HLE view decoder therefore needs a verified SDK layout or getter-based adapter;
+interpreting a view pointer as one fixed structure would select the wrong subresource in one of these games.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
