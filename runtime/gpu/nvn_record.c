@@ -52,15 +52,20 @@ typedef struct {
 typedef struct {
     u64 key;
     ReplayState state;
+    u64 shader_code[8];
+    u8 shader_count;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
 static int descriptor_replay;
+static int shader_transport;
+static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
 static u64 replay_sampler_resolved, replay_sampler_missing_pool, replay_sampler_missing_descriptor,
     replay_sampler_stale;
 static u64 replay_program_binds, replay_program_resolved, replay_program_missing, replay_program_unconfigured;
+static u64 replay_program_refs_known, replay_program_shader_refs;
 static u64 replay_queue_full;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
@@ -96,6 +101,7 @@ static NvnList* list_slot(u64 key, int create) {
 }
 
 void nvn_record_enable_descriptor_replay(void) { descriptor_replay = 1; }
+void nvn_record_enable_shader_transport(void) { shader_transport = 1; }
 
 static ReplayQueue* replay_queue_slot(u64 key) {
     if (!key) return NULL;
@@ -108,7 +114,7 @@ static ReplayQueue* replay_queue_slot(u64 key) {
 }
 
 /* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
-static void replay_list(u64 handle, ReplayState* state, u32 depth) {
+static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
         replay_depth_limit++;
         return;
@@ -152,16 +158,36 @@ static void replay_list(u64 handle, ReplayState* state, u32 depth) {
             }
         } else if (!strcmp(op->name, "nvnCommandBufferBindProgram")) {
             replay_program_binds++;
-            int result = nvn_program_check(op->args[0]);
-            if (result == 1)
+            NvnProgramSnapshot program = {0};
+            if (nvn_program_snapshot(op->args[0], &program)) {
                 replay_program_resolved++;
-            else if (result == -1)
+                if (program.refs_known) {
+                    replay_program_refs_known++;
+                    replay_program_shader_refs += program.shader_count;
+                    if (shader_transport && queue) {
+                        for (u32 j = 0; j < program.shader_count; j++) {
+                            u64 code = program.refs[j].code_candidate;
+                            if (!code) continue;
+                            int seen = 0;
+                            for (u32 k = 0; k < queue->shader_count; k++) seen |= queue->shader_code[k] == code;
+                            if (seen) continue;
+                            if (queue->shader_count == 8)
+                                shader_stage_full++;
+                            else {
+                                queue->shader_code[queue->shader_count++] = code;
+                                shader_staged++;
+                            }
+                        }
+                    }
+                }
+            } else if (nvn_program_check(op->args[0]) == -1) {
                 replay_program_unconfigured++;
-            else
+            } else {
                 replay_program_missing++;
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
             if (op->refs_truncated) replay_truncated_refs++;
-            for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], state, depth + 1);
+            for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], state, queue, depth + 1);
         }
     }
 }
@@ -202,7 +228,8 @@ static int kind(const char* name) {
 
 int nvn_record_wants(const char* name) {
     if (!strcmp(name, "nvnQueueSubmitCommands") || !strcmp(name, "nvnCommandBufferBeginRecording") ||
-        !strcmp(name, "nvnCommandBufferEndRecording"))
+        !strcmp(name, "nvnCommandBufferEndRecording") || !strcmp(name, "nvnQueueFlush") ||
+        !strcmp(name, "nvnQueuePresentTexture"))
         return 1;
     if (strncmp(name, "nvnCommandBuffer", 16)) return 0;
     if (!strcmp(name, "nvnCommandBufferSetMemoryCallback") || !strcmp(name, "nvnCommandBufferSetMemoryCallbackData"))
@@ -211,7 +238,9 @@ int nvn_record_wants(const char* name) {
 }
 
 void nvn_record_before(const CPU* c, const char* name) {
-    if (!strcmp(name, "nvnCommandBufferEndRecording")) return;
+    if (!strcmp(name, "nvnCommandBufferEndRecording") || !strcmp(name, "nvnQueueFlush") ||
+        !strcmp(name, "nvnQueuePresentTexture"))
+        return;
     if (!strcmp(name, "nvnQueueSubmitCommands")) {
         u32 count = (u32)c->x[1];
         u64 ptr = c->x[2];
@@ -238,7 +267,7 @@ void nvn_record_before(const CPU* c, const char* name) {
             for (u32 j = 0; j < list->count; j++) submitted_ops[list->ops[j].kind]++;
             if (descriptor_replay) {
                 replay_roots++;
-                replay_list(handle, &state, 0);
+                replay_list(handle, &state, queue, 0);
             }
         }
         if (queue) {
@@ -330,6 +359,22 @@ void nvn_record_before(const CPU* c, const char* name) {
 }
 
 void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
+    if (!strcmp(name, "nvnQueueFlush") || !strcmp(name, "nvnQueuePresentTexture")) {
+        if (!shader_transport) return;
+        u64 codes[8];
+        u32 count = 0;
+        pm_lock(&lock);
+        ReplayQueue* queue = replay_queue_slot(command_buffer);
+        if (queue && queue->key == command_buffer) {
+            count = queue->shader_count;
+            memcpy(codes, queue->shader_code, (size_t)count * sizeof(u64));
+            queue->shader_count = 0;
+            shader_flushed += count;
+        }
+        pm_unlock(&lock);
+        for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
+        return;
+    }
     if (strcmp(name, "nvnCommandBufferEndRecording")) return;
     pm_lock(&lock);
     ended++;
@@ -402,6 +447,11 @@ void nvn_record_report(void) {
         LOG("nvn-replay-program: binds=%llu resolved=%llu missing=%llu unconfigured=%llu\n",
             (unsigned long long)replay_program_binds, (unsigned long long)replay_program_resolved,
             (unsigned long long)replay_program_missing, (unsigned long long)replay_program_unconfigured);
+        LOG("nvn-replay-program: refs-known-binds=%llu shader-refs=%llu\n",
+            (unsigned long long)replay_program_refs_known, (unsigned long long)replay_program_shader_refs);
+        if (shader_transport)
+            LOG("nvn-shader-transport: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)shader_staged,
+                (unsigned long long)shader_flushed, (unsigned long long)shader_stage_full);
     }
     pm_unlock(&lock);
 }

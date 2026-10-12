@@ -205,12 +205,33 @@ missing or stale sampler result, untracked registration, or table loss.
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported
-program pointer and setup return value; it does not decode SDK-specific shader descriptors or translate their code.
+program pointer and setup return value. It also snapshots up to eight 24-byte shader references before the guest SDK
+can reuse the input array. In the ordinary entries observed so far, the first word names GPU code, the second names
+CPU control data, and the third is an extension word; the TotK exception below prevents treating that as a universal
+layout. The inspected TotK `SetShadersExt` copies entries in 24-byte steps, and Catherine's shared setup
+routine advances by the same stride. This is a source for future program materialization, not a copy of shader code.
 In a 120-frame Catherine run, all 1,462 replayed program binds found configured live programs. Its 133 initialized
 programs each received a successful shader setup, with no failed or untracked setup calls.
 In a 279-frame TotK run, all 1,028 replayed program binds resolved, and all 3,449 initialized programs received
 successful shader setup. Neither run reported missing or unconfigured program binds or table loss. These are object
 lifetime checks at submission time; actual shader-stage contents and command-list snapshot semantics remain unproven.
+
+`SNX_NVN_SHADER_TRANSLATE=1` enables descriptor replay and a bounded execution probe. Submitted `BindProgram` calls
+stage shader code addresses in their NVN queue; after the guest SDK's `QueueFlush` or `PresentTexture`, the first eight
+staged addresses are queued behind guest GPFIFO work on the GPU thread. The worker reads each NVN code blob from GPU
+memory, checks its `0x12345678` header, strips its 0x30-byte wrapper,
+and passes the following [Maxwell shader program header and instructions](https://download.nvidia.com/open-gpu-doc/Shader-Program-Header/1/Shader-Program-Header.html)
+to the existing translator and glslang. Stage classification currently recognizes the observed vertex and fragment
+headers; other stages are reported as unknown. The resulting SPIR-V is discarded after compilation. The probe does
+not bind constant buffers or use the compiled shader for a draw, so successful compilation is not yet evidence of
+correct rendered output. In initial Catherine and TotK boot samples, eight sampled shaders from each title compiled
+to SPIR-V with no unsupported instructions when translated at program setup. At the submitted-program boundary,
+Catherine again compiled eight of eight sampled references. TotK compiled four of eight: the other four all named
+one repeated address whose GPU-memory read returned zeros. One TotK `SetShadersExt` call has a second 24-byte entry
+whose first word is CPU-address-shaped, while its preceding entry's extension word is GPU-address-shaped. The current
+observer cannot assign that entry to a shader stage safely, so these lists must stay on the guest path. This is the
+first direct NVN-to-host shader execution path, while command recording, resource binding, synchronization, and
+presentation still run through the guest SDK.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

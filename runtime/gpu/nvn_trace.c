@@ -202,21 +202,27 @@ void nvn_trace_init(void) {
     const char* descriptor_env = getenv("SNX_NVN_DESCRIPTOR");
     const char* sampler_env = getenv("SNX_NVN_SAMPLER");
     const char* program_env = getenv("SNX_NVN_PROGRAM");
+    const char* shader_translate_env = getenv("SNX_NVN_SHADER_TRANSLATE");
     const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
     verify = hle && verify_env && !strcmp(verify_env, "1");
-    descriptor_replay = replay_env && !strcmp(replay_env, "1");
+    int shader_translate = shader_translate_env && !strcmp(shader_translate_env, "1");
+    descriptor_replay = shader_translate || (replay_env && !strcmp(replay_env, "1"));
     recording = descriptor_replay || (record_env && !strcmp(record_env, "1"));
     aliases = alias_env && !strcmp(alias_env, "1");
     descriptors = descriptor_replay || (descriptor_env && !strcmp(descriptor_env, "1"));
     buffers = aliases || (buffer_env && !strcmp(buffer_env, "1"));
     textures = aliases || descriptors || (texture_env && !strcmp(texture_env, "1"));
     samplers = descriptors || (sampler_env && !strcmp(sampler_env, "1"));
-    programs = descriptor_replay || (program_env && !strcmp(program_env, "1"));
+    programs = descriptor_replay || shader_translate || (program_env && !strcmp(program_env, "1"));
     pools = buffers || textures || (pool_env && !strcmp(pool_env, "1"));
     if (aliases) nvn_alias_enable();
     if (descriptor_replay) nvn_record_enable_descriptor_replay();
+    if (shader_translate) {
+        nvn_program_enable_translation();
+        nvn_record_enable_shader_transport();
+    }
     if (!tracing && !hle && !recording && !pools && !samplers && !programs) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
