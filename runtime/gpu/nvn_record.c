@@ -147,7 +147,7 @@ static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missi
     replay_depth_stale_target;
 static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
 static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported, clear_image_full,
-    clear_array_issued, clear_mip_issued;
+    clear_array_issued, clear_cube_issued, clear_mip_issued;
 static u64 preflight_batches, preflight_clear_only, preflight_mixed, preflight_no_clears, preflight_clear_commands;
 static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_invalid;
 static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
@@ -1188,6 +1188,7 @@ static void execute_nvn_batch(void* arg) {
                 __atomic_fetch_add(&clear_issued, 1, __ATOMIC_RELAXED);
                 const NvnTextureTarget* target = &batch->clears->commands[clear - 1].target;
                 if (target->target == 4) __atomic_fetch_add(&clear_array_issued, 1, __ATOMIC_RELAXED);
+                if (target->target == 8) __atomic_fetch_add(&clear_cube_issued, 1, __ATOMIC_RELAXED);
                 if (target->view.base_level) __atomic_fetch_add(&clear_mip_issued, 1, __ATOMIC_RELAXED);
             } else
                 __atomic_fetch_add(&clear_unsupported, 1, __ATOMIC_RELAXED);
@@ -1411,12 +1412,13 @@ void nvn_record_report(void) {
             LOG("nvn-shader-transport: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)shader_staged,
                 (unsigned long long)shader_flushed, (unsigned long long)shader_stage_full);
         if (clear_execute)
-            LOG("nvn-clear-execute: staged=%llu flushed=%llu issued=%llu unsupported=%llu stage-full=%llu array=%llu mip=%llu\n",
+            LOG("nvn-clear-execute: staged=%llu flushed=%llu issued=%llu unsupported=%llu stage-full=%llu array=%llu cube=%llu mip=%llu\n",
                 (unsigned long long)clear_staged, (unsigned long long)clear_flushed,
                 (unsigned long long)__atomic_load_n(&clear_issued, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&clear_unsupported, __ATOMIC_RELAXED),
                 (unsigned long long)clear_stage_full,
                 (unsigned long long)__atomic_load_n(&clear_array_issued, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&clear_cube_issued, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&clear_mip_issued, __ATOMIC_RELAXED));
         if (clear_execute)
             LOG("nvn-clear-image: cache-full=%llu\n",

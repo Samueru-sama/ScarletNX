@@ -53,8 +53,11 @@ static NvnImage* evict_old_image(void) {
 static VkFmt nvn_format(u32 format) {
     switch (format) {
         case 0x01: return (VkFmt){.vk = VK_FORMAT_R8_UNORM, .bpp = 1};            /* R8 */
+        case 0x05: return (VkFmt){.vk = VK_FORMAT_R16_SFLOAT, .bpp = 2};          /* R16F */
         case 0x0a: return (VkFmt){.vk = VK_FORMAT_R32_SFLOAT, .bpp = 4};          /* R32F */
         case 0x0d: return (VkFmt){.vk = VK_FORMAT_R8G8_UNORM, .bpp = 2};          /* RG8 */
+        case 0x11: return (VkFmt){.vk = VK_FORMAT_R16G16_SFLOAT, .bpp = 4};       /* RG16F */
+        case 0x12: return (VkFmt){.vk = VK_FORMAT_R16G16_UNORM, .bpp = 4};        /* RG16 */
         case 0x25: return vk_rt_format(0xd5);                                     /* RGBA8 */
         case 0x29: return (VkFmt){.vk = VK_FORMAT_R16G16B16A16_SFLOAT, .bpp = 8}; /* RGBA16F */
         case 0x38: return (VkFmt){.vk = VK_FORMAT_R8G8B8A8_SRGB, .bpp = 4};       /* RGBA8 SRGB */
@@ -94,6 +97,9 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     if (!guest_format.bpp || !target->levels || !target->depth || target->depth > limits->maxImageArrayLayers ||
         target->width > limits->maxImageDimension2D || target->height > limits->maxImageDimension2D)
         return NULL;
+    if (target->target == 8 &&
+        (target->width != target->height || target->width > limits->maxImageDimensionCube || target->depth != 6))
+        return NULL;
     u32 max_dimension = target->width > target->height ? target->width : target->height;
     u32 max_levels = 1;
     while (max_dimension >> max_levels) max_levels++;
@@ -130,6 +136,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     int sampled = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .imageType = VK_IMAGE_TYPE_2D,
+                              .flags = target->target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
                               .format = format,
                               .extent = {target->width, target->height, 1},
                               .mipLevels = target->levels,
@@ -160,14 +167,16 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
     empty->sampled = sampled;
     if (sampled) {
-        VkImageViewCreateInfo view = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = image,
-            .viewType = target->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
-            .format = format,
-            .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT
-                                                                    : VK_IMAGE_ASPECT_COLOR_BIT,
-                                 0, target->levels, 0, target->depth}};
+        VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                      .image = image,
+                                      .viewType = target->target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
+                                                  : target->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                                        : VK_IMAGE_VIEW_TYPE_2D,
+                                      .format = format,
+                                      .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT
+                                                               ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                               : VK_IMAGE_ASPECT_COLOR_BIT,
+                                                           0, target->levels, 0, target->depth}};
         if (vkCreateImageView(g_vk.dev, &view, NULL, &empty->sampled_view) != VK_SUCCESS) empty->sampled = 0;
         if (empty->sampled && target->levels > 1) {
             view.subresourceRange.levelCount = 1;
@@ -181,18 +190,28 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     const NvnTextureTarget* target = &command->target;
     u32 mip = target->view.base_level;
     u32 layer = target->view.first_layer;
-    if ((target->target != 1 && target->target != 4) || !target->width || !target->height || !target->depth ||
-        (target->target == 1 && target->depth != 1) || !target->levels || target->samples > 1 ||
+    if ((target->target != 1 && target->target != 4 && target->target != 8) || !target->width || !target->height ||
+        !target->depth || (target->target == 1 && target->depth != 1) || !target->levels || target->samples > 1 ||
         mip >= target->levels || mip >= 16 || layer >= target->depth || target->view.level_count > 1 ||
-        target->view.layer_count > 1 || (target->view.flags & (8 | 16)))
+        target->view.layer_count > 1 || (target->view.flags & (8 | 16))) {
+        LOG_LIMIT(12, "nvn-clear-shape: target=%u %ux%ux%u levels=%u samples=%u view=%x/%u/%u/%u/%u\n", target->target,
+                  target->width, target->height, target->depth, target->levels, target->samples, target->view.flags,
+                  mip, layer, target->view.level_count, target->view.layer_count);
         return 0;
+    }
     VkFmt format = nvn_format(target->format);
-    if (!format.vk) return 0;
+    if (!format.vk) {
+        LOG_LIMIT(12, "nvn-clear-format: format=%x unsupported\n", target->format);
+        return 0;
+    }
     if ((target->format == 0x25 && format.vk != VK_FORMAT_R8G8B8A8_UNORM) ||
         (target->format == 0x3f && format.vk != VK_FORMAT_B10G11R11_UFLOAT_PACK32))
         return 0; /* vk_rt_format may substitute RGBA8 on unsupported devices */
     if (command->kind == NVN_CLEAR_COLOR) {
-        if (format.depth || format.bw > 1 || format.bh > 1 || command->mask != 15) return 0;
+        if (format.depth || format.bw > 1 || format.bh > 1 || command->mask != 15) {
+            LOG_LIMIT(12, "nvn-clear-color-mask: format=%x mask=%x\n", target->format, command->mask);
+            return 0;
+        }
     } else if (command->kind == NVN_CLEAR_DEPTH_STENCIL) {
         if (!format.depth ||
             (command->stencil_mask && command->stencil_mask != 0xff && command->stencil_mask != 0xffffffffu) ||
@@ -204,7 +223,11 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     VkImageAspectFlags aspect = vk_aspect(&format);
     int full = 0;
     NvnImage* image = image_for(target, format.vk, aspect, &full);
-    if (!image) return full ? -1 : 0;
+    if (!image) {
+        LOG_LIMIT(12, "nvn-clear-image-reject: format=%x %ux%ux%u levels=%u cache-full=%d\n", target->format,
+                  target->width, target->height, target->depth, target->levels, full);
+        return full ? -1 : 0;
+    }
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_barrier(cb, image->image, aspect, image->stage, image->access, image->layout, VK_PIPELINE_STAGE_2_TRANSFER_BIT,

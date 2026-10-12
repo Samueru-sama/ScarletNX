@@ -249,8 +249,12 @@ packets run in their original replay order. The cache tracks written mip levels 
 for a draw that requests only level zero. A draw may use a matching image written earlier in its batch only when all
 levels in its selected view were written and no unmodeled image writer intervened; all other textures continue through
 the guest texture cache. Selected non-base mip and 2D-array-layer clears also execute into shadow images. Array clears
-are not yet marked ready for sampled-array descriptors. In a 22-second TotK boot, 4,173 of 4,807 staged clears issued,
-including 632 array clears and 901 non-base-mip clears, with no image-cache capacity failure. Catherine's boot
+are not yet marked ready for sampled-array descriptors. The shadow cache also executes cubemap-face clears and maps
+NVN R16F, RG16F, and RG16 to matching Vulkan formats. In a 22-second TotK boot, 4,693 clear callbacks issued,
+including 616 array clears, 156 cubemap-face clears, and 875 non-base-mip clears. No completed clear callback was
+unsupported, and no image-cache capacity failure occurred. These target and format values follow the
+[reconstructed NVN header](https://codeviewer.zeldamods.org/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html).
+Catherine's boot
 recorded and executed 157/157 buffer-to-texture copies with no rejected copies. TotK recorded no such copies in its
 boot run. Neither boot observed a draw sampling a semantic image in the same batch. The source bytes are still read
 after guest GPFIFO execution, so this shadow path does not establish historical texture contents at each NVN command.
