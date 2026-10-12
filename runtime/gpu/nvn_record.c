@@ -140,6 +140,7 @@ static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_stage
 static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_target_no_surf, draw_target_format,
     draw_target_size, draw_target_view;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
+static u64 draw_texture_header_ready, draw_texture_header_missing, draw_texture_header_unsupported;
 static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bind_invalid;
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
@@ -1080,6 +1081,11 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_SAMPLER_READY) __atomic_fetch_add(&draw_sampler_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_MISSING) __atomic_fetch_add(&draw_sampler_missing, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_FAILED) __atomic_fetch_add(&draw_sampler_failed, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_HEADER_READY) __atomic_fetch_add(&draw_texture_header_ready, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_HEADER_MISSING)
+            __atomic_fetch_add(&draw_texture_header_missing, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_HEADER_UNSUPPORTED)
+            __atomic_fetch_add(&draw_texture_header_unsupported, 1, __ATOMIC_RELAXED);
     }
     free(batch->clears);
     free(batch->draws);
@@ -1290,6 +1296,11 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_sampler_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_sampler_missing, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_sampler_failed, __ATOMIC_RELAXED));
+        if (draw_prepare)
+            LOG("nvn-draw-texture-header: ready=%llu missing=%llu unsupported=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_texture_header_ready, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_header_missing, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_header_unsupported, __ATOMIC_RELAXED));
         LOG("nvn-uniform-snapshot: ranges=%llu failed=%llu invalid-binds=%llu\n",
             (unsigned long long)uniform_range_snapshots, (unsigned long long)uniform_range_snapshot_failures,
             (unsigned long long)uniform_bind_invalid);

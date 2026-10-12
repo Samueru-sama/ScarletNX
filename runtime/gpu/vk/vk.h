@@ -221,6 +221,7 @@ VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkCompone
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers) */
 VkImageView vk_null_view(VkImageViewType type, int num);
 VkSampler vk_sampler(const u32* tsc);
+int vk_tex_tic_supported(const u32* tic);
 void vk_tex_frame(void); /* a frame was presented: evicts what wasn't used for a while */
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */

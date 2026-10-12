@@ -367,7 +367,15 @@ static VkImageViewType tic_view_type(u32 type, u32 d) {
 
 static u32 g_bud_frame;
 static i64 g_bud;
-static Surf* tex_from_tic(const u32* tic) {
+static int format_samples(VkFormat f);
+typedef struct {
+    u64 gva;
+    u32 w, h, d, type, glevels, bh, bd, pitch;
+    int bl, srgb;
+    VkFmt f;
+} TicHeader;
+
+static int tic_header(const u32* tic, TicHeader* out) {
     u64 gva = ((u64)(tic[2] & 0xFFFF) << 32) | tic[1];
     u32 hv = (tic[2] >> 21) & 7;
     int bl = hv == 3 || hv == 4;
@@ -376,10 +384,10 @@ static Surf* tex_from_tic(const u32* tic) {
     int srgb = (tic[4] >> 22) & 1;
     u32 glevels = ((tic[3] >> 28) & 0xF) + 1;
     u32 bh = (tic[3] >> 3) & 7, bd = (tic[3] >> 6) & 7, pitch = bl ? 0 : ((tic[3] & 0xFFFF) << 5);
-    if (!gva) return NULL;
+    if (!gva) return 0;
     if (hv == 0 || type == 6) { /* a buffer texture: its width spans words 3 and 4, it has no pitch or blocks */
         LOG_LIMIT(1, "vulkan: buffer textures aren't supported (not drawn)\n");
-        return NULL;
+        return 0;
     }
     if ((tic[7] >> 8) & 0xF) LOG_LIMIT(1, "vulkan: multisampled textures are read as single-sampled\n");
     if (type == 0 || type == 4) h = 1;
@@ -388,12 +396,50 @@ static Surf* tex_from_tic(const u32* tic) {
     else if (type == 8)
         d *= 6;
     VkFmt f = vk_tic_format(tic[0], srgb);
-    if (!f.bpp || w > 16384 || h > 16384 || d > 2048) return NULL;
-    if ((u64)w * h * d * (f.bw > 1 ? 1 : f.bpp) > (512ull << 20)) return NULL;
+    if (!f.bpp || w > 16384 || h > 16384 || d > 2048) return 0;
+    if ((u64)w * h * d * (f.bw > 1 ? 1 : f.bpp) > (512ull << 20)) return 0;
     if (!bl && pitch < (w + f.bw - 1) / f.bw * f.bpp) {
         LOG_LIMIT(1, "vulkan: a pitch-linear texture's pitch (%u bytes) is shorter than its rows (not drawn)\n", pitch);
-        return NULL;
+        return 0;
     }
+    *out = (TicHeader){.gva = gva,
+                       .w = w,
+                       .h = h,
+                       .d = d,
+                       .type = type,
+                       .glevels = glevels,
+                       .bh = bh,
+                       .bd = bd,
+                       .pitch = pitch,
+                       .bl = bl,
+                       .srgb = srgb,
+                       .f = f};
+    return 1;
+}
+
+int vk_tex_tic_supported(const u32* tic) {
+    TicHeader header = {0};
+    if (!tic_header(tic, &header)) return 0;
+    if (!format_samples(header.f.vk)) return 0;
+    VkImageViewType view = tic_view_type(header.type, header.d);
+    u32 layers = view == VK_IMAGE_VIEW_TYPE_3D ? 1 : header.d;
+    const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
+    if (view == VK_IMAGE_VIEW_TYPE_3D)
+        return header.w <= lim->maxImageDimension3D && header.h <= lim->maxImageDimension3D &&
+               header.d <= lim->maxImageDimension3D;
+    return header.w <= lim->maxImageDimension2D && header.h <= lim->maxImageDimension2D &&
+           layers <= lim->maxImageArrayLayers &&
+           (layers < 6 || header.w != header.h || header.w <= lim->maxImageDimensionCube);
+}
+
+static Surf* tex_from_tic(const u32* tic) {
+    TicHeader header = {0};
+    if (!tic_header(tic, &header)) return NULL;
+    u64 gva = header.gva;
+    u32 w = header.w, h = header.h, d = header.d, type = header.type, glevels = header.glevels;
+    u32 bh = header.bh, bd = header.bd, pitch = header.pitch;
+    int bl = header.bl, srgb = header.srgb;
+    VkFmt f = header.f;
     VkImageViewType vt = tic_view_type(type, d);
     if (vt == VK_IMAGE_VIEW_TYPE_CUBE && d != 6) vt = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     if (vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && !g_vk.feat.imageCubeArray) vt = VK_IMAGE_VIEW_TYPE_2D_ARRAY;

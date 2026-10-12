@@ -179,50 +179,67 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             }
         }
     if (has_sampler && !sampler_status) sampler_status = NVN_DRAW_SAMPLER_READY;
+    int texture_status = 0, has_texture = 0;
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !texture_status; stage++)
+        for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
+            if (!(command->texture_bound[stage] & (1u << i))) continue;
+            has_texture = 1;
+            const NvnDescriptorSnapshot* texture = &command->texture_descriptor[stage][i];
+            if (!(command->texture_descriptor_valid[stage] & (1u << i)) || !texture->tic_valid) {
+                texture_status = NVN_DRAW_TEXTURE_HEADER_MISSING;
+                break;
+            }
+            if (!vk_tex_tic_supported(texture->tic)) {
+                texture_status = NVN_DRAW_TEXTURE_HEADER_UNSUPPORTED;
+                break;
+            }
+        }
+    if (has_texture && !texture_status) texture_status = NVN_DRAW_TEXTURE_HEADER_READY;
+    int resource_status = sampler_status | texture_status;
     int has_target = command->color_target_mask || command->depth_target_bound;
-    if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED | sampler_status;
+    if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED | resource_status;
     for (u32 i = 0; i < 8; i++) {
         if (!(command->color_target_mask & (1u << i))) continue;
         const NvnTextureTarget* target = &command->color_target[i];
         const Surf* surf = vk_rt_find(target->gpu_address);
         VkFmt format = nvn_format(target->format);
-        if (!surf) return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_NO_SURFACE;
+        if (!surf) return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_NO_SURFACE;
         if (!format.vk || surf->f.vk != format.vk) {
             LOG_LIMIT(8, "nvn-draw-target-format: color nvn=%x vk=%u surf-vk=%u surf-key=%x\n", target->format,
                       format.vk, surf->f.vk, surf->fkey);
-            return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_FORMAT;
+            return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_FORMAT;
         }
         if (surf->w != target->width || surf->h != target->height) {
             LOG_LIMIT(8, "nvn-draw-target-size: color nvn=%ux%u surf=%ux%u\n", target->width, target->height, surf->w,
                       surf->h);
-            return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_SIZE;
+            return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_SIZE;
         }
         if (target->view.base_level || target->view.first_layer) {
             LOG_LIMIT(8, "nvn-draw-target-view: color level=%u layer=%u\n", target->view.base_level,
                       target->view.first_layer);
-            return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_VIEW;
+            return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_VIEW;
         }
     }
     if (command->depth_target_bound) {
         const NvnTextureTarget* target = &command->depth_target;
         const Surf* surf = vk_rt_find(target->gpu_address);
         VkFmt format = nvn_format(target->format);
-        if (!surf) return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_NO_SURFACE;
+        if (!surf) return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_NO_SURFACE;
         if (!format.vk || surf->f.vk != format.vk) {
             LOG_LIMIT(8, "nvn-draw-target-format: depth nvn=%x vk=%u surf-vk=%u surf-key=%x\n", target->format,
                       format.vk, surf->f.vk, surf->fkey);
-            return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_FORMAT;
+            return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_FORMAT;
         }
         if (surf->w != target->width || surf->h != target->height) {
             LOG_LIMIT(8, "nvn-draw-target-size: depth nvn=%ux%u surf=%ux%u\n", target->width, target->height, surf->w,
                       surf->h);
-            return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_SIZE;
+            return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_SIZE;
         }
         if (target->view.base_level || target->view.first_layer) {
             LOG_LIMIT(8, "nvn-draw-target-view: depth level=%u layer=%u\n", target->view.base_level,
                       target->view.first_layer);
-            return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_TARGET_VIEW;
+            return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_VIEW;
         }
     }
-    return NVN_DRAW_PREPARED | sampler_status | NVN_DRAW_SHARED_TARGET;
+    return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_SHARED_TARGET;
 }

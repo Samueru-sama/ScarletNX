@@ -220,6 +220,11 @@ run had a missing or all-zero sampler descriptor.
 With `SNX_NVN_DRAW_PREPARE=1`, the GPU-thread preparation pass now feeds captured TSCs to the existing cached Vulkan
 sampler constructor. It reports draws whose samplers were created or reused, missing descriptors, and Vulkan creation
 failures. These samplers are host resources for future HLE draws; the guest GPU path still renders the frame.
+The same pass checks captured TICs with the shared front-end parser used by the existing Vulkan texture loader. It
+rejects unsupported formats, invalid dimensions or pitch, missing address, and device sample-image limits without
+uploading texels or changing image contents. In later boots, all 3,707 Catherine and 3,078 TotK texture-using draws
+that reached GPU-thread preparation passed this check. This does not establish that the source memory is coherent with
+earlier GPU writes or that the image can be safely uploaded during draw setup.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
