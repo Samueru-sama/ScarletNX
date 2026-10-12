@@ -10,7 +10,7 @@
 
 /* Texture metadata and pool generations only. Storage layout and contents remain owned by the guest SDK. */
 typedef struct {
-    u64 key, pool, offset, pool_generation;
+    u64 key, generation, pool, offset, pool_generation;
     u32 flags, target, width, height, depth, levels, format, samples, storage_size;
     u8 alive, size_known;
 } Texture;
@@ -93,6 +93,7 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                 else
                     live++;
                 t->key = call->texture;
+                t->generation++;
                 t->pool = call->pool;
                 t->offset = call->offset;
                 t->pool_generation = pool_found ? pool.generation : 0;
@@ -153,4 +154,19 @@ void nvn_texture_report(void) {
         (unsigned long long)sizes_known, (unsigned long long)sizes_unavailable,
         (unsigned long long)footprint_outside_pool);
     pm_unlock(&lock);
+}
+
+int nvn_texture_snapshot(u64 texture, NvnTextureSnapshot* out) {
+    pm_lock(&lock);
+    Texture* t = texture_slot(texture, 0);
+    int found = t && t->alive;
+    if (found) {
+        out->generation = t->generation;
+        out->pool = t->pool;
+        out->pool_generation = t->pool_generation;
+        out->offset = t->offset;
+        out->storage_size = t->storage_size;
+    }
+    pm_unlock(&lock);
+    return found;
 }

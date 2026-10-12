@@ -1,0 +1,207 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+#include "gpu/nvn_descriptor.h"
+#include "gpu/nvn_texture.h"
+#include "platform/log.h"
+#include "platform/plat.h"
+#include <string.h>
+
+/* Observe the texture-ID path from descriptor registration to a single BindTexture call. This does not decode
+   BindTextures arrays or replace the guest SDK's descriptor memory. */
+typedef struct {
+    u64 key, generation;
+    u32 count;
+    u8 alive;
+} TexturePool;
+typedef struct {
+    u64 pool, pool_generation, texture, texture_generation, view;
+    u32 index;
+} Descriptor;
+typedef struct {
+    u64 key, pool, pool_generation;
+} CommandBufferPool;
+#define TEXTURE_POOL_SLOTS 1024
+#define DESCRIPTOR_SLOTS   65536
+#define COMMAND_POOL_SLOTS 8192
+static TexturePool pools[TEXTURE_POOL_SLOTS];
+static Descriptor descriptors[DESCRIPTOR_SLOTS];
+static CommandBufferPool commands[COMMAND_POOL_SLOTS];
+static PMutex lock = PMUTEX_INIT;
+static u64 initialized, failed, finalized, registered, binds, resolved, live_pools, sole_pool_key;
+static u64 inferred_bind_pools, resolved_inferred;
+static u64 unknown_pools, invalid_ids, untracked_textures, missing_bind_pools, missing_descriptors, stale_textures;
+static u64 pool_table_full, descriptor_table_full, command_table_full;
+
+static u32 hash(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
+
+static TexturePool* pool_slot(u64 key, int create) {
+    if (!key) return NULL;
+    u32 home = hash(key, TEXTURE_POOL_SLOTS - 1);
+    for (u32 step = 0; step < TEXTURE_POOL_SLOTS; step++) {
+        TexturePool* p = &pools[(home + step) & (TEXTURE_POOL_SLOTS - 1)];
+        if (p->key == key) return p;
+        if (!p->key) return create ? p : NULL;
+    }
+    return NULL;
+}
+
+static Descriptor* descriptor_slot(u64 pool, u32 index, int create) {
+    if (!pool) return NULL;
+    u32 home = hash(pool ^ ((u64)index << 32), DESCRIPTOR_SLOTS - 1);
+    for (u32 step = 0; step < DESCRIPTOR_SLOTS; step++) {
+        Descriptor* d = &descriptors[(home + step) & (DESCRIPTOR_SLOTS - 1)];
+        if (d->pool == pool && d->index == index) return d;
+        if (!d->pool) return create ? d : NULL;
+    }
+    return NULL;
+}
+
+static CommandBufferPool* command_slot(u64 key, int create) {
+    if (!key) return NULL;
+    u32 home = hash(key, COMMAND_POOL_SLOTS - 1);
+    for (u32 step = 0; step < COMMAND_POOL_SLOTS; step++) {
+        CommandBufferPool* b = &commands[(home + step) & (COMMAND_POOL_SLOTS - 1)];
+        if (b->key == key) return b;
+        if (!b->key) return create ? b : NULL;
+    }
+    return NULL;
+}
+
+int nvn_descriptor_wants(const char* name) {
+    return !strcmp(name, "nvnTexturePoolInitialize") || !strcmp(name, "nvnTexturePoolFinalize") ||
+           !strcmp(name, "nvnTexturePoolRegisterTexture") || !strcmp(name, "nvnCommandBufferSetTexturePool") ||
+           !strcmp(name, "nvnCommandBufferBindTexture");
+}
+
+void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* call) {
+    memset(call, 0, sizeof *call);
+    call->object = c->x[0];
+    if (!strcmp(name, "nvnTexturePoolInitialize")) {
+        call->count = (u32)c->x[3];
+    } else if (!strcmp(name, "nvnTexturePoolRegisterTexture")) {
+        call->index = (u32)c->x[1];
+        call->texture = c->x[2];
+        call->view = c->x[3];
+    } else if (!strcmp(name, "nvnCommandBufferSetTexturePool")) {
+        call->pool = c->x[1];
+    } else if (!strcmp(name, "nvnCommandBufferBindTexture")) {
+        call->handle = c->x[3];
+        call->index = (u32)call->handle & 0xfffff; /* DeviceGetTextureHandle packs texture ID in low 20 bits. */
+    }
+}
+
+void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCall* call) {
+    NvnTextureSnapshot texture = {0};
+    int texture_found = 0;
+    if (!strcmp(name, "nvnTexturePoolRegisterTexture")) texture_found = nvn_texture_snapshot(call->texture, &texture);
+    pm_lock(&lock);
+    if (!strcmp(name, "nvnTexturePoolInitialize")) {
+        if (!c->x[0]) {
+            failed++;
+        } else {
+            TexturePool* p = pool_slot(call->object, 1);
+            if (!p)
+                pool_table_full++;
+            else {
+                if (!p->alive) {
+                    live_pools++;
+                    sole_pool_key = live_pools == 1 ? call->object : 0;
+                }
+                p->key = call->object;
+                p->generation++;
+                p->count = call->count;
+                p->alive = 1;
+                initialized++;
+            }
+        }
+    } else if (!strcmp(name, "nvnTexturePoolFinalize")) {
+        TexturePool* p = pool_slot(call->object, 0);
+        if (p && p->alive) {
+            p->alive = 0;
+            live_pools--;
+            if (live_pools == 1) {
+                for (u32 i = 0; i < TEXTURE_POOL_SLOTS; i++)
+                    if (pools[i].alive) sole_pool_key = pools[i].key;
+            } else {
+                sole_pool_key = 0;
+            }
+            finalized++;
+        } else {
+            unknown_pools++;
+        }
+    } else if (!strcmp(name, "nvnTexturePoolRegisterTexture")) {
+        TexturePool* p = pool_slot(call->object, 0);
+        if (!p || !p->alive)
+            unknown_pools++;
+        else if (call->index >= p->count)
+            invalid_ids++;
+        else {
+            Descriptor* d = descriptor_slot(call->object, call->index, 1);
+            if (!d)
+                descriptor_table_full++;
+            else {
+                *d = (Descriptor){.pool = call->object,
+                                  .pool_generation = p->generation,
+                                  .texture = call->texture,
+                                  .texture_generation = texture_found ? texture.generation : 0,
+                                  .view = call->view,
+                                  .index = call->index};
+                registered++;
+                if (!texture_found) untracked_textures++;
+            }
+        }
+    } else if (!strcmp(name, "nvnCommandBufferSetTexturePool")) {
+        TexturePool* p = pool_slot(call->pool, 0);
+        CommandBufferPool* b = command_slot(call->object, 1);
+        if (!b)
+            command_table_full++;
+        else {
+            b->key = call->object;
+            b->pool = call->pool;
+            b->pool_generation = p && p->alive ? p->generation : 0;
+            if (!p || !p->alive) unknown_pools++;
+        }
+    } else if (!strcmp(name, "nvnCommandBufferBindTexture")) {
+        binds++;
+        CommandBufferPool* b = command_slot(call->object, 0);
+        TexturePool* p = b ? pool_slot(b->pool, 0) : NULL;
+        int explicit_pool = b && p && p->alive && p->generation == b->pool_generation;
+        if (!explicit_pool && live_pools == 1) {
+            p = pool_slot(sole_pool_key, 0);
+            inferred_bind_pools++;
+        }
+        if (!p || !p->alive || (!explicit_pool && live_pools != 1)) {
+            missing_bind_pools++;
+        } else {
+            Descriptor* d = descriptor_slot(p->key, call->index, 0);
+            if (!d || d->pool_generation != p->generation) {
+                missing_descriptors++;
+            } else {
+                NvnTextureSnapshot current = {0};
+                if (!nvn_texture_snapshot(d->texture, &current) || current.generation != d->texture_generation)
+                    stale_textures++;
+                else {
+                    resolved++;
+                    if (!explicit_pool) resolved_inferred++;
+                }
+            }
+        }
+    }
+    pm_unlock(&lock);
+}
+
+void nvn_descriptor_report(void) {
+    pm_lock(&lock);
+    LOG("nvn-descriptor: pools=%llu failed=%llu finalized=%llu registrations=%llu binds=%llu resolved=%llu inferred-bind-pools=%llu resolved-inferred=%llu\n",
+        (unsigned long long)initialized, (unsigned long long)failed, (unsigned long long)finalized,
+        (unsigned long long)registered, (unsigned long long)binds, (unsigned long long)resolved,
+        (unsigned long long)inferred_bind_pools, (unsigned long long)resolved_inferred);
+    LOG("nvn-descriptor: unknown-pools=%llu invalid-ids=%llu untracked-textures=%llu missing-bind-pools=%llu missing-descriptors=%llu stale-textures=%llu\n",
+        (unsigned long long)unknown_pools, (unsigned long long)invalid_ids, (unsigned long long)untracked_textures,
+        (unsigned long long)missing_bind_pools, (unsigned long long)missing_descriptors,
+        (unsigned long long)stale_textures);
+    LOG("nvn-descriptor: pool-table-full=%llu descriptor-table-full=%llu command-table-full=%llu\n",
+        (unsigned long long)pool_table_full, (unsigned long long)descriptor_table_full,
+        (unsigned long long)command_table_full);
+    pm_unlock(&lock);
+}

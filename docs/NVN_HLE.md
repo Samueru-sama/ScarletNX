@@ -161,6 +161,21 @@ In a 289-frame TotK boot, 14,407 intervals were registered, with 22 buffer-buffe
 pairs, including 84 exact-range pairs. Catherine registered 201 nonzero intervals in 120 frames and had no overlapping
 pairs in that boot scene. Neither run lost records or reported an invalid interval.
 
+`SNX_NVN_DESCRIPTOR=1` observes the texture-ID path. It records texture-pool lifetimes and
+`nvnTexturePoolRegisterTexture` mappings from descriptor index to a texture object generation. It follows
+`nvnCommandBufferSetTexturePool` on each command buffer, decodes the low 20-bit texture ID in single
+`nvnCommandBufferBindTexture` handles, and checks that the bound descriptor still names a live texture generation.
+This connects an observed bind to the tracked texture footprint without reading or replacing descriptor memory.
+When a command buffer has no observed pool selection and exactly one texture pool is live, the observer can use that
+unique pool for a diagnostic lookup; it reports these binds separately. This does not establish command-list state
+inheritance, which requires replaying pool-selection operations in queue submission order.
+`BindTextures` arrays, image descriptors, sampler pools, and multi-pool commands whose pool selection was inlined
+remain outside this observer's coverage.
+In a 166-frame TotK boot, all 26,775 observed single-texture binds resolved to live registrations; 26,608 used the
+unique-pool inference. Catherine resolved all 1,513 binds from observed pool selections in 120 frames. Both runs had
+zero missing descriptors, stale textures, invalid IDs, and table losses. The TotK inference remains conditional on
+there being exactly one live texture pool; it does not prove correct state propagation through secondary lists.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
