@@ -3,6 +3,7 @@
 #include "gpu/nvn_record.h"
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_sampler_descriptor.h"
+#include "gpu/nvn_program.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -59,6 +60,7 @@ static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, repl
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
 static u64 replay_sampler_resolved, replay_sampler_missing_pool, replay_sampler_missing_descriptor,
     replay_sampler_stale;
+static u64 replay_program_binds, replay_program_resolved, replay_program_missing, replay_program_unconfigured;
 static u64 replay_queue_full;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
@@ -148,6 +150,15 @@ static void replay_list(u64 handle, ReplayState* state, u32 depth) {
                 else
                     replay_sampler_missing_descriptor++;
             }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindProgram")) {
+            replay_program_binds++;
+            int result = nvn_program_check(op->args[0]);
+            if (result == 1)
+                replay_program_resolved++;
+            else if (result == -1)
+                replay_program_unconfigured++;
+            else
+                replay_program_missing++;
         } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
             if (op->refs_truncated) replay_truncated_refs++;
             for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], state, depth + 1);
@@ -388,6 +399,9 @@ void nvn_record_report(void) {
         LOG("nvn-replay-sampler: resolved=%llu missing-pool=%llu missing-descriptor=%llu stale=%llu\n",
             (unsigned long long)replay_sampler_resolved, (unsigned long long)replay_sampler_missing_pool,
             (unsigned long long)replay_sampler_missing_descriptor, (unsigned long long)replay_sampler_stale);
+        LOG("nvn-replay-program: binds=%llu resolved=%llu missing=%llu unconfigured=%llu\n",
+            (unsigned long long)replay_program_binds, (unsigned long long)replay_program_resolved,
+            (unsigned long long)replay_program_missing, (unsigned long long)replay_program_unconfigured);
     }
     pm_unlock(&lock);
 }

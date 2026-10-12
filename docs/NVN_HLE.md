@@ -202,6 +202,16 @@ An 85-frame TotK run resolved all 10,965 submitted binds through live sampler re
 opaque secondary-list visits. It tracked 849 sampler initializations and 91 registrations in one pool, with no
 missing or stale sampler result, untracked registration, or table loss.
 
+`SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
+`nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
+`nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported
+program pointer and setup return value; it does not decode SDK-specific shader descriptors or translate their code.
+In a 120-frame Catherine run, all 1,462 replayed program binds found configured live programs. Its 133 initialized
+programs each received a successful shader setup, with no failed or untracked setup calls.
+In a 279-frame TotK run, all 1,028 replayed program binds resolved, and all 3,449 initialized programs received
+successful shader setup. Neither run reported missing or unconfigured program binds or table loss. These are object
+lifetime checks at submission time; actual shader-stage contents and command-list snapshot semantics remain unproven.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

@@ -11,6 +11,7 @@
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_sampler.h"
 #include "gpu/nvn_sampler_descriptor.h"
+#include "gpu/nvn_program.h"
 #include "core/loader.h"
 #include "kernel/kernel.h"
 #include "kernel/mem.h"
@@ -22,7 +23,8 @@ static GuestFn bootstrap_original;
 static GuestFn getproc_original;
 static GuestFn texture_size_original;
 static u64 texture_size_entry;
-static int tracing, hle, verify, recording, pools, buffers, textures, samplers, aliases, descriptors, descriptor_replay;
+static int tracing, hle, verify, recording, pools, buffers, textures, samplers, programs, aliases, descriptors,
+    descriptor_replay;
 static u64 verify_failures;
 typedef struct {
     u64 addr, calls;
@@ -73,6 +75,9 @@ static void proc_trace(CPU* c, u64 entry) {
     int sampler_call = samplers && nvn_sampler_wants(p->name);
     NvnSamplerCall sampler;
     if (sampler_call) nvn_sampler_before(c, &sampler);
+    int program_call = programs && nvn_program_wants(p->name);
+    NvnProgramCall program;
+    if (program_call) nvn_program_before(c, p->name, &program);
     int descriptor_call = descriptors && nvn_descriptor_wants(p->name);
     NvnDescriptorCall descriptor;
     if (descriptor_call) nvn_descriptor_before(c, p->name, &descriptor);
@@ -125,6 +130,7 @@ static void proc_trace(CPU* c, u64 entry) {
     if (buffer_call) nvn_buffer_after(c, p->name, &buffer);
     if (texture_call) nvn_texture_after(c, p->name, &texture);
     if (sampler_call) nvn_sampler_after(c, p->name, &sampler);
+    if (program_call) nvn_program_after(c, p->name, &program);
     if (descriptor_call) nvn_descriptor_after(c, p->name, &descriptor);
     if (sampler_descriptor_call) nvn_sampler_descriptor_after(c, p->name, &sampler_descriptor);
     if (record_call) nvn_record_after(c, p->name, command_buffer);
@@ -156,7 +162,7 @@ static void getproc_trace(CPU* c, u64 entry) {
             (pools && nvn_pool_wants(name)) || (buffers && nvn_buffer_wants(name)) ||
             (textures && (nvn_texture_wants(name) || !strcmp(name, "nvnTextureGetStorageSize"))) ||
             (samplers && nvn_sampler_wants(name)) || (descriptors && nvn_descriptor_wants(name)) ||
-            (descriptors && nvn_sampler_descriptor_wants(name)))
+            (descriptors && nvn_sampler_descriptor_wants(name)) || (programs && nvn_program_wants(name)))
             trace_proc(c->x[0], name);
         if (textures && !strcmp(name, "nvnTextureGetStorageSize") && c->x[0] >= g_code_lo && c->x[0] < g_code_hi &&
             !(c->x[0] & 3)) {
@@ -195,6 +201,7 @@ void nvn_trace_init(void) {
     const char* alias_env = getenv("SNX_NVN_ALIAS");
     const char* descriptor_env = getenv("SNX_NVN_DESCRIPTOR");
     const char* sampler_env = getenv("SNX_NVN_SAMPLER");
+    const char* program_env = getenv("SNX_NVN_PROGRAM");
     const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
@@ -206,10 +213,11 @@ void nvn_trace_init(void) {
     buffers = aliases || (buffer_env && !strcmp(buffer_env, "1"));
     textures = aliases || descriptors || (texture_env && !strcmp(texture_env, "1"));
     samplers = descriptors || (sampler_env && !strcmp(sampler_env, "1"));
+    programs = descriptor_replay || (program_env && !strcmp(program_env, "1"));
     pools = buffers || textures || (pool_env && !strcmp(pool_env, "1"));
     if (aliases) nvn_alias_enable();
     if (descriptor_replay) nvn_record_enable_descriptor_replay();
-    if (!tracing && !hle && !recording && !pools && !samplers) return;
+    if (!tracing && !hle && !recording && !pools && !samplers && !programs) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
         WARN("nvn: bootstrap loader symbol is unavailable\n");
@@ -231,6 +239,7 @@ void nvn_trace_report(void) {
     if (buffers) nvn_buffer_report();
     if (textures) nvn_texture_report();
     if (samplers) nvn_sampler_report();
+    if (programs) nvn_program_report();
     if (aliases) nvn_alias_report();
     if (descriptors) nvn_descriptor_report();
     if (descriptors) nvn_sampler_descriptor_report();
