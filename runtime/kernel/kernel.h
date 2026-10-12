@@ -109,6 +109,7 @@ extern u64 g_core_mask, g_prio_mask;
 KShmem* kshmem_new(u64 size, const char* name);
 u8* kshmem_ptr(KShmem* s);
 void kernel_load_symbols(void); /* the game's exported symbols, for the dumps: call once its modules are loaded */
+u64 kernel_find_symbol_exact(const char* name); /* 0 when no loaded module exports this name */
 void kernel_dump_regs(CPU* c);
 void kernel_dump_threads(void);
 void mem_report(char* out, int n);

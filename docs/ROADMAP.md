@@ -26,4 +26,5 @@ Commands: [development](DEVELOPMENT.md).
 Port upstream releases manually to retain independent component layouts.
 
 NVN HLE remains exploratory: Catherine requests 468 exports and uses ~178. It could replace
-command decoding while retaining shader translation and host1x.
+command decoding while retaining shader translation and host1x. The [NVN HLE investigation](NVN_HLE.md)
+records the first traced API inventory and migration boundaries.

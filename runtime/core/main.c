@@ -11,6 +11,7 @@
 #include "core/options.h"
 #include "core/rtapi.h"
 #include "gpu/gpu.h"
+#include "gpu/nvn_trace.h"
 #include "gpu/renderer.h"
 #include "hle/fs.h"
 #include "hle/hid.h"
@@ -234,6 +235,7 @@ int snx_main(int argc, char** argv) {
     load_hints();
     if (loader_load()) fatal("Could not load the game executables from %sexefs/", g_datadir);
     kernel_load_symbols();
+    nvn_trace_init();
     read_npdm();
     services_init();
     romfs_init();
@@ -297,6 +299,7 @@ int snx_main(int argc, char** argv) {
             next = now;
     }
     save_hints();
+    nvn_trace_report();
     /* the process ends without shutting the renderer down, so it saves what it keeps across runs (the pipeline cache)
        here */
     if (g_renderer && g_renderer->save) g_renderer->save();

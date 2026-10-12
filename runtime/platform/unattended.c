@@ -8,6 +8,7 @@
 #include "core/main.h"
 #include "core/rtapi.h"
 #include "gpu/renderer.h"
+#include "gpu/nvn_trace.h"
 #include "platform/log.h"
 #include "platform/plat.h"
 #include <math.h>
@@ -100,6 +101,7 @@ int unattended_done(void) {
     return (g_maxframes >= 0 && g_frames >= g_maxframes) || (g_seconds && el >= (u64)g_seconds * 1000000000ull);
 }
 void unattended_exit(u64 hash, int w, int h) {
+    nvn_trace_report();
     if (w > 0 && h > 0)
         fprintf(stderr, "\nframes=%d hash=%016llx %dx%d\n", g_frames, (unsigned long long)hash, w, h);
     else

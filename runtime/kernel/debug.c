@@ -98,6 +98,14 @@ void kernel_load_symbols(void) {
     }
     if (g_ngsyms) qsort(g_gsyms, g_ngsyms, sizeof(GSym), gsym_cmp);
 }
+u64 kernel_find_symbol_exact(const char* name) {
+    size_t len = strlen(name) + 1;
+    for (int i = 0; i < g_ngsyms; i++) {
+        u64 addr = g_gstr[g_gsyms[i].mod] + g_gsyms[i].name_off;
+        if (mapped(addr, len) && !memcmp(GP(addr), name, len)) return g_gsyms[i].addr;
+    }
+    return 0;
+}
 static const char* gsym(u64 a) {
     static __thread char buf[4][200]; /* a few per thread, so one printf can hold several */
     static __thread int k;
