@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_pool.h"
+#include "gpu/nvn_alias.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -98,6 +99,7 @@ void nvn_pool_after(const CPU* c, const char* name, const NvnPoolCall* call) {
             if (!p || !p->alive)
                 unknown_finalizes++;
             else {
+                nvn_alias_retire_pool(p->key, p->generation);
                 p->alive = 0;
                 live--;
                 finalized++;

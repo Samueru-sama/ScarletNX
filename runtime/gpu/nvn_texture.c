@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_texture.h"
+#include "gpu/nvn_alias.h"
 #include "gpu/nvn_pool.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
@@ -107,6 +108,7 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                 t->size_known = call->size_known;
                 t->alive = 1;
                 initialized++;
+                nvn_alias_retire(NVN_ALIAS_TEXTURE, t->key);
                 if (call->size_known)
                     sizes_known++;
                 else
@@ -119,6 +121,9 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                     offset_outside_pool++;
                 else if (call->size_known && call->storage_size > pool.size - call->offset)
                     footprint_outside_pool++;
+                else if (call->size_known)
+                    nvn_alias_register(NVN_ALIAS_TEXTURE, t->key, t->pool, t->pool_generation, t->offset,
+                                       t->storage_size);
             }
         }
     } else {
@@ -126,6 +131,7 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
         if (!t || !t->alive)
             unknown_finalizes++;
         else {
+            nvn_alias_retire(NVN_ALIAS_TEXTURE, t->key);
             t->alive = 0;
             live--;
             finalized++;

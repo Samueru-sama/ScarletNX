@@ -7,6 +7,7 @@
 #include "gpu/nvn_pool.h"
 #include "gpu/nvn_buffer.h"
 #include "gpu/nvn_texture.h"
+#include "gpu/nvn_alias.h"
 #include "core/loader.h"
 #include "kernel/kernel.h"
 #include "kernel/mem.h"
@@ -18,7 +19,7 @@ static GuestFn bootstrap_original;
 static GuestFn getproc_original;
 static GuestFn texture_size_original;
 static u64 texture_size_entry;
-static int tracing, hle, verify, recording, pools, buffers, textures;
+static int tracing, hle, verify, recording, pools, buffers, textures, aliases;
 static u64 verify_failures;
 typedef struct {
     u64 addr, calls;
@@ -174,13 +175,16 @@ void nvn_trace_init(void) {
     const char* pool_env = getenv("SNX_NVN_POOL");
     const char* buffer_env = getenv("SNX_NVN_BUFFER");
     const char* texture_env = getenv("SNX_NVN_TEXTURE");
+    const char* alias_env = getenv("SNX_NVN_ALIAS");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
     verify = hle && verify_env && !strcmp(verify_env, "1");
     recording = record_env && !strcmp(record_env, "1");
-    buffers = buffer_env && !strcmp(buffer_env, "1");
-    textures = texture_env && !strcmp(texture_env, "1");
+    aliases = alias_env && !strcmp(alias_env, "1");
+    buffers = aliases || (buffer_env && !strcmp(buffer_env, "1"));
+    textures = aliases || (texture_env && !strcmp(texture_env, "1"));
     pools = buffers || textures || (pool_env && !strcmp(pool_env, "1"));
+    if (aliases) nvn_alias_enable();
     if (!tracing && !hle && !recording && !pools) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
@@ -202,6 +206,7 @@ void nvn_trace_report(void) {
     if (pools) nvn_pool_report();
     if (buffers) nvn_buffer_report();
     if (textures) nvn_texture_report();
+    if (aliases) nvn_alias_report();
     if (hle) {
         nvn_hle_report();
         if (verify) LOG("nvn-hle: %llu verification mismatches\n", (unsigned long long)verify_failures);

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_buffer.h"
+#include "gpu/nvn_alias.h"
 #include "gpu/nvn_pool.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
@@ -93,10 +94,13 @@ void nvn_buffer_after(const CPU* c, const char* name, const NvnBufferCall* call)
                 b->address_seen = b->mapped_seen = 0;
                 b->alive = 1;
                 initialized++;
+                nvn_alias_retire(NVN_ALIAS_BUFFER, b->key);
                 if (!pool_found)
                     untracked_pools++;
                 else if (b->offset > pool.size || b->size > pool.size - b->offset)
                     invalid_ranges++;
+                else
+                    nvn_alias_register(NVN_ALIAS_BUFFER, b->key, b->pool, b->pool_generation, b->offset, b->size);
             }
         }
     } else {
@@ -105,6 +109,7 @@ void nvn_buffer_after(const CPU* c, const char* name, const NvnBufferCall* call)
             if (!b || !b->alive)
                 unknown_finalizes++;
             else {
+                nvn_alias_retire(NVN_ALIAS_BUFFER, b->key);
                 b->alive = 0;
                 live--;
                 finalized++;

@@ -151,6 +151,16 @@ outside a tracked pool. Catherine reached 120 frames with sizes for all 109 text
 footprints. Earlier runs tracked 3,142 TotK textures at 255 frames and 109 Catherine textures at 120 frames, with no
 missing pools or offsets outside pools.
 
+`SNX_NVN_ALIAS=1` enables the pool, buffer, and texture observers together. It places each valid buffer or texture
+footprint in a pool-relative interval registry keyed by pool generation and guest object identity. Registering a new
+view counts overlaps with active views in that pool, separating buffer-buffer, buffer-texture, and texture-texture
+pairs. Finalizing an object or its pool retires the affected intervals. The registry is bounded and reports zero-size
+views, invalid ranges, and capacity loss. It does not resolve which overlapping view contains the newest contents;
+that needs GPU-thread ordering and guest-memory coherence before HLE rendering can use the intervals.
+In a 289-frame TotK boot, 14,407 intervals were registered, with 22 buffer-buffer and 233 texture-texture overlap
+pairs, including 84 exact-range pairs. Catherine registered 201 nonzero intervals in 120 frames and had no overlapping
+pairs in that boot scene. Neither run lost records or reported an invalid interval.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
