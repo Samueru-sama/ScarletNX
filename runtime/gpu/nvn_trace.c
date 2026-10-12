@@ -5,6 +5,7 @@
 #include "gpu/nvn_hle.h"
 #include "gpu/nvn_record.h"
 #include "gpu/nvn_pool.h"
+#include "gpu/nvn_buffer.h"
 #include "core/loader.h"
 #include "kernel/kernel.h"
 #include "kernel/mem.h"
@@ -14,7 +15,7 @@
 
 static GuestFn bootstrap_original;
 static GuestFn getproc_original;
-static int tracing, hle, verify, recording, pools;
+static int tracing, hle, verify, recording, pools, buffers;
 static u64 verify_failures;
 typedef struct {
     u64 addr, calls;
@@ -56,6 +57,9 @@ static void proc_trace(CPU* c, u64 entry) {
     int pool_call = pools && nvn_pool_wants(p->name);
     NvnPoolCall pool;
     if (pool_call) nvn_pool_before(c, p->name, &pool);
+    int buffer_call = buffers && nvn_buffer_wants(p->name);
+    NvnBufferCall buffer;
+    if (buffer_call) nvn_buffer_before(c, p->name, &buffer);
     if (record_call) nvn_record_before(c, p->name);
     int submit = tracing && !strcmp(p->name, "nvnQueueSubmitCommands");
     int queue_op = tracing && (!strcmp(p->name, "nvnQueueFlush") || !strcmp(p->name, "nvnQueueFenceSync") ||
@@ -87,6 +91,7 @@ static void proc_trace(CPU* c, u64 entry) {
     }
     p->original(c, entry);
     if (pool_call) nvn_pool_after(c, p->name, &pool);
+    if (buffer_call) nvn_buffer_after(c, p->name, &buffer);
     if (record_call) nvn_record_after(c, p->name, command_buffer);
     if (submit || queue_op)
         LOG("nvn-%s: GPFIFO submissions during call=%llu\n", p->name,
@@ -113,7 +118,7 @@ static void getproc_trace(CPU* c, u64 entry) {
     if (valid) {
         if (tracing) LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
         if (tracing || (hle && nvn_hle_supported(name)) || (recording && nvn_record_wants(name)) ||
-            (pools && nvn_pool_wants(name)))
+            (pools && nvn_pool_wants(name)) || (buffers && nvn_buffer_wants(name)))
             trace_proc(c->x[0], name);
     }
 }
@@ -139,12 +144,14 @@ void nvn_trace_init(void) {
     const char* verify_env = getenv("SNX_NVN_HLE_VERIFY");
     const char* record_env = getenv("SNX_NVN_RECORD");
     const char* pool_env = getenv("SNX_NVN_POOL");
+    const char* buffer_env = getenv("SNX_NVN_BUFFER");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
     verify = hle && verify_env && !strcmp(verify_env, "1");
     recording = record_env && !strcmp(record_env, "1");
-    pools = pool_env && !strcmp(pool_env, "1");
-    if (!tracing && !hle && !recording && !pools) return;
+    buffers = buffer_env && !strcmp(buffer_env, "1");
+    pools = buffers || (pool_env && !strcmp(pool_env, "1"));
+    if (!tracing && !hle && !recording && !pools && !buffers) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
         WARN("nvn: bootstrap loader symbol is unavailable\n");
@@ -163,6 +170,7 @@ void nvn_trace_init(void) {
 void nvn_trace_report(void) {
     if (recording) nvn_record_report();
     if (pools) nvn_pool_report();
+    if (buffers) nvn_buffer_report();
     if (hle) {
         nvn_hle_report();
         if (verify) LOG("nvn-hle: %llu verification mismatches\n", (unsigned long long)verify_failures);

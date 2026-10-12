@@ -123,6 +123,19 @@ In instrumented boot runs, TotK reached 511 frames with 1,820 successful pool in
 queries. Neither run reported an invalid builder, capacity loss, or a Map/GetBufferAddress call on an untracked pool.
 These observations validate the exported lifecycle path during boot, not complete resource coverage in gameplay.
 
+`SNX_NVN_BUFFER=1` also tracks buffer views and enables pool tracking automatically. At exported
+`nvnBufferInitialize`, it snapshots the builder's pool pointer, offset, and size. On success it binds the buffer to
+the pool generation and checks its range against the pool size. Finalize retires the record; Map and GetAddress retain
+the returned addresses. The first nonzero buffer address can establish a tentative pool GPU base; later addresses
+check base plus offset, and `nvnMemoryPoolGetBufferAddress` can independently check the inference. The summary
+separates untracked pools, out-of-range views, stale pool generations, and address mismatches.
+This remains an observation layer: it does not replace guest buffer operations or synchronize host memory.
+In opt-in direct-call boot runs, TotK reached 245 frames with 11,291 tracked buffer initializations, 556 inferred
+pool GPU bases, and 20,082 consistent address checks. Catherine reached 120 frames with 93 buffer initializations,
+two inferred bases, and 2,151 consistent checks. Both runs reported zero untracked pools, invalid ranges, stale
+generations, and address mismatches. These checks establish internal address consistency for observed buffers, not
+that all guest resource accesses have been intercepted.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

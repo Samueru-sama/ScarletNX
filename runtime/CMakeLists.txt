@@ -47,7 +47,7 @@ if(SNX_H264)
     # hwopus (hle/audio.c) decodes Opus with FFmpeg too
     target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec)
 endif()
-snx_component(gpu gpu/gpu.c gpu/engines.c gpu/mme.c gpu/compute.c gpu/fermi2d.c gpu/dma.c gpu/maxwell3d.c gpu/renderer.c gpu/nvn_trace.c gpu/nvn_hle.c gpu/nvn_record.c gpu/nvn_pool.c)
+snx_component(gpu gpu/gpu.c gpu/engines.c gpu/mme.c gpu/compute.c gpu/fermi2d.c gpu/dma.c gpu/maxwell3d.c gpu/renderer.c gpu/nvn_trace.c gpu/nvn_hle.c gpu/nvn_record.c gpu/nvn_pool.c gpu/nvn_buffer.c)
 
 set(platform platform/plat.c platform/unattended.c platform/backend/${SNX_BACKEND}.c)
 if(WIN32)
