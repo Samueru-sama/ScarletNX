@@ -31,7 +31,7 @@ void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
 void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
 void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
 u8* plat_vm_reserve(u64 size) {
-    void* p = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    void* p = mmap(NULL, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     return p == MAP_FAILED ? NULL : p;
 }
 int plat_vm_commit(u8* p, u64 size) {
