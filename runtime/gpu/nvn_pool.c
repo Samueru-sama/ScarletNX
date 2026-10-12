@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_pool.h"
 #include "gpu/nvn_alias.h"
+#include "gpu/gpu.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -153,6 +154,30 @@ int nvn_pool_snapshot(u64 pool, NvnPoolSnapshot* out) {
     }
     pm_unlock(&lock);
     return found;
+}
+
+int nvn_pool_read_backing(u64 pool, u64 generation, u64 offset, void* dst, u64 size) {
+    NvnPoolSnapshot snapshot = {0};
+    if (!size || !nvn_pool_snapshot(pool, &snapshot) || snapshot.generation != generation || offset > snapshot.size ||
+        size > snapshot.size - offset)
+        return 0;
+    int source = 0;
+    if (snapshot.storage && snapshot.storage <= UINT64_MAX - offset) {
+        u64 address = snapshot.storage + offset;
+        if (readable_range(address, size)) {
+            memcpy(dst, GP(address), size);
+            source = 2;
+        }
+    }
+    if (!source && snapshot.gpu_seen && snapshot.gpu_address <= UINT64_MAX - offset) {
+        const u8* bytes = gmem_ptr_untracked(snapshot.gpu_address + offset, size);
+        if (bytes) {
+            memcpy(dst, bytes, size);
+            source = 1;
+        }
+    }
+    NvnPoolSnapshot current = {0};
+    return source && nvn_pool_snapshot(pool, &current) && current.generation == generation ? source : 0;
 }
 
 int nvn_pool_observe_buffer_address(u64 pool, u64 generation, u64 offset, u64 address) {

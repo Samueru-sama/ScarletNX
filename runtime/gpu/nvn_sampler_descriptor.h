@@ -7,11 +7,15 @@
 
 typedef struct {
     u64 object, sampler;
+    u64 memory_pool;
+    i64 memory_offset;
     u32 index, count;
 } NvnSamplerDescriptorCall;
 typedef struct {
     u64 sampler, sampler_generation, pool_generation;
     NvnSamplerState state;
+    u32 tsc[8];
+    u8 tsc_valid;
 } NvnSamplerDescriptorSnapshot;
 
 int nvn_sampler_descriptor_wants(const char* name);

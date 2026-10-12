@@ -205,11 +205,18 @@ tracking and records `nvnSamplerPoolInitialize`, `Finalize`, and `RegisterSample
 index. The replay reports sampler resolution separately from texture resolution, including missing pool selections,
 missing registrations, and sampler objects that were finalized or reused. This validates observed SDK object identity;
 it does not decode sampler state or establish whether finalized sampler objects leave copied hardware descriptors valid.
+Registration now also copies each 32-byte hardware TSC from the sampler pool's readable CPU backing, falling back to a
+GPU mapping when one exists. The pool generation and bounds are checked before the copy. Unlike a TIC, a TSC has no
+texture address to validate, so a nonzero copy is marked available but is not yet proof that every sampler field maps
+correctly to the Vulkan decoder. Submitted draw packets carry the copied TSC alongside the explicit sampler state.
 In a 120-frame Catherine run, all 1,526 replayed binds resolved through live sampler registrations, with zero missing
 or stale entries; its three sampler objects and one sampler pool were tracked without table loss.
 An 85-frame TotK run resolved all 10,965 submitted binds through live sampler registrations across 86 roots and 425
 opaque secondary-list visits. It tracked 849 sampler initializations and 91 registrations in one pool, with no
 missing or stale sampler result, untracked registration, or table loss.
+In later draw-preparation boots, Catherine copied all four registered TSCs and carried one on all 3,897
+texture-using draws. TotK copied all 119 registered TSCs and carried one on all 3,562 texture-using draws. Neither
+run had a missing or all-zero sampler descriptor.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each

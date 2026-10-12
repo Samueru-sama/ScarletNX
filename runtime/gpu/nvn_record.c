@@ -147,6 +147,7 @@ static u64 draw_texture_descriptors_complete, draw_texture_descriptors_incomplet
 static u64 draw_texture_tics_complete, draw_texture_tics_incomplete;
 static u64 draw_texture_views_complete, draw_texture_views_incomplete;
 static u64 draw_sampler_descriptors_complete, draw_sampler_descriptors_incomplete;
+static u64 draw_sampler_tscs_complete, draw_sampler_tscs_incomplete;
 static u64 draw_sampler_filter_wrap_complete, draw_sampler_filter_wrap_incomplete;
 static u64 program_mask_zero, program_mask_invalid, draw_vertex_program, draw_fragment_program;
 static u64 vertex_attrib_snapshots, vertex_stream_snapshots, vertex_state_snapshot_failures;
@@ -534,7 +535,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.texture, state->texture, sizeof draw.texture);
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
             int descriptors_complete = 1, tics_complete = 1, views_complete = 1, samplers_complete = 1,
-                filter_wrap_complete = 1, has_texture = 0;
+                tscs_complete = 1, filter_wrap_complete = 1, has_texture = 0;
             for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
                 for (u32 index = 0; index < NVN_DRAW_TEXTURE_SLOTS; index++) {
                     if (!(draw.texture_bound[stage] & (1u << index))) continue;
@@ -552,12 +553,14 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     if (nvn_sampler_descriptor_snapshot(state->sampler_pool, draw.texture[stage][index],
                                                         &draw.sampler_descriptor[stage][index]) == 1) {
                         draw.sampler_descriptor_valid[stage] |= 1u << index;
+                        if (!draw.sampler_descriptor[stage][index].tsc_valid) tscs_complete = 0;
                         if ((draw.sampler_descriptor[stage][index].state.known &
                              (NVN_SAMPLER_FILTER_KNOWN | NVN_SAMPLER_WRAP_KNOWN)) !=
                             (NVN_SAMPLER_FILTER_KNOWN | NVN_SAMPLER_WRAP_KNOWN))
                             filter_wrap_complete = 0;
                     } else {
                         samplers_complete = 0;
+                        tscs_complete = 0;
                         filter_wrap_complete = 0;
                     }
                 }
@@ -578,6 +581,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     draw_sampler_descriptors_complete++;
                 else
                     draw_sampler_descriptors_incomplete++;
+                if (tscs_complete)
+                    draw_sampler_tscs_complete++;
+                else
+                    draw_sampler_tscs_incomplete++;
                 if (filter_wrap_complete)
                     draw_sampler_filter_wrap_complete++;
                 else
@@ -1294,6 +1301,8 @@ void nvn_record_report(void) {
         LOG("nvn-sampler-draw: descriptors-complete=%llu incomplete=%llu\n",
             (unsigned long long)draw_sampler_descriptors_complete,
             (unsigned long long)draw_sampler_descriptors_incomplete);
+        LOG("nvn-sampler-tsc-draw: complete=%llu incomplete=%llu\n", (unsigned long long)draw_sampler_tscs_complete,
+            (unsigned long long)draw_sampler_tscs_incomplete);
         LOG("nvn-sampler-state-draw: filter-wrap-complete=%llu incomplete=%llu\n",
             (unsigned long long)draw_sampler_filter_wrap_complete,
             (unsigned long long)draw_sampler_filter_wrap_incomplete);

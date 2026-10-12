@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_descriptor.h"
-#include "gpu/gpu.h"
 #include "gpu/nvn_pool.h"
 #include "gpu/nvn_texture.h"
-#include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
 #include <string.h>
@@ -41,18 +39,6 @@ static u64 unknown_pools, invalid_ids, untracked_textures, missing_bind_pools, m
 static u64 pool_table_full, descriptor_table_full, command_table_full;
 static u64 view_snapshots, view_snapshot_failures;
 static u64 tic_snapshots, tic_gpu_snapshots, tic_storage_snapshots, tic_missing_base, tic_address_mismatch;
-
-static int storage_read(u64 address, void* dst, u64 size) {
-    if (address < AS_BASE || address >= AS_SIZE || size > AS_SIZE - address) return 0;
-    MemBlock block;
-    mem_query(address, &block);
-    if (block.addr > address || block.state == MS_FREE || block.state == MS_INACCESSIBLE || !(block.perm & PERM_R) ||
-        block.size > AS_SIZE - block.addr || address - block.addr > block.size ||
-        size > block.size - (address - block.addr))
-        return 0;
-    memcpy(dst, GP(address), size);
-    return 1;
-}
 
 static int texture_current(const Descriptor* d) {
     NvnTextureSnapshot texture = {0};
@@ -147,16 +133,8 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
                 (u64)registration_pool.count <= (backing.size - (u64)registration_pool.memory_offset) / 32) {
                 u64 offset = (u64)registration_pool.memory_offset + (u64)call->index * 32;
                 /* Registration writes the TIC before returning. Avoid a renderer readback on the guest CPU thread. */
-                int copied = 0;
-                if (backing.storage && backing.storage <= UINT64_MAX - offset)
-                    copied = storage_read(backing.storage + offset, tic, sizeof tic) ? 2 : 0;
-                if (!copied && backing.gpu_seen && backing.gpu_address <= UINT64_MAX - offset) {
-                    const u8* bytes = gmem_ptr_untracked(backing.gpu_address + offset, sizeof tic);
-                    if (bytes) {
-                        memcpy(tic, bytes, sizeof tic);
-                        copied = 1;
-                    }
-                }
+                int copied = nvn_pool_read_backing(registration_pool.memory_pool,
+                                                   registration_pool.memory_pool_generation, offset, tic, sizeof tic);
                 if (copied) {
                     u64 tic_address = ((u64)(tic[2] & 0xffff) << 32) | tic[1];
                     tic_state = tic_address == texture.gpu_address ? copied : 3;
