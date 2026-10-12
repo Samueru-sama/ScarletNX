@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_record.h"
 #include "gpu/nvn_descriptor.h"
+#include "gpu/nvn_draw.h"
 #include "gpu/nvn_sampler_descriptor.h"
 #include "gpu/nvn_program.h"
 #include "gpu/nvn_texture.h"
@@ -71,6 +72,10 @@ static u64 captured[OP_COUNT], ended_ops[OP_COUNT], submitted_ops[OP_COUNT], ref
 typedef struct {
     u64 texture_pool, sampler_pool;
     NvnTargets targets;
+    u64 program;
+    NvnProgramSnapshot program_snapshot;
+    u16 vertex_bound;
+    NvnBufferRange vertex[NVN_DRAW_VERTEX_SLOTS];
 } ReplayState;
 typedef struct {
     u64 key;
@@ -81,6 +86,8 @@ typedef struct {
     u8 shader_count;
     NvnClearCommand clears[8];
     u8 clear_count;
+    NvnDrawCommand draws[8];
+    u8 draw_count;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
@@ -106,6 +113,10 @@ static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missi
 static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
 static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported;
 static u64 preflight_batches, preflight_clear_only, preflight_mixed, preflight_no_clears, preflight_clear_commands;
+static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_invalid;
+static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
+    draw_with_shader_refs;
+static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_staged, draw_stage_full, draw_flushed;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -292,7 +303,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         } else if (!strcmp(op->name, "nvnCommandBufferBindProgram")) {
             replay_program_binds++;
             NvnProgramSnapshot program = {0};
+            state->program = op->args[0];
+            state->program_snapshot = (NvnProgramSnapshot){0};
             if (nvn_program_snapshot(op->args[0], &program)) {
+                state->program_snapshot = program;
                 replay_program_resolved++;
                 if (program.refs_known) {
                     replay_program_refs_known++;
@@ -318,6 +332,84 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             } else {
                 replay_program_missing++;
             }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindVertexBuffer")) {
+            u32 index = (u32)op->args[0];
+            if (index >= NVN_DRAW_VERTEX_SLOTS)
+                vertex_bind_invalid++;
+            else {
+                state->vertex[index] = (NvnBufferRange){op->args[1], op->args[2]};
+                state->vertex_bound |= (u16)(1u << index);
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindVertexBuffers")) {
+            u32 first = (u32)op->args[0], count = (u32)op->args[1];
+            if (!op->payload || first >= NVN_DRAW_VERTEX_SLOTS || count > NVN_DRAW_VERTEX_SLOTS - first) {
+                vertex_bind_invalid++;
+                state->vertex_bound = 0;
+            } else {
+                const NvnBufferRange* ranges = op->payload;
+                for (u32 j = 0; j < count; j++) {
+                    state->vertex[first + j] = ranges[j];
+                    state->vertex_bound |= (u16)(1u << (first + j));
+                }
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferDrawArrays") ||
+                   !strcmp(op->name, "nvnCommandBufferDrawArraysInstanced") ||
+                   !strcmp(op->name, "nvnCommandBufferDrawElements") ||
+                   !strcmp(op->name, "nvnCommandBufferDrawElementsBaseVertex") ||
+                   !strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
+            NvnDrawCommand draw = {0};
+            draw.program = state->program;
+            draw.program_generation = state->program_snapshot.generation;
+            draw.program_known = !!draw.program_generation;
+            draw.shader_refs_known = state->program_snapshot.refs_known;
+            draw.shader_count = state->program_snapshot.shader_count;
+            memcpy(draw.shaders, state->program_snapshot.refs, sizeof draw.shaders);
+            draw.primitive = (u32)op->args[0];
+            draw.vertex_bound = state->vertex_bound;
+            memcpy(draw.vertex, state->vertex, sizeof draw.vertex);
+            if (!strncmp(op->name, "nvnCommandBufferDrawElements", 28)) {
+                draw_elements++;
+                draw.indexed = 1;
+                draw.index_type = (u32)op->args[1];
+                draw.count = (u32)op->args[2];
+                draw.index_address = op->args[3];
+                if (!strcmp(op->name, "nvnCommandBufferDrawElementsBaseVertex") ||
+                    !strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
+                    draw.base_vertex = (i32)op->args[4];
+                    draw_base_vertex++;
+                }
+                if (!strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
+                    draw.base_instance = (u32)op->args[5];
+                    draw.instance_count = (u32)op->args[6];
+                    draw_instanced++;
+                }
+                if (draw.index_type > 2 || !draw.index_address) draw_index_invalid++;
+            } else {
+                draw_arrays++;
+                draw.first = (u32)op->args[1];
+                draw.count = (u32)op->args[2];
+                if (!strcmp(op->name, "nvnCommandBufferDrawArraysInstanced")) {
+                    draw.base_instance = (u32)op->args[3];
+                    draw.instance_count = (u32)op->args[4];
+                    draw_instanced++;
+                }
+            }
+            draw_with_program += draw.program_known;
+            draw_with_shader_refs += draw.shader_refs_known;
+            if (draw.vertex_bound)
+                draw_with_vertex++;
+            else
+                draw_without_vertex++;
+            if (queue) {
+                if (queue->draw_count == 8)
+                    draw_stage_full++;
+                else {
+                    queue->draws[queue->draw_count++] = draw;
+                    draw_staged++;
+                }
+            }
+        } else if (op->kind == OP_DRAW) {
+            draw_other++;
         } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
             if (op->refs_truncated) {
                 replay_truncated_refs++;
@@ -456,6 +548,25 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
         if (targets->depth_view) snapshot_view(op->args[4], &targets->depth_view_data);
         op->payload = targets;
         target_snapshots++;
+    } else if (!strcmp(op->name, "nvnCommandBufferBindVertexBuffers")) {
+        u32 first = (u32)op->args[0], count = (u32)op->args[1];
+        if (first >= NVN_DRAW_VERTEX_SLOTS || count > NVN_DRAW_VERTEX_SLOTS - first ||
+            (count && !readable_range(op->args[2], (u64)count * sizeof(NvnBufferRange)))) {
+            vertex_range_snapshot_failures++;
+            return;
+        }
+        NvnBufferRange* ranges = calloc(count ? count : 1, sizeof *ranges);
+        if (!ranges) {
+            allocation_failures++;
+            vertex_range_snapshot_failures++;
+            return;
+        }
+        for (u32 i = 0; i < count; i++) {
+            ranges[i].address = gr64(op->args[2] + (u64)i * sizeof *ranges);
+            ranges[i].size = gr64(op->args[2] + (u64)i * sizeof *ranges + 8);
+        }
+        op->payload = ranges;
+        vertex_range_snapshots++;
     }
 }
 
@@ -663,6 +774,8 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
                 queue->clear_count = 0;
                 clear_flushed += batch.count;
             }
+            draw_flushed += queue->draw_count;
+            queue->draw_count = 0;
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
@@ -784,6 +897,16 @@ void nvn_record_report(void) {
             (unsigned long long)preflight_batches, (unsigned long long)preflight_clear_only,
             (unsigned long long)preflight_mixed, (unsigned long long)preflight_no_clears,
             (unsigned long long)preflight_clear_commands);
+        LOG("nvn-draw-snapshot: vertex-ranges=%llu failed=%llu invalid-binds=%llu\n",
+            (unsigned long long)vertex_range_snapshots, (unsigned long long)vertex_range_snapshot_failures,
+            (unsigned long long)vertex_bind_invalid);
+        LOG("nvn-draw-replay: arrays=%llu elements=%llu base-vertex=%llu instanced=%llu other=%llu program=%llu shader-refs=%llu vertex=%llu no-vertex=%llu invalid-index=%llu\n",
+            (unsigned long long)draw_arrays, (unsigned long long)draw_elements, (unsigned long long)draw_base_vertex,
+            (unsigned long long)draw_instanced, (unsigned long long)draw_other, (unsigned long long)draw_with_program,
+            (unsigned long long)draw_with_shader_refs, (unsigned long long)draw_with_vertex,
+            (unsigned long long)draw_without_vertex, (unsigned long long)draw_index_invalid);
+        LOG("nvn-draw-stage: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)draw_staged,
+            (unsigned long long)draw_flushed, (unsigned long long)draw_stage_full);
     }
     pm_unlock(&lock);
 }

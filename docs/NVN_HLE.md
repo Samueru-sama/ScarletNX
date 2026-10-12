@@ -285,6 +285,19 @@ still needs matching guest-memory and synchronization effects. In eight seconds 
 were mixed. In fourteen seconds of TotK, 252 were mixed and one contained no clear. Neither boot offers a clear-only
 batch to replace, so the next visual HLE milestone needs draw and state support inside mixed lists.
 
+Replay now copies `BindVertexBuffers` ranges at the call boundary and carries vertex slots and the selected program
+through nested command lists. It constructs bounded semantic packets for direct arrays, indexed, base-vertex, and
+instanced draws, including index GPU addresses and a snapshot of the program's shader references. In a sixteen-second
+TotK run, all 1,714 observed draws were indexed and instanced; all had a tracked program and shader references, and
+1,702 had an explicit vertex binding. The remaining twelve may use vertex ID or state that the recorder has not
+captured. The packet queue retains only eight samples per flush and discards them after counting. These packets do
+not execute, and binding coverage does not establish renderability: vertex attribute layout, uniform and texture
+bindings, shader stage semantics, image aliasing, indirect draws, and synchronization still need complete treatment
+before a mixed batch can replace its guest pushbuffers.
+In an eight-second Catherine run, all 4,007 observed draws were represented: 3,384 arrays and 623 indexed
+base-vertex calls. All had a tracked program, shader references, and an explicit vertex binding. Neither measured
+boot used the array form of `BindVertexBuffers`; the recorder still snapshots it so later scenes can be checked.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
