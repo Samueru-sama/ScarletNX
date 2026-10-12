@@ -130,6 +130,27 @@ int nvn_sampler_descriptor_check(u64 pool, u64 handle) {
     return result;
 }
 
+int nvn_sampler_descriptor_snapshot(u64 pool, u64 handle, NvnSamplerDescriptorSnapshot* out) {
+    *out = (NvnSamplerDescriptorSnapshot){0};
+    pm_lock(&lock);
+    SamplerPool* p = pool_slot(pool, 0);
+    SamplerDescriptor* d = p && p->alive ? descriptor_slot(pool, ((u32)handle >> 20) & 0xfff, 0) : NULL;
+    int result = 0;
+    if (d && d->pool_generation == p->generation) {
+        NvnSamplerSnapshot snapshot = {0};
+        if (nvn_sampler_snapshot(d->sampler, &snapshot) && snapshot.generation == d->sampler_generation) {
+            *out = (NvnSamplerDescriptorSnapshot){.sampler = d->sampler,
+                                                  .sampler_generation = d->sampler_generation,
+                                                  .pool_generation = d->pool_generation};
+            result = 1;
+        } else {
+            result = -1;
+        }
+    }
+    pm_unlock(&lock);
+    return result;
+}
+
 void nvn_sampler_descriptor_report(void) {
     pm_lock(&lock);
     LOG("nvn-sampler-descriptor: pools=%llu failed=%llu finalized=%llu live=%llu registrations=%llu unknown-pools=%llu invalid-ids=%llu untracked-samplers=%llu pool-table-full=%llu descriptor-table-full=%llu\n",

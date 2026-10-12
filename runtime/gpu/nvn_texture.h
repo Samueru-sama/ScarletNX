@@ -27,6 +27,10 @@ typedef struct {
     u32 base_level, level_count, first_layer, layer_count, format, target;
 } NvnTextureViewSelection;
 
+void nvn_texture_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction);
+u32 nvn_texture_view_layout(void);
+int nvn_texture_view_snapshot(u64 ptr, NvnTextureViewSelection* out);
+
 typedef struct {
     u64 texture, pool, gpu_address, texture_generation, pool_generation;
     u32 width, height, depth, levels, format, target, samples, flags;

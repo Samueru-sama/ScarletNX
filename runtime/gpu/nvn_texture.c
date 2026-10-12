@@ -21,6 +21,18 @@ static u64 initialized, failed, finalized, live, reinitialized, invalid_builders
 static u64 no_pool, untracked_pools, offset_outside_pool, unknown_finalizes;
 static u64 sizes_known, sizes_unavailable, footprint_outside_pool;
 static u64 addresses_known, addresses_unavailable, address_mismatches;
+static u32 view_layout;
+
+void nvn_texture_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction) {
+    u32 layout = 0;
+    if (first_instruction == 0xa9007c1f && second_instruction == 0xd65f03c0)
+        layout = 16;
+    else if (first_instruction == 0x6f00e400 && second_instruction == 0xb900201f && third_instruction == 0xad000000)
+        layout = 36;
+    __atomic_store_n(&view_layout, layout, __ATOMIC_RELEASE);
+}
+
+u32 nvn_texture_view_layout(void) { return __atomic_load_n(&view_layout, __ATOMIC_ACQUIRE); }
 
 static Texture* texture_slot(u64 key, int create) {
     if (!key) return NULL;
@@ -44,6 +56,37 @@ static int readable_range(u64 addr, u64 size) {
             return 0;
         u64 next = block.addr + block.size;
         addr = next < end ? next : end;
+    }
+    return 1;
+}
+
+int nvn_texture_view_snapshot(u64 ptr, NvnTextureViewSelection* out) {
+    *out = (NvnTextureViewSelection){0};
+    u32 layout = nvn_texture_view_layout();
+    if (!layout || !readable_range(ptr, layout)) return 0;
+    u8 bytes[36] = {0};
+    for (u32 i = 0; i < layout; i += 4) {
+        u32 word = gr32(ptr + i);
+        memcpy(bytes + i, &word, 4);
+    }
+    if (layout == 16) {
+        u64 packed;
+        memcpy(&packed, bytes, sizeof packed);
+        out->flags = (packed >> 56) & 0x3f;
+        out->base_level = (packed >> 32) & 0xff;
+        out->level_count = (packed >> 40) & 0xff;
+        out->first_layer = packed & 0xffff;
+        out->layer_count = (packed >> 16) & 0xffff;
+        memcpy(&out->format, bytes + 8, 4);
+        out->target = (packed >> 48) & 0xff;
+    } else {
+        out->flags = bytes[0] & 0x3f;
+        out->base_level = bytes[1];
+        out->level_count = bytes[2];
+        memcpy(&out->first_layer, bytes + 4, 2);
+        memcpy(&out->layer_count, bytes + 6, 2);
+        memcpy(&out->format, bytes + 8, 4);
+        memcpy(&out->target, bytes + 32, 4);
     }
     return 1;
 }

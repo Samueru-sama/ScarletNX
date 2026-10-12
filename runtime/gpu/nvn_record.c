@@ -45,7 +45,6 @@ typedef struct {
     void* payload;    /* owned snapshot for pointer arguments used by semantic replay */
 } NvnOp;
 typedef struct {
-    u8 bytes[36];
     NvnTextureViewSelection selection;
     u8 valid;
 } NvnView;
@@ -116,7 +115,6 @@ static int descriptor_replay;
 static int shader_transport;
 static int clear_execute;
 static int draw_prepare;
-static u32 view_layout;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
@@ -145,6 +143,9 @@ static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bin
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
 static u64 draw_with_texture, draw_without_texture;
+static u64 draw_texture_descriptors_complete, draw_texture_descriptors_incomplete;
+static u64 draw_texture_views_complete, draw_texture_views_incomplete;
+static u64 draw_sampler_descriptors_complete, draw_sampler_descriptors_incomplete;
 static u64 program_mask_zero, program_mask_invalid, draw_vertex_program, draw_fragment_program;
 static u64 vertex_attrib_snapshots, vertex_stream_snapshots, vertex_state_snapshot_failures;
 static u64 draw_with_attrib_state, draw_with_stream_state;
@@ -530,6 +531,39 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
             memcpy(draw.texture, state->texture, sizeof draw.texture);
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
+            int descriptors_complete = 1, views_complete = 1, samplers_complete = 1, has_texture = 0;
+            for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
+                for (u32 index = 0; index < NVN_DRAW_TEXTURE_SLOTS; index++) {
+                    if (!(draw.texture_bound[stage] & (1u << index))) continue;
+                    has_texture = 1;
+                    if (nvn_descriptor_snapshot(state->texture_pool, draw.texture[stage][index],
+                                                &draw.texture_descriptor[stage][index]) == 1) {
+                        draw.texture_descriptor_valid[stage] |= 1u << index;
+                        if (!draw.texture_descriptor[stage][index].view_known) views_complete = 0;
+                    } else {
+                        descriptors_complete = 0;
+                        views_complete = 0;
+                    }
+                    if (nvn_sampler_descriptor_snapshot(state->sampler_pool, draw.texture[stage][index],
+                                                        &draw.sampler_descriptor[stage][index]) == 1)
+                        draw.sampler_descriptor_valid[stage] |= 1u << index;
+                    else
+                        samplers_complete = 0;
+                }
+            if (has_texture) {
+                if (descriptors_complete)
+                    draw_texture_descriptors_complete++;
+                else
+                    draw_texture_descriptors_incomplete++;
+                if (views_complete)
+                    draw_texture_views_complete++;
+                else
+                    draw_texture_views_incomplete++;
+                if (samplers_complete)
+                    draw_sampler_descriptors_complete++;
+                else
+                    draw_sampler_descriptors_incomplete++;
+            }
             draw.target_complete = !!state->targets.valid;
             for (u32 j = 0; j < state->targets.count && j < 8; j++) {
                 if (!state->targets.color[j]) continue;
@@ -670,43 +704,13 @@ static int readable_range(u64 addr, u64 size) {
 
 /* Fingerprint the observed SDK's default constructor, which writes the entire view object. */
 void nvn_record_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction) {
-    u32 layout = 0;
-    if (first_instruction == 0xa9007c1f && second_instruction == 0xd65f03c0) /* 16-byte packed view */
-        layout = 16;
-    else if (first_instruction == 0x6f00e400 && second_instruction == 0xb900201f &&
-             third_instruction == 0xad000000) /* 36-byte field view */
-        layout = 36;
-    __atomic_store_n(&view_layout, layout, __ATOMIC_RELEASE);
+    nvn_texture_set_view_layout(first_instruction, second_instruction, third_instruction);
 }
 
 static void snapshot_view(u64 ptr, NvnView* view) {
-    u32 layout = __atomic_load_n(&view_layout, __ATOMIC_ACQUIRE);
-    if (!layout || !readable_range(ptr, layout)) {
+    if (!nvn_texture_view_snapshot(ptr, &view->selection)) {
         view_snapshot_failures++;
         return;
-    }
-    for (u32 i = 0; i < layout; i += 4) {
-        u32 word = gr32(ptr + i);
-        memcpy(view->bytes + i, &word, 4);
-    }
-    if (layout == 16) {
-        u64 packed;
-        memcpy(&packed, view->bytes, sizeof packed);
-        view->selection.flags = (packed >> 56) & 0x3f;
-        view->selection.base_level = (packed >> 32) & 0xff;
-        view->selection.level_count = (packed >> 40) & 0xff;
-        view->selection.first_layer = packed & 0xffff;
-        view->selection.layer_count = (packed >> 16) & 0xffff;
-        memcpy(&view->selection.format, view->bytes + 8, 4);
-        view->selection.target = (packed >> 48) & 0xff;
-    } else {
-        view->selection.flags = view->bytes[0] & 0x3f;
-        view->selection.base_level = view->bytes[1];
-        view->selection.level_count = view->bytes[2];
-        memcpy(&view->selection.first_layer, view->bytes + 4, 2);
-        memcpy(&view->selection.layer_count, view->bytes + 6, 2);
-        memcpy(&view->selection.format, view->bytes + 8, 4);
-        memcpy(&view->selection.target, view->bytes + 32, 4);
     }
     for (u32 i = 0; i < 6; i++) view_flags[i] += !!(view->selection.flags & (1u << i));
     view->valid = 1;
@@ -1182,7 +1186,7 @@ void nvn_record_report(void) {
             (unsigned long long)clear_snapshots, (unsigned long long)depth_snapshots,
             (unsigned long long)clear_snapshot_failures, (unsigned long long)target_snapshots,
             (unsigned long long)target_snapshot_failures);
-        LOG("nvn-view-snapshot: layout=%u copied=%llu failed=%llu\n", __atomic_load_n(&view_layout, __ATOMIC_ACQUIRE),
+        LOG("nvn-view-snapshot: layout=%u copied=%llu failed=%llu\n", nvn_texture_view_layout(),
             (unsigned long long)view_snapshots, (unsigned long long)view_snapshot_failures);
         LOG("nvn-view-overrides: levels=%llu layers=%llu format=%llu swizzle=%llu depth-mode=%llu target=%llu\n",
             (unsigned long long)view_flags[0], (unsigned long long)view_flags[1], (unsigned long long)view_flags[2],
@@ -1261,6 +1265,14 @@ void nvn_record_report(void) {
             (unsigned long long)texture_bind_invalid);
         LOG("nvn-texture-replay: draws-with-binding=%llu without=%llu\n", (unsigned long long)draw_with_texture,
             (unsigned long long)draw_without_texture);
+        LOG("nvn-texture-draw: descriptors-complete=%llu incomplete=%llu\n",
+            (unsigned long long)draw_texture_descriptors_complete,
+            (unsigned long long)draw_texture_descriptors_incomplete);
+        LOG("nvn-texture-view-draw: complete=%llu incomplete=%llu\n", (unsigned long long)draw_texture_views_complete,
+            (unsigned long long)draw_texture_views_incomplete);
+        LOG("nvn-sampler-draw: descriptors-complete=%llu incomplete=%llu\n",
+            (unsigned long long)draw_sampler_descriptors_complete,
+            (unsigned long long)draw_sampler_descriptors_incomplete);
         LOG("nvn-program-stages: zero-mask=%llu invalid-mask=%llu draws-vertex=%llu draws-fragment=%llu\n",
             (unsigned long long)program_mask_zero, (unsigned long long)program_mask_invalid,
             (unsigned long long)draw_vertex_program, (unsigned long long)draw_fragment_program);

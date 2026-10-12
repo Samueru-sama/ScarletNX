@@ -4,6 +4,8 @@
 #define SNX_NVN_DRAW_H
 #include "abi/cpu.h"
 #include "gpu/nvn_program.h"
+#include "gpu/nvn_sampler_descriptor.h"
+#include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_texture.h"
 
 #define NVN_DRAW_VERTEX_SLOTS  16
@@ -45,7 +47,11 @@ typedef struct {
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
+    NvnDescriptorSnapshot texture_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
+    NvnSamplerDescriptorSnapshot sampler_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
+    u32 texture_descriptor_valid[NVN_DRAW_SHADER_STAGES];
+    u32 sampler_descriptor_valid[NVN_DRAW_SHADER_STAGES];
     NvnTextureTarget color_target[8], depth_target;
     u8 color_target_mask, depth_target_bound, target_complete;
     u64 index_address;

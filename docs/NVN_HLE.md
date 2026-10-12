@@ -361,6 +361,14 @@ packets and 3,166 draw packets were staged without overflow. Of the 4,934 clear 
 506 issued into the probe's separate images and 4,428 were rejected; 2,347 rejections were due to its fixed
 16-image cache. Expanding that cache alone would not establish correctness because those images do not yet share
 the guest renderer's content or lifetime rules.
+Draw packets now snapshot the registered texture and sampler object identities and their pool and object generations
+for every bound texture handle. Texture-view selections are copied when the guest registers them; the existing
+16-byte and 36-byte view decoders are shared with render-target snapshots. Later descriptor-pool changes therefore
+cannot silently retarget an already queued draw, and the view selection no longer depends on its guest pointer
+remaining valid. In separate Catherine and TotK boot runs, all observed draws had complete texture, view, and
+sampler identities (3,727/3,727 and 3,166/3,166 respectively); 199 and 3,882 registered views were copied with
+zero failures. The Vulkan renderer still needs image-layout translation, sampler-state decoding, and resource
+coherence before it can bind these identities for a host draw.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

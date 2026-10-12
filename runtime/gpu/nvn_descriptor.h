@@ -3,11 +3,19 @@
 #ifndef SNX_NVN_DESCRIPTOR_H
 #define SNX_NVN_DESCRIPTOR_H
 #include "abi/cpu.h"
+#include "gpu/nvn_texture.h"
 
 typedef struct {
     u64 object, pool, texture, view, handle;
     u32 index, count;
+    NvnTextureViewSelection view_selection;
+    u8 view_known;
 } NvnDescriptorCall;
+typedef struct {
+    u64 texture, view, texture_generation, pool_generation;
+    NvnTextureViewSelection view_selection;
+    u8 view_known;
+} NvnDescriptorSnapshot;
 
 int nvn_descriptor_wants(const char* name);
 void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* call);
@@ -15,4 +23,6 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
 void nvn_descriptor_report(void);
 /* 1 = live texture, 0 = missing pool/descriptor, -1 = stale texture. */
 int nvn_descriptor_check(u64 pool, u64 handle);
+/* Returns 1 for a live texture registration, 0 for a missing descriptor, -1 for a stale texture. */
+int nvn_descriptor_snapshot(u64 pool, u64 handle, NvnDescriptorSnapshot* out);
 #endif

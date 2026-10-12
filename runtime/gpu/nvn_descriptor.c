@@ -17,6 +17,8 @@ typedef struct {
 typedef struct {
     u64 pool, pool_generation, texture, texture_generation, view;
     u32 index;
+    NvnTextureViewSelection view_selection;
+    u8 view_known;
 } Descriptor;
 typedef struct {
     u64 key, pool, pool_generation;
@@ -32,6 +34,7 @@ static u64 initialized, failed, finalized, registered, binds, resolved, live_poo
 static u64 inferred_bind_pools, resolved_inferred;
 static u64 unknown_pools, invalid_ids, untracked_textures, missing_bind_pools, missing_descriptors, stale_textures;
 static u64 pool_table_full, descriptor_table_full, command_table_full;
+static u64 view_snapshots, view_snapshot_failures;
 
 static int texture_current(const Descriptor* d) {
     NvnTextureSnapshot texture = {0};
@@ -91,6 +94,7 @@ void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* ca
         call->index = (u32)c->x[1];
         call->texture = c->x[2];
         call->view = c->x[3];
+        call->view_known = !call->view || nvn_texture_view_snapshot(call->view, &call->view_selection);
     } else if (!strcmp(name, "nvnCommandBufferSetTexturePool")) {
         call->pool = c->x[1];
     } else if (!strcmp(name, "nvnCommandBufferBindTexture")) {
@@ -154,9 +158,17 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
                                   .texture = call->texture,
                                   .texture_generation = texture_found ? texture.generation : 0,
                                   .view = call->view,
-                                  .index = call->index};
+                                  .index = call->index,
+                                  .view_selection = call->view_selection,
+                                  .view_known = call->view_known};
                 registered++;
                 if (!texture_found) untracked_textures++;
+                if (call->view) {
+                    if (call->view_known)
+                        view_snapshots++;
+                    else
+                        view_snapshot_failures++;
+                }
             }
         }
     } else if (!strcmp(name, "nvnCommandBufferSetTexturePool")) {
@@ -211,6 +223,8 @@ void nvn_descriptor_report(void) {
     LOG("nvn-descriptor: pool-table-full=%llu descriptor-table-full=%llu command-table-full=%llu\n",
         (unsigned long long)pool_table_full, (unsigned long long)descriptor_table_full,
         (unsigned long long)command_table_full);
+    LOG("nvn-descriptor-view: copied=%llu failed=%llu\n", (unsigned long long)view_snapshots,
+        (unsigned long long)view_snapshot_failures);
     pm_unlock(&lock);
 }
 
@@ -220,6 +234,29 @@ int nvn_descriptor_check(u64 pool, u64 handle) {
     Descriptor* d = p && p->alive ? descriptor_slot(pool, (u32)handle & 0xfffff, 0) : NULL;
     int result = 0;
     if (d && d->pool_generation == p->generation) { result = texture_current(d) ? 1 : -1; }
+    pm_unlock(&lock);
+    return result;
+}
+
+int nvn_descriptor_snapshot(u64 pool, u64 handle, NvnDescriptorSnapshot* out) {
+    *out = (NvnDescriptorSnapshot){0};
+    pm_lock(&lock);
+    TexturePool* p = pool_slot(pool, 0);
+    Descriptor* d = p && p->alive ? descriptor_slot(pool, (u32)handle & 0xfffff, 0) : NULL;
+    int result = 0;
+    if (d && d->pool_generation == p->generation) {
+        if (texture_current(d)) {
+            *out = (NvnDescriptorSnapshot){.texture = d->texture,
+                                           .view = d->view,
+                                           .texture_generation = d->texture_generation,
+                                           .pool_generation = d->pool_generation,
+                                           .view_selection = d->view_selection,
+                                           .view_known = d->view_known};
+            result = 1;
+        } else {
+            result = -1;
+        }
+    }
     pm_unlock(&lock);
     return result;
 }
