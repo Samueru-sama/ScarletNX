@@ -136,6 +136,16 @@ two inferred bases, and 2,151 consistent checks. Both runs reported zero untrack
 generations, and address mismatches. These checks establish internal address consistency for observed buffers, not
 that all guest resource accesses have been intercepted.
 
+`SNX_NVN_TEXTURE=1` captures texture builder metadata at `nvnTextureInitialize` and enables pool tracking. It records
+the pool generation, offset, flags, target, dimensions, levels, format, and sample count for successful textures,
+then retires them at `nvnTextureFinalize`. For pool-backed textures, the offset must start within the pool, but this
+diagnostic does not calculate the full storage footprint. Tiled, compressed, multisample, and mipmapped textures need
+the SDK's layout
+rules before a host front end can safely create images or validate overlap. A zero pool pointer is reported separately
+because externally backed textures can use one.
+Opt-in boot runs reached 255 frames and 3,142 tracked textures in TotK, and 120 frames and 109 textures in Catherine.
+Neither run reported a missing pool or an offset outside its pool.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
