@@ -23,6 +23,8 @@ static GuestFn bootstrap_original;
 static GuestFn getproc_original;
 static GuestFn texture_size_original;
 static u64 texture_size_entry;
+static GuestFn texture_address_original;
+static u64 texture_address_entry;
 static int tracing, hle, verify, recording, pools, buffers, textures, samplers, programs, aliases, descriptors,
     descriptor_replay;
 static u64 verify_failures;
@@ -125,6 +127,14 @@ static void proc_trace(CPU* c, u64 entry) {
             texture.storage_size = (u32)query.x[0];
             texture.size_known = 1;
         }
+        GuestFn texture_get_address = __atomic_load_n(&texture_address_original, __ATOMIC_ACQUIRE);
+        if (texture_get_address) {
+            CPU query = *c;
+            query.x[0] = texture.texture;
+            texture_get_address(&query, __atomic_load_n(&texture_address_entry, __ATOMIC_RELAXED));
+            texture.gpu_address = query.x[0];
+            texture.address_known = !!query.x[0];
+        }
     }
     if (pool_call) nvn_pool_after(c, p->name, &pool);
     if (buffer_call) nvn_buffer_after(c, p->name, &buffer);
@@ -162,7 +172,8 @@ static void getproc_trace(CPU* c, u64 entry) {
             nvn_record_set_view_layout(gr32(c->x[0]), gr32(c->x[0] + 4), gr32(c->x[0] + 8));
         if (tracing || (hle && nvn_hle_supported(name)) || (recording && nvn_record_wants(name)) ||
             (pools && nvn_pool_wants(name)) || (buffers && nvn_buffer_wants(name)) ||
-            (textures && (nvn_texture_wants(name) || !strcmp(name, "nvnTextureGetStorageSize"))) ||
+            (textures && (nvn_texture_wants(name) || !strcmp(name, "nvnTextureGetStorageSize") ||
+                          !strcmp(name, "nvnTextureGetTextureAddress"))) ||
             (samplers && nvn_sampler_wants(name)) || (descriptors && nvn_descriptor_wants(name)) ||
             (descriptors && nvn_sampler_descriptor_wants(name)) || (programs && nvn_program_wants(name)))
             trace_proc(c->x[0], name);
@@ -172,6 +183,14 @@ static void getproc_trace(CPU* c, u64 entry) {
             if (getter->addr == c->x[0]) {
                 __atomic_store_n(&texture_size_entry, c->x[0], __ATOMIC_RELAXED);
                 __atomic_store_n(&texture_size_original, getter->original, __ATOMIC_RELEASE);
+            }
+        }
+        if (textures && !strcmp(name, "nvnTextureGetTextureAddress") && c->x[0] >= g_code_lo && c->x[0] < g_code_hi &&
+            !(c->x[0] & 3)) {
+            NvProc* getter = proc_slot(c->x[0]);
+            if (getter->addr == c->x[0]) {
+                __atomic_store_n(&texture_address_entry, c->x[0], __ATOMIC_RELAXED);
+                __atomic_store_n(&texture_address_original, getter->original, __ATOMIC_RELEASE);
             }
         }
     }

@@ -256,6 +256,14 @@ zero unreadable pointers; its 87 submitted color clears all reached live texture
 sample always override levels, layers, and target, and some override format. TotK's sampled views mostly override
 levels and layers, with some format overrides. The existing Vulkan render-target path builds images from Maxwell
 registers, so the HLE path needs an NVN texture-to-image binding path before these packets can be executed.
+The texture observer now calls the SDK's pure `nvnTextureGetTextureAddress` getter after successful initialization,
+alongside its storage-size getter, and retains the returned GPU address with texture dimensions and format. It checks
+that address against a tracked pool base when one is known. A semantic target resolver combines the texture with a
+copied view, validates pool generation and explicit subresource bounds, and keeps zero view counts as SDK-defined
+sentinels for later renderer interpretation. In an eight-second Catherine replay, 202 texture addresses were known,
+none disagreed with a known pool base, and 1,143 submitted depth clears resolved a target. In a twelve-second TotK
+replay, 3,108 texture addresses were known with no pool disagreement; 414 color clears resolved targets. No guest
+rendering was replaced in these runs. NVN format and tiling still need a direct image path in the renderer.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

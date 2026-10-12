@@ -35,8 +35,8 @@ typedef struct {
 } NvnOp;
 typedef struct {
     u8 bytes[36];
-    u32 base_level, level_count, first_layer, layer_count, format, target;
-    u8 flags, valid;
+    NvnTextureViewSelection selection;
+    u8 valid;
 } NvnView;
 typedef struct {
     u32 count;
@@ -92,10 +92,11 @@ static u64 replay_queue_full;
 static u64 clear_snapshots, clear_snapshot_failures, depth_snapshots, target_snapshots, target_snapshot_failures;
 static u64 view_snapshots, view_snapshot_failures;
 static u64 view_flags[6];
-static u64 replay_color_clears, replay_color_target_live, replay_color_missing_target, replay_color_view_unknown,
+static u64 replay_color_clears, replay_color_target_resolved, replay_color_missing_target, replay_color_view_unknown,
     replay_color_stale_target;
-static u64 replay_depth_clears, replay_depth_target_live, replay_depth_missing_target, replay_depth_view_unknown,
+static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missing_target, replay_depth_view_unknown,
     replay_depth_stale_target;
+static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -172,9 +173,19 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                        !state->targets.color_view[clear->index].valid) {
                 replay_color_view_unknown++;
             } else {
-                NvnTextureSnapshot target;
-                if (nvn_texture_snapshot(state->targets.color[clear->index], &target))
-                    replay_color_target_live++;
+                const NvnView* view = &state->targets.color_view[clear->index];
+                NvnTextureTarget target;
+                NvnTargetResult result = nvn_texture_resolve_target(
+                    state->targets.color[clear->index],
+                    (state->targets.color_views & (1u << clear->index)) ? &view->selection : NULL, &target);
+                if (result == NVN_TARGET_RESOLVED)
+                    replay_color_target_resolved++;
+                else if (result == NVN_TARGET_STALE_POOL)
+                    replay_target_stale_pool++;
+                else if (result == NVN_TARGET_NO_ADDRESS)
+                    replay_target_no_address++;
+                else if (result == NVN_TARGET_BAD_VIEW)
+                    replay_target_bad_view++;
                 else
                     replay_color_stale_target++;
             }
@@ -185,9 +196,18 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             } else if (state->targets.depth_view && !state->targets.depth_view_data.valid) {
                 replay_depth_view_unknown++;
             } else {
-                NvnTextureSnapshot target;
-                if (nvn_texture_snapshot(state->targets.depth, &target))
-                    replay_depth_target_live++;
+                NvnTextureTarget target;
+                NvnTargetResult result = nvn_texture_resolve_target(
+                    state->targets.depth, state->targets.depth_view ? &state->targets.depth_view_data.selection : NULL,
+                    &target);
+                if (result == NVN_TARGET_RESOLVED)
+                    replay_depth_target_resolved++;
+                else if (result == NVN_TARGET_STALE_POOL)
+                    replay_target_stale_pool++;
+                else if (result == NVN_TARGET_NO_ADDRESS)
+                    replay_target_no_address++;
+                else if (result == NVN_TARGET_BAD_VIEW)
+                    replay_target_bad_view++;
                 else
                     replay_depth_stale_target++;
             }
@@ -300,23 +320,23 @@ static void snapshot_view(u64 ptr, NvnView* view) {
     if (layout == 16) {
         u64 packed;
         memcpy(&packed, view->bytes, sizeof packed);
-        view->flags = (packed >> 56) & 0x3f;
-        view->base_level = (packed >> 32) & 0xff;
-        view->level_count = (packed >> 40) & 0xff;
-        view->first_layer = packed & 0xffff;
-        view->layer_count = (packed >> 16) & 0xffff;
-        memcpy(&view->format, view->bytes + 8, 4);
-        view->target = (packed >> 48) & 0xff;
+        view->selection.flags = (packed >> 56) & 0x3f;
+        view->selection.base_level = (packed >> 32) & 0xff;
+        view->selection.level_count = (packed >> 40) & 0xff;
+        view->selection.first_layer = packed & 0xffff;
+        view->selection.layer_count = (packed >> 16) & 0xffff;
+        memcpy(&view->selection.format, view->bytes + 8, 4);
+        view->selection.target = (packed >> 48) & 0xff;
     } else {
-        view->flags = view->bytes[0] & 0x3f;
-        view->base_level = view->bytes[1];
-        view->level_count = view->bytes[2];
-        memcpy(&view->first_layer, view->bytes + 4, 2);
-        memcpy(&view->layer_count, view->bytes + 6, 2);
-        memcpy(&view->format, view->bytes + 8, 4);
-        memcpy(&view->target, view->bytes + 32, 4);
+        view->selection.flags = view->bytes[0] & 0x3f;
+        view->selection.base_level = view->bytes[1];
+        view->selection.level_count = view->bytes[2];
+        memcpy(&view->selection.first_layer, view->bytes + 4, 2);
+        memcpy(&view->selection.layer_count, view->bytes + 6, 2);
+        memcpy(&view->selection.format, view->bytes + 8, 4);
+        memcpy(&view->selection.target, view->bytes + 32, 4);
     }
-    for (u32 i = 0; i < 6; i++) view_flags[i] += !!(view->flags & (1u << i));
+    for (u32 i = 0; i < 6; i++) view_flags[i] += !!(view->selection.flags & (1u << i));
     view->valid = 1;
     view_snapshots++;
 }
@@ -617,14 +637,17 @@ void nvn_record_report(void) {
         LOG("nvn-view-overrides: levels=%llu layers=%llu format=%llu swizzle=%llu depth-mode=%llu target=%llu\n",
             (unsigned long long)view_flags[0], (unsigned long long)view_flags[1], (unsigned long long)view_flags[2],
             (unsigned long long)view_flags[3], (unsigned long long)view_flags[4], (unsigned long long)view_flags[5]);
-        LOG("nvn-clear-replay: color=%llu target-live=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
-            (unsigned long long)replay_color_clears, (unsigned long long)replay_color_target_live,
+        LOG("nvn-clear-replay: color=%llu target-resolved=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
+            (unsigned long long)replay_color_clears, (unsigned long long)replay_color_target_resolved,
             (unsigned long long)replay_color_missing_target, (unsigned long long)replay_color_view_unknown,
             (unsigned long long)replay_color_stale_target);
-        LOG("nvn-depth-replay: clears=%llu target-live=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
-            (unsigned long long)replay_depth_clears, (unsigned long long)replay_depth_target_live,
+        LOG("nvn-depth-replay: clears=%llu target-resolved=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
+            (unsigned long long)replay_depth_clears, (unsigned long long)replay_depth_target_resolved,
             (unsigned long long)replay_depth_missing_target, (unsigned long long)replay_depth_view_unknown,
             (unsigned long long)replay_depth_stale_target);
+        LOG("nvn-target-replay: stale-pool=%llu no-address=%llu bad-view=%llu\n",
+            (unsigned long long)replay_target_stale_pool, (unsigned long long)replay_target_no_address,
+            (unsigned long long)replay_target_bad_view);
         LOG("nvn-replay: roots=%llu lists=%llu opaque=%llu missing-lists=%llu truncated-refs=%llu depth-limit=%llu queue-full=%llu\n",
             (unsigned long long)replay_roots, (unsigned long long)replay_lists, (unsigned long long)replay_opaque,
             (unsigned long long)replay_missing_lists, (unsigned long long)replay_truncated_refs,
