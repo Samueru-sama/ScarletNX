@@ -209,6 +209,7 @@ int snx_generate_module(SnxProgram* loaded, const SnxCodegenOptions* options, Sn
     if (!options->interp_only &&
         snx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
         return -1;
+    codegen.hook_direct_calls = options->hook_direct_calls;
     temporary_dir = snx_temp_dir(options->outdir);
     if (!temporary_dir) {
         snx_codegen_free(&codegen);

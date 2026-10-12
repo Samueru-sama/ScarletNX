@@ -31,6 +31,7 @@ static void usage(void) {
          "  --runtime FILE         Deploy this runtime instead of building one\n"
          "  --keep-c               Save generated C in <outdir>/<NAME>_build\n"
          "  -q, --quiet            Suppress progress");
+    puts("  --hook-direct-calls    Route direct guest calls through dispatch for runtime instrumentation");
     puts("Hints: <outdir>/<NAME>.hints (hex PCs, one per line).\n"
          "SNX_CFLAGS adds whitespace-separated compiler arguments.");
 }
@@ -256,6 +257,8 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
             no_build = 1;
         else if (!strcmp(arg, "--interp-only"))
             gen.interp_only = 1;
+        else if (!strcmp(arg, "--hook-direct-calls"))
+            gen.hook_direct_calls = 1;
         else if (!strcmp(arg, "--keep-c"))
             keep_c = 1;
         else if (!strcmp(arg, "--quiet") || !strcmp(arg, "-q"))

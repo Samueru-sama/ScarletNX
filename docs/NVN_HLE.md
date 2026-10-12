@@ -77,10 +77,12 @@ limit, so these are boot observations rather than stable title-wide coverage num
 registers rather than resolved resource state. Object lifetime calls and guest memory contents remain outside the
 sidecar.
 
-Before using these records as an execution path, the recompiler must make direct guest calls to intercepted NVN
-functions observable too. Otherwise a list can contain commands or lifecycle transitions that bypass the recorder,
-even when every handle lookup succeeds. The diagnostic's zero-miss counts prove handle correlation for observed calls,
-not complete command coverage.
+For deeper investigation, recompile a game with `--hook-direct-calls`. This opt-in mode routes statically resolved
+guest calls through `CPU.disp` too, so the NVN wrappers can observe direct calls. It requires a new game module; the
+default recompiler path keeps direct C calls. A list can otherwise contain commands or lifecycle transitions that
+bypass the recorder, even when every handle lookup succeeds. The diagnostic's zero-miss counts prove handle
+correlation for observed calls, not complete command coverage. Direct-call mode still needs game validation before
+its counts can be treated as complete.
 
 ## Migration boundaries
 

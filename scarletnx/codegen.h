@@ -21,6 +21,7 @@ typedef struct {
     SnxFunction* functions;
     size_t function_count, function_capacity, instruction_count;
     SnxModuleImage* last_module;
+    int hook_direct_calls;
 } SnxCodegen;
 
 int snx_codegen_analyze(SnxCodegen* codegen, SnxProgram* loaded, const SnxU64* hints, size_t hint_count, int quiet);

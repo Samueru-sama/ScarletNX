@@ -126,7 +126,14 @@ static void analysis_and_module_test(const char* directory) {
     options.abi = 3;
     check(!snx_generate_module(&program, &options, &sources), "emit chunked module");
     if (sources.count) {
+        int direct = 0;
         check(sources.count == 3, "instruction budget splits at function boundaries");
+        for (i = 1; i < sources.count; ++i) {
+            text = snx_read_file(sources.paths[i], &size);
+            if (text && strstr((char*)text, "F_8000030(c,134217776);")) direct = 1;
+            free(text);
+        }
+        check(direct, "default direct BL target stays a static C call");
         text = snx_read_file(sources.paths[0], &size);
         check(text && strstr((char*)text, "MOD.abi=3;") && strstr((char*)text, "MOD.nentries=7;"),
               "module ABI/entry metadata");
@@ -143,6 +150,19 @@ static void analysis_and_module_test(const char* directory) {
         free(saved);
     }
     snx_sources_free(&sources);
+    options.hook_direct_calls = 1;
+    check(!snx_generate_module(&program, &options, &sources), "emit direct-call hook module");
+    {
+        int routed = 0;
+        for (i = 1; i < sources.count; ++i) {
+            text = snx_read_file(sources.paths[i], &size);
+            if (text && strstr((char*)text, "CALLDYN(134217776);")) routed = 1;
+            free(text);
+        }
+        check(routed, "direct BL target uses dispatch in hook mode");
+    }
+    snx_sources_free(&sources);
+    options.hook_direct_calls = 0;
     options.interp_only = 1;
     check(!snx_generate_module(&program, &options, &sources), "emit interpreter-only module");
     if (sources.count) {
