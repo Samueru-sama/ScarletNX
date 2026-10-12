@@ -3,6 +3,7 @@
 #ifndef SNX_NVN_SAMPLER_DESCRIPTOR_H
 #define SNX_NVN_SAMPLER_DESCRIPTOR_H
 #include "abi/cpu.h"
+#include "gpu/nvn_sampler.h"
 
 typedef struct {
     u64 object, sampler;
@@ -10,6 +11,7 @@ typedef struct {
 } NvnSamplerDescriptorCall;
 typedef struct {
     u64 sampler, sampler_generation, pool_generation;
+    NvnSamplerState state;
 } NvnSamplerDescriptorSnapshot;
 
 int nvn_sampler_descriptor_wants(const char* name);

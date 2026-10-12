@@ -76,7 +76,7 @@ static void proc_trace(CPU* c, u64 entry) {
     if (texture_call) nvn_texture_before(c, p->name, &texture);
     int sampler_call = samplers && nvn_sampler_wants(p->name);
     NvnSamplerCall sampler;
-    if (sampler_call) nvn_sampler_before(c, &sampler);
+    if (sampler_call) nvn_sampler_before(c, p->name, &sampler);
     int program_call = programs && nvn_program_wants(p->name);
     NvnProgramCall program;
     if (program_call) nvn_program_before(c, p->name, &program);

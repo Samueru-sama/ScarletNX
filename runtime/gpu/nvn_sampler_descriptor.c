@@ -141,7 +141,8 @@ int nvn_sampler_descriptor_snapshot(u64 pool, u64 handle, NvnSamplerDescriptorSn
         if (nvn_sampler_snapshot(d->sampler, &snapshot) && snapshot.generation == d->sampler_generation) {
             *out = (NvnSamplerDescriptorSnapshot){.sampler = d->sampler,
                                                   .sampler_generation = d->sampler_generation,
-                                                  .pool_generation = d->pool_generation};
+                                                  .pool_generation = d->pool_generation,
+                                                  .state = snapshot.state};
             result = 1;
         } else {
             result = -1;

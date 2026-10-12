@@ -369,6 +369,13 @@ remaining valid. In separate Catherine and TotK boot runs, all observed draws ha
 sampler identities (3,727/3,727 and 3,166/3,166 respectively); 199 and 3,882 registered views were copied with
 zero failures. The Vulkan renderer still needs image-layout translation, sampler-state decoding, and resource
 coherence before it can bind these identities for a host draw.
+Sampler builders now record explicit setter arguments instead of assuming object byte offsets. The draw packets carry
+known filter, wrap, LOD clamp and bias, compare, anisotropy, reduction, LOD snap, and border-color fields; fields not
+set through an observed setter remain marked unknown. In separate Catherine and TotK runs, every observed draw had
+explicit filter and wrap state (3,687/3,687 and 3,738/3,738). TotK called the LOD clamp, LOD bias, compare,
+reduction, and border setters for 2,001 samplers, anisotropy for 131, and LOD snap for none. Its 2,001 border-color
+pointers were copied without a read failure. Correctly translating the unobserved SDK defaults and custom border
+colors remains necessary before creating Vulkan samplers for all draws.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
