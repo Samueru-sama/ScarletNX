@@ -3,6 +3,7 @@
 #include "gpu/nvn_trace.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_hle.h"
+#include "gpu/nvn_record.h"
 #include "core/loader.h"
 #include "kernel/kernel.h"
 #include "kernel/mem.h"
@@ -12,7 +13,7 @@
 
 static GuestFn bootstrap_original;
 static GuestFn getproc_original;
-static int tracing, hle, verify;
+static int tracing, hle, verify, recording;
 static u64 verify_failures;
 typedef struct {
     u64 addr, calls;
@@ -49,6 +50,8 @@ static NvProc* proc_slot(u64 addr) {
 
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_slot(entry);
+    u64 command_buffer = c->x[0];
+    if (recording) nvn_record_before(c, p->name);
     int submit = tracing && !strcmp(p->name, "nvnQueueSubmitCommands");
     int queue_op = tracing && (!strcmp(p->name, "nvnQueueFlush") || !strcmp(p->name, "nvnQueueFenceSync") ||
                                !strcmp(p->name, "nvnQueuePresentTexture") || !strcmp(p->name, "nvnQueueWaitSync"));
@@ -78,6 +81,7 @@ static void proc_trace(CPU* c, u64 entry) {
         }
     }
     p->original(c, entry);
+    if (recording) nvn_record_after(c, p->name, command_buffer);
     if (submit || queue_op)
         LOG("nvn-%s: GPFIFO submissions during call=%llu\n", p->name,
             (unsigned long long)(__atomic_load_n(&g_gpu_submits, __ATOMIC_RELAXED) - gpu_before));
@@ -102,7 +106,8 @@ static void getproc_trace(CPU* c, u64 entry) {
     getproc_original(c, entry);
     if (valid) {
         if (tracing) LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
-        if (tracing || (hle && nvn_hle_supported(name))) trace_proc(c->x[0], name);
+        if (tracing || (hle && nvn_hle_supported(name)) || (recording && nvn_record_wants(name)))
+            trace_proc(c->x[0], name);
     }
 }
 
@@ -125,10 +130,12 @@ void nvn_trace_init(void) {
     const char* trace_env = getenv("SNX_NVN_TRACE");
     const char* hle_env = getenv("SNX_NVN_HLE");
     const char* verify_env = getenv("SNX_NVN_HLE_VERIFY");
+    const char* record_env = getenv("SNX_NVN_RECORD");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
     verify = hle && verify_env && !strcmp(verify_env, "1");
-    if (!tracing && !hle) return;
+    recording = record_env && !strcmp(record_env, "1");
+    if (!tracing && !hle && !recording) return;
     u64 entry = kernel_find_symbol_exact("nvnBootstrapLoader");
     if (!entry || entry < g_code_lo || entry >= g_code_hi || (entry & 3)) {
         WARN("nvn: bootstrap loader symbol is unavailable\n");
@@ -145,6 +152,7 @@ void nvn_trace_init(void) {
 }
 
 void nvn_trace_report(void) {
+    if (recording) nvn_record_report();
     if (hle) {
         nvn_hle_report();
         if (verify) LOG("nvn-hle: %llu verification mismatches\n", (unsigned long long)verify_failures);

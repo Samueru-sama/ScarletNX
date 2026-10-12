@@ -10,11 +10,13 @@ contracts. It is a separate front end to the renderer, not a replacement for the
 ## Entry point and baseline
 
 The SDK exports `nvnBootstrapLoader`, which resolves a named NVN function to a guest function pointer. The recompiler
-routes both direct and indirect calls through `CPU.disp`. `SNX_NVN_TRACE=1` temporarily wraps the bootstrap entry and
+routes indirect calls through `CPU.disp`, but a statically resolved direct branch calls its generated C function
+directly (`scarletnx/codegen.c:call`). `SNX_NVN_TRACE=1` temporarily wraps the bootstrap entry and
 the `nvnDeviceGetProcAddress` pointer it returns. It logs each requested name and guest address, then counts calls to
 the returned addresses. The wrappers call the original implementations, so the normal NVN path still runs. They are
-installed only when the bootstrap symbol has a recompiled dispatch entry. A title that uses a different bootstrap
-needs a different discovery path.
+installed only when the bootstrap symbol has a recompiled dispatch entry. These wrappers cannot see direct guest calls
+to an NVN function, so call counts and command-list coverage are lower bounds. A title that uses a different
+bootstrap needs a different discovery path.
 
 Use `SNX_NVN_TRACE=1` when running a game. `nvn: NAME -> ADDRESS` records resolution, `nvn-used: NAME COUNT` records
 calls, and the final line gives the number of resolved and called addresses. Names that share an address share one
@@ -49,6 +51,36 @@ The inspected SDK queue code stages command-list handles, then walks a tagged co
 sync operations. A direct front end therefore needs to record semantic command-buffer calls, keep list lifetimes,
 and submit them at queue flush or present boundaries. Merely forwarding `nvnQueueSubmitCommands` to the current GPU
 thread would lose the delayed submission behavior.
+
+## Dual command recorder
+
+`SNX_NVN_RECORD=1` enables a bounded diagnostic sidecar. The runtime copies the arguments of resolved NVN draw,
+clear, compute-dispatch, state/bind, transfer, barrier, sync, and `CallCommands` calls into host command-list records.
+It associates records with the handle returned by `EndRecording`, copies nested-list handles before the guest reuses
+the argument array, and checks
+the handles passed to `QueueSubmitCommands`. The original guest SDK calls still execute and render. The records do
+not contain resource state or enough information to replay with the host renderer; this mode is for measuring the
+shape and coverage of a future direct front end. Each list keeps at most 16,384 selected operations and each nested
+call keeps at most eight handles. The summary reports truncated records, invalid guest arrays, allocation failures,
+and storage evictions. A list whose `BeginRecording` was not observed is marked opaque, even when selected operations
+on that command buffer were captured. Opaque therefore describes an incomplete lifecycle, not necessarily an empty
+record.
+
+In a Catherine 120-frame run, all 122 submitted lists were found, containing 1,239 draws, 610 clears, 16,164 state
+or bind calls, 157 transfers, and 1,220 barriers. No operations were dropped. TotK's boot uses a different structure:
+its outer lists primarily call secondary lists whose begins were not seen through the resolved API. In a 25-second
+run, all 223 submitted outer lists and all 2,223 secondary references were found. The recorder captured 6,517 draws,
+6,572 clears, 1,381 compute dispatches, 392,784 state or bind calls, and 11,791 barriers, with no storage evictions,
+truncation, or invalid guest arrays. The outer lists themselves contained calls, state setup, and barriers; draws
+and dispatches appeared in secondary records. Counts varied substantially across runs at the same frame or time
+limit, so these are boot observations rather than stable title-wide coverage numbers. The records retain raw argument
+registers rather than resolved resource state. Object lifetime calls and guest memory contents remain outside the
+sidecar.
+
+Before using these records as an execution path, the recompiler must make direct guest calls to intercepted NVN
+functions observable too. Otherwise a list can contain commands or lifecycle transitions that bypass the recorder,
+even when every handle lookup succeeds. The diagnostic's zero-miss counts prove handle correlation for observed calls,
+not complete command coverage.
 
 ## Migration boundaries
 
