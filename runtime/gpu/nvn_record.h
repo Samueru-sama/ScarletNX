@@ -10,4 +10,5 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer);
 void nvn_record_report(void);
 void nvn_record_enable_descriptor_replay(void);
 void nvn_record_enable_shader_transport(void);
+void nvn_record_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction);
 #endif

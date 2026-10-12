@@ -158,6 +158,8 @@ static void getproc_trace(CPU* c, u64 entry) {
     getproc_original(c, entry);
     if (valid) {
         if (tracing) LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
+        if (recording && !strcmp(name, "nvnTextureViewSetDefaults") && readable(c->x[0]) && readable(c->x[0] + 8))
+            nvn_record_set_view_layout(gr32(c->x[0]), gr32(c->x[0] + 4), gr32(c->x[0] + 8));
         if (tracing || (hle && nvn_hle_supported(name)) || (recording && nvn_record_wants(name)) ||
             (pools && nvn_pool_wants(name)) || (buffers && nvn_buffer_wants(name)) ||
             (textures && (nvn_texture_wants(name) || !strcmp(name, "nvnTextureGetStorageSize"))) ||

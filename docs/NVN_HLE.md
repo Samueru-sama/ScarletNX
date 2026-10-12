@@ -239,13 +239,23 @@ them. It carries the selected targets through secondary lists and checks clear c
 An optional texture view is kept as an unresolved requirement: a handle alone does not identify the selected mip or
 layer. In an eight-second TotK boot, all 135 submitted color clears had a target and all 135 used a view. In an
 eight-second Catherine boot, all 1,104 submitted depth clears had a target and all 1,104 used a view. Neither run
-lost a clear or render-target snapshot. Consequently no clear is yet eligible for host execution, and the guest SDK
-still executes every clear. The next implementation step is to snapshot and decode view selection, then add a semantic
-clear operation to the renderer interface and switch only complete submissions to HLE.
+lost a clear or render-target snapshot. The guest SDK still executes every clear. The next implementation step is to
+validate subresource selection against the texture, then add an NVN texture-to-image binding and semantic clear
+operation to the renderer. Only complete submissions may switch to HLE.
 The view representation itself differs between the two inspected SDKs: TotK's `TextureViewSetDefaults` clears 16 bytes
 and its setters pack selection and override flags into that object, while Catherine's clears 36 bytes and stores
 separate flag and value fields. An HLE view decoder therefore needs a verified SDK layout or getter-based adapter;
 interpreting a view pointer as one fixed structure would select the wrong subresource in one of these games.
+The replay now fingerprints those two observed constructors, copies the matching view object at render-target binding,
+and normalizes its level, layer, format, target, and override fields. An unknown constructor or unreadable view stays
+unresolved. This is still a diagnostic snapshot: the host renderer has no NVN clear operation yet, and copied view
+fields have not been checked against texture bounds or translated to a Vulkan image view.
+In six-second boot runs, Catherine copied 4,845 views using the 36-byte layout with zero unreadable pointers; its
+765 submitted depth clears all reached live texture records. TotK copied 1,293 views using the 16-byte layout with
+zero unreadable pointers; its 87 submitted color clears all reached live texture records. Catherine's views in this
+sample always override levels, layers, and target, and some override format. TotK's sampled views mostly override
+levels and layers, with some format overrides. The existing Vulkan render-target path builds images from Maxwell
+registers, so the HLE path needs an NVN texture-to-image binding path before these packets can be executed.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
