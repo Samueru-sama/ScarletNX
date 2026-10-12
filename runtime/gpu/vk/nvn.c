@@ -13,17 +13,17 @@
 #define NVN_IMAGE_BUDGET (256ull << 20)
 typedef struct {
     u64 texture, pool, address, texture_generation, pool_generation;
-    u64 write_sequence;
-    u32 width, height, levels, format;
+    u64 mip_sequence[16];
+    u32 width, height, levels, layers, target, format;
     u64 bytes;
     u64 last_batch;
     VkImage image;
-    VkImageView sampled_view;
+    VkImageView sampled_view, base_view;
     VmaAllocation allocation;
     VkImageLayout layout;
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
-    VkImageAspectFlags written_aspects;
+    VkImageAspectFlags mip_aspects[16];
     int sampled;
 } NvnImage;
 static NvnImage images[NVN_IMAGE_SLOTS];
@@ -32,7 +32,7 @@ static u64 batch_serial;
 
 void vk_nvn_batch_begin(void) {
     batch_serial++;
-    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) images[i].written_aspects = 0;
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) memset(images[i].mip_aspects, 0, sizeof images[i].mip_aspects);
 }
 
 static NvnImage* evict_old_image(void) {
@@ -43,7 +43,7 @@ static NvnImage* evict_old_image(void) {
         if (!oldest || image->last_batch < oldest->last_batch) oldest = image;
     }
     if (!oldest) return NULL;
-    vk_defer_image(oldest->image, oldest->allocation, oldest->sampled_view, VK_NULL_HANDLE);
+    vk_defer_image(oldest->image, oldest->allocation, oldest->sampled_view, oldest->base_view);
     image_bytes -= oldest->bytes;
     memset(oldest, 0, sizeof *oldest);
     LOG_LIMIT(1, "nvn-image-cache: evicting images from earlier batches when capacity is needed\n");
@@ -85,18 +85,19 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         if (image->texture == target->texture && image->pool == target->pool && image->address == target->gpu_address &&
             image->texture_generation == target->texture_generation &&
             image->pool_generation == target->pool_generation && image->width == target->width &&
-            image->height == target->height && image->levels == target->levels && image->format == target->format)
+            image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
+            image->target == target->target && image->format == target->format)
             return image;
     }
     VkFmt guest_format = nvn_format(target->format);
     const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
-    if (!guest_format.bpp || !target->levels || target->width > limits->maxImageDimension2D ||
-        target->height > limits->maxImageDimension2D)
+    if (!guest_format.bpp || !target->levels || !target->depth || target->depth > limits->maxImageArrayLayers ||
+        target->width > limits->maxImageDimension2D || target->height > limits->maxImageDimension2D)
         return NULL;
     u32 max_dimension = target->width > target->height ? target->width : target->height;
     u32 max_levels = 1;
     while (max_dimension >> max_levels) max_levels++;
-    if (target->levels > max_levels) return NULL;
+    if (target->levels > max_levels || target->levels > 16) return NULL;
     u32 block_width = guest_format.bw ? guest_format.bw : 1;
     u32 block_height = guest_format.bh ? guest_format.bh : 1;
     u64 bytes = 0;
@@ -104,7 +105,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         u32 width = target->width >> level ? target->width >> level : 1;
         u32 height = target->height >> level ? target->height >> level : 1;
         bytes += (u64)((width + block_width - 1) / block_width) * ((height + block_height - 1) / block_height) *
-                 guest_format.bpp;
+                 guest_format.bpp * target->depth;
     }
     if (bytes > NVN_IMAGE_BUDGET) return NULL;
     while (bytes > NVN_IMAGE_BUDGET - image_bytes)
@@ -125,17 +126,17 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     }
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, format, &properties);
+    if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) return NULL;
     int sampled = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .imageType = VK_IMAGE_TYPE_2D,
                               .format = format,
                               .extent = {target->width, target->height, 1},
                               .mipLevels = target->levels,
-                              .arrayLayers = 1,
+                              .arrayLayers = target->depth,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                       (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0)};
+                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0)};
     VmaAllocationCreateInfo allocation = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation memory = NULL;
@@ -150,6 +151,8 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->width = target->width;
     empty->height = target->height;
     empty->levels = target->levels;
+    empty->layers = target->depth;
+    empty->target = target->target;
     empty->format = target->format;
     empty->bytes = bytes;
     image_bytes += bytes;
@@ -157,24 +160,31 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
     empty->sampled = sampled;
     if (sampled) {
-        VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                                      .image = image,
-                                      .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                      .format = format,
-                                      .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT
-                                                               ? VK_IMAGE_ASPECT_DEPTH_BIT
-                                                               : VK_IMAGE_ASPECT_COLOR_BIT,
-                                                           0, 1, 0, 1}};
+        VkImageViewCreateInfo view = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = target->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+            .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                    : VK_IMAGE_ASPECT_COLOR_BIT,
+                                 0, target->levels, 0, target->depth}};
         if (vkCreateImageView(g_vk.dev, &view, NULL, &empty->sampled_view) != VK_SUCCESS) empty->sampled = 0;
+        if (empty->sampled && target->levels > 1) {
+            view.subresourceRange.levelCount = 1;
+            vkCreateImageView(g_vk.dev, &view, NULL, &empty->base_view);
+        }
     }
     return empty;
 }
 
 int vk_nvn_clear(const NvnClearCommand* command) {
     const NvnTextureTarget* target = &command->target;
-    if (target->target != 1 || !target->width || !target->height || target->depth != 1 || target->levels != 1 ||
-        target->samples > 1 || target->view.base_level || target->view.first_layer || (target->view.level_count > 1) ||
-        (target->view.layer_count > 1) || (target->view.flags & (8 | 16)))
+    u32 mip = target->view.base_level;
+    u32 layer = target->view.first_layer;
+    if ((target->target != 1 && target->target != 4) || !target->width || !target->height || !target->depth ||
+        (target->target == 1 && target->depth != 1) || !target->levels || target->samples > 1 ||
+        mip >= target->levels || mip >= 16 || layer >= target->depth || target->view.level_count > 1 ||
+        target->view.layer_count > 1 || (target->view.flags & (8 | 16)))
         return 0;
     VkFmt format = nvn_format(target->format);
     if (!format.vk) return 0;
@@ -202,7 +212,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     image->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     image->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    VkImageSubresourceRange range = {aspect, 0, 1, 0, 1};
+    VkImageSubresourceRange range = {aspect, mip, 1, layer, 1};
     if (command->kind == NVN_CLEAR_COLOR) {
         VkClearColorValue color = {0};
         memcpy(color.float32, command->color, sizeof command->color);
@@ -214,19 +224,26 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         memcpy(&value.depth, &command->depth_bits, sizeof value.depth);
         vkCmdClearDepthStencilImage(cb, image->image, image->layout, &value, 1, &range);
     }
-    image->write_sequence = command->sequence;
-    image->written_aspects = range.aspectMask;
+    if (target->target == 1) {
+        image->mip_sequence[mip] = command->sequence;
+        image->mip_aspects[mip] = range.aspectMask;
+    }
     image->last_batch = batch_serial;
     return 1;
 }
 
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     const NvnTextureTarget* target = &command->target;
+    u32 mip = target->view.base_level;
+    u32 mip_width = mip < 16 ? target->width >> mip : 0;
+    u32 mip_height = mip < 16 ? target->height >> mip : 0;
+    if (!mip_width) mip_width = 1;
+    if (!mip_height) mip_height = 1;
     if (target->target != 1 || !target->width || !target->height || target->depth != 1 || !target->levels ||
-        target->samples > 1 || target->view.base_level || target->view.first_layer || target->view.level_count > 1 ||
-        target->view.layer_count > 1 || (target->view.flags & (8 | 16)) || command->flags || command->x || command->y ||
-        command->z || command->width != (i32)target->width || command->height != (i32)target->height ||
-        command->depth != 1 || !command->source) {
+        target->samples > 1 || mip >= target->levels || mip >= 16 || target->view.first_layer ||
+        target->view.level_count > 1 || target->view.layer_count > 1 || (target->view.flags & (8 | 16)) ||
+        command->flags || command->x || command->y || command->z || command->width != (i32)mip_width ||
+        command->height != (i32)mip_height || command->depth != 1 || !command->source) {
         LOG_LIMIT(
             2,
             "nvn-copy-shape: target=%u %ux%ux%u levels=%u samples=%u view=%x/%u/%u/%u/%u region=%d,%d,%d %dx%dx%d flags=%x source=%llx\n",
@@ -246,8 +263,8 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     }
     u32 block_width = format.bw ? format.bw : 1;
     u32 block_height = format.bh ? format.bh : 1;
-    u64 row = (u64)((target->width + block_width - 1) / block_width) * format.bpp;
-    u64 size = row * ((target->height + block_height - 1) / block_height);
+    u64 row = (u64)((mip_width + block_width - 1) / block_width) * format.bpp;
+    u64 size = row * ((mip_height + block_height - 1) / block_height);
     if (!size || size > (64ull << 20) || (command->row_stride && command->row_stride != (i64)row) ||
         (command->image_stride && command->image_stride != (i64)size)) {
         LOG_LIMIT(2, "nvn-copy-stride: format=%x size=%llu row=%llu configured=%lld image=%lld\n", target->format,
@@ -291,36 +308,40 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     vk_barrier(cb, image->image, VK_IMAGE_ASPECT_COLOR_BIT, image->stage, image->access, image->layout,
                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkBufferImageCopy region = {.bufferOffset = offset,
-                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                .imageExtent = {target->width, target->height, 1}};
+                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1},
+                                .imageExtent = {mip_width, mip_height, 1}};
     vkCmdCopyBufferToImage(cb, buffer, image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     image->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     image->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    image->write_sequence = command->sequence;
-    image->written_aspects = VK_IMAGE_ASPECT_COLOR_BIT;
+    image->mip_sequence[mip] = command->sequence;
+    image->mip_aspects[mip] = VK_IMAGE_ASPECT_COLOR_BIT;
     image->last_batch = batch_serial;
     return 1;
 }
 
-static NvnImage* image_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write) {
+static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write) {
     u64 address;
-    u32 width, height;
+    u32 width, height, levels;
     VkFormat format;
     if (!descriptor->texture || !descriptor->texture_generation ||
-        !vk_tex_tic_single_2d(descriptor->tic, &address, &width, &height, &format))
-        return NULL;
+        !vk_tex_tic_2d(descriptor->tic, &address, &width, &height, &levels, &format))
+        return VK_NULL_HANDLE;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
-        if (!image->image || !image->sampled || !image->written_aspects ||
-            image->write_sequence <= last_unmodeled_write || image->texture != descriptor->texture ||
-            image->texture_generation != descriptor->texture_generation || image->address != address ||
-            image->width != width || image->height != height)
+        if (!image->image || !image->sampled || image->target != 1 || image->layers != 1 ||
+            image->texture != descriptor->texture || image->texture_generation != descriptor->texture_generation ||
+            image->address != address || image->width != width || image->height != height ||
+            (levels != image->levels && (levels != 1 || !image->base_view)))
             continue;
         VkFmt source = nvn_format(image->format);
-        if (source.vk != format ||
-            !(image->written_aspects & (source.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT)))
-            continue;
+        if (source.vk != format) continue;
+        VkImageAspectFlags aspect = source.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        int complete = 1;
+        for (u32 level = 0; level < levels; level++)
+            if (!(image->mip_aspects[level] & aspect) || image->mip_sequence[level] <= last_unmodeled_write)
+                complete = 0;
+        if (!complete) continue;
         VkCommandBuffer cb = vk_cmd();
         vk_barrier(cb, image->image, vk_aspect(&source), image->stage, image->access, image->layout,
                    VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -328,9 +349,9 @@ static NvnImage* image_from_semantic(const NvnDescriptorSnapshot* descriptor, u6
         image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         image->stage = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
         image->access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        return image;
+        return levels == 1 && image->levels > 1 ? image->base_view : image->sampled_view;
     }
-    return NULL;
+    return VK_NULL_HANDLE;
 }
 
 /* Prepare exact guest buffer snapshots on the GPU thread. These are inputs for a future
@@ -409,9 +430,9 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
         for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && ready; stage++)
             for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
                 if (!(command->texture_bound[stage] & (1u << i))) continue;
-                NvnImage* image =
-                    image_from_semantic(&command->texture_descriptor[stage][i], command->last_unmodeled_write);
-                if (image) {
+                VkImageView view =
+                    image_view_from_semantic(&command->texture_descriptor[stage][i], command->last_unmodeled_write);
+                if (view) {
                     from_clear = 1;
                     continue;
                 }

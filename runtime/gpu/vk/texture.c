@@ -431,14 +431,16 @@ static int tic_header(const u32* tic, TicHeader* out) {
     return 1;
 }
 
-int vk_tex_tic_single_2d(const u32* tic, u64* gva, u32* width, u32* height, VkFormat* format) {
+int vk_tex_tic_2d(const u32* tic, u64* gva, u32* width, u32* height, u32* levels, VkFormat* format) {
     TicHeader header = {0};
-    if (!tic_header(tic, &header) || header.d != 1 || header.glevels != 1 ||
-        tic_view_type(header.type, header.d) != VK_IMAGE_VIEW_TYPE_2D || (tic[7] & 0xff) || ((tic[7] >> 8) & 0xf))
+    u32 base = tic[7] & 0xf, max = (tic[7] >> 4) & 0xf;
+    if (!tic_header(tic, &header) || header.d != 1 || tic_view_type(header.type, header.d) != VK_IMAGE_VIEW_TYPE_2D ||
+        base || ((tic[7] >> 8) & 0xf))
         return 0;
     *gva = header.gva;
     *width = header.w;
     *height = header.h;
+    *levels = max >= header.glevels ? header.glevels : max + 1;
     *format = header.f.vk;
     return 1;
 }

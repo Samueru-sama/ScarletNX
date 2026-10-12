@@ -67,7 +67,7 @@ typedef struct {
     u32 depth, stencil, depth_mask, stencil_mask;
 } NvnClearDepth;
 typedef struct {
-    i32 x, y, z, width, height, depth;
+    i32 region[6];
     NvnView view;
     u8 valid, has_view;
 } NvnCopyRegion;
@@ -146,7 +146,8 @@ static u64 replay_color_clears, replay_color_target_resolved, replay_color_missi
 static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missing_target, replay_depth_view_unknown,
     replay_depth_stale_target;
 static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
-static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported, clear_image_full;
+static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported, clear_image_full,
+    clear_array_issued, clear_mip_issued;
 static u64 preflight_batches, preflight_clear_only, preflight_mixed, preflight_no_clears, preflight_clear_commands;
 static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_invalid;
 static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
@@ -323,12 +324,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                                           .source = op->args[0],
                                                           .row_stride = state->copy_row_stride,
                                                           .image_stride = state->copy_image_stride,
-                                                          .x = copy->x,
-                                                          .y = copy->y,
-                                                          .z = copy->z,
-                                                          .width = copy->width,
-                                                          .height = copy->height,
-                                                          .depth = copy->depth,
+                                                          .x = copy->region[0],
+                                                          .y = copy->region[1],
+                                                          .z = copy->region[2],
+                                                          .width = copy->region[3],
+                                                          .height = copy->region[4],
+                                                          .depth = copy->region[5],
                                                           .flags = (u32)op->args[4]};
                     stage_copy(queue, packet);
                 }
@@ -848,8 +849,7 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
             copy_snapshot_failures++;
             return;
         }
-        i32* fields = &copy->x;
-        for (u32 i = 0; i < 6; i++) fields[i] = (i32)gr32(op->args[3] + (u64)i * 4);
+        for (u32 i = 0; i < 6; i++) copy->region[i] = (i32)gr32(op->args[3] + (u64)i * 4);
         copy->has_view = !!op->args[2];
         if (copy->has_view) snapshot_view(op->args[2], &copy->view);
         copy->valid = !copy->has_view || copy->view.valid;
@@ -1184,9 +1184,12 @@ static void execute_nvn_batch(void* arg) {
         u64 draw_seq = draw < draw_count ? batch->draws->commands[draw].sequence : UINT64_MAX;
         if (clear_seq < copy_seq && clear_seq < draw_seq) {
             int result = g_renderer->nvn_clear(&batch->clears->commands[clear++]);
-            if (result > 0)
+            if (result > 0) {
                 __atomic_fetch_add(&clear_issued, 1, __ATOMIC_RELAXED);
-            else
+                const NvnTextureTarget* target = &batch->clears->commands[clear - 1].target;
+                if (target->target == 4) __atomic_fetch_add(&clear_array_issued, 1, __ATOMIC_RELAXED);
+                if (target->view.base_level) __atomic_fetch_add(&clear_mip_issued, 1, __ATOMIC_RELAXED);
+            } else
                 __atomic_fetch_add(&clear_unsupported, 1, __ATOMIC_RELAXED);
             if (result == -1) __atomic_fetch_add(&clear_image_full, 1, __ATOMIC_RELAXED);
             continue;
@@ -1408,11 +1411,13 @@ void nvn_record_report(void) {
             LOG("nvn-shader-transport: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)shader_staged,
                 (unsigned long long)shader_flushed, (unsigned long long)shader_stage_full);
         if (clear_execute)
-            LOG("nvn-clear-execute: staged=%llu flushed=%llu issued=%llu unsupported=%llu stage-full=%llu\n",
+            LOG("nvn-clear-execute: staged=%llu flushed=%llu issued=%llu unsupported=%llu stage-full=%llu array=%llu mip=%llu\n",
                 (unsigned long long)clear_staged, (unsigned long long)clear_flushed,
                 (unsigned long long)__atomic_load_n(&clear_issued, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&clear_unsupported, __ATOMIC_RELAXED),
-                (unsigned long long)clear_stage_full);
+                (unsigned long long)clear_stage_full,
+                (unsigned long long)__atomic_load_n(&clear_array_issued, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&clear_mip_issued, __ATOMIC_RELAXED));
         if (clear_execute)
             LOG("nvn-clear-image: cache-full=%llu\n",
                 (unsigned long long)__atomic_load_n(&clear_image_full, __ATOMIC_RELAXED));

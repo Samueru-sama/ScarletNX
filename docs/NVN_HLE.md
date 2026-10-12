@@ -241,12 +241,16 @@ ordered image ownership shared by clears, copies, draws, and presentation before
 
 `SNX_NVN_COPY_EXECUTE=1` now snapshots `nvnCommandBufferCopyBufferToTexture` source addresses, destination texture
 and view, [six-field copy region](https://codeviewer.zeldamods.org/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html),
-flags, and the active row and image strides. Full base-level 2D copies with tightly packed rows execute on the GPU
+flags, and the active row and image strides. Full 2D mip-level copies with tightly packed rows execute on the GPU
 thread into the same NVN-owned image cache as clears. The copy path covers R8, RG8, RGBA8, BC1, BC2, and BC3,
 plus the existing scalar and half-float formats. It checks source page mappings and bounds each
 image allocation; old images are retired after GPU use when the 128-slot, 256 MiB cache fills. Clear, copy, and draw
-packets run in their original replay order. A draw may use a matching image written earlier in its batch only when no
-unmodeled image writer intervened; all other textures continue through the guest texture cache. Catherine's boot
+packets run in their original replay order. The cache tracks written mip levels separately and has a base-level view
+for a draw that requests only level zero. A draw may use a matching image written earlier in its batch only when all
+levels in its selected view were written and no unmodeled image writer intervened; all other textures continue through
+the guest texture cache. Selected non-base mip and 2D-array-layer clears also execute into shadow images. Array clears
+are not yet marked ready for sampled-array descriptors. In a 22-second TotK boot, 4,173 of 4,807 staged clears issued,
+including 632 array clears and 901 non-base-mip clears, with no image-cache capacity failure. Catherine's boot
 recorded and executed 157/157 buffer-to-texture copies with no rejected copies. TotK recorded no such copies in its
 boot run. Neither boot observed a draw sampling a semantic image in the same batch. The source bytes are still read
 after guest GPFIFO execution, so this shadow path does not establish historical texture contents at each NVN command.
@@ -404,7 +408,8 @@ establish that those draws lacked a matching surface when they executed. Direct 
 in submission order and own image state at each command rather than reconstructing it afterward.
 When both execution probes are enabled, resolved clear and draw packets now carry a queue-local sequence and enter
 one GPU-thread batch in their original list order. This preserves the order of the commands the probes understand;
-copies, barriers, dispatches, fence operations, and unsupported clears are still absent from the semantic stream.
+buffer-to-texture copies now share the ordered stream, while barriers, dispatches, fence operations, and unsupported
+clears remain outside it.
 Both packet arrays grow to 4,096 entries per flush. In a twenty-two-second TotK run, all 4,992 observed clear
 packets and 3,166 draw packets were staged without overflow. Of the 4,934 clear callbacks completed by report time,
 506 issued into the probe's separate images and 4,428 were rejected; 2,347 rejections were due to its fixed
