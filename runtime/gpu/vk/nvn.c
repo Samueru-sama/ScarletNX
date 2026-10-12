@@ -117,3 +117,43 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     }
     return 1;
 }
+
+/* Prepare exact guest buffer snapshots on the GPU thread. These are inputs for a future
+   host draw; the guest GPFIFO remains responsible for rendering and presentation. */
+int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
+    enum { MAX_RANGE = 1 << 20, MAX_TOTAL = 4 << 20 };
+    u64 total = 0;
+    for (u32 i = 0; i < NVN_DRAW_VERTEX_SLOTS; i++) {
+        if (!(command->vertex_bound & (1u << i))) continue;
+        const NvnBufferRange* range = &command->vertex[i];
+        if (!range->address || !range->size || range->size > MAX_RANGE || total + range->size > MAX_TOTAL) return 0;
+        total += range->size;
+    }
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
+        for (u32 i = 0; i < NVN_DRAW_UNIFORM_SLOTS; i++) {
+            if (!(command->uniform_bound[stage] & (1u << i))) continue;
+            const NvnBufferRange* range = &command->uniform[stage][i];
+            if (!range->address || !range->size || range->size > MAX_RANGE || total + range->size > MAX_TOTAL) return 0;
+            total += range->size;
+        }
+    u64 index_bytes = 0;
+    if (command->indexed) {
+        if (command->index_type > 2 || !command->index_address) return 0;
+        index_bytes = (u64)command->count << command->index_type;
+        if (!index_bytes || index_bytes > MAX_RANGE || total + index_bytes > MAX_TOTAL) return 0;
+    }
+    VkBuffer buffer;
+    u64 offset;
+    for (u32 i = 0; i < NVN_DRAW_VERTEX_SLOTS; i++)
+        if ((command->vertex_bound & (1u << i)) &&
+            !vk_buf_get_strict(command->vertex[i].address, command->vertex[i].size, &buffer, &offset))
+            return 0;
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
+        for (u32 i = 0; i < NVN_DRAW_UNIFORM_SLOTS; i++)
+            if ((command->uniform_bound[stage] & (1u << i)) &&
+                !vk_buf_get_strict(command->uniform[stage][i].address, command->uniform[stage][i].size, &buffer,
+                                   &offset))
+                return 0;
+    if (index_bytes && !vk_buf_get_strict(command->index_address, index_bytes, &buffer, &offset)) return 0;
+    return 1;
+}

@@ -24,6 +24,10 @@ static int null_nvn_clear(const NvnClearCommand* command) {
     (void)command;
     return 0;
 }
+static int null_nvn_draw_prepare(const NvnDrawCommand* command) {
+    (void)command;
+    return 0;
+}
 static void null_draw(GpuChannel* ch, int i, u32 t, u32 f, u32 c, u32 bv, u32 bi, u32 in) {
     (void)ch;
     (void)i;
@@ -85,6 +89,7 @@ const Renderer null_renderer = {
     .async_submit = null_async_submit,
     .clear = null_clear,
     .nvn_clear = null_nvn_clear,
+    .nvn_draw_prepare = null_nvn_draw_prepare,
     .draw = null_draw,
     .cb_bind = null_cb_bind,
     .blit = null_blit,

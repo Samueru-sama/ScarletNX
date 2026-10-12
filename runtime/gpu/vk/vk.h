@@ -25,6 +25,7 @@
 #include "abi/cpu.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_clear.h"
+#include "gpu/nvn_draw.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include "gpu/shader/shader.h"
@@ -33,6 +34,7 @@
 #define VK_SC_MAX 16 /* swapchain images */
 
 int vk_nvn_clear(const NvnClearCommand* command);
+int vk_nvn_draw_prepare(const NvnDrawCommand* command);
 
 typedef struct {
     VkInstance instance;

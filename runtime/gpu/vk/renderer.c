@@ -77,6 +77,12 @@ static int vkr_nvn_clear(const NvnClearCommand* command) {
     vk_unlock();
     return result;
 }
+static int vkr_nvn_draw_prepare(const NvnDrawCommand* command) {
+    vk_lock();
+    int result = vk_nvn_draw_prepare(command);
+    vk_unlock();
+    return result;
+}
 static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 bv, u32 bi, u32 instances) {
     g_draws++;
     vk_lock();
@@ -390,6 +396,7 @@ const Renderer vk_renderer = {
     .async_submit = vkr_async_submit,
     .clear = vkr_clear,
     .nvn_clear = vkr_nvn_clear,
+    .nvn_draw_prepare = vkr_nvn_draw_prepare,
     .draw = vkr_draw,
     .cb_bind = vkr_cb_bind,
     .blit = vkr_blit,

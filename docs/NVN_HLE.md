@@ -330,6 +330,18 @@ had complete targets; in a sixteen-second TotK run, all 1,274 observed draws did
 snapshots only. The host renderer still needs a coherent image allocation and binding path shared by clears, draws,
 copies, and presentation.
 
+`SNX_NVN_DRAW_PREPARE=1` now sends submitted draw packets to the GPU thread and asks the Vulkan renderer to prepare
+exact guest vertex, uniform, and index-buffer snapshots through its strict buffer cache. A draw is rejected if a
+bound range is empty, an index type is unsupported, a range exceeds 1 MiB, the total vertex and uniform data exceeds
+4 MiB, or the guest range cannot be read. This probe does not issue Vulkan draws or replace guest GPFIFO execution.
+The recorder uses a growable batch capped at 4,096 packets per queue flush; the former eight-packet diagnostic cap
+missed most draws in both games. An eight-second Catherine run captured and flushed all 3,787 observed draws with no
+staging overflow; 3,747 had finished preparation and none had been rejected when the exit report printed. A
+sixteen-second TotK run captured and flushed all 1,582 observed draws with no staging overflow; 1,538 had finished
+preparation and none had been rejected at report time. The prepared count can lag the flushed count because callbacks
+run asynchronously. These results demonstrate buffer transport, not render correctness: texture descriptors, image
+coherence, shader binding, and draw execution are still outstanding.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

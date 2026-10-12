@@ -29,6 +29,10 @@ enum {
     OP_COUNT
 };
 typedef struct {
+    u32 count, capacity;
+    NvnDrawCommand commands[];
+} NvnDrawBatch;
+typedef struct {
     u8 kind;
     u8 ref_count, refs_truncated;
     const char* name; /* stable name in the resolver's process-lifetime table */
@@ -100,14 +104,14 @@ typedef struct {
     u8 vertex_probe_count;
     NvnClearCommand clears[8];
     u8 clear_count;
-    NvnDrawCommand draws[8];
-    u8 draw_count;
+    NvnDrawBatch* draws;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
 static int descriptor_replay;
 static int shader_transport;
 static int clear_execute;
+static int draw_prepare;
 static u32 view_layout;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
@@ -131,6 +135,7 @@ static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_i
 static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
     draw_with_shader_refs;
 static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_staged, draw_stage_full, draw_flushed;
+static u64 draw_prepared, draw_prepare_unsupported;
 static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bind_invalid;
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
@@ -177,6 +182,7 @@ static NvnList* list_slot(u64 key, int create) {
 void nvn_record_enable_descriptor_replay(void) { descriptor_replay = 1; }
 void nvn_record_enable_shader_transport(void) { shader_transport = 1; }
 void nvn_record_enable_clear_execute(void) { clear_execute = 1; }
+void nvn_record_enable_draw_prepare(void) { draw_prepare = 1; }
 
 static ReplayQueue* replay_queue_slot(u64 key) {
     if (!key) return NULL;
@@ -590,11 +596,24 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             else
                 draw_without_texture++;
             if (queue) {
-                if (queue->draw_count == 8)
-                    draw_stage_full++;
-                else {
-                    queue->draws[queue->draw_count++] = draw;
+                NvnDrawBatch* batch = queue->draws;
+                if (!batch || batch->count == batch->capacity) {
+                    u32 capacity = batch ? batch->capacity * 2 : 8;
+                    if (capacity > 4096) capacity = 4096;
+                    if (!batch || batch->capacity < capacity) {
+                        NvnDrawBatch* grown = realloc(batch, sizeof *batch + (size_t)capacity * sizeof draw);
+                        if (grown) {
+                            if (!batch) grown->count = 0;
+                            grown->capacity = capacity;
+                            queue->draws = batch = grown;
+                        }
+                    }
+                }
+                if (batch && batch->count < batch->capacity) {
+                    batch->commands[batch->count++] = draw;
                     draw_staged++;
+                } else {
+                    draw_stage_full++;
                 }
             }
         } else if (op->kind == OP_DRAW) {
@@ -993,12 +1012,24 @@ static void execute_clear_batch(void* arg) {
     free(batch);
 }
 
+static void execute_draw_prepare_batch(void* arg) {
+    NvnDrawBatch* batch = arg;
+    for (u32 i = 0; i < batch->count; i++) {
+        if (g_renderer->nvn_draw_prepare(&batch->commands[i]))
+            __atomic_fetch_add(&draw_prepared, 1, __ATOMIC_RELAXED);
+        else
+            __atomic_fetch_add(&draw_prepare_unsupported, 1, __ATOMIC_RELAXED);
+    }
+    free(batch);
+}
+
 void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
     if (!strcmp(name, "nvnQueueFlush") || !strcmp(name, "nvnQueuePresentTexture")) {
         if (!descriptor_replay) return;
         u64 codes[8];
         u32 count = 0;
         NvnClearBatch batch = {0};
+        NvnDrawBatch* draw_batch = NULL;
         pm_lock(&lock);
         ReplayQueue* queue = replay_queue_slot(command_buffer);
         if (queue && queue->key == command_buffer) {
@@ -1033,8 +1064,14 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
                 queue->clear_count = 0;
                 clear_flushed += batch.count;
             }
-            draw_flushed += queue->draw_count;
-            queue->draw_count = 0;
+            if (queue->draws) {
+                draw_flushed += queue->draws->count;
+                if (draw_prepare && queue->draws->count)
+                    draw_batch = queue->draws;
+                else
+                    free(queue->draws);
+                queue->draws = NULL;
+            }
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
@@ -1047,6 +1084,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
                 __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
             }
         }
+        if (draw_batch) gpu_call(execute_draw_prepare_batch, draw_batch);
         return;
     }
     if (strcmp(name, "nvnCommandBufferEndRecording")) return;
@@ -1166,6 +1204,10 @@ void nvn_record_report(void) {
             (unsigned long long)draw_without_vertex, (unsigned long long)draw_index_invalid);
         LOG("nvn-draw-stage: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)draw_staged,
             (unsigned long long)draw_flushed, (unsigned long long)draw_stage_full);
+        if (draw_prepare)
+            LOG("nvn-draw-prepare: prepared=%llu unsupported=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_prepared, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_prepare_unsupported, __ATOMIC_RELAXED));
         LOG("nvn-uniform-snapshot: ranges=%llu failed=%llu invalid-binds=%llu\n",
             (unsigned long long)uniform_range_snapshots, (unsigned long long)uniform_range_snapshot_failures,
             (unsigned long long)uniform_bind_invalid);
