@@ -297,6 +297,20 @@ before a mixed batch can replace its guest pushbuffers.
 In an eight-second Catherine run, all 4,007 observed draws were represented: 3,384 arrays and 623 indexed
 base-vertex calls. All had a tracked program, shader references, and an explicit vertex binding. Neither measured
 boot used the array form of `BindVertexBuffers`; the recorder still snapshots it so later scenes can be checked.
+Uniform buffer bindings now follow the same ordered replay path for all six NVN shader stages. Single-buffer calls
+retain their GPU address and size, while array calls copy the guest ranges before the SDK can reuse the pointer.
+Every observed draw in subsequent Catherine and TotK boot runs had at least one uniform binding. That confirms the
+packets preserve the binding calls seen in these runs; it does not establish that the GPU address contents are
+coherent or that the shader's constant-buffer slots have been mapped to the host renderer.
+Texture bindings now travel with the same packets as raw combined NVN handles, for direct calls and copied handle
+arrays. In subsequent eight-second Catherine and sixteen-second TotK runs, every observed draw had a texture binding,
+with no invalid stage or slot and no failed handle-array snapshots. The existing scalar descriptor check still runs at
+bind time. This is a handle snapshot, not an NVN texture-to-Vulkan descriptor binding; aliasing, lifetime, and
+sampler state remain part of that implementation.
+`BindProgram` applies to a stage mask, so replay now keeps a separate program identity and shader-reference snapshot
+for each stage. A later partial bind updates only its selected stages instead of erasing the others. Draw diagnostics
+report vertex and fragment program coverage independently. The packet still needs a validated mapping from each NVN
+shader record to the exact host shader stage before it can create a graphics pipeline.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

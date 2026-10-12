@@ -5,15 +5,25 @@
 #include "abi/cpu.h"
 #include "gpu/nvn_program.h"
 
-#define NVN_DRAW_VERTEX_SLOTS 16
+#define NVN_DRAW_VERTEX_SLOTS  16
+#define NVN_DRAW_SHADER_STAGES 6
+#define NVN_DRAW_UNIFORM_SLOTS 16
+#define NVN_DRAW_TEXTURE_SLOTS 32
 typedef struct {
     u64 address, size;
 } NvnBufferRange;
 typedef struct {
-    u64 program, program_generation;
-    NvnShaderRef shaders[NVN_PROGRAM_MAX_SHADERS];
-    u32 shader_count;
+    u64 handle;
+    NvnProgramSnapshot snapshot;
+} NvnStageProgram;
+typedef struct {
+    NvnStageProgram program[NVN_DRAW_SHADER_STAGES];
+    u8 program_bound;
     NvnBufferRange vertex[NVN_DRAW_VERTEX_SLOTS];
+    NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
+    u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
+    u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
+    u32 texture_bound[NVN_DRAW_SHADER_STAGES];
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;
