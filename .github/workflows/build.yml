@@ -25,7 +25,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang pkgconf sdl3 libxtst
+        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang pkgconf sdl3 libxtst libxrandr libxss
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:

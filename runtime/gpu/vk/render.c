@@ -119,13 +119,9 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
     g_rp.open = 1;
     return 1;
 }
-static void targets_written(void) {
-    for (u32 i = 0; i < g_rp.n; i++)
-        if (g_rp.rt[i]) {
-            g_rp.rt[i]->wgen++;
-            vk_rt_drawn(g_rp.rt[i]);
-        }
-    if (g_rp.zt) g_rp.zt->wgen++;
+static void target_written(Surf* s) {
+    s->wgen++;
+    vk_rt_drawn(s);
 }
 
 /* every dynamic state at a neutral value, for draws of our own */
@@ -164,7 +160,7 @@ static u32 clear_int(float f, int sint) {
 
 /* a clear of some color components only: a full-screen triangle with that write mask, whose fragment shader writes
    the cleared slot alone, in the target's number type */
-static void clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
+static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
     static VkShaderModule vs, fs[8][3];
     const VkFmt* f = &g_rp.rt[slot]->f;
     int num = f->is_int ? (f->sint ? 2 : 1) : 0;
@@ -181,7 +177,7 @@ static void clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
                  ty[num], slot, ty[num]);
         fs[slot][num] = vk_module(src, ST_FS);
     }
-    if (!vs || !fs[slot][num]) return;
+    if (!vs || !fs[slot][num]) return 0;
     PipeKey k;
     memset(&k, 0, sizeof k);
     k.vs = vs;
@@ -197,7 +193,7 @@ static void clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
         k.stencil = g_rp.zt->f.stencil ? g_rp.zt->f.vk : VK_FORMAT_UNDEFINED;
     }
     VkPipeline p = vk_pipeline_get(&k);
-    if (!p) return;
+    if (!p) return 0;
     VkCommandBuffer cb = vk_cmd();
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     plain_state(cb, rect);
@@ -209,6 +205,7 @@ static void clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
             memcpy(&pc[4 + i], &cc[i], 4);
     vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
+    return 1;
 }
 
 /* v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer */
@@ -256,8 +253,7 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
                 memcpy(at[na].clearValue.color.float32, cc, 16);
             na++;
         } else {
-            clear_masked(slot, mask, cc, rect.rect);
-            targets_written();
+            if (clear_masked(slot, mask, cc, rect.rect)) target_written(g_rp.rt[slot]);
         }
     }
     if ((v & 3) && zt) {
@@ -271,8 +267,18 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
         }
     }
     if (na) {
+        int color_clear = mask == 15 && slot < g_rp.n && g_rp.rt[slot];
         vkCmdClearAttachments(vk_cmd(), na, at, 1, &rect);
-        targets_written();
+        if (color_clear) {
+            Surf* s = g_rp.rt[slot];
+            s->wgen++;
+            if (rect.rect.offset.x == 0 && rect.rect.offset.y == 0 && rect.rect.extent.width == s->sw &&
+                rect.rect.extent.height == s->sh)
+                vk_rt_drawn_full(s);
+            else
+                vk_rt_drawn(s);
+        }
+        if (na > (u32)color_clear && zt) zt->wgen++;
     }
 }
 
@@ -742,7 +748,14 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
         int sten_w = zt && zt->f.stencil && r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)));
         int depth_ro = t && t == zt && !r[0x4BA] && !sten_w;
         if (t && is_target(t, rt, zt, n) && !depth_ro) {
-            LOG_LIMIT(1, "vulkan: a draw samples a color target it renders to (read as empty)\n");
+            /* The guest reads the target's previous contents during a draw that writes it. Vulkan can't bind one
+               image for both uses here, so copy it before the draw starts and sample that copy. */
+            Surf* snap = vk_rt_snapshot(t);
+            if (snap != t) {
+                t = snap;
+                view = vk_tex_bind_view(t, want, x->tic, num);
+            } else
+                LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
         } else
             view = vk_tex_bind_view(t, want, x->tic, num);
         if (view && depth_ro) {
@@ -1253,6 +1266,9 @@ retry:
     } else
         vkCmdDraw(cb, count, instances, first, base_instance);
     vk_buf_writable_commit();
-    targets_written();
+    if (fs)
+        for (u32 i = 0; i < n; i++)
+            if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
+    if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) zt->wgen++;
     g_vk_drawn++;
 }

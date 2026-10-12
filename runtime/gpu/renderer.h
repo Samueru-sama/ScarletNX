@@ -27,7 +27,7 @@ typedef struct Renderer {
     void (*rt_flush)(u64 gva);  /* a render target at gva is about to be read from guest memory: write it back */
     void (*rt_reload)(u64 gva); /* guest memory under a render target changed: load it again */
     void (*dispatch)(GpuChannel* ch, const u32* q, u64 code); /* a compute launch (q: its QMD) */
-    /* gmem_read and gmem_ptr hit memory a compute dispatch wrote that hasn't landed yet: land it now */
+    /* gmem_read and gmem_ptr land pending compute or graphics storage writes before reading memory */
     void (*cs_mem_need)(u64 a, u64 n);
     void (*gfx_mem_need)(u64 a, u64 n);
     void (*before_syncwait)(void); /* the stream is about to wait on a syncpoint: flush everything in flight */
@@ -48,7 +48,7 @@ extern const Renderer* g_renderer;
 /* shared state (gpu/renderer.c) */
 extern int g_renderer_up; /* the renderer started */
 extern u64 g_draws;
-extern volatile int g_cs_any;  /* compute results are pending somewhere */
-extern volatile int g_gfx_any; /* graphics storage-buffer results are pending somewhere */
+extern _Atomic int g_cs_any;  /* compute results are pending somewhere */
+extern _Atomic int g_gfx_any; /* graphics storage-buffer results are pending somewhere */
 
 #endif

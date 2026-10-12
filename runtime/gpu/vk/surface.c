@@ -9,6 +9,7 @@
 #include <string.h>
 #include "gpu/gpu.h"
 #include "hle/nvdrv.h"
+#include "kernel/mem.h"
 #include "platform/log.h"
 #include "gpu/vk/vk.h"
 
@@ -190,6 +191,7 @@ void vk_rt_reload(u64 gva) {
            access stay for the next barrier to wait on */
         vk_render_end();
         s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        s->draw_wseen = 0;
         s->gw = gpu_mem_generation();
         return;
     }
@@ -233,6 +235,7 @@ void vk_rt_reload(u64 gva) {
             vk_defer_image(t, tm, VK_NULL_HANDLE, VK_NULL_HANDLE);
         }
         s->mem_wgen = s->wgen; /* memory and image hold the same now: nothing to write back */
+        s->draw_wseen = 0;     /* a successful full load starts a new source epoch for later draws */
         s->gw = gpu_mem_generation();
     }
     free(tmp);
@@ -380,7 +383,31 @@ Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h) {
 /* render targets drawn this frame or the last, for a texture made of them (gpu/vk/texture.c) */
 static Surf** g_drawn;
 static int g_ndrawn, g_capdrawn;
+/* Read backing memory directly: asking gmem_read to land pending output here could submit a draw mid-setup. */
+static u64 rt_mem_hash(const Surf* s) {
+    u64 h = 1469598103934665603ull;
+    u64 size = rt_bytes(s);
+    for (u64 o = 0; o < size;) {
+        u64 a = s->gva + o;
+        u64 n = 0x1000 - (a & 0xFFF);
+        if (n > size - o) n = size - o;
+        u64 cpu = gmmu_translate(a);
+        const u8* p = cpu ? GP(cpu) : NULL;
+        for (u64 i = 0; i < n; i++) h = (h ^ (p ? p[i] : 0)) * 1099511628211ull;
+        o += n;
+    }
+    return h;
+}
 void vk_rt_drawn(Surf* s) {
+    /* A memory write after the first draw can leave untouched pixels stale even when later draws touch the target.
+       Keep that first baseline until the next present instead of scanning the whole target on every draw. */
+    if (!s->draw_wseen || s->drawn_at != g_vk_present) {
+        u64 size = rt_bytes(s);
+        s->draw_has_hash = vk_written_since(gmem_ptr_untracked(s->gva, size), size, 0) < 0;
+        if (s->draw_has_hash) s->draw_hash = rt_mem_hash(s);
+        s->draw_wseen = vk_ww_now();
+        s->draw_gw = gpu_mem_generation();
+    }
     s->drawn_at = g_vk_present;
     for (int i = 0; i < g_ndrawn; i++)
         if (g_drawn[i] == s) return;
@@ -393,6 +420,17 @@ void vk_rt_drawn(Surf* s) {
     }
     g_drawn[g_ndrawn++] = s;
 }
+void vk_rt_drawn_full(Surf* s) {
+    s->draw_wseen = 0; /* every pixel was replaced, so earlier memory writes no longer matter */
+    vk_rt_drawn(s);
+}
+int vk_rt_drawn_fresh(Surf* s) {
+    u64 size = rt_bytes(s);
+    if (!s->draw_wseen || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || gpu_mem_dirty_since(s->draw_gw, s->gva, size))
+        return 0;
+    if (s->draw_has_hash) return rt_mem_hash(s) == s->draw_hash;
+    return vk_written_since(gmem_ptr_untracked(s->gva, size), size, s->draw_wseen) == 0;
+}
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     int n = 0;
     for (int i = 0; i < g_ndrawn;) {
@@ -401,7 +439,10 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
             g_drawn[i] = g_drawn[--g_ndrawn];
             continue;
         }
-        if (s->gva >= lo && s->gva < hi && n < max) out[n++] = s; /* a parked target's address is out of every range */
+        if (s->gva >= lo && s->gva < hi) {
+            if (n < max) out[n] = s; /* a parked target's address is out of every range */
+            n++;
+        }
         i++;
     }
     return n;
@@ -476,6 +517,10 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
     vkCmdBlitImage(cb, st->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dt->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     dt->wgen++;
+    if (dx == 0 && dy == 0 && X1 == (i32)dt->sw && Y1 == (i32)dt->sh)
+        vk_rt_drawn_full(dt);
+    else
+        vk_rt_drawn(dt);
     dt->last_used = g_vk_present;
     return 1;
 }

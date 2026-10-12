@@ -101,9 +101,11 @@ static u64 level_out_size(const VkFmt* f, u32 lw, u32 lh, u32 ld, u32 rowb) {
     return (u64)rowb * th * ld;
 }
 
+static u32 g_tex_upload_gen;
 static void tex_upload(Surf* t) {
     const VkFmt* f = &t->f;
-    vk_render_end(); /* copies and clears happen outside rendering passes */
+    t->wgen = ++g_tex_upload_gen; /* even a new texture at a reused address invalidates an old target's copy */
+    vk_render_end();              /* copies and clears happen outside rendering passes */
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -269,7 +271,7 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
     return t;
 }
 
-/* a render target read through a smaller header: a copy of that region, refreshed when the target is drawn to. One
+/* a render target read through a smaller header or a feedback draw: a copy refreshed when the target is drawn to. One
    copy per size, in a list through next: one draw can hold copies of a target at two sizes (two headers, or two
    stages), so a copy isn't replaced while a draw may hold it. Copies not read for a second go; their views and image
    when the frame being recorded is done, as descriptors may still name them */
@@ -322,8 +324,9 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h) {
         c->crop_gen = ~0u;
         c->next = rt->crop;
         rt->crop = c;
-        LOG_LIMIT(10, "vulkan: %ux%u texture reads the %ux%u render target at %llx: only that region is used\n", w, h,
-                  rt->w, rt->h, (unsigned long long)rt->gva);
+        if (w != rt->w || h != rt->h)
+            LOG_LIMIT(10, "vulkan: %ux%u texture reads the %ux%u render target at %llx: only that region is used\n", w,
+                      h, rt->w, rt->h, (unsigned long long)rt->gva);
     }
     c->last_used = g_vk_present;
     if (c->crop_gen != rt->wgen) {
@@ -332,13 +335,20 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h) {
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         vk_surf_use(cb, c, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        VkImageAspectFlags a = vk_aspect(&rt->f);
+        /* A depth/stencil texture view samples depth. Copy only that aspect: VkImageCopy requires one aspect per
+           region, and the snapshot's stencil is never read. */
+        VkImageAspectFlags a = rt->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         VkImageCopy r = {.srcSubresource = {a, 0, 0, 1}, .dstSubresource = {a, 0, 0, 1}, .extent = {c->sw, c->sh, 1}};
         vkCmdCopyImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        1, &r);
         c->crop_gen = rt->wgen;
     }
     return c;
+}
+
+Surf* vk_rt_snapshot(Surf* rt) {
+    if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
+    return rt_crop(rt, rt->w, rt->h);
 }
 
 /* texture header type -> what the image is created as */
@@ -728,19 +738,31 @@ void vk_tex_frame(void) {
    text later goes) */
 static void tex_take_drawn(Surf* t) {
     if (!t || t->is_rt || t->f.conv || t->f.depth || t->type == VK_IMAGE_VIEW_TYPE_3D) return;
-    Surf* d[16];
+    Surf* small[32];
+    Surf** d = small;
     u64 stride = t->layer_size;
-    int n = vk_rt_drawn_in(t->gva, t->gva + (stride ? stride * t->layers : 1), d, 16);
+    u64 hi = t->gva + (stride ? stride * t->layers : 1);
+    int n = vk_rt_drawn_in(t->gva, hi, d, 32);
+    if (n > 32) {
+        d = malloc((size_t)n * sizeof *d);
+        if (d)
+            n = vk_rt_drawn_in(t->gva, hi, d, n);
+        else {
+            d = small;
+            n = 32;
+        }
+    }
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
         if (s->f.depth || s->f.bpp != t->f.bpp || s->sw != s->w || s->sh != s->h) continue;
-        if (s->copy_dst == t && s->copy_wgen == s->wgen) continue; /* copied since it was last drawn */
+        if (s->copy_dst == t && s->copy_wgen == s->wgen && s->copy_tgen == t->wgen) continue;
         u64 off = s->gva - t->gva;
         u32 layer = stride ? (u32)(off / stride) : 0;
         u64 rem = off - (u64)layer * stride, lo = 0;
         for (u32 l = 0; l < t->levels && layer < t->layers; l++) {
             u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
             if (rem == lo && s->w == lw && s->h == lh) {
+                if (!vk_rt_drawn_fresh(s)) break; /* newer guest memory at this address takes precedence */
                 vk_render_end();
                 VkCommandBuffer cb = vk_cmd();
                 vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -754,12 +776,14 @@ static void tex_take_drawn(Surf* t) {
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
                 s->copy_dst = t;
                 s->copy_wgen = s->wgen;
+                s->copy_tgen = t->wgen;
                 break;
             }
             if (!t->bl) break;
             lo += bl_level_size(t->w, t->h, 1, &t->f, t->bh, t->bd, l, NULL, NULL);
         }
     }
+    if (d != small) free(d);
 }
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic);
