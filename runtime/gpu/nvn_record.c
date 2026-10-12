@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_record.h"
 #include "gpu/nvn_descriptor.h"
+#include "gpu/nvn_sampler_descriptor.h"
 #include "kernel/mem.h"
 #include "platform/log.h"
 #include "platform/plat.h"
@@ -45,13 +46,19 @@ static u64 calls, call_refs, call_ref_missing, call_ref_opaque, truncated_refs;
 static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, invalid_arrays, allocation_failures;
 static u64 captured[OP_COUNT], ended_ops[OP_COUNT], submitted_ops[OP_COUNT], referenced_ops[OP_COUNT];
 typedef struct {
-    u64 key, texture_pool;
+    u64 texture_pool, sampler_pool;
+} ReplayState;
+typedef struct {
+    u64 key;
+    ReplayState state;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
 static int descriptor_replay;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
+static u64 replay_sampler_resolved, replay_sampler_missing_pool, replay_sampler_missing_descriptor,
+    replay_sampler_stale;
 static u64 replay_queue_full;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
@@ -98,8 +105,8 @@ static ReplayQueue* replay_queue_slot(u64 key) {
     return NULL;
 }
 
-/* Walk a diagnostic list in GPU command order. Secondary lists inherit the caller's texture-pool selection. */
-static void replay_list(u64 handle, u64* texture_pool, u32 depth) {
+/* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
+static void replay_list(u64 handle, ReplayState* state, u32 depth) {
     if (depth == 32) {
         replay_depth_limit++;
         return;
@@ -114,13 +121,15 @@ static void replay_list(u64 handle, u64* texture_pool, u32 depth) {
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
         if (!strcmp(op->name, "nvnCommandBufferSetTexturePool")) {
-            *texture_pool = op->args[0];
+            state->texture_pool = op->args[0];
+        } else if (!strcmp(op->name, "nvnCommandBufferSetSamplerPool")) {
+            state->sampler_pool = op->args[0];
         } else if (!strcmp(op->name, "nvnCommandBufferBindTexture")) {
             replay_binds++;
-            if (!*texture_pool) {
+            if (!state->texture_pool) {
                 replay_missing_pool++;
             } else {
-                int result = nvn_descriptor_check(*texture_pool, op->args[2]);
+                int result = nvn_descriptor_check(state->texture_pool, op->args[2]);
                 if (result == 1)
                     replay_resolved++;
                 else if (result == -1)
@@ -128,9 +137,20 @@ static void replay_list(u64 handle, u64* texture_pool, u32 depth) {
                 else
                     replay_missing_descriptor++;
             }
+            if (!state->sampler_pool) {
+                replay_sampler_missing_pool++;
+            } else {
+                int result = nvn_sampler_descriptor_check(state->sampler_pool, op->args[2]);
+                if (result == 1)
+                    replay_sampler_resolved++;
+                else if (result == -1)
+                    replay_sampler_stale++;
+                else
+                    replay_sampler_missing_descriptor++;
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
             if (op->refs_truncated) replay_truncated_refs++;
-            for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], texture_pool, depth + 1);
+            for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], state, depth + 1);
         }
     }
 }
@@ -192,7 +212,7 @@ void nvn_record_before(const CPU* c, const char* name) {
         }
         pm_lock(&lock);
         ReplayQueue* queue = descriptor_replay ? replay_queue_slot(c->x[0]) : NULL;
-        u64 texture_pool = queue && queue->key ? queue->texture_pool : 0;
+        ReplayState state = queue && queue->key ? queue->state : (ReplayState){0};
         if (descriptor_replay && !queue) replay_queue_full++;
         for (u32 i = 0; i < count; i++) {
             u64 handle = gr64(ptr + (u64)i * 8);
@@ -207,12 +227,12 @@ void nvn_record_before(const CPU* c, const char* name) {
             for (u32 j = 0; j < list->count; j++) submitted_ops[list->ops[j].kind]++;
             if (descriptor_replay) {
                 replay_roots++;
-                replay_list(handle, &texture_pool, 0);
+                replay_list(handle, &state, 0);
             }
         }
         if (queue) {
             queue->key = c->x[0];
-            queue->texture_pool = texture_pool;
+            queue->state = state;
         }
         pm_unlock(&lock);
         return;
@@ -365,6 +385,9 @@ void nvn_record_report(void) {
             (unsigned long long)replay_binds, (unsigned long long)replay_resolved,
             (unsigned long long)replay_missing_pool, (unsigned long long)replay_missing_descriptor,
             (unsigned long long)replay_stale);
+        LOG("nvn-replay-sampler: resolved=%llu missing-pool=%llu missing-descriptor=%llu stale=%llu\n",
+            (unsigned long long)replay_sampler_resolved, (unsigned long long)replay_sampler_missing_pool,
+            (unsigned long long)replay_sampler_missing_descriptor, (unsigned long long)replay_sampler_stale);
     }
     pm_unlock(&lock);
 }

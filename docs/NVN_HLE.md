@@ -169,17 +169,18 @@ This connects an observed bind to the tracked texture footprint without reading 
 When a command buffer has no observed pool selection and exactly one texture pool is live, the observer can use that
 unique pool for a diagnostic lookup; it reports these binds separately. This does not establish command-list state
 inheritance, which requires replaying pool-selection operations in queue submission order.
-`BindTextures` arrays, image descriptors, sampler pools, and multi-pool commands whose pool selection was inlined
-remain outside this observer's coverage.
+`BindTextures` arrays, image descriptors, and multi-pool commands whose pool selection was inlined remain outside
+this eager observer's coverage.
 In a 166-frame TotK boot, all 26,775 observed single-texture binds resolved to live registrations; 26,608 used the
 unique-pool inference. Catherine resolved all 1,513 binds from observed pool selections in 120 frames. Both runs had
 zero missing descriptors, stale textures, invalid IDs, and table losses. The TotK inference remains conditional on
 there being exactly one live texture pool; it does not prove correct state propagation through secondary lists.
 
 `SNX_NVN_DESC_REPLAY=1` enables command recording and descriptor observation together, then walks submitted lists in
-recorded order. `SetTexturePool` changes queue texture-pool state; `CallCommands` recursively executes secondary list
-records with the caller's state; each single `BindTexture` checks its descriptor, texture generation, and backing pool
-generation against that state. Queue state carries
+recorded order. `SetTexturePool` and `SetSamplerPool` change queue descriptor-pool state; `CallCommands` recursively
+executes secondary list records with the caller's state. Each single `BindTexture` checks the low 20-bit texture ID
+against its descriptor, texture generation, and backing pool generation, and checks the next 12-bit sampler ID against
+its registration and sampler generation. Queue state carries
 across submitted lists. The report separates resolved binds from missing pool state, descriptors, stale textures,
 opaque or missing lists, truncated references, and recursion depth limits. This is a diagnostic walk of observed NVN
 calls, not a substitute for executing the guest command stream or proof that inlined operations were captured.
@@ -188,6 +189,18 @@ lists. In a 25-second TotK run, all 61,586 replayed binds resolved across 337 su
 secondary-list visits, with no missing lists, truncated references, depth-limit hits, or stale pool generations. The
 69,205 eager TotK bind calls include work not yet submitted during that interval; the replay count measures submitted
 list executions rather than calls made while building lists.
+
+`SNX_NVN_SAMPLER=1` tracks sampler object initialization, finalization, and generations without decoding builder bytes:
+the inspected TotK and Catherine SDKs copy different builder layouts. Descriptor observation also enables sampler
+tracking and records `nvnSamplerPoolInitialize`, `Finalize`, and `RegisterSampler` by pool generation and descriptor
+index. The replay reports sampler resolution separately from texture resolution, including missing pool selections,
+missing registrations, and sampler objects that were finalized or reused. This validates observed SDK object identity;
+it does not decode sampler state or establish whether finalized sampler objects leave copied hardware descriptors valid.
+In a 120-frame Catherine run, all 1,526 replayed binds resolved through live sampler registrations, with zero missing
+or stale entries; its three sampler objects and one sampler pool were tracked without table loss.
+An 85-frame TotK run resolved all 10,965 submitted binds through live sampler registrations across 86 roots and 425
+opaque secondary-list visits. It tracked 849 sampler initializations and 91 registrations in one pool, with no
+missing or stale sampler result, untracked registration, or table loss.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
