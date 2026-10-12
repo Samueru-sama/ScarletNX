@@ -140,6 +140,7 @@ static u64 vertex_attrib_snapshots, vertex_stream_snapshots, vertex_state_snapsh
 static u64 draw_with_attrib_state, draw_with_stream_state;
 static u64 draw_enabled_attribs, draw_bad_attrib_stream;
 static u64 draw_zero_count, draw_zero_instances;
+static u64 draw_targets_complete, draw_targets_incomplete, draw_targets_none;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
 
@@ -505,6 +506,40 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
             memcpy(draw.texture, state->texture, sizeof draw.texture);
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
+            draw.target_complete = !!state->targets.valid;
+            for (u32 j = 0; j < state->targets.count && j < 8; j++) {
+                if (!state->targets.color[j]) continue;
+                if ((state->targets.color_views & (1u << j)) && !state->targets.color_view[j].valid) {
+                    draw.target_complete = 0;
+                    continue;
+                }
+                const NvnTextureViewSelection* view =
+                    (state->targets.color_views & (1u << j)) ? &state->targets.color_view[j].selection : NULL;
+                if (nvn_texture_resolve_target(state->targets.color[j], view, &draw.color_target[j]) ==
+                    NVN_TARGET_RESOLVED)
+                    draw.color_target_mask |= 1u << j;
+                else
+                    draw.target_complete = 0;
+            }
+            if (state->targets.depth) {
+                if (state->targets.depth_view && !state->targets.depth_view_data.valid) {
+                    draw.target_complete = 0;
+                } else {
+                    const NvnTextureViewSelection* view =
+                        state->targets.depth_view ? &state->targets.depth_view_data.selection : NULL;
+                    if (nvn_texture_resolve_target(state->targets.depth, view, &draw.depth_target) ==
+                        NVN_TARGET_RESOLVED)
+                        draw.depth_target_bound = 1;
+                    else
+                        draw.target_complete = 0;
+                }
+            }
+            if (!draw.color_target_mask && !draw.depth_target_bound)
+                draw_targets_none++;
+            else if (draw.target_complete)
+                draw_targets_complete++;
+            else
+                draw_targets_incomplete++;
             if (!strncmp(op->name, "nvnCommandBufferDrawElements", 28)) {
                 draw_elements++;
                 draw.indexed = 1;
@@ -1152,6 +1187,8 @@ void nvn_record_report(void) {
             (unsigned long long)draw_enabled_attribs, (unsigned long long)draw_bad_attrib_stream);
         LOG("nvn-draw-noop: zero-count=%llu zero-instances=%llu\n", (unsigned long long)draw_zero_count,
             (unsigned long long)draw_zero_instances);
+        LOG("nvn-draw-targets: complete=%llu incomplete=%llu none=%llu\n", (unsigned long long)draw_targets_complete,
+            (unsigned long long)draw_targets_incomplete, (unsigned long long)draw_targets_none);
     }
     pm_unlock(&lock);
 }

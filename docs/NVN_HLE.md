@@ -323,6 +323,12 @@ one that reads attribute zero. The host draw path must preserve the guest GPU's 
 than assuming every enabled attribute requires a bound vertex buffer. The shader probe previously stopped forever
 after its first eight jobs because its in-flight counter was never released. It now releases each slot after a job
 and skips code addresses already inspected, allowing later shaders to be checked without repeated compilation.
+Draw packets now resolve their selected color and depth attachments through the same texture-and-view resolver used
+by clear packets. They retain texture and pool generations, GPU addresses, formats, dimensions, and selected
+subresources rather than a bare guest texture pointer. In an eight-second Catherine run, all 3,847 observed draws
+had complete targets; in a sixteen-second TotK run, all 1,274 observed draws did too. These are semantic target
+snapshots only. The host renderer still needs a coherent image allocation and binding path shared by clears, draws,
+copies, and presentation.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

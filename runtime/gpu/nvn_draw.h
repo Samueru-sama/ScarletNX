@@ -4,6 +4,7 @@
 #define SNX_NVN_DRAW_H
 #include "abi/cpu.h"
 #include "gpu/nvn_program.h"
+#include "gpu/nvn_texture.h"
 
 #define NVN_DRAW_VERTEX_SLOTS  16
 #define NVN_DRAW_SHADER_STAGES 6
@@ -36,6 +37,8 @@ typedef struct {
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
+    NvnTextureTarget color_target[8], depth_target;
+    u8 color_target_mask, depth_target_bound, target_complete;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;
