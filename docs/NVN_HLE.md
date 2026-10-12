@@ -349,7 +349,18 @@ After adding the three Vulkan format mappings, a twenty-two-second TotK run prep
 buffers. Of those, 2,925 found matching existing surfaces, 223 first differed in depth target size, and 150 selected
 a non-base texture layer. No target lacked a surface at its GPU address, and no format mismatch remained in that run.
 This is a compatibility probe, not an image-coherence guarantee: the existing `Surf` cache represents one base layer
-per image, while NVN targets may name other layers or a differently sized view of the same pool address.
+per image, while NVN targets may name other layers or a differently sized view of the same pool address. The probe
+runs after the guest GPFIFO batch and can see a later active `Surf` at a reused address, so the size counts do not
+establish that those draws lacked a matching surface when they executed. Direct HLE needs to queue semantic commands
+in submission order and own image state at each command rather than reconstructing it afterward.
+When both execution probes are enabled, resolved clear and draw packets now carry a queue-local sequence and enter
+one GPU-thread batch in their original list order. This preserves the order of the commands the probes understand;
+copies, barriers, dispatches, fence operations, and unsupported clears are still absent from the semantic stream.
+Both packet arrays grow to 4,096 entries per flush. In a twenty-two-second TotK run, all 4,992 observed clear
+packets and 3,166 draw packets were staged without overflow. Of the 4,934 clear callbacks completed by report time,
+506 issued into the probe's separate images and 4,428 were rejected; 2,347 rejections were due to its fixed
+16-image cache. Expanding that cache alone would not establish correctness because those images do not yet share
+the guest renderer's content or lifetime rules.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

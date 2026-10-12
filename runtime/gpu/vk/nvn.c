@@ -30,7 +30,7 @@ static VkFmt nvn_format(u32 format) {
     }
 }
 
-static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkImageAspectFlags aspect) {
+static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkImageAspectFlags aspect, int* full) {
     NvnImage* empty = NULL;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
@@ -44,7 +44,10 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
             image->height == target->height && image->format == target->format)
             return image;
     }
-    if (!empty) return NULL;
+    if (!empty) {
+        *full = 1;
+        return NULL;
+    }
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .imageType = VK_IMAGE_TYPE_2D,
                               .format = format,
@@ -97,8 +100,9 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         return 0;
     }
     VkImageAspectFlags aspect = vk_aspect(&format);
-    NvnImage* image = image_for(target, format.vk, aspect);
-    if (!image) return 0;
+    int full = 0;
+    NvnImage* image = image_for(target, format.vk, aspect, &full);
+    if (!image) return full ? -1 : 0;
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_barrier(cb, image->image, aspect,

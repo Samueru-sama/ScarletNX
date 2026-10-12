@@ -33,6 +33,10 @@ typedef struct {
     NvnDrawCommand commands[];
 } NvnDrawBatch;
 typedef struct {
+    u32 count, capacity;
+    NvnClearCommand commands[];
+} NvnClearBatch;
+typedef struct {
     u8 kind;
     u8 ref_count, refs_truncated;
     const char* name; /* stable name in the resolver's process-lifetime table */
@@ -95,6 +99,7 @@ typedef struct {
 } ReplayState;
 typedef struct {
     u64 key;
+    u64 next_sequence;
     ReplayState state;
     u32 pending_roots, pending_clears;
     u8 observed_clear_only;
@@ -102,8 +107,7 @@ typedef struct {
     u8 shader_count;
     u64 vertex_probe_code[8];
     u8 vertex_probe_count;
-    NvnClearCommand clears[8];
-    u8 clear_count;
+    NvnClearBatch* clears;
     NvnDrawBatch* draws;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
@@ -129,7 +133,7 @@ static u64 replay_color_clears, replay_color_target_resolved, replay_color_missi
 static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missing_target, replay_depth_view_unknown,
     replay_depth_stale_target;
 static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
-static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported;
+static u64 clear_staged, clear_flushed, clear_stage_full, clear_issued, clear_unsupported, clear_image_full;
 static u64 preflight_batches, preflight_clear_only, preflight_mixed, preflight_no_clears, preflight_clear_commands;
 static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_invalid;
 static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
@@ -195,6 +199,29 @@ static ReplayQueue* replay_queue_slot(u64 key) {
     return NULL;
 }
 
+static void stage_clear(ReplayQueue* queue, NvnClearCommand command) {
+    NvnClearBatch* batch = queue->clears;
+    if (!batch || batch->count == batch->capacity) {
+        u32 capacity = batch ? batch->capacity * 2 : 8;
+        if (capacity > 4096) capacity = 4096;
+        if (!batch || batch->capacity < capacity) {
+            NvnClearBatch* grown = realloc(batch, sizeof *batch + (size_t)capacity * sizeof command);
+            if (grown) {
+                if (!batch) grown->count = 0;
+                grown->capacity = capacity;
+                queue->clears = batch = grown;
+            }
+        }
+    }
+    if (!batch || batch->count == batch->capacity) {
+        clear_stage_full++;
+        return;
+    }
+    command.sequence = queue->next_sequence++;
+    batch->commands[batch->count++] = command;
+    clear_staged++;
+}
+
 /* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
 static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
@@ -243,14 +270,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     replay_color_target_resolved++;
                     if (queue) queue->pending_clears++;
                     if (clear_execute && queue) {
-                        if (queue->clear_count == 8) {
-                            clear_stage_full++;
-                        } else {
-                            NvnClearCommand* packet = &queue->clears[queue->clear_count++];
-                            *packet = (NvnClearCommand){.kind = NVN_CLEAR_COLOR, .target = target, .mask = clear->mask};
-                            memcpy(packet->color, clear->color, sizeof packet->color);
-                            clear_staged++;
-                        }
+                        NvnClearCommand packet = {.kind = NVN_CLEAR_COLOR, .target = target, .mask = clear->mask};
+                        memcpy(packet.color, clear->color, sizeof packet.color);
+                        stage_clear(queue, packet);
                     }
                 } else if (result == NVN_TARGET_STALE_POOL)
                     replay_target_stale_pool++;
@@ -279,19 +301,14 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     replay_depth_target_resolved++;
                     if (queue) queue->pending_clears++;
                     if (clear_execute && queue) {
-                        if (queue->clear_count == 8) {
-                            clear_stage_full++;
-                        } else {
-                            const NvnClearDepth* clear = op->payload;
-                            NvnClearCommand* packet = &queue->clears[queue->clear_count++];
-                            *packet = (NvnClearCommand){.kind = NVN_CLEAR_DEPTH_STENCIL,
-                                                        .target = target,
-                                                        .depth_bits = clear->depth,
-                                                        .stencil = clear->stencil,
-                                                        .depth_mask = clear->depth_mask,
-                                                        .stencil_mask = clear->stencil_mask};
-                            clear_staged++;
-                        }
+                        const NvnClearDepth* clear = op->payload;
+                        NvnClearCommand packet = {.kind = NVN_CLEAR_DEPTH_STENCIL,
+                                                  .target = target,
+                                                  .depth_bits = clear->depth,
+                                                  .stencil = clear->stencil,
+                                                  .depth_mask = clear->depth_mask,
+                                                  .stencil_mask = clear->stencil_mask};
+                        stage_clear(queue, packet);
                     }
                 } else if (result == NVN_TARGET_STALE_POOL)
                     replay_target_stale_pool++;
@@ -611,6 +628,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     }
                 }
                 if (batch && batch->count < batch->capacity) {
+                    draw.sequence = queue->next_sequence++;
                     batch->commands[batch->count++] = draw;
                     draw_staged++;
                 } else {
@@ -998,25 +1016,27 @@ void nvn_record_before(const CPU* c, const char* name) {
 }
 
 typedef struct {
-    u32 count;
-    NvnClearCommand commands[8];
-} NvnClearBatch;
+    NvnClearBatch* clears;
+    NvnDrawBatch* draws;
+} NvnGpuBatch;
 
-static void execute_clear_batch(void* arg) {
-    NvnClearBatch* batch = arg;
-    for (u32 i = 0; i < batch->count; i++) {
-        if (g_renderer->nvn_clear(&batch->commands[i]))
-            __atomic_fetch_add(&clear_issued, 1, __ATOMIC_RELAXED);
-        else
-            __atomic_fetch_add(&clear_unsupported, 1, __ATOMIC_RELAXED);
-    }
-    free(batch);
-}
-
-static void execute_draw_prepare_batch(void* arg) {
-    NvnDrawBatch* batch = arg;
-    for (u32 i = 0; i < batch->count; i++) {
-        int result = g_renderer->nvn_draw_prepare(&batch->commands[i]);
+static void execute_nvn_batch(void* arg) {
+    NvnGpuBatch* batch = arg;
+    u32 clear = 0, draw = 0;
+    u32 clear_count = batch->clears ? batch->clears->count : 0;
+    u32 draw_count = batch->draws ? batch->draws->count : 0;
+    while (clear < clear_count || draw < draw_count) {
+        if (clear < clear_count &&
+            (draw == draw_count || batch->clears->commands[clear].sequence < batch->draws->commands[draw].sequence)) {
+            int result = g_renderer->nvn_clear(&batch->clears->commands[clear++]);
+            if (result > 0)
+                __atomic_fetch_add(&clear_issued, 1, __ATOMIC_RELAXED);
+            else
+                __atomic_fetch_add(&clear_unsupported, 1, __ATOMIC_RELAXED);
+            if (result == -1) __atomic_fetch_add(&clear_image_full, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        int result = g_renderer->nvn_draw_prepare(&batch->draws->commands[draw++]);
         if (result & NVN_DRAW_PREPARED)
             __atomic_fetch_add(&draw_prepared, 1, __ATOMIC_RELAXED);
         else
@@ -1027,6 +1047,8 @@ static void execute_draw_prepare_batch(void* arg) {
         if (result & NVN_DRAW_TARGET_SIZE) __atomic_fetch_add(&draw_target_size, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_TARGET_VIEW) __atomic_fetch_add(&draw_target_view, 1, __ATOMIC_RELAXED);
     }
+    free(batch->clears);
+    free(batch->draws);
     free(batch);
 }
 
@@ -1035,7 +1057,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
         if (!descriptor_replay) return;
         u64 codes[8];
         u32 count = 0;
-        NvnClearBatch batch = {0};
+        NvnClearBatch* clear_batch = NULL;
         NvnDrawBatch* draw_batch = NULL;
         pm_lock(&lock);
         ReplayQueue* queue = replay_queue_slot(command_buffer);
@@ -1065,11 +1087,13 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
                 queue->vertex_probe_count = 0;
                 shader_flushed += count;
             }
-            if (clear_execute) {
-                batch.count = queue->clear_count;
-                memcpy(batch.commands, queue->clears, (size_t)batch.count * sizeof(NvnClearCommand));
-                queue->clear_count = 0;
-                clear_flushed += batch.count;
+            if (queue->clears) {
+                clear_flushed += queue->clears->count;
+                if (clear_execute && queue->clears->count)
+                    clear_batch = queue->clears;
+                else
+                    free(queue->clears);
+                queue->clears = NULL;
             }
             if (queue->draws) {
                 draw_flushed += queue->draws->count;
@@ -1082,16 +1106,18 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
-        if (batch.count) {
-            NvnClearBatch* owned = malloc(sizeof *owned);
+        if (clear_batch || draw_batch) {
+            NvnGpuBatch* owned = malloc(sizeof *owned);
             if (owned) {
-                *owned = batch;
-                gpu_call(execute_clear_batch, owned);
+                owned->clears = clear_batch;
+                owned->draws = draw_batch;
+                gpu_call(execute_nvn_batch, owned);
             } else {
+                free(clear_batch);
+                free(draw_batch);
                 __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
             }
         }
-        if (draw_batch) gpu_call(execute_draw_prepare_batch, draw_batch);
         return;
     }
     if (strcmp(name, "nvnCommandBufferEndRecording")) return;
@@ -1197,6 +1223,9 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&clear_issued, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&clear_unsupported, __ATOMIC_RELAXED),
                 (unsigned long long)clear_stage_full);
+        if (clear_execute)
+            LOG("nvn-clear-image: cache-full=%llu\n",
+                (unsigned long long)__atomic_load_n(&clear_image_full, __ATOMIC_RELAXED));
         LOG("nvn-preflight: batches=%llu observed-clear-only=%llu mixed=%llu no-clears=%llu clear-commands=%llu\n",
             (unsigned long long)preflight_batches, (unsigned long long)preflight_clear_only,
             (unsigned long long)preflight_mixed, (unsigned long long)preflight_no_clears,

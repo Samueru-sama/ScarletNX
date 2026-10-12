@@ -33,6 +33,7 @@ typedef struct {
     u32 stride, divisor;
 } NvnVertexStream;
 typedef struct {
+    u64 sequence;
     NvnStageProgram program[NVN_DRAW_SHADER_STAGES];
     u8 program_bound;
     NvnBufferRange vertex[NVN_DRAW_VERTEX_SLOTS];
