@@ -7,19 +7,22 @@
 typedef struct {
     u64 texture, pool, offset;
     u64 gpu_address;
+    i64 stride;
     u32 flags, target, width, height, depth, levels, format, samples;
-    u32 storage_size;
+    u32 storage_size, storage_class;
     int size_known;
     int address_known;
+    int stride_known, storage_class_known;
     int valid;
 } NvnTextureCall;
 
 typedef struct {
     u64 generation, pool, pool_generation, offset;
     u64 gpu_address;
+    i64 stride;
     u32 flags, target, width, height, depth, levels, format, samples;
-    u32 storage_size;
-    int address_known;
+    u32 storage_size, storage_class;
+    int address_known, stride_known, storage_class_known;
 } NvnTextureSnapshot;
 
 typedef struct {
@@ -33,7 +36,10 @@ int nvn_texture_view_snapshot(u64 ptr, NvnTextureViewSelection* out);
 
 typedef struct {
     u64 texture, pool, gpu_address, texture_generation, pool_generation;
+    i64 stride;
     u32 width, height, depth, levels, format, target, samples, flags;
+    u32 storage_class;
+    u8 stride_known, storage_class_known;
     NvnTextureViewSelection view;
 } NvnTextureTarget;
 

@@ -376,6 +376,14 @@ explicit filter and wrap state (3,687/3,687 and 3,738/3,738). TotK called the LO
 reduction, and border setters for 2,001 samplers, anisotropy for 131, and LOD snap for none. Its 2,001 border-color
 pointers were copied without a read failure. Correctly translating the unobserved SDK defaults and custom border
 colors remains necessary before creating Vulkan samplers for all draws.
+The observer now calls the guest SDK's pure `nvnTextureGetStride` and `nvnTextureGetStorageClass` getters after a
+successful texture initialization, alongside its existing storage-size and GPU-address getters. [The SDK API declares
+both getters](https://code.botw.link/uking/uking/lib/NintendoSDK/include/nvn/nvn_FuncPtrInline.h.html), and using
+their results avoids guessing version-specific object offsets. Catherine returned both values for all 202 textures
+observed in one run; TotK did so for all 5,959. In that TotK run, 5,935 textures had zero stride and 24 had a
+positive stride; six storage-class values appeared. A zero stride does not by itself specify block height, mip
+offsets, or array-layer packing. Those address rules still need to be translated before sharing NVN images with the
+Vulkan surface cache.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

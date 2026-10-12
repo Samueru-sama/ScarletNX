@@ -11,8 +11,9 @@
 /* Texture metadata and pool generations only. Storage layout and contents remain owned by the guest SDK. */
 typedef struct {
     u64 key, generation, pool, offset, pool_generation, gpu_address;
-    u32 flags, target, width, height, depth, levels, format, samples, storage_size;
-    u8 alive, size_known, address_known;
+    i64 stride;
+    u32 flags, target, width, height, depth, levels, format, samples, storage_size, storage_class;
+    u8 alive, size_known, address_known, stride_known, storage_class_known;
 } Texture;
 #define TEXTURE_SLOTS 32768
 static Texture textures[TEXTURE_SLOTS];
@@ -21,6 +22,13 @@ static u64 initialized, failed, finalized, live, reinitialized, invalid_builders
 static u64 no_pool, untracked_pools, offset_outside_pool, unknown_finalizes;
 static u64 sizes_known, sizes_unavailable, footprint_outside_pool;
 static u64 addresses_known, addresses_unavailable, address_mismatches;
+static u64 strides_known, strides_unavailable, storage_classes_known, storage_classes_unavailable;
+static u64 stride_zero, stride_positive, stride_negative;
+static struct {
+    u32 value;
+    u64 count;
+} class_counts[32];
+static u32 class_count;
 static u32 view_layout;
 
 void nvn_texture_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction) {
@@ -153,6 +161,10 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                 t->size_known = call->size_known;
                 t->gpu_address = call->gpu_address;
                 t->address_known = call->address_known;
+                t->stride = call->stride;
+                t->stride_known = call->stride_known;
+                t->storage_class = call->storage_class;
+                t->storage_class_known = call->storage_class_known;
                 t->alive = 1;
                 initialized++;
                 nvn_alias_retire(NVN_ALIAS_TEXTURE, t->key);
@@ -160,6 +172,27 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                     sizes_known++;
                 else
                     sizes_unavailable++;
+                if (call->stride_known) {
+                    strides_known++;
+                    if (call->stride > 0)
+                        stride_positive++;
+                    else if (call->stride < 0)
+                        stride_negative++;
+                    else
+                        stride_zero++;
+                } else
+                    strides_unavailable++;
+                if (call->storage_class_known) {
+                    storage_classes_known++;
+                    u32 slot = 0;
+                    while (slot < class_count && class_counts[slot].value != call->storage_class) slot++;
+                    if (slot == class_count && class_count < 32) {
+                        class_counts[slot].value = call->storage_class;
+                        class_count++;
+                    }
+                    if (slot < class_count) class_counts[slot].count++;
+                } else
+                    storage_classes_unavailable++;
                 if (call->address_known) {
                     addresses_known++;
                     if (pool_found && pool.gpu_seen && call->offset < pool.size &&
@@ -211,6 +244,14 @@ void nvn_texture_report(void) {
     LOG("nvn-texture: addresses-known=%llu unavailable=%llu pool-mismatches=%llu\n",
         (unsigned long long)addresses_known, (unsigned long long)addresses_unavailable,
         (unsigned long long)address_mismatches);
+    LOG("nvn-texture-layout: strides-known=%llu unavailable=%llu classes-known=%llu unavailable=%llu\n",
+        (unsigned long long)strides_known, (unsigned long long)strides_unavailable,
+        (unsigned long long)storage_classes_known, (unsigned long long)storage_classes_unavailable);
+    LOG("nvn-texture-layout: stride-zero=%llu positive=%llu negative=%llu\n", (unsigned long long)stride_zero,
+        (unsigned long long)stride_positive, (unsigned long long)stride_negative);
+    for (u32 i = 0; i < class_count; i++)
+        LOG("nvn-texture-class: value=%x count=%llu\n", class_counts[i].value,
+            (unsigned long long)class_counts[i].count);
     pm_unlock(&lock);
 }
 
@@ -225,6 +266,10 @@ int nvn_texture_snapshot(u64 texture, NvnTextureSnapshot* out) {
         out->offset = t->offset;
         out->storage_size = t->storage_size;
         out->gpu_address = t->gpu_address;
+        out->stride = t->stride;
+        out->stride_known = t->stride_known;
+        out->storage_class = t->storage_class;
+        out->storage_class_known = t->storage_class_known;
         out->address_known = t->address_known;
         out->flags = t->flags;
         out->target = t->target;
@@ -259,6 +304,7 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
     *out = (NvnTextureTarget){.texture = texture,
                               .pool = t.pool,
                               .gpu_address = t.gpu_address,
+                              .stride = t.stride,
                               .texture_generation = t.generation,
                               .pool_generation = t.pool_generation,
                               .width = t.width,
@@ -269,6 +315,9 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
                               .target = (selection.flags & 32) ? selection.target : t.target,
                               .samples = t.samples,
                               .flags = t.flags,
+                              .storage_class = t.storage_class,
+                              .stride_known = t.stride_known,
+                              .storage_class_known = t.storage_class_known,
                               .view = selection};
     return NVN_TARGET_RESOLVED;
 }
