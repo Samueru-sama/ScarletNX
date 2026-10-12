@@ -217,6 +217,9 @@ missing or stale sampler result, untracked registration, or table loss.
 In later draw-preparation boots, Catherine copied all four registered TSCs and carried one on all 3,897
 texture-using draws. TotK copied all 119 registered TSCs and carried one on all 3,562 texture-using draws. Neither
 run had a missing or all-zero sampler descriptor.
+With `SNX_NVN_DRAW_PREPARE=1`, the GPU-thread preparation pass now feeds captured TSCs to the existing cached Vulkan
+sampler constructor. It reports draws whose samplers were created or reused, missing descriptors, and Vulkan creation
+failures. These samplers are host resources for future HLE draws; the guest GPU path still renders the frame.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
