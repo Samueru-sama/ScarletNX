@@ -60,11 +60,13 @@ It associates records with the handle returned by `EndRecording`, copies nested-
 the argument array, and checks
 the handles passed to `QueueSubmitCommands`. The original guest SDK calls still execute and render. The records do
 not contain resource state or enough information to replay with the host renderer; this mode is for measuring the
-shape and coverage of a future direct front end. Each list keeps at most 16,384 selected operations and each nested
-call keeps at most eight handles. The summary reports truncated records, invalid guest arrays, allocation failures,
+shape and coverage of a future direct front end. Each list keeps at most 32,768 selected operations and each nested
+call copies up to 4,096 handles. The summary reports truncated records, invalid guest arrays, allocation failures,
 and storage evictions. A list whose `BeginRecording` was not observed is marked opaque, even when selected operations
 on that command buffer were captured. Opaque therefore describes an incomplete lifecycle, not necessarily an empty
-record.
+record. In an 80-second hooked Odyssey run, 1,868 frames replayed without a truncated list or dropped operation;
+the old 16,384-operation cap had dropped about 3,300 operations. A 30-second Scarlet run replayed 760 frames with
+zero truncated nested-list references after replacing the eight-handle snapshot.
 
 In a Catherine 120-frame run, all 122 submitted lists were found, containing 1,239 draws, 610 clears, 16,164 state
 or bind calls, 157 transfers, and 1,220 barriers. No operations were dropped. TotK's boot uses a different structure:

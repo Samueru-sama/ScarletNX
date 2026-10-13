@@ -43,7 +43,8 @@ typedef struct {
 } NvnCopyBatch;
 typedef struct {
     u8 kind;
-    u8 ref_count, refs_truncated;
+    u8 refs_truncated;
+    u16 ref_count;
     const char* name; /* stable name in the resolver's process-lifetime table */
     u64 args[7];      /* x1..x7 at the NVN call boundary */
     u64 refs[8];      /* CallCommands list handles, copied before the guest may reuse its array */
@@ -1016,7 +1017,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     queue->last_unmodeled_write = queue->next_sequence++;
                 }
             }
-            for (u32 j = 0; j < op->ref_count; j++) replay_list(op->refs[j], state, queue, depth + 1);
+            const u64* refs = op->ref_count > 8 ? op->payload : op->refs;
+            for (u32 j = 0; j < op->ref_count; j++) replay_list(refs[j], state, queue, depth + 1);
         }
     }
 }
@@ -1444,13 +1446,22 @@ void nvn_record_before(const CPU* c, const char* name) {
                     op->name = name;
                     memcpy(op->args, &c->x[1], sizeof op->args);
                     snapshot_semantic(op, c);
-                    if (op_kind == OP_CALL && (u32)c->x[1] <= 4096 &&
-                        (!(u32)c->x[1] || readable_range(c->x[2], (u64)(u32)c->x[1] * 8))) {
+                    if (op_kind == OP_CALL) {
                         u32 count = (u32)c->x[1];
-                        op->ref_count = count < 8 ? count : 8;
-                        op->refs_truncated = count > 8;
-                        truncated_refs += count > 8;
-                        for (u32 i = 0; i < op->ref_count; i++) op->refs[i] = gr64(c->x[2] + (u64)i * 8);
+                        if (count > 4096 || (count && !readable_range(c->x[2], (u64)count * 8))) {
+                            op->refs_truncated = 1;
+                        } else {
+                            u64* refs = count > 8 ? malloc((size_t)count * sizeof *refs) : op->refs;
+                            if (!refs) {
+                                allocation_failures++;
+                                op->refs_truncated = 1;
+                            } else {
+                                op->ref_count = (u16)count;
+                                if (count > 8) op->payload = refs;
+                                for (u32 i = 0; i < count; i++) refs[i] = gr64(c->x[2] + (u64)i * 8);
+                            }
+                        }
+                        truncated_refs += op->refs_truncated;
                     }
                 }
             }
