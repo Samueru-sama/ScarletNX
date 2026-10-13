@@ -500,6 +500,15 @@ depth bounds and discard on 3,726. Neither boot called the sample-mask setter. T
 Vulkan dynamic-state commands. The future host path must apply SDK defaults when a setter was not observed and reject
 or translate unsupported state before recording a host draw.
 
+Texture-image preparation now checks the queued descriptor's texture and backing-pool generations again on the GPU
+thread before using either a semantic image or the copied TIC. In separate Catherine and TotK boot runs with the
+texture-load probe enabled, 3,759 and 2,011 draws prepared texture images, while 8 and 6 were rejected as stale;
+TotK reused a semantic image for 11 draws. The probe still does not bind these images for presentation. A longer
+direct-call-hooked Super Mario Odyssey run reached 1,849 frames and replayed 116,195 draws, but none had a complete
+sampler descriptor or a readable texture-header base. Its observer reported 131 untracked sampler registrations out
+of 132 and all 3,724 texture-header copies missing a base. That title needs descriptor-pool and sampler-lifetime
+coverage before the texture-image path can be evaluated there.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
