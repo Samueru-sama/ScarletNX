@@ -288,6 +288,8 @@ typedef struct {
     u32 n;
 } VkCbReads;
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
+/* Scope a shader translation to the NVN-generated texture/image handle words in CBUF 2. Passing NULL clears it. */
+void vk_shader_set_nvn_handle_bank(const u32* words, const u8* known, u32 word_count);
 /* shader_to_glsl, reading constant buffers through read and recording what it read into reads */
 char* vk_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, VkCbReader read, VkCbReads* reads);
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read); /* BRX tables through read */

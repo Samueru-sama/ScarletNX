@@ -669,6 +669,25 @@ static int prepare_vertex_formats(const NvnDrawCommand* command, u32 shader_inpu
     return 1;
 }
 
+enum { NVN_HANDLE_BANK_WORDS = 72 + 2 * NVN_DRAW_IMAGE_SLOTS };
+
+static void build_handle_bank(const NvnDrawCommand* command, u32 stage, u32* words, u8* known) {
+    memset(words, 0, NVN_HANDLE_BANK_WORDS * sizeof *words);
+    memset(known, 0, NVN_HANDLE_BANK_WORDS * sizeof *known);
+    /* The SDK writes texture handles at words 8, 10, ... and image handles at 72, 74, ... in CBUF 2.
+       Only the low handle words have been verified against the generated Maxwell bank. */
+    for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++)
+        if (command->texture_bound[stage] & (1u << i)) {
+            words[8 + 2 * i] = (u32)command->texture[stage][i];
+            known[8 + 2 * i] = 1;
+        }
+    for (u32 i = 0; i < NVN_DRAW_IMAGE_SLOTS; i++)
+        if (command->image_bound[stage] & (1u << i)) {
+            words[72 + 2 * i] = (u32)command->image[stage][i];
+            known[72 + 2 * i] = 1;
+        }
+}
+
 static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex, VkSh** fragment_shader) {
     if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
     u64 vertex_a = 0, vertex_b = 0, fragment = 0;
@@ -745,6 +764,10 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
                 g_vk_cb[row][i + 3] = command->uniform[stage][i].address;
                 g_vk_cbsize[row][i + 3] = (u32)command->uniform[stage][i].size;
             }
+        u32 handle_words[NVN_HANDLE_BANK_WORDS];
+        u8 handle_known[NVN_HANDLE_BANK_WORDS];
+        build_handle_bank(command, stage, handle_words, handle_known);
+        vk_shader_set_nvn_handle_bank(handle_words, handle_known, NVN_HANDLE_BANK_WORDS);
         VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
                                      stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, stage ? 0 : attr_int,
                                      stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0, 0, 0, 0);
@@ -785,6 +808,7 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
             else if (!images_known)
                 shader = NULL;
         }
+        vk_shader_set_nvn_handle_bank(NULL, NULL, 0);
         memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
         memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
         if (!shader || !shader->mod || shader->failed || shader->si.unsupported) {

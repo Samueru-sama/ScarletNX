@@ -30,8 +30,22 @@ static VkPipelineCache g_pcache;
 u64 g_vk_cb[5][18];
 u32 g_vk_cbsize[5][18];
 static int g_sh_bind; /* the stage whose constant buffers the translator reads */
+static const u32* g_nvn_handle_words;
+static const u8* g_nvn_handle_known;
+static u32 g_nvn_handle_count;
+
+void vk_shader_set_nvn_handle_bank(const u32* words, const u8* known, u32 word_count) {
+    g_nvn_handle_words = words;
+    g_nvn_handle_known = known;
+    g_nvn_handle_count = words && known ? word_count : 0;
+}
 
 static int sh_cb_read(u32 idx, u32 off, u32* out) {
+    if (idx == 2 && g_nvn_handle_count && !(off & 3) && off / 4 < g_nvn_handle_count &&
+        g_nvn_handle_known[off / 4]) {
+        *out = g_nvn_handle_words[off / 4];
+        return 1;
+    }
     if (idx >= 18) return 0;
     u64 a = g_vk_cb[g_sh_bind][idx];
     u32 sz = g_vk_cbsize[g_sh_bind][idx];

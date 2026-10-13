@@ -584,6 +584,14 @@ An additional Scarlet draw probe observed application fragment slots 0 and 1 at 
 at bank `slot + 3` and leaves the first three banks unbound rather than supplying unrelated application data. This
 corrects the known application-buffer mapping for shader translation, but the generated bank contents still need to
 be reconstructed before a direct draw can bind complete descriptor sets.
+The texture and image handle portion of generated CBUF 2 can be reconstructed from recorded bindings: low texture
+handle words are at `8 + 2*slot`, and low image handle words at `72 + 2*slot`. A diagnostic compared bound texture
+slots of each batch's last recorded draw with the Maxwell bank visible after the SDK submission. Catherine matched
+1,000/1,000 sampled entries and Scarlet matched 16,000/16,000; TotK matched about 82%, with mismatches concentrated
+in fragment state after secondary-list execution, so that end-state comparison is not draw-by-draw proof for TotK.
+Shader materialization now supplies only those known low words from the semantic NVN bindings to its CBUF reader;
+unknown words remain unavailable. This makes the shader translation input independent of the emulated GPU's later
+CBUF 2 state. A host draw still needs an uploaded buffer containing the full generated bank and descriptor bindings.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
