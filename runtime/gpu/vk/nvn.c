@@ -1348,10 +1348,10 @@ static VkPipeline prepare_draw_pipeline(const NvnDrawCommand* command, const VkS
     return pipeline;
 }
 
-static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format) {
+static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format, u32 layer) {
     for (u32 i = 0; i < 16; i++)
         if (image->attachments[i].view && image->attachments[i].format == format &&
-            !image->attachments[i].mip && !image->attachments[i].layer)
+            !image->attachments[i].mip && image->attachments[i].layer == layer)
             return image->attachments[i].view;
     return VK_NULL_HANDLE;
 }
@@ -1399,7 +1399,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !triangles && !indexed_triangles) || !command->count || !command->instance_count ||
         !fill_polygon ||
-        (command->color_state != 0x08030000u && command->color_state != 0x08030100u) ||
+        (command->color_state & 0xffff00ffu) != 0x08030000u ||
         (key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
          (((command->depth_stencil_state[0] & 1) &&
@@ -1413,13 +1413,17 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         (command->color_target[0].format != 0x0a && command->color_target[0].format != 0x25 &&
          command->color_target[0].format != 0x29 && command->color_target[0].format != 0x38 &&
          command->color_target[0].format != 0x3d && command->color_target[0].format != 0x3f) ||
-        command->color_target[0].target != 1 || command->color_target[0].storage_target != 1 ||
-        command->color_target[0].view.base_level || command->color_target[0].view.first_layer ||
+        command->color_target[0].target != 1 ||
+        (command->color_target[0].storage_target != 1 && command->color_target[0].storage_target != 4 &&
+         command->color_target[0].storage_target != 8) ||
+        command->color_target[0].view.base_level || command->color_target[0].view.first_layer >= 64 ||
         (command->depth_target_bound &&
          ((command->depth_target.format != 0x32 && command->depth_target.format != 0x34 &&
            command->depth_target.format != 0x35) || command->depth_target.target != 1 ||
-          command->depth_target.storage_target != 1 || command->depth_target.view.base_level ||
-          command->depth_target.view.first_layer || command->color_target[0].width != command->depth_target.width ||
+          (command->depth_target.storage_target != 1 && command->depth_target.storage_target != 4 &&
+           command->depth_target.storage_target != 8) ||
+          command->depth_target.view.base_level || command->depth_target.view.first_layer >= 64 ||
+          command->color_target[0].width != command->depth_target.width ||
           command->color_target[0].height != command->depth_target.height)) ||
         key->nbind != key->nattr || key->nbind > 32)
         return 0;
@@ -1429,6 +1433,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     u64 effective_unknown = effective_unknown_write(command->last_unmodeled_write);
     const NvnTextureTarget* color_target = &command->color_target[0];
     const NvnTextureTarget* depth_target = &command->depth_target;
+    u32 color_layer = color_target->view.first_layer;
+    u32 depth_layer = depth_target->view.first_layer;
     float vp_data[4];
     memcpy(vp_data, command->viewport[0], sizeof vp_data);
     if (!(vp_data[2] > 0 && vp_data[3] > 0) || vp_data[0] < 0 || vp_data[1] < 0 ||
@@ -1642,11 +1648,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                           ? image_for(depth_target, depth_format.vk, vk_aspect(&depth_format), &full) : NULL;
     if (!color || !color->attachment || (command->depth_target_bound && (!depth || !depth->attachment))) return 0;
     if (depth && (command->depth_stencil_state[0] & 1) &&
-        (!(depth->depth_layers[0] & 1) || depth->subresource_sequence[0][0] <= effective_unknown)) {
+        (!(depth->depth_layers[0] & (1ull << depth_layer)) ||
+         depth->subresource_sequence[0][depth_layer] <= effective_unknown)) {
         return 0;
     }
-    VkImageView color_view = shadow_attachment_view(color, color_format.vk);
-    VkImageView depth_view = depth ? shadow_attachment_view(depth, depth_format.vk) : VK_NULL_HANDLE;
+    VkImageView color_view = shadow_attachment_view(color, color_format.vk, color_layer);
+    VkImageView depth_view = depth ? shadow_attachment_view(depth, depth_format.vk, depth_layer) : VK_NULL_HANDLE;
     if (!color_view || (depth && !depth_view)) return 0;
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
@@ -1688,8 +1695,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     int color_written = (fragment->si.sph[18] & 15) && key->blend[0].mask;
-    int prior_covered = (color->color_layers[0] & 1) &&
-                        color->subresource_sequence[0][0] > effective_unknown;
+    int prior_covered = (color->color_layers[0] & (1ull << color_layer)) &&
+                        color->subresource_sequence[0][color_layer] > effective_unknown;
     static int sample_first = 1;
     static int force_capture = -1;
     if (force_capture < 0) {
@@ -1795,7 +1802,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             color->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             color->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             color->access = VK_ACCESS_2_TRANSFER_READ_BIT;
-            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, color_layer, 1},
                                       .imageExtent = {color_target->width, color_target->height, 1}};
             vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
             vk_finish();
@@ -1828,10 +1835,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (color_written) {
         preserved = capture ? capture_full : preserved;
         if (preserved) {
-            color->color_layers[0] |= 1;
-            color->subresource_sequence[0][0] = command->sequence;
+            color->color_layers[0] |= 1ull << color_layer;
+            color->subresource_sequence[0][color_layer] = command->sequence;
         } else {
-            color->color_layers[0] &= ~1ull;
+            color->color_layers[0] &= ~(1ull << color_layer);
         }
     }
     mark_modeled_unknown(command->sequence + 1, command->last_unmodeled_write);
@@ -2209,6 +2216,11 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
            those shadow attachments before returning from any of the surface checks below. */
         if (!draw_pipeline) scope_unmodeled_draw(command, vertex_shader, fragment_shader);
     }
+    /* Shadow rendering owns a separate NVN image. Maxwell's surface cache can expose another mip, layer, or
+       dimensions at the same address; those comparisons are diagnostics, not prerequisites for an NVN draw. */
+    if (draw_pipeline &&
+        !shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key, embedded_bank1))
+        scope_unmodeled_draw(command, vertex_shader, fragment_shader);
     for (u32 i = 0; i < 8; i++) {
         if (!(command->color_target_mask & (1u << i))) continue;
         const NvnTextureTarget* target = &command->color_target[i];
@@ -2252,8 +2264,5 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_VIEW;
         }
     }
-    if (draw_pipeline &&
-        !shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key, embedded_bank1))
-        scope_unmodeled_draw(command, vertex_shader, fragment_shader);
     return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_SHARED_TARGET;
 }

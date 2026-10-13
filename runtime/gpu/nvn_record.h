@@ -17,5 +17,6 @@ void nvn_record_enable_texture_load(void);
 void nvn_record_enable_attachment_prepare(void);
 void nvn_record_enable_shader_materialize(void);
 void nvn_record_enable_pipeline_prepare(void);
+void nvn_record_enable_inlined_draws(void);
 void nvn_record_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction);
 #endif

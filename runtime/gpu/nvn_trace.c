@@ -269,6 +269,7 @@ void nvn_trace_init(void) {
     const char* shader_materialize_env = getenv("SNX_NVN_SHADER_MATERIALIZE");
     const char* pipeline_prepare_env = getenv("SNX_NVN_PIPELINE_PREPARE");
     const char* shadow_draw_env = getenv("SNX_NVN_SHADOW_DRAW");
+    const char* inlined_draw_env = getenv("SNX_NVN_INLINED_DRAW");
     const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
@@ -302,6 +303,7 @@ void nvn_trace_init(void) {
     if (attachment_prepare) nvn_record_enable_attachment_prepare();
     if (shader_materialize) nvn_record_enable_shader_materialize();
     if (pipeline_prepare) nvn_record_enable_pipeline_prepare();
+    if (shadow_draw && inlined_draw_env && !strcmp(inlined_draw_env, "1")) nvn_record_enable_inlined_draws();
     if (shader_translate) {
         nvn_program_enable_translation();
         nvn_record_enable_shader_transport();

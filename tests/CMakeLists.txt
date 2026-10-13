@@ -76,6 +76,10 @@ add_executable(snx-test-astc astc_decode.c "${PROJECT_SOURCE_DIR}/runtime/gpu/te
 snx_test_target(snx-test-astc 23)
 add_test(NAME astc_decode COMMAND snx-test-astc)
 
+add_executable(snx-test-nvn-command-gap nvn_command_gap.c "${PROJECT_SOURCE_DIR}/runtime/gpu/nvn_command_gap.c")
+snx_test_target(snx-test-nvn-command-gap 23)
+add_test(NAME nvn_command_gap COMMAND snx-test-nvn-command-gap)
+
 add_executable(snx-test-fs-fixture filesystem_fixture.c)
 snx_test_target(snx-test-fs-fixture 90)
 target_link_libraries(snx-test-fs-fixture PRIVATE snx_test_common)

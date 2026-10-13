@@ -836,7 +836,7 @@ uses an image prepared the storage view. The remaining bound-image draws do not 
 Host descriptor writes, storage-image layout transitions, write ordering, and draw submission remain required.
 
 In a TotK boot comparison, the first 640×360 RGBA16F shadow target differed from the Maxwell target in exactly
-its top 36 rows (23,040 pixels). The direct NVN path issued all 31 recorded draws for that target, but the Maxwell
+its top 36 rows (23,040 pixels). The direct NVN path staged all 31 recorded draws for that target, but the Maxwell
 renderer had issued three earlier draws on the same target with one vertex attribute and index counts 1,656, 3,384,
 and 3,384. All three used GPU channel 20, the same channel as the subsequent recorded draw, and occupied one GPFIFO
 entry immediately before the first recorded draw's entry. None appeared among those 31 recorded NVN draws.
@@ -850,16 +850,33 @@ A byte comparison resolved that ambiguity. The entire 979-word GPFIFO entry cont
 matched a contiguous span of the NVN command pool supplied to the **second** new secondary list, the one with 39
 recorded draws. In one run, the entry matched pool offset `0xc110d4`, within that list's `AddCommandMemory` range
 `0xc01e98..0x1000000`. In another run the ring-buffer offsets changed, but the same entry matched at `0x12134`,
-within the corresponding list's `0x2ef8..0x400000` range. The Maxwell draw methods occurred at words 489, 814,
-and 972 of that entry. The preceding list's zero direct-draw count was a misleading clue: the missing commands are
-encoded in the same secondary list as later observed NVN draws. Recovering those inlined draw calls requires parsing
-or observing this list's encoded command stream and preserving their position relative to its exported API calls.
+within the corresponding list's `0x2ef8..0x400000` range. The renderer flushed the three pending draws while
+processing words 489, 814, and 972 of that entry; these are flush positions, not necessarily the encoded draw
+packets, because Maxwell MME macros can issue the draw before a later state change flushes it. The preceding list's
+zero direct-draw count was a misleading clue: the missing commands are encoded in the same secondary list as later
+observed NVN draws.
+
+TotK's command-buffer cursor at object offset zero points into the supplied command pool. Between exported calls,
+it exposes 48-byte gaps before recorded operations 103, 128, and 153. Each gap ends in a complete indexed-draw MME
+packet with counts 1,656, 3,384, and 3,384 respectively. `SNX_NVN_INLINED_DRAW=1` now recognizes that validated
+packet form and inserts a draw record at the gap's position. One 65-second boot captured 20,629 such draws; the
+decoder rejects malformed or incomplete packets and leaves other gaps unmodeled. The flag is opt-in because the
+resulting draws still lack some shader constant-buffer state, so the direct renderer cannot issue them reliably.
+For the first 1,656-index draw, the emulated vertex shader had CBUF banks 3 and 4 bound, while the NVN recorder had
+no application uniform slots 0 or 1 at that point. A later recorded slot 5 matched Maxwell bank 8, consistent with
+the established application-slot-plus-three mapping where a binding exists. The missing bank 3 and 4 bindings must
+be recovered from the encoded stream in order; inventing uniform data would invalidate the comparison.
+
+The shadow renderer now selects the prepared attachment layer and tracks coverage per layer. It also attempts its
+NVN-owned draw before testing Maxwell's surface-cache shape, which can describe a different view at the same GPU
+address. A default TotK boot issued a shadow Vulkan draw to the first 640×360 target after these changes. This does
+not resolve the missing uniform bindings or establish image parity.
 Temporarily omitting only those three Maxwell draws
 made the two targets match byte-for-byte (0/230,400 different pixels); that omission was removed after diagnosis.
 The direct draw itself left a forced magenta target unchanged, including with depth testing, culling, and blending
-disabled independently. This establishes a command-coverage gap for the first three draws, not a wrong color value
-from the 31 direct draws. Recovering the source and semantics of those unobserved commands is required before the
-direct path can replace their GPFIFO execution or certify whole-frame parity.
+disabled independently. This established the initial command-coverage gap, rather than a wrong color value from the
+31 staged draws. The new draw records close that count gap, but full encoded-state capture and image comparison are
+still required before replacing GPFIFO execution.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

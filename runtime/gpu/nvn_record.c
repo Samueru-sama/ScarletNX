@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_record.h"
+#include "gpu/nvn_command_gap.h"
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
@@ -90,6 +91,7 @@ typedef struct {
 } NvnDynamicArray;
 typedef struct {
     u64 key;
+    u64 command_cursor, command_low, command_high;
     NvnOp* ops;
     u16 count, capacity;
     u8 truncated, opaque, implicit_counted;
@@ -101,6 +103,8 @@ typedef struct {
 static NvnList active[ACTIVE_SLOTS], lists[LIST_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_found, submitted_missing, submitted_opaque;
+static u64 inlined_draws, inlined_gaps, inlined_unparsed;
+static int inlined_draw_replay;
 static u64 calls, call_refs, call_ref_missing, call_ref_opaque, truncated_refs;
 static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, invalid_arrays, allocation_failures;
 static u64 captured[OP_COUNT], ended_ops[OP_COUNT], submitted_ops[OP_COUNT], referenced_ops[OP_COUNT];
@@ -295,6 +299,7 @@ void nvn_record_enable_pipeline_prepare(void) {
     shader_materialize = 1;
     pipeline_prepare = 1;
 }
+void nvn_record_enable_inlined_draws(void) { inlined_draw_replay = 1; }
 
 static ReplayQueue* replay_queue_slot(u64 key) {
     if (!key) return NULL;
@@ -1182,6 +1187,43 @@ static int readable_range(u64 addr, u64 size) {
     return 1;
 }
 
+static int inlined_indexed_draw(u64 address, u64 size, u64 args[7]) {
+    if (size < 24 || size > 65536 || (size & 3) || !readable_range(address, size)) return 0;
+    NvnGapIndexedDraw draw;
+    if (!nvn_command_gap_indexed_draw((const u32*)GP(address), (u32)(size / 4), &draw)) return 0;
+    args[0] = draw.primitive;
+    args[1] = draw.index_type;
+    args[2] = draw.count;
+    args[3] = draw.index_address;
+    return 1;
+}
+
+static void append_inlined_draw(NvnList* list, const u64 args[7]) {
+    if (list->count == MAX_OPS) {
+        list->truncated = 1;
+        dropped_ops++;
+        return;
+    }
+    if (list->count == list->capacity) {
+        u16 capacity = list->capacity ? list->capacity * 2 : 16;
+        NvnOp* grown = realloc(list->ops, (size_t)capacity * sizeof *grown);
+        if (!grown) {
+            allocation_failures++;
+            list->truncated = 1;
+            dropped_ops++;
+            return;
+        }
+        list->ops = grown;
+        list->capacity = capacity;
+    }
+    NvnOp* op = &list->ops[list->count++];
+    memset(op, 0, sizeof *op);
+    op->kind = OP_DRAW;
+    op->name = "nvnCommandBufferDrawElements";
+    memcpy(op->args, args, sizeof op->args);
+    inlined_draws++;
+}
+
 /* Fingerprint the observed SDK's default constructor, which writes the entire view object. */
 void nvn_record_set_view_layout(u32 first_instruction, u32 second_instruction, u32 third_instruction) {
     nvn_texture_set_view_layout(first_instruction, second_instruction, third_instruction);
@@ -1608,6 +1650,18 @@ void nvn_record_before(const CPU* c, const char* name) {
         pm_unlock(&lock);
         return;
     }
+    if (inlined_draw_replay && r->key == c->x[0] && r->opaque && r->command_cursor &&
+        readable_range(c->x[0], 8)) {
+        u64 cursor = gr64(c->x[0]);
+        if (r->command_cursor >= r->command_low && cursor <= r->command_high && cursor > r->command_cursor) {
+            u64 args[7] = {0};
+            inlined_gaps++;
+            if (inlined_indexed_draw(r->command_cursor, cursor - r->command_cursor, args))
+                append_inlined_draw(r, args);
+            else
+                inlined_unparsed++;
+        }
+    }
     if (!strcmp(name, "nvnCommandBufferBeginRecording")) {
         if (r->key && r->key != UINT64_MAX && r->key != c->x[0]) active_collisions++;
         reset(r);
@@ -1621,6 +1675,16 @@ void nvn_record_before(const CPU* c, const char* name) {
             reset(r);
             r->key = c->x[0];
             r->opaque = 1; /* command-buffer activity without a visible BeginRecording */
+        }
+        if (inlined_draw_replay && !strcmp(name, "nvnCommandBufferAddCommandMemory")) {
+            NvnPoolSnapshot pool = {0};
+            u64 offset = c->x[2], size = c->x[3];
+            if (nvn_pool_snapshot(c->x[1], &pool) && pool.storage && offset <= pool.size &&
+                size <= pool.size - offset && pool.storage <= UINT64_MAX - offset - size) {
+                r->command_low = pool.storage + offset;
+                r->command_high = r->command_low + size;
+                r->command_cursor = 0;
+            }
         }
         if (r->opaque && !r->implicit_counted && op_kind != OP_MEMORY) {
             implicit_begins++;
@@ -1783,6 +1847,16 @@ static void execute_nvn_batch(void* arg) {
 }
 
 void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
+    if (inlined_draw_replay && !strncmp(name, "nvnCommandBuffer", 16) &&
+        strcmp(name, "nvnCommandBufferEndRecording") && readable_range(command_buffer, 8)) {
+        pm_lock(&lock);
+        NvnList* list = active_slot(command_buffer, 0);
+        if (list && list->key == command_buffer && list->command_low < list->command_high) {
+            u64 cursor = gr64(command_buffer);
+            list->command_cursor = cursor >= list->command_low && cursor <= list->command_high ? cursor : 0;
+        }
+        pm_unlock(&lock);
+    }
     if (!strcmp(name, "nvnQueueFlush") || !strcmp(name, "nvnQueuePresentTexture")) {
         if (!descriptor_replay) return;
         u64 codes[8];
@@ -1911,6 +1985,10 @@ void nvn_record_report(void) {
     report_ops("ended", ended_ops);
     report_ops("submitted", submitted_ops);
     report_ops("referenced", referenced_ops);
+    if (inlined_draw_replay)
+        LOG("nvn-record: inlined-gaps=%llu inlined-indexed-draws=%llu unparsed-gaps=%llu\n",
+            (unsigned long long)inlined_gaps, (unsigned long long)inlined_draws,
+            (unsigned long long)inlined_unparsed);
     LOG("nvn-record: refs=%llu missing_refs=%llu opaque_refs=%llu truncated_refs=%llu\n", (unsigned long long)call_refs,
         (unsigned long long)call_ref_missing, (unsigned long long)call_ref_opaque, (unsigned long long)truncated_refs);
     LOG("nvn-record: calls=%llu active_collisions=%llu list_collisions=%llu truncated_lists=%llu dropped_ops=%llu "
