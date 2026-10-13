@@ -1195,6 +1195,11 @@ With `SNX_NVN_SHADOW_ZERO_PROBE=1`, the recorder tags only the first zero-backed
 clear uses zero instead of magenta. The first 1600×900 Odyssey comparison then found 0/1,440,000 differing pixels
 and 0/5,760,000 differing bytes. The probe deliberately leaves coverage unproven: a queue-submission zero snapshot
 alone does not exclude pending GPU writes or establish coherent initial contents for every later image.
+An ABI-7 Odyssey rebuild with guest-only texture fallback and partial-image guards issued at least
+7,500 direct shadow draws in a 50-second headless run without a fatal error. Its ordinary first-target
+comparison still differed in 518,400 of 1,440,000 pixels, all outside the 1280×720 draw scissor;
+the inside-scissor comparison was byte-exact. The ABI-7 zero-backed diagnostic matched the entire
+target byte-for-byte and still reported coverage unproven for the same reason.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
