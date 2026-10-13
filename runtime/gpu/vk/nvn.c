@@ -795,19 +795,13 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         if (format.stencil) key.stencil = format.vk;
     }
     u32 depth_state = command->depth_stencil_state[0];
-    if ((depth_state & 3) && !key.depth) {
-        LOG_LIMIT(8, "nvn-pipeline: depth enabled without depth target state=%08x\n", depth_state);
-        return 0;
-    }
-    if ((depth_state & 1) && (!((depth_state >> 4) & 0xf) || ((depth_state >> 4) & 0xf) > 8)) {
+    /* Vulkan skips depth and stencil tests without their respective attachments. The SDK can leave their state
+       enabled across a color-only pass, so only validate the active attachment's test configuration. */
+    if (key.depth && (depth_state & 1) && (!((depth_state >> 4) & 0xf) || ((depth_state >> 4) & 0xf) > 8)) {
         LOG_LIMIT(8, "nvn-pipeline: unsupported depth compare state=%08x\n", depth_state);
         return 0;
     }
-    if (depth_state & 4) {
-        if (!key.stencil) {
-            LOG_LIMIT(8, "nvn-pipeline: stencil enabled without stencil target state=%08x\n", depth_state);
-            return 0;
-        }
+    if (key.stencil && (depth_state & 4)) {
         u32 stencil_state = command->depth_stencil_state[1];
         for (u32 shift = 0; shift < 32; shift += 4) {
             u32 value = (stencil_state >> shift) & 0xf;

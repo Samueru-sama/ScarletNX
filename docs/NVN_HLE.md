@@ -551,6 +551,11 @@ preflights ready, compared with 2,220/2,380 before the additions. Pipeline creat
 1,983 draws and failed for 705, chiefly where a shader input had no captured vertex stream or depth testing was
 enabled without a captured depth target. These counts vary with boot timing and are not a before/after rendering
 comparison; the GPFIFO renderer still produces the displayed frames.
+The [Vulkan fragment-operations specification](https://docs.vulkan.org/spec/latest/chapters/fragops.html) says that
+depth and stencil tests are skipped if their attachments are absent. The preflight now accepts such color-only
+pipelines even if the guest left those tests enabled. In a following TotK boot, 2,300 of 2,543 draw pipelines were
+ready; the remaining diagnostic samples were missing vertex streams for shader-used attributes. That path still
+needs the correct constant-attribute or unbound-stream semantics before it can issue host draws.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
