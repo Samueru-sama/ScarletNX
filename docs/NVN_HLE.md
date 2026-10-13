@@ -556,6 +556,11 @@ depth and stencil tests are skipped if their attachments are absent. The preflig
 pipelines even if the guest left those tests enabled. In a following TotK boot, 2,300 of 2,543 draw pipelines were
 ready; the remaining diagnostic samples were missing vertex streams for shader-used attributes. That path still
 needs the correct constant-attribute or unbound-stream semantics before it can issue host draws.
+The existing Maxwell renderer supplies a shared `(0,0,0,1)` constant for attributes with no readable stream. NVN
+pipeline preflight now uses the same constant-attribute binding and numeric type for that case. A later TotK boot
+created 2,588 of 2,727 pipelines; the 139 remaining failures lacked captured multisample state. Those draws stay
+conservative because the missing state may affect sample coverage even when the current attachment has one sample.
+The future NVN draw command must bind the constant buffer described by the pipeline layout.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

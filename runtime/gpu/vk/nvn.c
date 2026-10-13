@@ -677,8 +677,13 @@ static int nvn_dual_source_factor(u32 factor) {
    can form a Vulkan pipeline. Dynamic raster and depth state is set by a future host draw. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
     if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known ||
-        !command->polygon_state_known || !command->depth_stencil_state_known || !command->multisample_state_known)
+        !command->polygon_state_known || !command->depth_stencil_state_known || !command->multisample_state_known) {
+        LOG_LIMIT(8,
+                  "nvn-pipeline: missing base state shader=%d/%d channel=%d color=%d polygon=%d depth=%d samples=%d\n",
+                  !!vertex, !!fragment_shader, command->channel_mask_known, command->color_state_known,
+                  command->polygon_state_known, command->depth_stencil_state_known, command->multisample_state_known);
         return 0;
+    }
     u32 multisample = command->multisample_state[0];
     u32 samples = (multisample >> 8) & 31, raster_samples = (multisample >> 15) & 31;
     /* The current attachment and pipeline path is single-sample only. Zero is the SDK default for one sample. */
@@ -715,10 +720,10 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         default: LOG_LIMIT(8, "nvn-pipeline: unsupported primitive=%u\n", command->primitive); return 0;
     }
     const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
+    int constant_binding = -1;
     for (u32 location = 0; location < 32; location++) {
         if (!(vertex->si.in_mask & (1u << location))) continue;
-        if (location >= command->vertex_attrib_count || key.nattr >= limits->maxVertexInputAttributes ||
-            key.nbind >= limits->maxVertexInputBindings) {
+        if (location >= command->vertex_attrib_count || key.nattr >= limits->maxVertexInputAttributes) {
             LOG_LIMIT(8, "nvn-pipeline: missing attribute location=%u count=%u bind=%u\n", location,
                       command->vertex_attrib_count, key.nbind);
             return 0;
@@ -726,9 +731,21 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         const NvnVertexAttrib* attrib = &command->vertex_attrib[location];
         if (!attrib->enabled || attrib->stream >= command->vertex_stream_count ||
             !(command->vertex_bound & (1u << attrib->stream))) {
-            LOG_LIMIT(8, "nvn-pipeline: missing stream location=%u stream=%u count=%u bound=%x\n", location,
-                      attrib->stream, command->vertex_stream_count, command->vertex_bound);
-            return 0;
+            /* Match the Maxwell renderer's unbound-stream fallback: one shared, zero-stride buffer containing
+               (0,0,0,1) as float and integer vectors. The future draw path must bind that buffer here. */
+            if (constant_binding < 0) {
+                if (key.nbind >= limits->maxVertexInputBindings || key.nbind >= 33) return 0;
+                constant_binding = (int)key.nbind++;
+            }
+            int kind = nvn_integer_format(attrib->format);
+            key.attr[key.nattr].loc = location;
+            key.attr[key.nattr].binding = (u32)constant_binding;
+            key.attr[key.nattr].format = kind < 0   ? VK_FORMAT_R32G32B32A32_SINT
+                                         : kind > 0 ? VK_FORMAT_R32G32B32A32_UINT
+                                                    : VK_FORMAT_R32G32B32A32_SFLOAT;
+            key.attr[key.nattr].offset = kind ? 16 : 0;
+            key.nattr++;
+            continue;
         }
         VkFormat format = nvn_vertex_format(attrib->format);
         if (!format || attrib->offset > limits->maxVertexInputAttributeOffset ||
@@ -742,6 +759,7 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
             LOG_LIMIT(8, "nvn-pipeline: unsupported divisor=%u\n", divisor);
             return 0;
         }
+        if (key.nbind >= limits->maxVertexInputBindings || key.nbind >= 33) return 0;
         u32 binding = key.nbind++;
         key.bind[binding].divisor = divisor;
         key.attr[key.nattr].loc = location;
