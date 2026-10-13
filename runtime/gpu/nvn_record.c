@@ -217,6 +217,8 @@ static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_b
 static u64 draw_with_texture, draw_without_texture;
 static u64 image_handle_snapshots, image_handle_snapshot_failures, image_bind_invalid;
 static u64 draw_with_image, draw_image_descriptors_complete, draw_image_descriptors_incomplete;
+static u64 draw_image_targets_complete, draw_image_targets_incomplete;
+static u64 draw_image_storage_ready;
 static u64 draw_texture_descriptors_complete, draw_texture_descriptors_incomplete;
 static u64 draw_texture_tics_complete, draw_texture_tics_incomplete;
 static u64 draw_texture_views_complete, draw_texture_views_incomplete;
@@ -895,7 +897,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
             memcpy(draw.image, state->image, sizeof draw.image);
             memcpy(draw.image_bound, state->image_bound, sizeof draw.image_bound);
-            int image_complete = 1, has_image = 0;
+            int image_complete = 1, image_targets_complete = 1, has_image = 0;
             for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
                 for (u32 index = 0; index < NVN_DRAW_IMAGE_SLOTS; index++) {
                     if (!(draw.image_bound[stage] & (1u << index))) continue;
@@ -905,6 +907,11 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                         draw.image_descriptor_valid[stage] |= (u8)(1u << index);
                     else
                         image_complete = 0;
+                    if (nvn_descriptor_target_snapshot(state->texture_pool, draw.image[stage][index],
+                                                       &draw.image_target[stage][index]))
+                        draw.image_target_valid[stage] |= (u8)(1u << index);
+                    else
+                        image_targets_complete = 0;
                 }
             if (has_image) {
                 draw_with_image++;
@@ -912,6 +919,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     draw_image_descriptors_complete++;
                 else
                     draw_image_descriptors_incomplete++;
+                if (image_targets_complete)
+                    draw_image_targets_complete++;
+                else
+                    draw_image_targets_incomplete++;
             }
             int descriptors_complete = 1, tics_complete = 1, views_complete = 1, samplers_complete = 1,
                 tscs_complete = 1, filter_wrap_complete = 1, has_texture = 0;
@@ -1622,6 +1633,7 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_ATTACHMENT_READY) __atomic_fetch_add(&draw_attachment_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_ATTACHMENT_FAILED) __atomic_fetch_add(&draw_attachment_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SHADER_MODULE_READY) __atomic_fetch_add(&draw_shader_module_ready, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_IMAGE_STORAGE_READY) __atomic_fetch_add(&draw_image_storage_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SHADER_MODULE_FAILED) __atomic_fetch_add(&draw_shader_module_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_ZERO_BIND_TEXTURELESS)
             __atomic_fetch_add(&draw_zero_bind_textureless, 1, __ATOMIC_RELAXED);
@@ -1945,11 +1957,14 @@ void nvn_record_report(void) {
         LOG("nvn-texture-replay: draws-with-binding=%llu without=%llu\n", (unsigned long long)draw_with_texture,
             (unsigned long long)draw_without_texture);
         LOG("nvn-image-replay: handles=%llu failed=%llu invalid-binds=%llu draws-with-binding=%llu "
-            "descriptors-complete=%llu incomplete=%llu\n",
+            "descriptors-complete=%llu incomplete=%llu targets-complete=%llu targets-incomplete=%llu\n",
             (unsigned long long)image_handle_snapshots, (unsigned long long)image_handle_snapshot_failures,
             (unsigned long long)image_bind_invalid, (unsigned long long)draw_with_image,
             (unsigned long long)draw_image_descriptors_complete,
-            (unsigned long long)draw_image_descriptors_incomplete);
+            (unsigned long long)draw_image_descriptors_incomplete,
+            (unsigned long long)draw_image_targets_complete, (unsigned long long)draw_image_targets_incomplete);
+        LOG("nvn-image-storage: ready-draws=%llu\n",
+            (unsigned long long)__atomic_load_n(&draw_image_storage_ready, __ATOMIC_RELAXED));
         LOG("nvn-texture-draw: descriptors-complete=%llu incomplete=%llu\n",
             (unsigned long long)draw_texture_descriptors_complete,
             (unsigned long long)draw_texture_descriptors_incomplete);

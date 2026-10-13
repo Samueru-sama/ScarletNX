@@ -47,6 +47,7 @@ enum {
     NVN_DRAW_TEXTURE_UNUSED = 536870912,
     NVN_DRAW_TEXTURE_SLOTS_MAPPED = 1073741824
 };
+#define NVN_DRAW_IMAGE_STORAGE_READY 0x80000000u
 typedef struct {
     u64 address, size;
 } NvnBufferRange;
@@ -82,8 +83,10 @@ typedef struct {
     u32 sampler_descriptor_valid[NVN_DRAW_SHADER_STAGES];
     u64 image[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
     NvnDescriptorSnapshot image_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
+    NvnTextureTarget image_target[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
     u8 image_bound[NVN_DRAW_SHADER_STAGES];
     u8 image_descriptor_valid[NVN_DRAW_SHADER_STAGES];
+    u8 image_target_valid[NVN_DRAW_SHADER_STAGES];
     NvnTextureTarget color_target[8], depth_target;
     u8 color_target_mask, depth_target_bound, target_complete;
     u32 channel_mask;

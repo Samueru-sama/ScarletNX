@@ -28,6 +28,7 @@ typedef struct {
     VkImageView sampled_view, base_view, sampled_view_alt, base_view_alt;
     VkFormat alt_format;
     NvnAttachmentView attachments[16];
+    NvnAttachmentView storage_views[16];
     VmaAllocation allocation;
     VkImageLayout layout;
     VkPipelineStageFlags2 stage;
@@ -35,6 +36,7 @@ typedef struct {
     u64 color_layers[16], depth_layers[16];
     int sampled;
     int attachment;
+    int storage;
 } NvnImage;
 static NvnImage images[NVN_IMAGE_SLOTS];
 static u64 image_bytes;
@@ -59,6 +61,9 @@ static NvnImage* evict_old_image(void) {
     for (u32 i = 0; i < 16; i++)
         if (oldest->attachments[i].view)
             vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->attachments[i].view, VK_NULL_HANDLE);
+    for (u32 i = 0; i < 16; i++)
+        if (oldest->storage_views[i].view)
+            vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->storage_views[i].view, VK_NULL_HANDLE);
     if (oldest->sampled_view_alt || oldest->base_view_alt)
         vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->sampled_view_alt, oldest->base_view_alt);
     vk_defer_image(oldest->image, oldest->allocation, oldest->sampled_view, oldest->base_view);
@@ -73,6 +78,8 @@ static VkFmt nvn_format(u32 format) {
         case 0x01: return (VkFmt){.vk = VK_FORMAT_R8_UNORM, .bpp = 1};            /* R8 */
         case 0x05: return (VkFmt){.vk = VK_FORMAT_R16_SFLOAT, .bpp = 2};          /* R16F */
         case 0x0a: return (VkFmt){.vk = VK_FORMAT_R32_SFLOAT, .bpp = 4};          /* R32F */
+        case 0x0b: return (VkFmt){.vk = VK_FORMAT_R32_UINT, .bpp = 4, .is_int = 1}; /* R32UI */
+        case 0x0c: return (VkFmt){.vk = VK_FORMAT_R32_SINT, .bpp = 4, .is_int = 1, .sint = 1}; /* R32I */
         case 0x0d: return (VkFmt){.vk = VK_FORMAT_R8G8_UNORM, .bpp = 2};          /* RG8 */
         case 0x11: return (VkFmt){.vk = VK_FORMAT_R16G16_SFLOAT, .bpp = 4};       /* RG16F */
         case 0x12: return (VkFmt){.vk = VK_FORMAT_R16G16_UNORM, .bpp = 4};        /* RG16 */
@@ -181,6 +188,8 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                                                   : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
     int attachment = !!((properties.optimalTilingFeatures & view_properties.optimalTilingFeatures) &
                        attachment_feature);
+    int storage = !!((properties.optimalTilingFeatures & view_properties.optimalTilingFeatures) &
+                    VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && !rgba8_pair;
     VkImageUsageFlags attachment_usage =
         attachment ? (aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                                          : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
@@ -204,7 +213,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
-                                       attachment_usage};
+                                       attachment_usage | (storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0)};
     VmaAllocationCreateInfo allocation = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation memory = NULL;
@@ -228,6 +237,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
     empty->sampled = sampled;
     empty->attachment = attachment;
+    empty->storage = storage;
     if (sampled) {
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                       .image = image,
@@ -309,6 +319,44 @@ static int prepare_attachment(const NvnTextureTarget* target, int depth) {
                                       .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                       .format = format.vk,
                                       .subresourceRange = {vk_aspect(&format), mip, 1, layer, 1}};
+        if (vkCreateImageView(g_vk.dev, &view, NULL, &slot->view) != VK_SUCCESS) return 0;
+        slot->mip = mip;
+        slot->layer = layer;
+        slot->format = format.vk;
+        image->last_batch = batch_serial;
+        return 1;
+    }
+    return 0;
+}
+
+/* Allocate the exact single-mip, single-layer storage view a future NVN draw will bind. This preflight neither
+   writes pixels nor changes image layout; the draw path must order storage writes with later texture reads. */
+static int prepare_storage_image(const NvnTextureTarget* target, VkFormat expected) {
+    u32 mip = target->view.base_level, layer = target->view.first_layer;
+    if (target->storage_target != 1 || target->target != 1 || !target->width || !target->height ||
+        target->depth != 1 || !target->levels || target->samples > 1 || mip >= target->levels ||
+        target->view.level_count > 1 || target->view.layer_count > 1 || layer ||
+        (target->view.flags & (8 | 16)))
+        return 0;
+    VkFmt format = nvn_format(target->format);
+    if (format.vk != expected || target->format != target->storage_format || !format.is_int) return 0;
+    int full = 0;
+    NvnImage* image = image_for(target, format.vk, VK_IMAGE_ASPECT_COLOR_BIT, &full);
+    if (!image || !image->storage) return 0;
+    for (u32 i = 0; i < 16; i++)
+        if (image->storage_views[i].view && image->storage_views[i].format == format.vk &&
+            image->storage_views[i].mip == mip && image->storage_views[i].layer == layer) {
+            image->last_batch = batch_serial;
+            return 1;
+        }
+    for (u32 i = 0; i < 16; i++) {
+        NvnAttachmentView* slot = &image->storage_views[i];
+        if (slot->view) continue;
+        VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                      .image = image->image,
+                                      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                      .format = format.vk,
+                                      .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, layer, 1}};
         if (vkCreateImageView(g_vk.dev, &view, NULL, &slot->view) != VK_SUCCESS) return 0;
         slot->mip = mip;
         slot->layer = layer;
@@ -1013,6 +1061,40 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     VkSh* fragment_shader = NULL;
     int shader_ready =
         command->materialize_shaders && materialize_draw_shaders(command, &vertex_shader, &fragment_shader);
+    int image_storage_ready = 0;
+    if (shader_ready && fragment_shader->si.nimg) {
+        image_storage_ready = 1;
+        for (int k = 0; k < fragment_shader->si.nimg; k++) {
+            u32 word = fragment_shader->si.img[k].cbuf_off;
+            if (!fragment_shader->si.img[k].bindless || fragment_shader->si.img[k].bl_cbuf != 2 ||
+                word < 72 || ((word - 72) & 1) ||
+                (word - 72) / 2 >= NVN_DRAW_IMAGE_SLOTS) {
+                image_storage_ready = 0;
+                break;
+            }
+            u32 slot = (word - 72) / 2;
+            if (!(command->image_bound[1] & (1u << slot)) ||
+                !(command->image_descriptor_valid[1] & (1u << slot)) ||
+                !(command->image_target_valid[1] & (1u << slot))) {
+                image_storage_ready = 0;
+                break;
+            }
+            VkFormat format = vk_tic_format(command->image_descriptor[1][slot].tic[0], 0).vk;
+            if (!format || !prepare_storage_image(&command->image_target[1][slot], format)) {
+                const NvnTextureTarget* target = &command->image_target[1][slot];
+                LOG_LIMIT(8, "nvn-image-storage: unsupported slot=%u tic-format=%x target-format=%x "
+                             "storage-format=%x type=%u storage-type=%u size=%ux%ux%u levels=%u samples=%u "
+                             "view=%u:%u:%u:%u flags=%x\n",
+                          slot, command->image_descriptor[1][slot].tic[0] & 0x7f, target->format,
+                          target->storage_format, target->target, target->storage_target, target->width,
+                          target->height, target->depth, target->levels, target->samples, target->view.base_level,
+                          target->view.level_count, target->view.first_layer, target->view.layer_count,
+                          target->view.flags);
+                image_storage_ready = 0;
+                break;
+            }
+        }
+    }
     int textureless_shader = shader_ready && !vertex_shader->si.ntex && !fragment_shader->si.ntex;
     u32 texture_slots[NVN_DRAW_SHADER_STAGES];
     memcpy(texture_slots, command->texture_bound, sizeof texture_slots);
@@ -1114,6 +1196,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                 : NVN_DRAW_TEXTURE_IMAGE_FAILED | failure;
     }
     int resource_status = sampler_status | texture_status;
+    if (image_storage_ready) resource_status |= NVN_DRAW_IMAGE_STORAGE_READY;
     if (textureless_shader) resource_status |= NVN_DRAW_TEXTURE_UNUSED;
     if (slots_mapped && !textureless_shader) resource_status |= NVN_DRAW_TEXTURE_SLOTS_MAPPED;
     if (command->materialize_shaders)

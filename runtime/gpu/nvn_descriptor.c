@@ -22,7 +22,8 @@ typedef struct {
     u32 index;
     u32 tic[8];
     NvnTextureViewSelection view_selection;
-    u8 view_known, tic_valid;
+    NvnTextureTarget target;
+    u8 view_known, tic_valid, target_valid;
 } Descriptor;
 typedef struct {
     u64 key, pool, pool_generation;
@@ -142,6 +143,14 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
     NvnTextureTarget copied = {0};
     int copied_found = registering_descriptor(name) && !texture_found &&
                        nvn_texture_resolve_copied_target(call->texture, NULL, &copied) == NVN_TARGET_RESOLVED;
+    NvnTextureTarget registered_target = {0};
+    int target_found = registering_descriptor(name) && call->view_known &&
+                       (nvn_texture_resolve_target(call->texture,
+                                                   call->view ? &call->view_selection : NULL,
+                                                   &registered_target) == NVN_TARGET_RESOLVED ||
+                        nvn_texture_resolve_copied_target(call->texture,
+                                                          call->view ? &call->view_selection : NULL,
+                                                          &registered_target) == NVN_TARGET_RESOLVED);
     NvnPoolSnapshot memory = {0};
     int memory_found =
         !strcmp(name, "nvnTexturePoolInitialize") && call->memory_pool && nvn_pool_snapshot(call->memory_pool, &memory);
@@ -238,7 +247,9 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
                                   .view = call->view,
                                   .index = call->index,
                                   .view_selection = call->view_selection,
-                                  .view_known = call->view_known};
+                                  .view_known = call->view_known,
+                                  .target = registered_target,
+                                  .target_valid = target_found};
                 if (tic_state == 1 || tic_state == 2) {
                     memcpy(d->tic, tic, sizeof tic);
                     d->tic_valid = 1;
@@ -356,6 +367,20 @@ int nvn_descriptor_snapshot(u64 pool, u64 handle, NvnDescriptorSnapshot* out) {
         } else {
             result = -1;
         }
+    }
+    pm_unlock(&lock);
+    return result;
+}
+
+int nvn_descriptor_target_snapshot(u64 pool, u64 handle, NvnTextureTarget* out) {
+    *out = (NvnTextureTarget){0};
+    pm_lock(&lock);
+    TexturePool* p = pool_slot(pool, 0);
+    Descriptor* d = p && p->alive ? descriptor_slot(pool, (u32)handle & 0xfffff, 0) : NULL;
+    int result = 0;
+    if (d && d->pool_generation == p->generation && d->target_valid && texture_current(d, NULL)) {
+        *out = d->target;
+        result = 1;
     }
     pm_unlock(&lock);
     return result;

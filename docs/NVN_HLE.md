@@ -691,6 +691,12 @@ shader modules and 7,330 pipelines, with two unrelated pipeline misses. The Maxw
 graphics shaders with storage-image writes until it can bind and synchronize those images; the direct NVN probe
 still does not issue draws. Catherine, TotK, and Odyssey scene probes retained their previous shader and texture
 coverage.
+The recorder also retains the registered image's texture target and view for each bound draw. A Vulkan preflight
+now checks the shader-visible image slot against its TIC format and allocates the matching single-layer R32_UINT
+storage view, without issuing a draw or changing image layout. In a fifteen-second Scarlet probe, all 7,848
+image-bound draws retained complete descriptor and target snapshots, and 624 draws whose fragment shader actually
+uses an image prepared the storage view. The remaining bound-image draws do not necessarily access that binding.
+Host descriptor writes, storage-image layout transitions, write ordering, and draw submission remain required.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

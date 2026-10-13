@@ -30,4 +30,6 @@ void nvn_descriptor_report(void);
 int nvn_descriptor_check(u64 pool, u64 handle);
 /* Returns 1 for a live texture registration, 0 for a missing descriptor, -1 for a stale texture. */
 int nvn_descriptor_snapshot(u64 pool, u64 handle, NvnDescriptorSnapshot* out);
+/* Captured image storage/view metadata, checked against the registered backing pool generation. */
+int nvn_descriptor_target_snapshot(u64 pool, u64 handle, NvnTextureTarget* out);
 #endif
