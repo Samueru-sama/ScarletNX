@@ -708,6 +708,14 @@ invalidating it. A later eight-second boot issued at least 1,100 shadow draws, i
 The first color-writing pass changed 921,600 of 2,073,600 pixels in its sRGB target, leaving full-image provenance
 unproven. The sentinel readback now compares packed pixels in RGBA8, sRGB RGBA8, and R11G11B10F correctly. Storage
 image writes likewise remain incomplete until their coverage or later consumers are established.
+Tracing the remaining Scarlet image chain found that the R11G11B10F targets at `0x55bb70000` and `0x55c3e0000`
+both sample `0x558050000`. That earlier 1920×1080 pass binds depth and 16 textures. Its observed NVN depth state
+`0x61` agrees with the corresponding Maxwell registers: depth test enabled, depth writes disabled, compare function
+6. The direct draw path now programs the captured depth-test, write, and compare settings and requires an NVN-owned
+complete depth image before using a depth test. That pass passes the state gate, but its first texture either
+does not resolve through the semantic TIC decoder or points to another Maxwell-owned render target at
+`0x5570d0000`. The next dependency is
+therefore upstream texture production and descriptor handling, not the depth-state encoding.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still

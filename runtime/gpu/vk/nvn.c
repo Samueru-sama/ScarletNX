@@ -1217,7 +1217,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         (command->color_state != 0x08030000u && command->color_state != 0x08030100u) ||
         (key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
-         command->depth_stencil_state[0] != (indexed_triangles ? 0x40u : 0x42u)) ||
+         ((command->depth_stencil_state[0] & ~0xf3u) ||
+          ((command->depth_stencil_state[0] >> 4) & 15) < 1 ||
+          ((command->depth_stencil_state[0] >> 4) & 15) > 8)) ||
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
         (command->color_target[0].format != 0x25 && command->color_target[0].format != 0x38 &&
@@ -1430,6 +1432,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     NvnImage* depth = command->depth_target_bound
                           ? image_for(depth_target, depth_format.vk, vk_aspect(&depth_format), &full) : NULL;
     if (!color || !color->attachment || (command->depth_target_bound && (!depth || !depth->attachment))) return 0;
+    if (depth && (command->depth_stencil_state[0] & 1) &&
+        (!(depth->depth_layers[0] & 1) || depth->subresource_sequence[0][0] <= effective_unknown)) {
+        return 0;
+    }
     VkImageView color_view = shadow_attachment_view(color, color_format.vk);
     VkImageView depth_view = depth ? shadow_attachment_view(depth, depth_format.vk) : VK_NULL_HANDLE;
     if (!color_view || (depth && !depth_view)) return 0;
@@ -1519,9 +1525,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     float blend[4] = {0};
     if (command->blend_color_known) memcpy(blend, command->blend_color, sizeof blend);
     vkCmdSetBlendConstants(cb, blend);
-    vkCmdSetDepthTestEnable(cb, VK_FALSE);
-    vkCmdSetDepthWriteEnable(cb, VK_FALSE);
-    vkCmdSetDepthCompareOp(cb, VK_COMPARE_OP_ALWAYS);
+    u32 depth_state = command->depth_stencil_state[0];
+    vkCmdSetDepthTestEnable(cb, depth && (depth_state & 1));
+    vkCmdSetDepthWriteEnable(cb, depth && (depth_state & 2));
+    vkCmdSetDepthCompareOp(cb, depth && (depth_state & 1)
+                                   ? (VkCompareOp)(((depth_state >> 4) & 15) - 1)
+                                   : VK_COMPARE_OP_ALWAYS);
     vkCmdSetDepthBoundsTestEnable(cb, VK_FALSE);
     vkCmdSetDepthBounds(cb, 0.0f, 1.0f);
     vkCmdSetStencilTestEnable(cb, VK_FALSE);
