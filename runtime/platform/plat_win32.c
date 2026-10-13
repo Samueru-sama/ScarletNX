@@ -14,6 +14,104 @@
 #include <time.h>
 #include <process.h>
 #include <io.h> /* _get_osfhandle */
+typedef struct {
+    char* out;
+    size_t cap;
+    HWND edit;
+    int result;
+} TextDialog;
+static LRESULT CALLBACK text_dialog_proc(HWND win, UINT msg, WPARAM wp, LPARAM lp) {
+    TextDialog* d = (TextDialog*)GetWindowLongPtrW(win, GWLP_USERDATA);
+    if (msg == WM_NCCREATE) {
+        SetWindowLongPtrW(win, GWLP_USERDATA, (LONG_PTR)((CREATESTRUCTW*)lp)->lpCreateParams);
+        return TRUE;
+    }
+    if (msg == WM_COMMAND && d) {
+        int id = LOWORD(wp);
+        if (id == IDOK) {
+            int len = GetWindowTextLengthW(d->edit);
+            WCHAR* wide = malloc(((size_t)len + 1) * sizeof *wide);
+            if (wide) {
+                GetWindowTextW(d->edit, wide, len + 1);
+                int bytes = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+                if (bytes > 0 && (size_t)bytes > d->cap) {
+                    free(wide);
+                    MessageBoxW(win, L"Text is too long.", L"ScarletNX", MB_OK | MB_ICONWARNING);
+                    SetFocus(d->edit);
+                    return 0;
+                }
+                if (bytes > 0 && WideCharToMultiByte(CP_UTF8, 0, wide, -1, d->out, bytes, NULL, NULL) == bytes)
+                    d->result = 0;
+                free(wide);
+            }
+            DestroyWindow(win);
+            return 0;
+        }
+        if (id == IDCANCEL) {
+            d->result = 1;
+            DestroyWindow(win);
+            return 0;
+        }
+    }
+    if (msg == WM_CLOSE) {
+        if (d) d->result = 1;
+        DestroyWindow(win);
+        return 0;
+    }
+    return DefWindowProcW(win, msg, wp, lp);
+}
+int plat_text_input(char* out, size_t cap, const char* initial) {
+    if (!cap) return -1;
+    HINSTANCE inst = GetModuleHandleW(NULL);
+    WNDCLASSW cls = {.lpfnWndProc = text_dialog_proc,
+                     .hInstance = inst,
+                     .lpszClassName = L"ScarletNXTextInput",
+                     .hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW),
+                     .hbrBackground = (HBRUSH)(COLOR_WINDOW + 1)};
+    if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return -1;
+    TextDialog d = {.out = out, .cap = cap, .result = -1};
+    int x = (GetSystemMetrics(SM_CXSCREEN) - 360) / 2, y = (GetSystemMetrics(SM_CYSCREEN) - 140) / 2;
+    HWND win = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, cls.lpszClassName, L"ScarletNX text entry",
+                               WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, x, y, 360, 140, NULL, NULL, inst, &d);
+    if (!win) return -1;
+    CreateWindowExW(0, L"STATIC", L"Enter text:", WS_CHILD | WS_VISIBLE, 12, 12, 324, 18, win, NULL, inst, NULL);
+    d.edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 12,
+                             34, 324, 24, win, (HMENU)100, inst, NULL);
+    HWND ok = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 176, 70, 76,
+                              25, win, (HMENU)IDOK, inst, NULL);
+    HWND cancel = CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 260, 70, 76, 25, win,
+                                  (HMENU)IDCANCEL, inst, NULL);
+    if (!d.edit || !ok || !cancel) {
+        DestroyWindow(win);
+        return -1;
+    }
+    if (initial) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, initial, -1, NULL, 0);
+        WCHAR* wide = n > 0 ? malloc((size_t)n * sizeof *wide) : NULL;
+        if (wide) {
+            if (MultiByteToWideChar(CP_UTF8, 0, initial, -1, wide, n)) SetWindowTextW(d.edit, wide);
+            free(wide);
+        }
+    }
+    ShowWindow(win, SW_SHOW);
+    SetFocus(d.edit);
+    MSG msg;
+    while (IsWindow(win)) {
+        BOOL got = GetMessageW(&msg, NULL, 0, 0);
+        if (got <= 0) {
+            if (!got) PostQuitMessage((int)msg.wParam);
+            DestroyWindow(win);
+            break;
+        }
+        if (msg.message == WM_KEYDOWN && msg.hwnd == d.edit && msg.wParam == VK_RETURN) {
+            SendMessageW(win, WM_COMMAND, IDOK, 0);
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return d.result;
+}
 void pm_init(PMutex* m) { InitializeSRWLock(&m->l); }
 void pm_lock(PMutex* m) { AcquireSRWLockExclusive(&m->l); }
 void pm_unlock(PMutex* m) { ReleaseSRWLockExclusive(&m->l); }

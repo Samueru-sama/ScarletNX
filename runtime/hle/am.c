@@ -294,6 +294,76 @@ static SvcObj* controller_result(LibApplet* la) {
     if (result) LOG("applet: controller support asks for %d players, one controller here: cancelled\n", min_players);
     return am_storage_new(sizeof r, r);
 }
+/* Standard swkbd returns 0x7D8 bytes: u32 close result, then a UTF-16 name. */
+static u32 swkbd_text(u8* out, const char* text, u32 max_chars) {
+    u32 count = 0;
+    const u8* p = (const u8*)text;
+    while (*p && count < max_chars && count < (0x7D8 - 4) / 2 - 1) {
+        u32 cp = *p++;
+        if (cp >= 0xF0 && cp < 0xF5 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 &&
+            !(cp == 0xF0 && p[0] < 0x90) && !(cp == 0xF4 && p[0] >= 0x90)) {
+            cp = ((cp & 7) << 18) | ((p[0] & 0x3F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+            p += 3;
+        } else if (cp >= 0xE0 && cp < 0xF0 && (p[0] & 0xC0) == 0x80 && (p[1] & 0xC0) == 0x80 &&
+                   !(cp == 0xE0 && p[0] < 0xA0) && !(cp == 0xED && p[0] >= 0xA0)) {
+            cp = ((cp & 15) << 12) | ((p[0] & 0x3F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        } else if (cp >= 0xC2 && cp < 0xE0 && (p[0] & 0xC0) == 0x80) {
+            cp = ((cp & 31) << 6) | (p[0] & 0x3F);
+            p++;
+        } else if (cp >= 0x80) {
+            cp = 0xFFFD;
+        }
+        if (cp >= 0x10000) {
+            if (count + 2 > max_chars || count + 2 >= (0x7D8 - 4) / 2) break;
+            cp -= 0x10000;
+            u16 hi = 0xD800 | (cp >> 10), lo = 0xDC00 | (cp & 0x3FF);
+            memcpy(out + 4 + count++ * 2, &hi, 2);
+            memcpy(out + 4 + count++ * 2, &lo, 2);
+        } else {
+            u16 ch = cp;
+            memcpy(out + 4 + count++ * 2, &ch, 2);
+        }
+    }
+    return count;
+}
+static SvcObj* swkbd_result(LibApplet* la) {
+    u8 r[0x7D8] = {0};
+    u32 max_chars = (sizeof r - 4) / 2 - 1, min_chars = 0;
+    StorageData* cfg = la->nin > 1 && la->in[1]->dispatch == storage_disp ? la->in[1]->data : NULL;
+    if (cfg && cfg->size >= 0x3B4) {
+        u32 limit;
+        memcpy(&limit, cfg->d + 0x3AC, 4);
+        if (limit && limit < max_chars) max_chars = limit;
+        memcpy(&min_chars, cfg->d + 0x3B0, 4);
+    }
+    if (min_chars > max_chars) {
+        WARN("applet: swkbd minimum text length %u exceeds maximum %u\n", min_chars, max_chars);
+        min_chars = max_chars;
+    }
+    char input[4096];
+    int result;
+    u32 chars = 0;
+    const char* preset = getenv("SNX_SWKBD_TEXT");
+    if (preset) {
+        chars = swkbd_text(r, preset, max_chars);
+        result = chars < min_chars ? 1 : 0;
+    } else {
+        do {
+            result = plat_text_input(input, sizeof input, "");
+            if (result) break;
+            memset(r + 4, 0, sizeof r - 4);
+            chars = swkbd_text(r, input, max_chars);
+        } while (chars < min_chars);
+    }
+    LOG("applet: swkbd %s with %u UTF-16 code units\n", result ? "cancelled" : "accepted", chars);
+    if (result) {
+        u32 cancelled = 1;
+        memcpy(r, &cancelled, 4);
+        if (result < 0) WARN("applet: host software keyboard unavailable (install zenity or kdialog on POSIX)\n");
+    }
+    return am_storage_new(sizeof r, r);
+}
 static int am_lib_accessor(SvcObj* o, IpcCtx* c) {
     LibApplet* la = o->data;
     switch (c->cmd) {
@@ -322,6 +392,8 @@ static int am_lib_accessor(SvcObj* o, IpcCtx* c) {
         }
         case 101:
         case 104: {
+            /* Standard swkbd has no interactive output unless it requests application text validation. */
+            if (la->id == 0x11 && c->cmd == 104) return RC(128, 2);
             /* PopOutData and PopInteractiveOutData are separate channels, each with one storage */
             int* popped = c->cmd == 101 ? &la->popped_out : &la->popped_interactive;
             if (__atomic_exchange_n(popped, 1, __ATOMIC_SEQ_CST)) return RC(128, 2);
@@ -334,6 +406,9 @@ static int am_lib_accessor(SvcObj* o, IpcCtx* c) {
             if (id == 0x0C && c->cmd == 101) {
                 st = controller_result(la);
                 n = 0xC;
+            } else if (id == 0x11 && c->cmd == 101) {
+                st = swkbd_result(la);
+                n = 0x7D8;
             } else if (id == 0x10) {
                 u8 r[0x18];
                 memset(r, 0, sizeof r);
@@ -345,15 +420,17 @@ static int am_lib_accessor(SvcObj* o, IpcCtx* c) {
                 st = am_storage_new(n, NULL);
             }
             if (!st) return RC(128, 503);
-            LOG_LIMIT(4, "applet: library applet %02x closed right away (no applet UI here), %llu bytes of output\n",
-                      id, (unsigned long long)n);
+            if (id != 0x11)
+                LOG_LIMIT(4,
+                          "applet: library applet %02x closed right away (no applet UI here), %llu bytes of output\n",
+                          id, (unsigned long long)n);
             out_obj(c, st);
             return 0;
         }
         case 105:
         case 106: {
             KEvent* e = kevent_new("applet data");
-            e->signaled = 1;
+            e->signaled = !(la->id == 0x11 && c->cmd == 106);
             out_copy_h(c, h_new(&e->o));
             return 0;
         }

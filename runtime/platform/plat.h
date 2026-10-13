@@ -48,6 +48,8 @@ void plat_thread_exit(void);
 /* ends the process now, with code: stdio flushed, no atexit handlers, the other threads not joined */
 void plat_exit_now(int code) __attribute__((noreturn));
 void plat_sleep_ns(i64 ns);
+/* Host text entry for the standard software keyboard: 0 accepted, 1 cancelled, -1 unavailable. */
+int plat_text_input(char* out, size_t cap, const char* initial);
 void plat_yield(void);
 u64 plat_ns(void); /* monotonic */
 i64 plat_unix_time(void);

@@ -3,7 +3,7 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* ASTC LDR 2D decoder, written from the Khronos spec.
-   Desktop GPUs mostly lack ASTC so we decode on upload. */
+   CPU reference for tests. Vulkan uploads use astc.comp. */
 #include "gpu/texture/astc.h"
 #include <string.h>
 #include <stdlib.h>
@@ -637,8 +637,8 @@ static int decode_block_mode(u32 bm, int* gw, int* gh, int* dual, int* wq) {
     return 1;
 }
 static void decode_block(const u8* blk, int bw, int bh, u8* out, int srgb) {
-    u32 bm = getbits(blk, 0, 11);
-    if ((bm & 0x1FF) == 0x1FC) { /* void extent = solid color */
+    u32 bm = getbits(blk, 0, 12); /* void extent validation also needs reserved bit 11 */
+    if ((bm & 0x1FF) == 0x1FC) {  /* void extent = solid color */
         /* bit 9 makes it HDR (FP16 colours), which an LDR decoder can't give, and bits 10-11 are reserved as 1s:
            otherwise the block is an error */
         if (((bm >> 9) & 1) || getbits(blk, 10, 2) != 3) {

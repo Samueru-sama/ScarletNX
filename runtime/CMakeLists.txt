@@ -63,13 +63,13 @@ if(NOT SNX_VULKAN)
     list(APPEND components null)
 endif()
 if(SNX_VULKAN)
-    snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/translate.c gpu/shader/corpus.c
-                  gpu/texture/astc.c)
+    snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/translate.c gpu/shader/corpus.c)
     snx_component(spirv gpu/vk/spirv.c)
     target_link_libraries(snx_spirv PUBLIC glslang::glslang glslang::glslang-default-resource-limits)
     # volk uses SDL's loader for windows and loads Vulkan directly for headless runs
-    snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c gpu/vk/nvn.c
-                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c gpu/vk/vma.cpp
+    snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
+                  gpu/vk/nvn.c gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c
+                  gpu/vk/astc.c gpu/vk/vma.cpp
                   "${volk_SOURCE_DIR}/volk.c")
     list(APPEND components shader spirv vk)
     # third-party code (vma.cpp is VMA's implementation)

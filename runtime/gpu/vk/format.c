@@ -156,7 +156,7 @@ static VkFmt TC(VkFormat f, int bpp) { /* block compressed, 4x4 */
     VkFmt r = {f, (u8)bpp, 4, 4, 0, 0, 0, 1};
     return r;
 }
-static VkFmt TA(int bw, int bh, int srgb) { /* ASTC, decoded on the CPU: few desktop GPUs sample it */
+static VkFmt TA(int bw, int bh, int srgb) { /* ASTC, decoded by compute: few desktop GPUs sample it */
     VkFmt r = {srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, (u8)bw, (u8)bh, 0, 0, 0, 0};
     r.conv = VKC_ASTC;
     return r;

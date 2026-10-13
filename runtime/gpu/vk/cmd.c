@@ -169,7 +169,8 @@ u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation*
     if (!f->stage || at + size > f->stage_cap) {
         /* a bigger buffer; the old one stays alive until this frame's work is done */
         if (f->stage) {
-            /* The old allocation remains in use by recorded commands but is no longer flushed at submit. */
+            /* The submit only flushes the current ring. Flush a retired ring too:
+               earlier copies and ASTC dispatches still read its host writes. */
             vmaFlushAllocation(g_vk.vma, f->stage_mem, 0, VK_WHOLE_SIZE);
             dead_push(f, (Dead){.buf = f->stage, .mem = f->stage_mem});
         }

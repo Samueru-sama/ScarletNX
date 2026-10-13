@@ -47,7 +47,13 @@ static void read_targets(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
         if (a && t[2] && t[3] && t[4]) {
             /* a pitch-linear target (bit 12 of the memory layout) holds its row pitch in bytes where the width is */
             u32 bpp = vk_rt_format(t[4]).bpp, linear = (t[5] >> 12) & 1, w = linear ? t[2] / bpp : t[2];
-            if (w) rt[i] = vk_rt(a, w, t[3], t[4], t[5], 0, linear ? t[2] : w * bpp);
+            /* COLOR_TARGET_THIRD_DIMENSION names the number of renderable array slices. Vertex shaders may
+               select one with their layer output (the color LUT passes render all slices in one draw). */
+            u32 layers = t[6] & 0xffff;
+            if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
+            if (w)
+                rt[i] = vk_rt_array(a, w, t[3], t[4], t[5], linear ? t[2] : w * bpp, layers, (u64)t[7] * 4,
+                                    (t[6] >> 16) & 1);
             if (rt[i]) *n = i + 1;
         }
     }
@@ -103,9 +109,14 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
         if (zt->sw < ext.width) ext.width = zt->sw;
         if (zt->sh < ext.height) ext.height = zt->sh;
     }
+    u32 layers = ~0u;
+    for (u32 i = 0; i < n; i++)
+        if (rt[i] && rt[i]->layers < layers) layers = rt[i]->layers;
+    if (zt && zt->layers < layers) layers = zt->layers;
+    if (layers == ~0u) layers = 1;
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                           .renderArea = {{0, 0}, ext},
-                          .layerCount = 1,
+                          .layerCount = layers,
                           .colorAttachmentCount = n,
                           .pColorAttachments = ca,
                           .pDepthAttachment = zt ? &za : NULL,
@@ -160,13 +171,15 @@ static u32 clear_int(float f, int sint) {
 
 /* a clear of some color components only: a full-screen triangle with that write mask, whose fragment shader writes
    the cleared slot alone, in the target's number type */
-static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
+static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 layer) {
     static VkShaderModule vs, fs[8][3];
     const VkFmt* f = &g_rp.rt[slot]->f;
     int num = f->is_int ? (f->sint ? 2 : 1) : 0;
     if (!vs)
-        vs = vk_module("#version 450\nvoid main(){ vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
-                       "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n",
+        vs = vk_module("#version 450\n#extension GL_ARB_shader_viewport_layer_array : require\n"
+                       "layout(push_constant) uniform PC { int layer; };\n"
+                       "void main(){ vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
+                       "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); gl_Layer = layer; }\n",
                        ST_VS);
     if (!fs[slot][num]) {
         static const char* ty[3] = {"vec4", "uvec4", "ivec4"};
@@ -198,6 +211,7 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     plain_state(cb, rect);
     u32 pc[8] = {0};
+    pc[0] = layer;
     for (int i = 0; i < 4; i++)
         if (num)
             pc[4 + i] = clear_int(cc[i], num == 2);
@@ -211,7 +225,7 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect) {
 /* v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer */
 void vk_render_clear(GpuChannel* ch, u32 v) {
     u32* r = ch->r3d;
-    u32 slot = (v >> 6) & 15, mask = (v >> 2) & 15;
+    u32 slot = (v >> 6) & 15, mask = (v >> 2) & 15, layer = (v >> 10) & 0x7ff;
     float cc[4], dz;
     memcpy(cc, &r[0x360], 16);
     memcpy(&dz, &r[0x364], 4);
@@ -228,7 +242,12 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
             LOG_LIMIT(1, "vulkan: a clear of color slot %u under RT_CONTROL %08x\n", slot, ctl);
     }
     if (!render_begin(rt, zt, n, 0)) return;
-    VkClearRect rect = {{{0, 0}, g_rp.ext}, 0, 1};
+    u32 layers = ~0u;
+    for (u32 i = 0; i < g_rp.n; i++)
+        if (g_rp.rt[i] && g_rp.rt[i]->layers < layers) layers = g_rp.rt[i]->layers;
+    if (g_rp.zt && g_rp.zt->layers < layers) layers = g_rp.zt->layers;
+    if (layer >= layers) return;
+    VkClearRect rect = {{{0, 0}, g_rp.ext}, layer, 1};
     if ((r[0x43E] & 0x10) && (r[0x380] & 1)) { /* scissored clear */
         u32 xs = r[0x381], ys = r[0x382];
         i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16), y0 = (i32)vk_scf(ys & 0xFFFF),
@@ -253,7 +272,7 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
                 memcpy(at[na].clearValue.color.float32, cc, 16);
             na++;
         } else {
-            if (clear_masked(slot, mask, cc, rect.rect)) target_written(g_rp.rt[slot]);
+            if (clear_masked(slot, mask, cc, rect.rect, layer)) target_written(g_rp.rt[slot]);
         }
     }
     if ((v & 3) && zt) {
@@ -272,8 +291,8 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
         if (color_clear) {
             Surf* s = g_rp.rt[slot];
             s->wgen++;
-            if (rect.rect.offset.x == 0 && rect.rect.offset.y == 0 && rect.rect.extent.width == s->sw &&
-                rect.rect.extent.height == s->sh)
+            if (s->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
+                rect.rect.extent.width == s->sw && rect.rect.extent.height == s->sh)
                 vk_rt_drawn_full(s);
             else
                 vk_rt_drawn(s);

@@ -136,7 +136,8 @@ static int device_score(VkPhysicalDevice pd, u32* gfx, u32* compute, u32* gfx_qu
     for (u32 i = 0; i < nq; i++) {
         VkBool32 present = VK_TRUE;
         if (!g_opt_headless) vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, g_vk.surface, &present);
-        if ((q[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present && *gfx == ~0u) *gfx = i;
+        VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT; /* ASTC uploads use compute */
+        if ((q[i].queueFlags & required) == required && present && *gfx == ~0u) *gfx = i;
     }
     /* a compute family without graphics runs alongside the graphics queue */
     for (u32 i = 0; i < nq; i++)
