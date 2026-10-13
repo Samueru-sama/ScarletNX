@@ -115,6 +115,11 @@ record and do not inflate its implicit-begin count.
 `SNX_NVN_POOL=1` now records memory-pool lifetimes alongside guest execution. At the exported
 `nvnMemoryPoolInitialize` boundary it snapshots the builder's flags, backing pointer, and size, so inlined builder
 setters are covered too. Only a successful initialization creates or advances a pool record. Finalize retires it;
+Odyssey uses an older builder layout with storage, size, and flags at `+8`, `+16`, and `+24`; the newer layout uses
+flags, storage, and size at `+4`, `+16`, and `+24`. The observer selects the older layout when the newer size field is
+not page-sized and the older size field is. This restored Odyssey's descriptor backing range: a 15-second boot copied
+39 TICs with zero missing bases or address mismatches. Catherine and TotK retained zero legacy-layout detections
+and copied 199 and 5,773 TICs respectively in their validation boots.
 Map and GetBufferAddress attach the returned CPU and GPU addresses. The bounded table reports failed initialization,
 invalid builders, reuse without finalize, capacity loss, and operations on untracked pools. It does not own the backing
 memory or change rendering. The backing pointer is intentionally not required to be CPU-readable: GPU-only and virtual

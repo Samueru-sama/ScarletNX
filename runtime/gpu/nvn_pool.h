@@ -7,7 +7,7 @@
 typedef struct {
     u64 pool, storage, size;
     u32 flags;
-    int valid;
+    int valid, legacy_layout;
 } NvnPoolCall;
 
 typedef struct {

@@ -19,7 +19,7 @@ typedef struct {
 static Pool pools[POOL_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 initialized, failed, finalized, live, reinitialized, unknown_finalizes, unknown_maps, unknown_addresses;
-static u64 invalid_builders, table_full, mapped, addressed, inferred_addresses, getter_mismatches;
+static u64 invalid_builders, table_full, mapped, addressed, inferred_addresses, getter_mismatches, legacy_builders;
 
 static Pool* pool_slot(u64 key, int create) {
     if (!key) return NULL;
@@ -56,13 +56,18 @@ void nvn_pool_before(const CPU* c, const char* name, NvnPoolCall* call) {
     memset(call, 0, sizeof *call);
     call->pool = c->x[0];
     if (strcmp(name, "nvnMemoryPoolInitialize")) return;
-    /* SDK builder: flags at +4, backing pointer at +16, size at +24. Do not require the backing to be CPU-readable:
-       some pools are GPU-only or virtual. Only the small builder snapshot itself is dereferenced. */
+    /* SDK layouts differ: newer builders place flags/storage/size at +4/+16/+24, while the older layout used by
+       Odyssey places storage/size/flags at +8/+16/+24. Memory pools are page-sized, so a small value in the new
+       size position and a page-aligned value at +16 identify the older layout. */
     u64 builder = c->x[1];
     if (!readable_range(builder, 0x20)) return;
-    call->flags = gr32(builder + 4);
-    call->storage = gr64(builder + 0x10);
-    call->size = gr64(builder + 0x18);
+    u64 old_size = gr64(builder + 0x10);
+    u64 new_size = gr64(builder + 0x18);
+    call->legacy_layout = old_size >= 0x1000 && !(old_size & 0xfff) &&
+                          (new_size < 0x1000 || (new_size & 0xfff));
+    call->flags = gr32(builder + (call->legacy_layout ? 0x18 : 4));
+    call->storage = gr64(builder + (call->legacy_layout ? 8 : 0x10));
+    call->size = call->legacy_layout ? old_size : new_size;
     call->valid = 1;
 }
 
@@ -92,6 +97,7 @@ void nvn_pool_after(const CPU* c, const char* name, const NvnPoolCall* call) {
                 p->generation++;
                 p->alive = 1;
                 initialized++;
+                if (call->legacy_layout) legacy_builders++;
             }
         }
     } else {
@@ -136,8 +142,9 @@ void nvn_pool_report(void) {
     LOG("nvn-pool: maps=%llu gpu-addresses=%llu unknown-finalizes=%llu unknown-maps=%llu unknown-addresses=%llu\n",
         (unsigned long long)mapped, (unsigned long long)addressed, (unsigned long long)unknown_finalizes,
         (unsigned long long)unknown_maps, (unsigned long long)unknown_addresses);
-    LOG("nvn-pool: inferred-gpu-bases=%llu getter-mismatches=%llu\n", (unsigned long long)inferred_addresses,
-        (unsigned long long)getter_mismatches);
+    LOG("nvn-pool: inferred-gpu-bases=%llu getter-mismatches=%llu legacy-builders=%llu\n",
+        (unsigned long long)inferred_addresses, (unsigned long long)getter_mismatches,
+        (unsigned long long)legacy_builders);
     pm_unlock(&lock);
 }
 
