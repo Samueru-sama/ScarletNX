@@ -34,7 +34,8 @@ int nvn_command_gap_methods(const u32* words, u32 length, NvnGapMethodVisitor vi
 static void check_buffer_binding(u32 subchannel, u32 method, u32 value, void* context) {
     (void)value;
     int* valid = context;
-    if (subchannel || !((method >= 0x8e0 && method <= 0x8e2) || method == 0x904 || method == 0x924))
+    if (subchannel || !((method >= 0x8e0 && method <= 0x8e2) ||
+                        (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0)))
         *valid = 0;
 }
 

@@ -1031,6 +1031,14 @@ coverage surviving. Resolve the intervening write's resource scope, then compare
 Maxwell again. Before these passes executed, the direct second graphics writer set only one of the 240 flags that
 Maxwell set. This remains a diagnostic shadow path; it does not yet present an HLE-rendered frame.
 
+The newer marker comes from an opaque TotK list boundary, not from a known draw or dispatch. The observed list had
+3,811 recorded operations, one command-memory allocation, and known prefix and tail, but its cursor gaps failed the
+buffer-bindings-only check. Some failures were omitted constant-buffer binds for the other Maxwell stages; the
+classifier now recognizes all five read-only bind methods. Other gaps contain report-semaphore writes, constant data
+uploads, vertex ranges, and MME draw packets. They cannot be declared harmless as a group. The next provenance step
+is to replay or scope those hidden memory writes in command order and retain a global barrier for any gap whose write
+range cannot be proved. A query write to an unrelated address should not invalidate a covered sampled image.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

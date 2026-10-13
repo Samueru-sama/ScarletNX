@@ -48,6 +48,8 @@ int main(void) {
     const u32 binding_packets[] = {0x200308e0, 0x100, 6, 0x22ad0000,
                                    0x60010904, 0x31, 0x60010924, 0x41};
     assert(nvn_command_gap_buffer_bindings_only(binding_packets, 8));
+    const u32 other_stage_bindings[] = {0x6001090c, 0x31, 0x60010914, 0x41, 0x6001091c, 0x51};
+    assert(nvn_command_gap_buffer_bindings_only(other_stage_bindings, 6));
     assert(!nvn_command_gap_buffer_bindings_only(state_packets, 7)); /* 0x8e3 is not classified. */
     assert(!nvn_command_gap_buffer_bindings_only(packet, 12)); /* Indexed draw writes attachments. */
     const u32 clear_packet[] = {0x60010674, 1};
