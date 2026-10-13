@@ -255,6 +255,7 @@ static int tex_upload(Surf* t) {
 done:
     if (nreg) vkCmdCopyBufferToImage(cb, regbuf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nreg, reg);
     free(reg);
+    if (complete) t->maxwell_imported = 0;
     return t->upload_valid = complete;
 }
 
@@ -527,7 +528,7 @@ int vk_tex_tic_supported(const u32* tic) {
            (layers < 6 || header.w != header.h || header.w <= lim->maxImageDimensionCube);
 }
 
-static Surf* tex_from_tic(const u32* tic) {
+static Surf* tex_from_tic(const u32* tic, int guest_only) {
     TicHeader header = {0};
     if (!tic_header(tic, &header)) return NULL;
     u64 gva = header.gva;
@@ -564,7 +565,7 @@ static Surf* tex_from_tic(const u32* tic) {
     Surf* rt = vk_rt_find(gva);
     /* a texture of several levels isn't the target (its other levels are other targets' memory, a mip chain drawn level
        by level): loaded from memory */
-    if (rt && rt->layout != VK_IMAGE_LAYOUT_UNDEFINED && f.bw == 1 && !f.conv && type != 2 && rt->w >= w &&
+    if (!guest_only && rt && rt->layout != VK_IMAGE_LAYOUT_UNDEFINED && f.bw == 1 && !f.conv && type != 2 && rt->w >= w &&
         rt->h >= h && (d == 1 || type == 1 || type == 7) && levels == 1) {
         /* a header of another texel size covers other memory than the target's pixels (depth is read through its
            own aspect, whatever the host format's size) */
@@ -592,6 +593,21 @@ static Surf* tex_from_tic(const u32* tic) {
                   (cube && w > lim->maxImageDimensionCube)) {
         LOG_LIMIT(1, "vulkan: a %ux%ux%u texture is bigger than the GPU's images can be (not drawn)\n", w, h, d);
         return NULL;
+    }
+    if (guest_only) {
+        u64 size = 0;
+        for (u32 l = 0; l < levels; l++) {
+            u64 level = bl ? bl_level_size(w, h, d3, &f, bh, bd, l, NULL, NULL) : stride;
+            if (level > UINT64_MAX - size) return NULL;
+            size += level;
+        }
+        if (!layers || (layers > 1 && stride > (UINT64_MAX - size) / (layers - 1))) return NULL;
+        size += stride * (layers - 1);
+        if (!size || gva > UINT64_MAX - size || vk_rt_fresh_in(gva, gva + size)) {
+            LOG_LIMIT(12, "nvn-guest-texture-waits: address=%llx size=%llu\n",
+                      (unsigned long long)gva, (unsigned long long)size);
+            return NULL;
+        }
     }
     u32 ilevels = levels; /* ASTC compute uploads include every mip level. */
     u32 fkey = (tic[0] & 0x7FFFF) | ((u32)srgb << 31);
@@ -943,6 +959,7 @@ static void tex_take_drawn(Surf* t) {
                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
                     }
                 }
+                t->maxwell_imported = 1;
                 s->copy_dst = t;
                 s->copy_wgen = s->wgen;
                 s->copy_tgen = t->wgen;
@@ -998,6 +1015,7 @@ static void tex_take_drawn(Surf* t) {
                         vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
                     }
+                    t->maxwell_imported = 1;
                     s->copy_dst = t;
                     s->copy_wgen = s->wgen;
                     s->copy_tgen = t->wgen;
@@ -1028,6 +1046,7 @@ static void tex_take_drawn(Surf* t) {
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
                 if (t->f.depth)
                     LOG_LIMIT(1, "vulkan: sampled depth texture imports a drawn subresource from its render target\n");
+                t->maxwell_imported = 1;
                 s->copy_dst = t;
                 s->copy_wgen = s->wgen;
                 s->copy_tgen = t->wgen;
@@ -1040,8 +1059,14 @@ static void tex_take_drawn(Surf* t) {
     if (d != small) free(d);
 }
 Surf* vk_tex_from_tic(const u32* tic) {
-    Surf* t = tex_from_tic(tic);
+    Surf* t = tex_from_tic(tic, 0);
     if (t && !t->is_rt && !t->upload_valid) return NULL;
     tex_take_drawn(t);
+    return t;
+}
+Surf* vk_tex_from_tic_guest(const u32* tic) {
+    Surf* t = tex_from_tic(tic, 1);
+    if (!t || t->is_rt || !t->upload_valid) return NULL;
+    if (t->maxwell_imported && !tex_upload(t)) return NULL;
     return t;
 }

@@ -189,6 +189,7 @@ typedef struct Surf {
     int nsv;
     u64 size, hash, shash;
     int upload_valid; /* textures: every subresource initialized (packed depth/stencil still uses a fallback) */
+    int maxwell_imported; /* texture image contains a copy of an emulated render target */
     u32 checked, next_check, stable, tfull;
     u32 wseen; /* write-tracking clock when it last matched memory */
     /* copies of regions of this render target for texture headers or feedback draws, one per size, linked through next
@@ -222,6 +223,7 @@ void vk_rt_flush(u64 gva);
 void vk_rt_drawn(Surf* s);      /* a render target was drawn to (gpu/vk/render.c) */
 void vk_rt_drawn_full(Surf* s); /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s); /* no guest-memory write has replaced the target since its last draw */
+int vk_rt_fresh_in(u64 lo, u64 hi); /* a host-only target still owns bytes in this guest range */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
 void vk_rt_reload(u64 gva);
 /* textures share the surface table */
@@ -238,6 +240,7 @@ void vk_astc_upload(VkCommandBuffer cb, Surf* t, const u8* blocks, u32 w, u32 h,
 
 /* texture.c */
 Surf* vk_tex_from_tic(const u32* tic);
+Surf* vk_tex_from_tic_guest(const u32* tic); /* guest-backed input without Maxwell target imports */
 /* a view of s as the shader declares it, sRGB or linear (color formats that have both), with a component mapping;
    VK_NULL_HANDLE when the image can't be viewed that way */
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map);

@@ -1945,7 +1945,7 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
         VkImageView view = image_view_from_semantic(descriptor,
                                                     effective_unknown_write(command->prior_unmodeled_write));
         if (!view) {
-            Surf* sampled = vk_tex_from_tic(descriptor->tic);
+            Surf* sampled = vk_tex_from_tic_guest(descriptor->tic);
             if (!sampled) return 0;
             view = vk_tex_bind_view(sampled, vk_tex_view_type(sampled_shader), descriptor->tic, 0);
             if (view)
@@ -2373,7 +2373,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             if ((color_feedback || depth_feedback) && !view) return 0;
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
-                Surf* sampled = vk_tex_from_tic(descriptor->tic);
+                Surf* sampled = vk_tex_from_tic_guest(descriptor->tic);
                 if (!sampled) return 0;
                 /* A distinct Maxwell target can still supply a sampled input while its NVN
                    producer is being modeled. Bound attachments require the snapshot above. */
@@ -3234,7 +3234,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                     from_clear = 1;
                     continue;
                 }
-                Surf* surf = vk_tex_from_tic(descriptor->tic);
+                Surf* surf = vk_tex_from_tic_guest(descriptor->tic);
                 if (!surf) {
                     failure = NVN_DRAW_TEXTURE_IMAGE_MISSING;
                     ready = 0;

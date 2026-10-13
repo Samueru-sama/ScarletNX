@@ -498,6 +498,17 @@ int vk_rt_drawn_fresh(Surf* s) {
     if (s->draw_has_hash) return rt_mem_hash(s) == s->draw_hash;
     return vk_written_since(gmem_ptr_untracked(s->gva, size), size, s->draw_wseen) == 0;
 }
+int vk_rt_fresh_in(u64 lo, u64 hi) {
+    if (lo >= hi) return 1;
+    for (int k = 0; k < SURFH; k++)
+        for (Surf* s = g_surfh[k]; s; s = s->next) {
+            if (!s->is_rt || s->gva >= hi) continue;
+            u64 size = rt_bytes(s);
+            if (size > UINT64_MAX - s->gva || s->gva + size <= lo) continue;
+            if (vk_rt_drawn_fresh(s)) return 1;
+        }
+    return 0;
+}
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     int n = 0;
     for (int i = 0; i < g_ndrawn;) {

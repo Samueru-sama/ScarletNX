@@ -1155,9 +1155,14 @@ byte-exact; that result does not yet prove its contents matched when the writer 
 The second writer's vertex shader also samples a 640×360 R32F image with a nonidentity TIC
 swizzle. A cached semantic view now carries that component mapping, but the 239-byte dispatch
 input difference remained at that point. Its fragment shader samples a separate 320×180, two-level image;
-at this draw, only mip 0 has direct-image coverage, so that source still uses the Maxwell
+at this draw, only mip 0 has direct-image coverage, so that source previously used the Maxwell
 texture path. The earlier unknown-write rejection seen while preparing the emulated texture
 was not the direct draw's reason for falling back.
+Direct NVN texture fallback now loads only guest-backed TIC data. A fresh Maxwell render target
+overlapping that texture means the guest bytes may be stale, so the direct draw waits for a modeled
+NVN producer instead of importing the emulated pixels. A cached texture previously filled from a
+Maxwell target is reloaded from guest memory before NVN samples it. This improves provenance but
+does not yet cover compute or DMA outputs that the emulated path materializes into guest memory.
 The shader dump then exposed the missing input: the fragment shader scales `gl_FragCoord` by
 `SNX_RS.x` before computing the storage index, but the direct NVN draw did not bind the
 `SNX_RS` descriptor. It now binds the same `1 / g_vk_scale` constant as the emulated draw.
