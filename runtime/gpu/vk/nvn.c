@@ -1065,8 +1065,8 @@ static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format
     return VK_NULL_HANDLE;
 }
 
-/* First executable NVN slice: an isolated Catherine-style draw with only application CBUF 3 and one vertex
-   stream. It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
+/* First executable NVN slice: an isolated one-stream draw with application constant buffers and sampled textures.
+   It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
 static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
                               VkPipeline pipeline, const PipeKey* key) {
     static int enabled = -1;
@@ -1078,9 +1078,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int indexed_triangles = command->primitive == 4 && command->indexed && command->index_type == 1 &&
                             !command->first && !command->base_vertex && command->depth_target_bound;
     int strip = command->primitive == 5 && !command->indexed;
+    u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
     if (!enabled || !pipeline || !vertex || !fragment ||
-        ((vertex->si.cbuf_mask | fragment->si.cbuf_mask) & ~8u) || vertex->si.ntex || fragment->si.ntex > 1 ||
-        fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf || vertex->si.in_mask != 1 ||
+        (cbuf_mask & ~(((1u << 18) - 1) & ~7u)) || vertex->si.ntex < 0 ||
+        vertex->si.ntex > SH_MAXTEX || fragment->si.ntex < 0 || fragment->si.ntex > SH_MAXTEX ||
+        vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf || vertex->si.in_mask != 1 ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !indexed_triangles) || !command->count || !command->instance_count ||
         command->polygon_state != 0x16 ||
@@ -1127,9 +1129,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         !vk_buf_get_strict(command->index_address, (u64)command->count * 2, &index_buffer, &index_offset))
         return 0;
     VkDescriptorSet sets[2];
-    VkDescriptorBufferInfo uniforms[2] = {0};
-    VkDescriptorImageInfo texture_info = {0};
-    VkWriteDescriptorSet writes[3] = {0};
+    VkDescriptorBufferInfo uniforms[2][NVN_DRAW_UNIFORM_SLOTS] = {0};
+    VkDescriptorImageInfo textures[2][SH_MAXTEX] = {0};
+    VkWriteDescriptorSet writes[2 * (NVN_DRAW_UNIFORM_SLOTS + SH_MAXTEX)] = {0};
     u32 nwrites = 0;
     int semantic_sampled = 0;
     u64 setup_frame = vk_frame_number();
@@ -1137,82 +1139,85 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     for (u32 stage = 0; stage < 2; stage++) {
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
         if (!sets[stage]) return 0;
-        if (shaders[stage]->si.cbuf_mask & 8) {
-            if (!(command->uniform_bound[stage] & 1)) return 0;
-            u32 size = shaders[stage]->si.cbuf_max[3];
+        const ShaderInfo* si = &shaders[stage]->si;
+        for (u32 bank = 3; bank < 18; bank++) {
+            if (!(si->cbuf_mask & (1u << bank))) continue;
+            u32 slot = bank - 3;
+            if (!(command->uniform_bound[stage] & (1u << slot))) return 0;
+            u32 size = si->cbuf_max[bank];
             if (size < 16) size = 16;
             if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
-            VkBuffer uniform_buffer;
-            u64 uniform_offset;
-            u8* staged = vk_stage(size, vk_stage_align(), &uniform_buffer, &uniform_offset);
+            VkBuffer buffer;
+            u64 offset;
+            u8* staged = vk_stage(size, vk_stage_align(), &buffer, &offset);
             if (!staged) return 0;
             memset(staged, 0, size);
-            u64 read_size = command->uniform[stage][0].size;
+            u64 read_size = command->uniform[stage][slot].size;
             if (read_size > size) read_size = size;
-            if (read_size) gmem_read(command->uniform[stage][0].address, staged, read_size);
-            uniforms[nwrites] = (VkDescriptorBufferInfo){uniform_buffer, uniform_offset, size};
-            writes[nwrites] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                                   .dstSet = sets[stage],
-                                                   .dstBinding = SNX_VKB_CB + 3,
-                                                   .descriptorCount = 1,
-                                                   .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                                   .pBufferInfo = &uniforms[nwrites]};
-            nwrites++;
+            if (read_size) gmem_read(command->uniform[stage][slot].address, staged, read_size);
+            uniforms[stage][slot] = (VkDescriptorBufferInfo){buffer, offset, size};
+            writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                      .dstSet = sets[stage],
+                                                      .dstBinding = SNX_VKB_CB + bank,
+                                                      .descriptorCount = 1,
+                                                      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                      .pBufferInfo = &uniforms[stage][slot]};
         }
-    }
-    if (fragment->si.ntex) {
-        const ShTex* shader_texture = &fragment->si.tex[0];
-        u32 word = shader_texture->cbuf_off;
-        if (shader_texture->bindless || shader_texture->bl2 || word < 8 ||
-            ((word - 8) & 1) || (word - 8) / 2 >= NVN_DRAW_TEXTURE_SLOTS) return 0;
-        u32 slot = (word - 8) / 2;
-        if (!(command->texture_descriptor_valid[1] & (1u << slot)) ||
-            !(command->sampler_descriptor_valid[1] & (1u << slot))) return 0;
-        const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[1][slot];
-        const NvnSamplerDescriptorSnapshot* sampler = &command->sampler_descriptor[1][slot];
-        if (!descriptor->tic_valid || !sampler->tsc_valid) return 0;
-        int num = shader_texture->shadow || !(fragment->si.tex_int_mask & 1) ? 0
-                  : (fragment->si.tex_sint_mask & 1) ? 2 : 1;
-        VkImageView view = VK_NULL_HANDLE;
-        u64 sampled_address = 0;
-        u32 sampled_width, sampled_height, sampled_layers, sampled_levels;
-        VkImageViewType sampled_type;
-        VkFormat sampled_format;
-        int semantic_shape = vk_tex_tic_shadow(descriptor->tic, &sampled_address, &sampled_width,
-                                               &sampled_height, &sampled_layers, &sampled_levels,
-                                               &sampled_type, &sampled_format);
-        if (semantic_shape &&
-            (sampled_address == color_target->gpu_address ||
-             (command->depth_target_bound && sampled_address == depth_target->gpu_address)))
-            return 0; /* attachment feedback needs a separate source snapshot */
-        /* The semantic view currently has identity component mapping. Keep other TIC swizzles on the
-           ordinary guest-memory texture path until format-aware shadow views are available. */
-        int identity_swizzle = ((descriptor->tic[0] >> 19) & 7) == 2 &&
-                               ((descriptor->tic[0] >> 22) & 7) == 3 &&
-                               ((descriptor->tic[0] >> 25) & 7) == 4 &&
-                               ((descriptor->tic[0] >> 28) & 7) == 5;
-        if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0 && identity_swizzle &&
-            (sampled_format == VK_FORMAT_R8G8B8A8_UNORM || sampled_format == VK_FORMAT_R8G8B8A8_SRGB))
-            view = image_view_from_semantic(descriptor, effective_unknown);
-        semantic_sampled = view != VK_NULL_HANDLE;
-        if (!view) {
-            Surf* sampled = vk_tex_from_tic(descriptor->tic);
-            if (!sampled || sampled->is_rt) return 0;
-            view = vk_tex_bind_view(sampled, vk_tex_view_type(shader_texture), descriptor->tic, num);
-            if (view)
-                vk_surf_use(vk_cmd(), sampled, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
-                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        for (int tex_index = 0; tex_index < si->ntex; tex_index++) {
+            const ShTex* shader_texture = &si->tex[tex_index];
+            u32 word = shader_texture->cbuf_off;
+            if (shader_texture->bindless || shader_texture->bl2 || word < 8 ||
+                ((word - 8) & 1) || (word - 8) / 2 >= NVN_DRAW_TEXTURE_SLOTS) return 0;
+            u32 slot = (word - 8) / 2;
+            if (!(command->texture_bound[stage] & (1u << slot)) ||
+                !(command->texture_descriptor_valid[stage] & (1u << slot)) ||
+                !(command->sampler_descriptor_valid[stage] & (1u << slot))) return 0;
+            const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[stage][slot];
+            const NvnSamplerDescriptorSnapshot* sampler = &command->sampler_descriptor[stage][slot];
+            if (!descriptor->tic_valid || !sampler->tsc_valid) return 0;
+            int num = shader_texture->shadow || !(si->tex_int_mask & (1u << tex_index)) ? 0
+                      : (si->tex_sint_mask & (1u << tex_index)) ? 2 : 1;
+            VkImageView view = VK_NULL_HANDLE;
+            u64 sampled_address = 0;
+            u32 sampled_width, sampled_height, sampled_layers, sampled_levels;
+            VkImageViewType sampled_type;
+            VkFormat sampled_format;
+            int semantic_shape = vk_tex_tic_shadow(descriptor->tic, &sampled_address, &sampled_width,
+                                                   &sampled_height, &sampled_layers, &sampled_levels,
+                                                   &sampled_type, &sampled_format);
+            if (semantic_shape &&
+                (sampled_address == color_target->gpu_address ||
+                 (command->depth_target_bound && sampled_address == depth_target->gpu_address)))
+                return 0; /* attachment feedback needs a separate source snapshot */
+            /* Semantic views currently have identity component mapping. Other swizzles require views. */
+            int identity_swizzle = ((descriptor->tic[0] >> 19) & 7) == 2 &&
+                                   ((descriptor->tic[0] >> 22) & 7) == 3 &&
+                                   ((descriptor->tic[0] >> 25) & 7) == 4 &&
+                                   ((descriptor->tic[0] >> 28) & 7) == 5;
+            if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0 &&
+                identity_swizzle && (sampled_format == VK_FORMAT_R8G8B8A8_UNORM ||
+                                     sampled_format == VK_FORMAT_R8G8B8A8_SRGB))
+                view = image_view_from_semantic(descriptor, effective_unknown);
+            semantic_sampled += view != VK_NULL_HANDLE;
+            if (!view) {
+                Surf* sampled = vk_tex_from_tic(descriptor->tic);
+                if (!sampled || sampled->is_rt) return 0;
+                view = vk_tex_bind_view(sampled, vk_tex_view_type(shader_texture), descriptor->tic, num);
+                if (view)
+                    vk_surf_use(vk_cmd(), sampled, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            }
+            VkSampler handle = vk_tex_bind_sampler(sampler->tsc, shader_texture, num);
+            if (!view || !handle) return 0;
+            textures[stage][tex_index] = (VkDescriptorImageInfo){handle, view,
+                                                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                      .dstSet = sets[stage],
+                                                      .dstBinding = SNX_VKB_TEX + tex_index,
+                                                      .descriptorCount = 1,
+                                                      .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                      .pImageInfo = &textures[stage][tex_index]};
         }
-        VkSampler sampler_handle = vk_tex_bind_sampler(sampler->tsc, shader_texture, num);
-        if (!view || !sampler_handle) return 0;
-        texture_info = (VkDescriptorImageInfo){sampler_handle, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        writes[nwrites] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                               .dstSet = sets[1],
-                                               .dstBinding = SNX_VKB_TEX,
-                                               .descriptorCount = 1,
-                                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                               .pImageInfo = &texture_info};
-        nwrites++;
     }
     if (setup_frame != vk_frame_number()) return 0;
     if (nwrites) vkUpdateDescriptorSets(g_vk.dev, nwrites, writes, 0, NULL);

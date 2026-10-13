@@ -607,10 +607,12 @@ The SDK's GPFIFO still supplies the displayed frame; this path does not replace 
 image writes with guest memory, or establish visual parity. It deliberately accepts only verified bank-3-only,
 one-attribute, single-color triangle-strip or narrow indexed triangle-list state until more generated buffers and
 dynamic state are modeled.
-The shadow descriptor setup now also handles one fragment sampled texture and permits a color-only attachment for
-the same simple triangle-strip shape. It decodes the shader's generated handle slot, binds the captured TIC/TSC,
-and uses the existing texture view and sampler rules. It accepts guest-memory-backed textures and independently
-complete NVN-owned images; sampling a Maxwell render target would make the shadow result depend on the emulated GPU.
+The shadow descriptor setup now binds captured application uniform slots to shader banks 3–17 and resolves every
+sampled texture used by either vertex or fragment shaders. It decodes each shader's generated handle slot, binds
+the captured TIC/TSC, and uses the existing texture view and sampler rules. It accepts guest-memory-backed textures
+and independently complete NVN-owned images; sampling a Maxwell render target would make the shadow result depend
+on the emulated GPU. The supported draw shape and dynamic state remain narrow, and generated banks 0–2, storage
+buffers, and images remain unsupported.
 The texture binder can now select a prior NVN-owned RGBA8 image when the captured TIC has an identity swizzle,
 the image's required subresources were fully initialized by modeled operations after the last unknown write, and
 the draw does not sample its own attachment. The first magenta diagnostic draw can also establish full coverage
@@ -629,7 +631,7 @@ can establish, and they are plausible contributors to the observed alpha differe
 With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN color target is also read back
 alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
 in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target
-was `(0,0,0,255)` at the center. This target is an intermediate image, not the VI-presented framebuffer. The
+was `(0,0,0,255)` at the center. This target is an intermediate image, not the VI-presented framebuffer.
 The three-draw chain's first presented-target comparison also had identical RGB and a full-image alpha mismatch
 (`0` against `255`). The comparison samples after the guest submission, so later Maxwell operations may also affect
 its contents; these black boot frames are a diagnostic rather than proof of visual parity in gameplay. Later batches
