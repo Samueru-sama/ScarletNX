@@ -552,6 +552,12 @@ texture images prepared successfully, versus none under the old all-bound-slots 
 prepared 3,048 and 2,468 texture images respectively, with only two and one stale image snapshots. This validates
 the preflight's resource selection in those scenes; it does not yet bind descriptors for NVN host draws or prove
 that all future shaders use the same internal layout.
+The same distinction applies beyond textures. In a textureless Scarlet draw trace, the Maxwell fragment stage had
+CBUF banks 0, 1, 2, and 3 at `0x564630000`, `0x4011e0600`, `0x564637800`, and `0x5157b5300`; the captured NVN
+fragment uniform slot 0 was `0x5157b5300`. Thus one application uniform slot matched GPU bank 3, while banks 0–2
+were populated internally. Even textureless shaders in that scene read CBUF banks 0 and 1 or 3. Host descriptor
+binding therefore needs the SDK's internal constant-buffer contents and bank assignment; binding NVN uniform slots
+directly to identically numbered shader banks would be wrong.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
