@@ -67,7 +67,7 @@ if(SNX_VULKAN)
     # volk uses SDL's loader for windows and loads Vulkan directly for headless runs
     snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                   gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c
-                  gpu/vk/astc.c gpu/vk/vic.c gpu/vk/vma.cpp
+                  gpu/vk/astc.c gpu/texture/etc2.c gpu/vk/vic.c gpu/vk/vma.cpp
                   "${volk_SOURCE_DIR}/volk.c")
     list(APPEND components shader spirv vk)
     # third-party code (vma.cpp is VMA's implementation)
