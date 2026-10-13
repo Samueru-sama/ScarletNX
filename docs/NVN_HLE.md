@@ -841,14 +841,19 @@ renderer had issued three earlier draws on the same target with one vertex attri
 and 3,384. All three used GPU channel 20, the same channel as the subsequent recorded draw, and occupied one GPFIFO
 entry immediately before the first recorded draw's entry. None appeared among those 31 recorded NVN draws.
 At the first transition to this workload, TotK reused the same outer submitted list, expanding it from five to
-eight secondary-list calls. The outer list had no draws. Its new secondary list immediately before the one with
-39 recorded draws contained about 9,920 captured state and memory operations, zero captured draws, and was marked
-opaque because its begin was inlined. This places the missing GPU entry near an opaque secondary-list boundary;
-the captured operation counts alone do not prove which secondary list emitted its three draws.
-That list itself includes nested `CallCommands` references, so its zero direct-draw count does not mean its full
-subtree is draw-free. Its final operations contain three repeated program, texture, vertex-attribute, and
-vertex-stream bindings with no intervening draw call recorded. This is a specific place to investigate an inlined
-draw producer, but matching the encoded command bytes to those operations is still necessary before replay.
+eight secondary-list calls. The outer list had no draws. The first two new secondary lists were opaque because their
+begins were inlined. The first had about 9,900 directly captured operations but no direct draw calls; the second
+had 39 directly captured draws. Both also held nested `CallCommands` references, so direct operation counts alone
+could not assign the missing draws to either list.
+
+A byte comparison resolved that ambiguity. The entire 979-word GPFIFO entry containing the three earlier draws
+matched a contiguous span of the NVN command pool supplied to the **second** new secondary list, the one with 39
+recorded draws. In one run, the entry matched pool offset `0xc110d4`, within that list's `AddCommandMemory` range
+`0xc01e98..0x1000000`. In another run the ring-buffer offsets changed, but the same entry matched at `0x12134`,
+within the corresponding list's `0x2ef8..0x400000` range. The Maxwell draw methods occurred at words 489, 814,
+and 972 of that entry. The preceding list's zero direct-draw count was a misleading clue: the missing commands are
+encoded in the same secondary list as later observed NVN draws. Recovering those inlined draw calls requires parsing
+or observing this list's encoded command stream and preserving their position relative to its exported API calls.
 Temporarily omitting only those three Maxwell draws
 made the two targets match byte-for-byte (0/230,400 different pixels); that omission was removed after diagnosis.
 The direct draw itself left a forced magenta target unchanged, including with depth testing, culling, and blending
