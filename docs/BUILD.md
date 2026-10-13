@@ -11,7 +11,7 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
   Use a system SDL3 development package, or X11/Wayland development libraries for the bundled SDL3 build.
 - **Windows:** Win10/11 x64 + Git. Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
   NASM and w64devkit in `deps/tools`.
-- **Display:** a Vulkan 1.3 driver. Headless builds omit SDL3 and can optionally retain Vulkan.
+- **Display:** a Vulkan 1.3 driver. Headless builds omit SDL3 and use Vulkan offscreen.
 - **FFmpeg:** avoid spaces in checkout/cache paths.
 
 ## Linux / FreeBSD
@@ -83,7 +83,7 @@ installation is needed. It still needs your platform's window-system development
 - To force the source build, pass `-DSNX_BUNDLED_SDL3=ON`.
 - If SDL3's configure reports missing X11/Wayland development libraries, install the packages above.
   Do not work around that by disabling both display backends for a windowed build.
-- A no-window Vulkan build needs no SDL3. Use `-DSNX_BACKEND=headless -DSNX_VULKAN=ON` as shown below.
+- A no-window Vulkan build needs no SDL3. Use `-DSNX_BACKEND=headless` as shown below.
   The runtime flag `-H` alone does not remove the SDL3 build dependency from a window-capable binary.
 
 After installing dependencies, rerun:
@@ -154,14 +154,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 
 ```sh
 # Vulkan without SDL3, a display server, a surface or a swapchain:
-cmake --preset default -B build/headless-vk -DSNX_BACKEND=headless -DSNX_VULKAN=ON -DSNX_DEPLOY=OFF &&
+cmake --preset default -B build/headless-vk -DSNX_BACKEND=headless -DSNX_DEPLOY=OFF &&
 cmake --build build/headless-vk
 # -> build/headless-vk/scarletnx, Vulkan renderer, always headless
-
-# Lightweight null renderer (does not render the game's 3D graphics):
-cmake --preset default -B build/headless -DSNX_BACKEND=headless -DSNX_VULKAN=OFF -DSNX_DEPLOY=OFF &&
-cmake --build build/headless
-# -> build/headless/scarletnx, no SDL3/Vulkan or game deployment
 
 cmake --preset windows-cross && cmake --build --preset windows-cross
 # -> build/windows-cross/scarletnx.exe; requires llvm-mingw on PATH
@@ -173,7 +168,7 @@ The no-SDL3 builds cannot switch to a window. [Software Vulkan / lavapipe setup]
 Offscreen integration test, with an installed Vulkan 1.3 ICD (lavapipe works):
 
 ```sh
-cmake --preset default -B build/headless-vk -DSNX_BACKEND=headless -DSNX_VULKAN=ON \
+cmake --preset default -B build/headless-vk -DSNX_BACKEND=headless \
   -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON && cmake --build build/headless-vk
 # Set VK_DRIVER_FILES to your lavapipe manifest to force CPU rendering.
 SNX_VK_VALIDATION=1 ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure

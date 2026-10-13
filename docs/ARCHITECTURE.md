@@ -69,7 +69,7 @@ bump `SNX_ABI` for ABI changes. Version mismatches reject loading.
 | `runtime/` | Module loading, INI, clock, `RtAPI`, crashes |
 | `hle/kernel/`, `hle/svc/`, `memory/` | Objects, threads, sync, SVC, Switch memory, IPC |
 | `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
-| `gpu/` and `gpu/maxwell/` | GPFIFO, Maxwell engine implementation, shaders, Vk/null renderers |
+| `gpu/` and `gpu/maxwell/` | GPFIFO, Maxwell engine implementation, shaders, Vulkan renderer |
 | `gpu/video/` | host1x, NVDEC/FFmpeg, VIC |
 | `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit |
 
@@ -98,8 +98,8 @@ SVC -> `hle/svc/svc.c`; `svcSendSyncRequest` -> `hle/kernel/ipc.c` -> session's 
 
 ### Renderer coherence + lifetime
 
-- **Vk**: Vulkan 1.3, guest buffer mirrors; separate compute queue when available, graphics queue otherwise.
-- **null**: headless; executes command streams, syncpoints, semaphores.
+- **Vk**: Vulkan 1.3 in windowed or headless mode, with guest buffer mirrors; separate compute queue when available,
+  graphics queue otherwise.
 
 Invalidation: host write tracking + `mem_unmap` -> `gpu_mem_changed`. Vk treats zeroed unmap/heap-return ranges
 as written at the next cache check.

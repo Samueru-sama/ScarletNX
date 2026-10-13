@@ -3,7 +3,7 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* the 3D engine's side of the renderer: clears, draws, constant buffers and blits go to it, with clears done in guest
-   memory when no renderer runs (the headless build). Also the log of what the GPU wrote to memory */
+   memory before the renderer starts. Also the log of what the GPU wrote to memory */
 #include <stdlib.h>
 #include <string.h>
 #include "gpu/renderer.h"

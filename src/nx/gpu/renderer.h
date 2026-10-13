@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The renderer interface: what the GPU front end (gpu.c, engines.c, maxwell3d.c) and the window backends ask of a
-   renderer. The Vulkan (gpu/vk/renderer.c) and null (gpu/null/null.c) renderers each fill in every operation, with a
-   no-op where they have nothing to do, so callers never check. save is the one exception (NULL when there is
-   nothing to save). */
+/* The renderer interface: what the GPU front end (gpu.c, engines.c, maxwell3d.c) and the window backends ask of the
+   Vulkan renderer (gpu/vk/renderer.c). It works with a window or offscreen without a swapchain. */
 #ifndef SNX_RENDERER_H
 #define SNX_RENDERER_H
 #include "cpu/aarch64/cpu.h"
@@ -18,8 +16,8 @@ typedef struct Renderer {
     const char* name;
     int (*start)(void); /* 0 when it can't run here */
     /* called first for every GPFIFO submission, on the submitting thread before gpu_submit queues it. 1 would mean the
-       renderer took it, skipping the GPU thread with its order and fence wait; both renderers return 0 (Vulkan only
-       notes that guest memory may have changed) */
+       renderer took it, skipping the GPU thread with its order and fence wait; Vulkan returns 0 and notes that guest
+       memory may have changed */
     int (*async_submit)(u64* e, u32 n, u32 syncpt, u32 incs);
     /* the 3D engine (maxwell3d.c) */
     void (*clear)(GpuChannel* ch, u32 v);
@@ -58,8 +56,8 @@ typedef struct Renderer {
     void (*save)(void);
 } Renderer;
 
-extern const Renderer vk_renderer, null_renderer;
-/* the active renderer: Vulkan (windowed or headless), or null when Vulkan is disabled */
+extern const Renderer vk_renderer;
+/* the Vulkan renderer, windowed or headless */
 extern const Renderer* g_renderer;
 
 /* shared state (gpu/renderer.c) */

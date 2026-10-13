@@ -7,7 +7,7 @@
 #   hle       the services the game talks to                         video     NVDEC and VIC (host1x)
 #   gpu       the GPU front end: GPFIFO, engines, the renderer interface
 #   shader    Maxwell shaders to GLSL                                 spirv     GLSL to SPIR-V (glslang)
-#   vk / null        the renderers                                    platform  the OS layer and a window backend
+#   vk        the renderer                                            platform  the OS layer and a window backend
 
 add_library(snx_nx_flags INTERFACE)
 target_include_directories(snx_nx_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -60,10 +60,6 @@ endif()
 snx_component(platform ${platform})
 
 set(components core kernel hle video gpu platform)
-if(NOT SNX_VULKAN)
-    snx_component(null gpu/null/null.c)
-    list(APPEND components null)
-endif()
 if(SNX_VULKAN)
     snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/translate.c gpu/shader/corpus.c)
     snx_component(spirv gpu/vk/spirv.c)

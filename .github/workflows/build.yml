@@ -25,7 +25,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang pkgconf sdl3 libxtst libxrandr libxss
+        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
@@ -43,8 +43,10 @@ jobs:
           cmake --build build/sdl-fallback --target scarletnx
       - name: Build the headless backend too
         run: |
-          cmake --preset default -B build/headless -DSNX_BACKEND=headless -DSNX_DEPLOY=OFF
+          cmake --preset default -B build/headless -DSNX_BACKEND=headless -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON
           cmake --build build/headless
+      - name: Test headless Vulkan and NX runtime
+        run: ctest --test-dir build/headless -R '^(vulkan_headless|nx_runtime_homebrew)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src/common/cpu/aarch64 src/common/cpu/aarch64/cpu_helpers.c

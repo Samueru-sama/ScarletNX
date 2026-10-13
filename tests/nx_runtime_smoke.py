@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Recompile synthetic homebrew and run its Horizon SVCs with the null renderer."""
+"""Recompile synthetic homebrew and run its Horizon SVCs with headless Vulkan."""
 
 import argparse
 import os
@@ -91,7 +91,7 @@ def main():
                 raise RuntimeError(
                     f'NX runtime returned {result.returncode} or did not execute the Horizon SVC markers'
                 )
-            print('Synthetic NRO recompiled and ran Horizon OutputDebugString/ExitProcess with the null renderer.')
+            print('Synthetic NRO recompiled and ran Horizon OutputDebugString/ExitProcess with headless Vulkan.')
             return 0
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             artifacts.mkdir(parents=True, exist_ok=True)

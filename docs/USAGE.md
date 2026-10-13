@@ -158,6 +158,8 @@ always starts headless because it has no window backend.
 Rendering still uses Vulkan 1.3, including uploads, draws, compute and screenshot readback. Headless runs
 create no window, `VkSurfaceKHR` or swapchain and request no WSI extensions, including `VK_EXT_headless_surface`.
 Frames still submit and recycle their resources. `--seconds`, `--frames`, `--script` and `--shot` work as before.
+Keep `SNX_H264=ON` (the build default) for games that play H.264 video. With decoding disabled, those scenes can
+present black frames even though Vulkan is drawing and frame counts advance.
 
 To use software rendering, select Mesa's **lavapipe Vulkan ICD**, rather than the hardware driver. Mesa may
 report this device as `llvmpipe` in the Vulkan log. Selecting a CPU ICD is independent of `-H`:

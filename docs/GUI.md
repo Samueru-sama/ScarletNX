@@ -93,7 +93,7 @@ built separately and installed beside it or made available on PATH.
 To build it alongside a no-window NX test runtime:
 
 ```sh
-cmake -S . -B build/gui -DSNX_BACKEND=headless -DSNX_VULKAN=OFF \
+cmake -S . -B build/gui -DSNX_BACKEND=headless \
   -DSNX_H264=OFF -DSNX_DEPLOY=OFF -DSNX_BUILD_GUI=ON
 cmake --build build/gui
 ctest --test-dir build/gui -R '^gui_' --output-on-failure
