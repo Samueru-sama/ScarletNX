@@ -268,17 +268,19 @@ void nvn_trace_init(void) {
     const char* attachment_prepare_env = getenv("SNX_NVN_ATTACHMENT_PREPARE");
     const char* shader_materialize_env = getenv("SNX_NVN_SHADER_MATERIALIZE");
     const char* pipeline_prepare_env = getenv("SNX_NVN_PIPELINE_PREPARE");
+    const char* shadow_draw_env = getenv("SNX_NVN_SHADOW_DRAW");
     const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
     verify = hle && verify_env && !strcmp(verify_env, "1");
     int shader_translate = shader_translate_env && !strcmp(shader_translate_env, "1");
-    int clear_execute = clear_execute_env && !strcmp(clear_execute_env, "1");
+    int shadow_draw = shadow_draw_env && !strcmp(shadow_draw_env, "1");
+    int clear_execute = shadow_draw || (clear_execute_env && !strcmp(clear_execute_env, "1"));
     int copy_execute = copy_execute_env && !strcmp(copy_execute_env, "1");
-    int texture_load = texture_load_env && !strcmp(texture_load_env, "1");
-    int attachment_prepare = attachment_prepare_env && !strcmp(attachment_prepare_env, "1");
-    int shader_materialize = shader_materialize_env && !strcmp(shader_materialize_env, "1");
-    int pipeline_prepare = pipeline_prepare_env && !strcmp(pipeline_prepare_env, "1");
+    int texture_load = shadow_draw || (texture_load_env && !strcmp(texture_load_env, "1"));
+    int attachment_prepare = shadow_draw || (attachment_prepare_env && !strcmp(attachment_prepare_env, "1"));
+    int shader_materialize = shadow_draw || (shader_materialize_env && !strcmp(shader_materialize_env, "1"));
+    int pipeline_prepare = shadow_draw || (pipeline_prepare_env && !strcmp(pipeline_prepare_env, "1"));
     int draw_prepare = texture_load || attachment_prepare || shader_materialize || pipeline_prepare ||
                        (draw_prepare_env && !strcmp(draw_prepare_env, "1"));
     descriptor_replay =

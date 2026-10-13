@@ -37,6 +37,7 @@ typedef struct {
     int sampled;
     int attachment;
     int storage;
+    int transfer_src;
 } NvnImage;
 static NvnImage images[NVN_IMAGE_SLOTS];
 static u64 image_bytes;
@@ -190,6 +191,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                        attachment_feature);
     int storage = !!((properties.optimalTilingFeatures & view_properties.optimalTilingFeatures) &
                     VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && !rgba8_pair;
+    int transfer_src = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT);
     VkImageUsageFlags attachment_usage =
         attachment ? (aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                                          : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
@@ -212,7 +214,9 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                               .arrayLayers = is_3d ? 1 : target->depth,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
+                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                       (transfer_src ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0) |
+                                       (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
                                        attachment_usage | (storage ? VK_IMAGE_USAGE_STORAGE_BIT : 0)};
     VmaAllocationCreateInfo allocation = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage image = VK_NULL_HANDLE;
@@ -238,6 +242,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->sampled = sampled;
     empty->attachment = attachment;
     empty->storage = storage;
+    empty->transfer_src = transfer_src;
     if (sampled) {
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                       .image = image,
@@ -867,9 +872,10 @@ static int nvn_dual_source_factor(u32 factor) {
            factor == VK_BLEND_FACTOR_SRC1_ALPHA || factor == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
 }
 
-/* This key checks that the observed shader, vertex, blend, polygon, and attachment interface
-   can form a Vulkan pipeline. Dynamic raster and depth state is set by a future host draw. */
-static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
+/* Check that the observed shader, vertex, blend, polygon, and attachment interface
+   can form a Vulkan pipeline, and return its key for the opt-in host draw. */
+static VkPipeline prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex,
+                                        const VkSh* fragment_shader, PipeKey* out_key) {
     int default_single_sample = !command->multisample_state_known &&
                                 (command->color_target_mask || command->depth_target_bound);
     for (u32 i = 0; i < 8 && default_single_sample; i++)
@@ -1044,7 +1050,214 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
             return 0;
         }
     }
-    return vk_pipeline_get(&key) != VK_NULL_HANDLE;
+    VkPipeline pipeline = vk_pipeline_get(&key);
+    if (pipeline && out_key) *out_key = key;
+    return pipeline;
+}
+
+static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format) {
+    for (u32 i = 0; i < 16; i++)
+        if (image->attachments[i].view && image->attachments[i].format == format &&
+            !image->attachments[i].mip && !image->attachments[i].layer)
+            return image->attachments[i].view;
+    return VK_NULL_HANDLE;
+}
+
+/* First executable NVN slice: an isolated Catherine-style draw with only application CBUF 3 and one vertex
+   stream. It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
+static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
+                              VkPipeline pipeline, const PipeKey* key) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* opt = getenv("SNX_NVN_SHADOW_DRAW");
+        enabled = opt && !strcmp(opt, "1");
+    }
+    if (!enabled || !pipeline || !vertex || !fragment ||
+        ((vertex->si.cbuf_mask | fragment->si.cbuf_mask) & ~8u) || vertex->si.ntex || fragment->si.ntex ||
+        fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf || vertex->si.in_mask != 1 ||
+        command->color_target_mask != 1 || !command->depth_target_bound || !command->target_complete ||
+        command->primitive != 5 || command->indexed || !command->count || !command->instance_count ||
+        command->polygon_state != 0x16 || command->color_state != 0x08030100 ||
+        command->depth_stencil_state[0] != 0x42 || !(command->viewport_known & 1) ||
+        !(command->scissor_known & 1) || command->color_target[0].format != 0x25 ||
+        command->depth_target.format != 0x35 || command->color_target[0].target != 1 ||
+        command->color_target[0].storage_target != 1 || command->depth_target.target != 1 ||
+        command->depth_target.storage_target != 1 || command->color_target[0].view.base_level ||
+        command->color_target[0].view.first_layer || command->depth_target.view.base_level ||
+        command->depth_target.view.first_layer || command->color_target[0].width != command->depth_target.width ||
+        command->color_target[0].height != command->depth_target.height || key->nbind != 1 || key->nattr != 1 ||
+        key->attr[0].loc != 0 || key->attr[0].binding != 0 || !command->vertex_attrib[0].enabled ||
+        command->vertex_attrib[0].stream != 0 || !(command->vertex_bound & 1))
+        return 0;
+    const NvnTextureTarget* color_target = &command->color_target[0];
+    const NvnTextureTarget* depth_target = &command->depth_target;
+    float vp_data[4];
+    memcpy(vp_data, command->viewport[0], sizeof vp_data);
+    if (!(vp_data[2] > 0 && vp_data[3] > 0) || vp_data[0] < 0 || vp_data[1] < 0 ||
+        vp_data[0] + vp_data[2] > color_target->width || vp_data[1] + vp_data[3] > color_target->height)
+        return 0;
+    const u32* sc_data = command->scissor[0];
+    if (sc_data[0] > color_target->width || sc_data[1] > color_target->height ||
+        sc_data[2] > color_target->width - sc_data[0] ||
+        sc_data[3] > color_target->height - sc_data[1])
+        return 0;
+    VkBuffer vertex_buffer;
+    u64 vertex_offset;
+    if (!vk_buf_get_strict(command->vertex[0].address, command->vertex[0].size, &vertex_buffer, &vertex_offset))
+        return 0;
+    VkDescriptorSet sets[2];
+    VkDescriptorBufferInfo uniforms[2] = {0};
+    VkWriteDescriptorSet writes[2] = {0};
+    u32 nwrites = 0;
+    u64 setup_frame = vk_frame_number();
+    const VkSh* shaders[2] = {vertex, fragment};
+    for (u32 stage = 0; stage < 2; stage++) {
+        sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
+        if (!sets[stage]) return 0;
+        if (!(shaders[stage]->si.cbuf_mask & 8)) continue;
+        if (!(command->uniform_bound[stage] & 1)) return 0;
+        u32 size = shaders[stage]->si.cbuf_max[3];
+        if (size < 16) size = 16;
+        if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
+        VkBuffer uniform_buffer;
+        u64 uniform_offset;
+        u8* staged = vk_stage(size, vk_stage_align(), &uniform_buffer, &uniform_offset);
+        if (!staged) return 0;
+        memset(staged, 0, size);
+        u64 read_size = command->uniform[stage][0].size;
+        if (read_size > size) read_size = size;
+        if (read_size) gmem_read(command->uniform[stage][0].address, staged, read_size);
+        uniforms[nwrites] = (VkDescriptorBufferInfo){uniform_buffer, uniform_offset, size};
+        writes[nwrites] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                               .dstSet = sets[stage],
+                                               .dstBinding = SNX_VKB_CB + 3,
+                                               .descriptorCount = 1,
+                                               .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                               .pBufferInfo = &uniforms[nwrites]};
+        nwrites++;
+    }
+    if (setup_frame != vk_frame_number()) return 0;
+    if (nwrites) vkUpdateDescriptorSets(g_vk.dev, nwrites, writes, 0, NULL);
+    int full = 0;
+    VkFmt color_format = nvn_format(color_target->format), depth_format = nvn_format(depth_target->format);
+    NvnImage* color = image_for(color_target, color_format.vk, VK_IMAGE_ASPECT_COLOR_BIT, &full);
+    NvnImage* depth = image_for(depth_target, depth_format.vk, vk_aspect(&depth_format), &full);
+    if (!color || !depth || !color->attachment || !depth->attachment) return 0;
+    VkImageView color_view = shadow_attachment_view(color, color_format.vk);
+    VkImageView depth_view = shadow_attachment_view(depth, depth_format.vk);
+    if (!color_view || !depth_view) return 0;
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT, color->stage, color->access, color->layout,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    vk_barrier(cb, depth->image, vk_aspect(&depth_format), depth->stage, depth->access, depth->layout,
+               VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    color->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color->stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    color->access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    depth->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth->stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    depth->access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    VkRenderingAttachmentInfo color_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                  .imageView = color_view,
+                                                  .imageLayout = color->layout,
+                                                  .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                  .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    VkRenderingAttachmentInfo depth_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                  .imageView = depth_view,
+                                                  .imageLayout = depth->layout,
+                                                  .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                  .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    static int sample_first = 1;
+    int capture = sample_first;
+    if (capture) {
+        color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachment.clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
+        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
+    }
+    VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                 .renderArea = {{0, 0}, {color_target->width, color_target->height}},
+                                 .layerCount = 1,
+                                 .colorAttachmentCount = 1,
+                                 .pColorAttachments = &color_attachment,
+                                 .pDepthAttachment = &depth_attachment,
+                                 .pStencilAttachment = depth_format.stencil ? &depth_attachment : NULL};
+    vkCmdBeginRendering(cb, &rendering);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_playout, 0, 2, sets, 0, NULL);
+    VkDeviceSize vertex_stride = command->vertex_stream[0].stride;
+    vkCmdBindVertexBuffers2(cb, 0, 1, &vertex_buffer, &vertex_offset, NULL, &vertex_stride);
+    VkViewport viewport = {vp_data[0], vp_data[1], vp_data[2], vp_data[3], 0.0f, 1.0f};
+    if (command->depth_range_known & 1)
+        memcpy(&viewport.minDepth, command->depth_range[0], sizeof(float) * 2);
+    vkCmdSetViewportWithCount(cb, 1, &viewport);
+    VkRect2D scissor = {{(i32)sc_data[0], (i32)sc_data[1]}, {sc_data[2], sc_data[3]}};
+    vkCmdSetScissorWithCount(cb, 1, &scissor);
+    vkCmdSetCullMode(cb, VK_CULL_MODE_NONE);
+    vkCmdSetFrontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    vkCmdSetPrimitiveTopology(cb, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
+    vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+    vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
+    vkCmdSetLineWidth(cb, 1.0f);
+    vkCmdSetDepthBiasEnable(cb, VK_FALSE);
+    vkCmdSetDepthBias(cb, 0, 0, 0);
+    float blend[4] = {0};
+    if (command->blend_color_known) memcpy(blend, command->blend_color, sizeof blend);
+    vkCmdSetBlendConstants(cb, blend);
+    vkCmdSetDepthTestEnable(cb, VK_FALSE);
+    vkCmdSetDepthWriteEnable(cb, VK_FALSE);
+    vkCmdSetDepthCompareOp(cb, VK_COMPARE_OP_ALWAYS);
+    vkCmdSetDepthBoundsTestEnable(cb, VK_FALSE);
+    vkCmdSetDepthBounds(cb, 0.0f, 1.0f);
+    vkCmdSetStencilTestEnable(cb, VK_FALSE);
+    vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+                      VK_COMPARE_OP_ALWAYS);
+    vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+    vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+    vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+    float push[8] = {0, 1, 0, 0, 0, 0, 0, 0};
+    vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, push);
+    vkCmdDraw(cb, command->count, command->instance_count, command->first, command->base_instance);
+    vkCmdEndRendering(cb);
+    if (capture) {
+        u64 bytes = (u64)color_target->width * color_target->height * 4;
+        VkBuffer readback;
+        u8* pixels = color->transfer_src && bytes <= (32ull << 20)
+                         ? vk_readback_buffer(bytes, &readback) : NULL;
+        if (pixels) {
+            vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            color->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            color->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            color->access = VK_ACCESS_2_TRANSFER_READ_BIT;
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                      .imageExtent = {color_target->width, color_target->height, 1}};
+            vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
+            vk_finish();
+            vk_readback_ready();
+            u64 changed = 0;
+            for (u64 i = 0; i < bytes; i += 4)
+                changed += pixels[i] != 255 || pixels[i + 1] != 0 || pixels[i + 2] != 255 || pixels[i + 3] != 255;
+            u64 center = ((u64)(color_target->height / 2) * color_target->width + color_target->width / 2) * 4;
+            LOG("nvn-shadow-readback: changed-pixels=%llu total=%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
+                (unsigned long long)changed, (unsigned long long)(bytes / 4), pixels[0], pixels[1], pixels[2],
+                pixels[3], pixels[bytes - 4], pixels[bytes - 3], pixels[bytes - 2], pixels[bytes - 1],
+                pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3]);
+        }
+        sample_first = 0;
+    }
+    color->last_batch = depth->last_batch = batch_serial;
+    static u64 issued;
+    issued++;
+    if (issued == 1 || !(issued % 100)) LOG("nvn-shadow-draw: issued=%llu\n", (unsigned long long)issued);
+    return 1;
 }
 
 /* Prepare exact guest buffer snapshots on the GPU thread. These are inputs for a future
@@ -1266,13 +1479,15 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
         if (command->depth_target_bound && !prepare_attachment(&command->depth_target, 1)) ready = 0;
         resource_status |= ready ? NVN_DRAW_ATTACHMENT_READY : NVN_DRAW_ATTACHMENT_FAILED;
     }
-    if (command->prepare_pipeline)
-        resource_status |= (resource_status & NVN_DRAW_SHADER_MODULE_READY) &&
-                                   (resource_status & NVN_DRAW_VERTEX_FORMAT_READY) &&
-                                   (resource_status & NVN_DRAW_ATTACHMENT_READY) &&
-                                   prepare_draw_pipeline(command, vertex_shader, fragment_shader)
-                               ? NVN_DRAW_PIPELINE_READY
-                               : NVN_DRAW_PIPELINE_FAILED;
+    PipeKey draw_key = {0};
+    VkPipeline draw_pipeline = VK_NULL_HANDLE;
+    if (command->prepare_pipeline) {
+        if ((resource_status & NVN_DRAW_SHADER_MODULE_READY) &&
+            (resource_status & NVN_DRAW_VERTEX_FORMAT_READY) &&
+            (resource_status & NVN_DRAW_ATTACHMENT_READY))
+            draw_pipeline = prepare_draw_pipeline(command, vertex_shader, fragment_shader, &draw_key);
+        resource_status |= draw_pipeline ? NVN_DRAW_PIPELINE_READY : NVN_DRAW_PIPELINE_FAILED;
+    }
     for (u32 i = 0; i < 8; i++) {
         if (!(command->color_target_mask & (1u << i))) continue;
         const NvnTextureTarget* target = &command->color_target[i];
@@ -1316,5 +1531,6 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_VIEW;
         }
     }
+    if (draw_pipeline) shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key);
     return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_SHARED_TARGET;
 }

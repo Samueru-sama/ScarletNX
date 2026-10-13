@@ -595,8 +595,16 @@ CBUF 2 state. A host draw still needs an uploaded buffer containing the full gen
 The first Catherine boot draws had vertex/fragment CBUF masks `0/8`, `0/a`, or `8/0`: some need only application
 bank 3, while one fragment case also reads the first 16 bytes of generated bank 1. That bank's sampled prefix was
 zero, but it had substantial data later in the 64 KiB allocation, so zero-filling it generally would be wrong.
-This identifies a bank-3-only shader pair for a first shadow-draw experiment; vertex bindings, dynamic state, and
-target ordering still need to be implemented for that draw.
+This identified a bank-3-only shader pair for the first shadow-draw experiment.
+`SNX_NVN_SHADOW_DRAW=1` now enables an opt-in executable slice for Catherine's observed fullscreen triangle-strip
+draws. It prepares the required resources, binds application CBUF 3 and one vertex stream, and records the translated
+shaders' Vulkan draw into NVN-owned color/depth images in command-list order. The first draw clears its isolated color
+target to magenta and reads it back: with the draw disabled for a diagnostic run, all 921,600 pixels stayed magenta;
+with the draw enabled, all became black. An eight-second run issued more than 300 shadow draws and completed normally.
+The SDK's GPFIFO still supplies the displayed frame; this path does not replace command submission, synchronize its
+image writes with guest memory, or establish visual parity. It deliberately accepts only the verified bank-3-only,
+one-attribute, non-indexed, single-color-plus-depth triangle-strip state until more generated buffers and dynamic
+state are modeled.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
