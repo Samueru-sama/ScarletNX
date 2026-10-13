@@ -352,7 +352,9 @@ int snx_compile_sources(char** sources, size_t count, const char* output, const 
     args[3] = tmp;
     args[4] = rsp_arg;
     args[5] = o->target_win ? "-static-libgcc" : "-lm";
-    args[6] = NULL;
+    /* Large generated modules can exceed the reach of the linker's GOTPCREL relaxation. */
+    args[6] = o->target_win ? NULL : "-Wl,--no-relax";
+    args[7] = NULL;
     rc = snx_run(args, NULL, NULL, &version);
     if (!rc) rc = snx_replace(tmp, output);
     if (rc) {
