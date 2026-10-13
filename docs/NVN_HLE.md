@@ -602,27 +602,36 @@ shaders' Vulkan draw into NVN-owned color/depth images in command-list order. Th
 target to magenta and reads it back: with the draw disabled for a diagnostic run, all 921,600 pixels stayed magenta;
 with the draw enabled, all became black. An eight-second run issued more than 300 shadow draws and completed normally.
 The SDK's GPFIFO still supplies the displayed frame; this path does not replace command submission, synchronize its
-image writes with guest memory, or establish visual parity. It deliberately accepts only the verified bank-3-only,
-one-attribute, non-indexed, single-color-plus-depth triangle-strip state until more generated buffers and dynamic
-state are modeled.
+image writes with guest memory, or establish visual parity. It deliberately accepts only verified bank-3-only,
+one-attribute, single-color triangle-strip or narrow indexed triangle-list state until more generated buffers and
+dynamic state are modeled.
 The shadow descriptor setup now also handles one fragment sampled texture and permits a color-only attachment for
 the same simple triangle-strip shape. It decodes the shader's generated handle slot, binds the captured TIC/TSC,
-and uses the existing texture view and sampler rules. It accepts only guest-memory-backed textures here; sampling
-a Maxwell render target would make the shadow result depend on the emulated GPU. Catherine's observed textured
-fullscreen candidates sampled Maxwell render targets, so this extension did not increase issued shadow-draw count.
-Their source images need to come from earlier ordered HLE clears/copies/draws before these draws can execute
-independently.
+and uses the existing texture view and sampler rules. It accepts guest-memory-backed textures and independently
+complete NVN-owned images; sampling a Maxwell render target would make the shadow result depend on the emulated GPU.
+The texture binder can now select a prior NVN-owned RGBA8 image when the captured TIC has an identity swizzle,
+the image's required subresources were fully initialized by modeled operations after the last unknown write, and
+the draw does not sample its own attachment. The first magenta diagnostic draw can also establish full coverage
+when its readback shows that every pixel changed; later draws preserve provenance only after such initialization.
+The command recorder marks every guest draw as unknown while GPFIFO remains authoritative, so the shadow path cancels only the synthetic marker
+for its immediately preceding successfully executed draw when no other unknown operation intervened. This enables
+ordered host-image read-after-write without treating a failed or unsupported draw as modeled. Catherine's first
+batch now executes a three-draw chain: a fullscreen strip certifies all 921,600 color pixels written, a 12-index
+triangle-list draw updates that same image, and a later strip samples the NVN-owned image into a target that VI
+presents. Earlier textured draws in the batch still read Maxwell targets because their producers are not modeled.
 With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN color target is also read back
 alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
 in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target
 was `(0,0,0,255)` at the center. This target is an intermediate image, not the VI-presented framebuffer. The
-comparison samples after the guest submission, so later Maxwell operations may also affect its contents; it is a
-diagnostic rather than proof of full draw parity.
+The three-draw chain's first presented-target comparison also had identical RGB and a full-image alpha mismatch
+(`0` against `255`). The comparison samples after the guest submission, so later Maxwell operations may also affect
+its contents; these black boot frames are a diagnostic rather than proof of visual parity in gameplay. Later batches
+do not yet certify the producer's full coverage, so the sampled chain currently executes only in the first batch.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
-shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
-the draws executable: descriptor-set population, shader-visible constant and storage buffers, vertex bindings,
-ordered image state, and submission are not yet implemented by the NVN path.
+shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still
+need broader descriptor population, generated constant and storage buffers, vertex bindings, and ordered image state
+before the NVN path can execute them.
 The TotK pipeline probe exposed two missing vertex-input format mappings: NVN `0x11` (RG16F) and `0x12` (RG16
 UNORM). With both mapped to their Vulkan equivalents, a twenty-two-second boot reported 2,688/2,688 vertex-format
 preflights ready, compared with 2,220/2,380 before the additions. Pipeline creation in the later run succeeded for
