@@ -96,16 +96,30 @@ static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* conte
     switch (method) {
         case 0x6c0: scan->state.query_high = value; scan->state.query_known |= 1; return;
         case 0x6c1: scan->state.query_low = value; scan->state.query_known |= 2; return;
+        case 0x6c2: scan->state.query_sequence = value; scan->state.query_known |= 4; return;
         case 0x8e1: scan->state.cbuf_high = value; scan->state.cbuf_known |= 1; return;
         case 0x8e2: scan->state.cbuf_low = value; scan->state.cbuf_known |= 2; return;
         case 0x8e3: scan->state.cbuf_offset = value; scan->state.cbuf_known |= 4; return;
         case 0x6c3:
             if ((value & 3) == 0 || (value & 3) == 2) {
-                if (scan->state.query_known != 3) { scan->invalid = 1; return; }
+                if ((scan->state.query_known & 3) != 3) { scan->invalid = 1; return; }
                 u64 address = ((u64)(scan->state.query_high & 0xff) << 32) | scan->state.query_low;
                 u32 size = (value & 3) == 0 ? ((value & ((1u << 4) | (1u << 28))) ? 4 : 16)
                                             : ((value & (1u << 28)) ? 4 : 16);
                 emit_memory_write(scan, address, size, NVN_GAP_WRITE_QUERY);
+                if (!scan->invalid && scan->writes) {
+                    NvnGapMemoryWrite* write = &scan->writes[scan->count - 1];
+                    u32 selector = (value >> 23) & 31;
+                    write->fake_known = 1;
+                    write->fake_report = (value & 3) == 2 && selector != 0;
+                    if ((value & 3) == 0) {
+                        write->value = scan->state.query_sequence;
+                        write->value_known = !!(scan->state.query_known & 4);
+                    } else if (!selector) {
+                        write->value = 0;
+                        write->value_known = 1;
+                    }
+                }
             }
             return;
         default: break;

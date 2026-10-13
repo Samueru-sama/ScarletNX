@@ -1119,6 +1119,11 @@ the clear enabled. In the TotK trace, the first clear executes, the two later cl
 and the direct feedback source matches Maxwell's solid-white image. An explicit `SetRenderEnable(false)`
 now gates recorded draws. Conditional draws need fake-counter provenance and other query-write
 mechanisms before they can safely be skipped during whole-list GPU replacement.
+The inlined command-gap scanner now tags Maxwell counter reports whose values are estimates and
+tracks release sequence values in command order. The clear replay retains a conditional clear if
+either compared report was tagged as estimated. Report tags are currently scoped to one queue
+submission. A clear whose comparison relies on an older estimated report may still be evaluated
+from guest memory without that tag. Conditional draws remain ungated.
 
 After that fix, the second dispatch still has 239 differing input bytes and the same 239 output
 bytes; the first dispatch remains byte-exact. In a controlled TotK probe, submitting the first two

@@ -76,7 +76,9 @@ int main(void) {
     assert(write_count == 99 && !report_state.query_known);
     assert(nvn_command_gap_memory_writes(report_packet, 5, &report_state, writes, 2, &write_count));
     assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY &&
-           writes[0].address == 0x622ad0000ull && writes[0].size == 16);
+           writes[0].address == 0x622ad0000ull && writes[0].size == 16 &&
+           writes[0].value_known && writes[0].value == 1 &&
+           writes[0].fake_known && !writes[0].fake_report);
     assert(nvn_command_gap_memory_writes(acquire_packet, 5, &report_state, writes, 2, &write_count));
     assert(write_count == 0);
     const u32 puller_address[] = {0x20030004, 6, 0x22ad0000, 1};
@@ -92,7 +94,12 @@ int main(void) {
     assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_PULLER &&
            writes[0].size == 16 && writes[0].value_known && writes[0].value == 0);
     assert(nvn_command_gap_memory_writes(counter_packet, 5, &report_state, writes, 2, &write_count));
-    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY && writes[0].size == 16);
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY && writes[0].size == 16 &&
+           writes[0].value_known && writes[0].value == 0 && !writes[0].fake_report);
+    const u32 samples_counter[] = {0x600106c3, 0x00800002};
+    assert(nvn_command_gap_memory_writes(samples_counter, 2, &report_state, writes, 2, &write_count));
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY &&
+           writes[0].fake_known && writes[0].fake_report && !writes[0].value_known);
     const u32 two_releases[] = {0x60010007, 2, 0x60010007, 2};
     NvnGapMemoryState before_overflow = report_state;
     assert(!nvn_command_gap_memory_writes(two_releases, 4, &report_state, writes, 1, &write_count));

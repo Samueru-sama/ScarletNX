@@ -186,7 +186,7 @@ typedef struct {
 } ReplayState;
 typedef struct {
     u64 address, value;
-    u8 known;
+    u8 known, fake_report;
 } ReplayQueryValue;
 typedef struct {
     u64 key;
@@ -381,13 +381,18 @@ static ReplayQueryValue* replay_query_value(ReplayQueue* queue, u64 address, int
 }
 
 static void replay_query_write(ReplayQueue* queue, u64 address, u32 size, u8 kind,
-                               u32 payload, int payload_known) {
+                               u32 payload, int payload_known, int fake_known, int fake_report) {
     if (!queue || !address || !size) return;
     for (u32 i = 0; i < queue->query_value_count; i++) {
         ReplayQueryValue* entry = &queue->query_values[i];
         if (address < entry->address + 8 && entry->address < address + size) entry->known = 0;
     }
-    if (kind == NVN_GAP_WRITE_PULLER && size == 16 && payload_known) {
+    if (kind == NVN_GAP_WRITE_QUERY && fake_known) {
+        ReplayQueryValue* value = replay_query_value(queue, address, 0);
+        if (value) value->fake_report = !!fake_report;
+    }
+    if ((kind == NVN_GAP_WRITE_PULLER || kind == NVN_GAP_WRITE_QUERY) &&
+        size == 16 && payload_known) {
         ReplayQueryValue* value = replay_query_value(queue, address, 0);
         if (value) {
             value->value = payload;
@@ -402,6 +407,7 @@ static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue) {
         state->render_condition_address > UINT64_MAX - 24) return 1;
     ReplayQueryValue* lhs = replay_query_value(queue, state->render_condition_address, 1);
     ReplayQueryValue* rhs = replay_query_value(queue, state->render_condition_address + 16, 1);
+    if ((lhs && lhs->fake_report) || (rhs && rhs->fake_report)) return 1;
     if (!lhs || !rhs || !lhs->known || !rhs->known) return 1; /* unknown: retain the draw */
     return state->render_condition_mode ? lhs->value != rhs->value : lhs->value == rhs->value;
 }
@@ -643,7 +649,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             if (queue) {
                 stage_memory_write(queue, op->args[0], (u32)op->args[1], (u8)op->args[2]);
                 replay_query_write(queue, op->args[0], (u32)op->args[1], (u8)op->args[2],
-                                   (u32)op->args[3], !!op->args[4]);
+                                   (u32)op->args[3], !!op->args[4], !!op->args[5], !!op->args[6]);
             }
             continue;
         }
@@ -2180,7 +2186,8 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                     parsed_writes = 1;
                     for (u32 i = 0; i < write_count; i++) {
                         u64 args[7] = {writes[i].address, writes[i].size, writes[i].kind,
-                                       writes[i].value, writes[i].value_known};
+                                       writes[i].value, writes[i].value_known,
+                                       writes[i].fake_known, writes[i].fake_report};
                         append_inlined_op(r, OP_TRANSFER, "nvnInlinedMemoryWrite", args);
                     }
                 }
