@@ -13,6 +13,7 @@
 #include "gpu/nvn_texture.h"
 #include "gpu/gpu.h"
 #include "gpu/renderer.h"
+#include "hle/services/nvdrv.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
@@ -105,7 +106,7 @@ typedef struct {
 typedef struct {
     u64 key;
     u32 record_generation;
-    u64 command_cursor, command_low, command_high;
+    u64 command_cursor, command_low, command_high, command_used_low, command_used_high;
     NvnGapMacroData3 cbuf_macro_data;
     NvnGapMemoryState memory_state;
     u8 cbuf_macro_data_known;
@@ -120,14 +121,14 @@ typedef struct {
     u16 count, capacity;
     u8 truncated, opaque, implicit_counted;
     u16 command_memory_count;
-    u8 command_prefix_known, command_gaps_safe, command_tail_known;
+    u8 command_prefix_known, command_gaps_safe, command_tail_known, command_span_ambiguous;
 } NvnList;
 #define ACTIVE_SLOTS 8192
 #define LIST_SLOTS   32768
 /* Odyssey records more than 16,384 operations in one list. Keep the bound within u16 capacity. */
 #define MAX_OPS      32768
 static NvnList active[ACTIVE_SLOTS], lists[LIST_SLOTS];
-typedef struct { u64 key, device; } NvnCommandBufferDevice;
+typedef struct { u64 key, device, command_low, command_high; } NvnCommandBufferDevice;
 typedef struct { u64 key; u8 mode, known; } NvnDeviceDepthMode;
 static NvnCommandBufferDevice command_buffer_devices[ACTIVE_SLOTS];
 static NvnDeviceDepthMode device_depth_modes[64];
@@ -196,6 +197,7 @@ typedef struct {
 typedef struct {
     u64 key;
     u64 next_sequence;
+    u64 next_visit;
     u64 batch_start_sequence;
     u64 last_unmodeled_write;
     u64 color_probe_seen[128];
@@ -412,6 +414,143 @@ static ReplayQueue* replay_queue_slot(u64 key) {
         if (q->key == key || !q->key) return q;
     }
     return NULL;
+}
+
+/* Observe SDK-produced queue packets on the submitting thread. This is a state probe;
+   the normal GPU thread still executes every GPFIFO entry. */
+typedef struct {
+    u32 channel, classes[8];
+    u32 mode, sub, method, count, index;
+    u32 origin, origin_writes;
+    u8 active, known;
+} NvnOriginStream;
+static NvnOriginStream origin_streams[128];
+static _Thread_local u64 submit_queue_scope;
+
+u64 nvn_record_submit_scope(u64 queue) {
+    u64 previous = submit_queue_scope;
+    submit_queue_scope = queue;
+    return previous;
+}
+
+static NvnOriginStream* origin_stream_slot(u32 channel, int create) {
+    for (u32 i = 0; i < 128; i++)
+        if (origin_streams[i].active && origin_streams[i].channel == channel) return &origin_streams[i];
+    if (!create) return NULL;
+    for (u32 i = 0; i < 128; i++)
+        if (!origin_streams[i].active) {
+            origin_streams[i].active = 1;
+            origin_streams[i].channel = channel;
+            return &origin_streams[i];
+        }
+    return NULL;
+}
+
+void nvn_record_forget_gpu_channel(u32 channel) {
+    if (!descriptor_replay) return;
+    pm_lock(&lock);
+    NvnOriginStream* stream = origin_stream_slot(channel, 0);
+    if (stream) memset(stream, 0, sizeof *stream);
+    pm_unlock(&lock);
+}
+
+static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 value) {
+    if (method == 0) stream->classes[sub] = value & 0xffff;
+    if (method == 0x4eb && (stream->classes[sub] == 0xb197 || (sub == 0 && !stream->classes[sub]))) {
+        stream->origin = value;
+        stream->known = 1;
+        stream->origin_writes++;
+    }
+}
+
+static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 length) {
+    u32 i = 0;
+    while (i < length) {
+        if (stream->index < stream->count) {
+            u32 sub = stream->sub, method = stream->method, mode = stream->mode;
+            while (stream->index < stream->count && i < length) {
+                u32 k = stream->index++;
+                u32 actual = mode == 1 ? method + k : mode == 5 && k ? method + 1 : method;
+                origin_method(stream, sub, actual, words[i++]);
+            }
+            if (stream->index < stream->count) return;
+        }
+        if (i >= length) break;
+        u32 header = words[i++], mode = header >> 29;
+        u32 sub = (header >> 13) & 7, method = header & 0xfff;
+        u32 count = (header >> 16) & 0x1fff;
+        if (mode == 4)
+            origin_method(stream, sub, method, count);
+        else if (mode == 1 || mode == 3 || mode == 5) {
+            stream->mode = mode;
+            stream->sub = sub;
+            stream->method = method;
+            stream->count = count;
+            stream->index = 0;
+        } else if (header) stream->known = 0;
+    }
+}
+
+static int origin_entry_matches_list(const NvnDrawCommand* draw, u64 cpu, u64 bytes) {
+    return draw->source_command_low && cpu >= draw->source_command_low &&
+           cpu < draw->source_command_high && bytes <= draw->source_command_high - cpu;
+}
+
+static u64 command_buffer_cursor(u64 command_buffer, u64 low, u64 high) {
+    if (!low || low >= high || !readable_range(command_buffer, 8)) return 0;
+    u64 cursor = gr64(command_buffer);
+    if (cursor >= low && cursor <= high) return cursor;
+    /* Some NVN versions wrap the command writer. Validate its pool bounds and
+       mirrored cursor before using the wrapper's cursor. */
+    if (!readable_range(command_buffer, 0x58)) return 0;
+    cursor = gr64(command_buffer + 0x18);
+    if (cursor >= low && cursor <= high && gr64(command_buffer + 0x28) == cursor &&
+        gr64(command_buffer + 0x20) == high && gr64(command_buffer + 0x50) == low)
+        return cursor;
+    return 0;
+}
+
+void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
+    if (!descriptor_replay || !entries) return;
+    pm_lock(&lock);
+    NvnOriginStream* stream = origin_stream_slot(channel, 1);
+    ReplayQueue* queue = submit_queue_scope ? replay_queue_slot(submit_queue_scope) : NULL;
+    if (queue && queue->key != submit_queue_scope) queue = NULL;
+    for (u32 entry = 0; stream && entry < count; entry++) {
+        u64 va = entries[entry] & 0xfffffffffcull;
+        u32 words = (u32)((entries[entry] >> 42) & 0x1fffff);
+        if (!words) continue;
+        u64 bytes = (u64)words * 4;
+        u64 cpu = gmmu_translate(va);
+        u64 matched_visit = 0, matched_list = 0;
+        if (queue && queue->draws && cpu)
+            for (u32 i = 0; i < queue->draws->count; i++) {
+                NvnDrawCommand* draw = &queue->draws->commands[i];
+                if (!origin_entry_matches_list(draw, cpu, bytes)) continue;
+                if (matched_visit &&
+                    (matched_visit != draw->source_visit || matched_list != draw->source_list)) {
+                    matched_visit = UINT64_MAX;
+                    break;
+                }
+                matched_visit = draw->source_visit;
+                matched_list = draw->source_list;
+            }
+        u32 writes_before = stream->origin_writes;
+        const u32* data = (const u32*)gmem_ptr_untracked(va, bytes);
+        if (data) origin_pushbuffer(stream, data, words);
+        else stream->known = 0;
+        if (queue && queue->draws && matched_visit)
+            for (u32 i = 0; i < queue->draws->count; i++) {
+                NvnDrawCommand* draw = &queue->draws->commands[i];
+                if (!origin_entry_matches_list(draw, cpu, bytes)) continue;
+                u8 state = !data || stream->origin_writes != writes_before ||
+                           matched_visit == UINT64_MAX || !stream->known ? 3
+                               : (stream->origin & 0x10) ? 2 : 1;
+                if (draw->window_flip_state && draw->window_flip_state != state) state = 3;
+                draw->window_flip_state = state;
+            }
+    }
+    pm_unlock(&lock);
 }
 
 static ReplayQueryValue* replay_query_value(ReplayQueue* queue, u64 address, int seed) {
@@ -650,6 +789,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         return;
     }
     replay_lists++;
+    u64 visit = queue ? ++queue->next_visit : 0;
     if (list->opaque) replay_opaque++;
     int complete_opaque = list_command_memory_complete(list);
     replay_complete_opaque += complete_opaque;
@@ -1190,6 +1330,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                An estimated counter or a value seeded from later guest memory cannot. */
             if (queue && !replay_render_enabled(state, queue, 1)) continue;
             NvnDrawCommand draw = {0};
+            draw.source_list = handle;
+            draw.source_visit = visit;
+            if (!list->command_span_ambiguous) {
+                draw.source_command_low = list->command_used_low;
+                draw.source_command_high = list->command_used_high;
+            }
             draw.last_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
             draw.load_textures = texture_load;
             draw.prepare_attachments = attachment_prepare;
@@ -2385,7 +2531,7 @@ u64 nvn_record_before(const CPU* c, const char* name) {
     }
     if (inlined_draw_replay && r->key == c->x[0] && r->opaque && r->command_cursor &&
         readable_range(c->x[0], 8)) {
-        u64 cursor = gr64(c->x[0]);
+        u64 cursor = command_buffer_cursor(c->x[0], r->command_low, r->command_high);
         if (r->command_cursor >= r->command_low && cursor <= r->command_high && cursor > r->command_cursor) {
             u64 gap_size = cursor - r->command_cursor;
             if (gap_size > 65536 || (gap_size & 3) || !readable_range(r->command_cursor, gap_size) ||
@@ -2429,6 +2575,11 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         reset(r);
         r->key = c->x[0];
         r->record_generation = next_record_generation++;
+        NvnCommandBufferDevice* binding = command_buffer_device_slot(c->x[0], 0);
+        if (binding && binding->key == c->x[0]) {
+            r->command_low = binding->command_low;
+            r->command_high = binding->command_high;
+        }
         began++;
     } else {
         int op_kind = kind(name);
@@ -2441,6 +2592,10 @@ u64 nvn_record_before(const CPU* c, const char* name) {
             r->opaque = 1; /* command-buffer activity without a visible BeginRecording */
         }
         if (inlined_draw_replay && !strcmp(name, "nvnCommandBufferAddCommandMemory")) {
+            if (r->command_used_low || r->command_memory_count) {
+                r->command_span_ambiguous = 1;
+                r->command_used_low = r->command_used_high = 0;
+            }
             r->command_memory_count++;
             NvnPoolSnapshot pool = {0};
             u64 offset = c->x[2], size = c->x[3];
@@ -2448,6 +2603,11 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                 size <= pool.size - offset && pool.storage <= UINT64_MAX - offset - size) {
                 r->command_low = pool.storage + offset;
                 r->command_high = r->command_low + size;
+                NvnCommandBufferDevice* binding = command_buffer_device_slot(c->x[0], 0);
+                if (binding && binding->key == c->x[0]) {
+                    binding->command_low = r->command_low;
+                    binding->command_high = r->command_high;
+                }
                 r->command_cursor = 0;
                 r->command_gaps_safe = 1;
             }
@@ -2683,7 +2843,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 ar
         pm_lock(&lock);
         NvnList* list = active_slot(command_buffer, 0);
         if (list && list->key == command_buffer && list->command_low < list->command_high) {
-            u64 cursor = gr64(command_buffer);
+            u64 cursor = command_buffer_cursor(command_buffer, list->command_low, list->command_high);
             if (record_token && !strcmp(name, "nvnCommandBufferBindStorageBuffer") &&
                 list->record_generation == (u32)(record_token >> 16) &&
                 (u16)record_token && (u16)record_token <= list->count &&
@@ -2705,6 +2865,10 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 ar
                 }
             }
             list->command_cursor = cursor >= list->command_low && cursor <= list->command_high ? cursor : 0;
+            if ((!strcmp(name, "nvnCommandBufferBeginRecording") ||
+                 !strcmp(name, "nvnCommandBufferAddCommandMemory")) &&
+                list->command_cursor && !list->command_used_low && !list->command_span_ambiguous)
+                list->command_used_low = list->command_cursor;
             if (!strcmp(name, "nvnCommandBufferAddCommandMemory"))
                 list->command_prefix_known = list->command_cursor == list->command_low;
         }
@@ -2835,8 +2999,12 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 ar
     }
     reset(list);
     if (r) {
-        if (inlined_draw_replay && r->command_cursor && readable_range(command_buffer, 8)) {
-            u64 end = gr64(command_buffer);
+        if (r->command_used_low) {
+            u64 end = command_buffer_cursor(command_buffer, r->command_low, r->command_high);
+            if (end > r->command_used_low && end <= r->command_high) r->command_used_high = end;
+        }
+        if (inlined_draw_replay && r->command_cursor) {
+            u64 end = command_buffer_cursor(command_buffer, r->command_low, r->command_high);
             if (r->command_memory_count == 1 && end > r->command_low && end <= r->command_high &&
                 end - r->command_low <= 65536 && !((end - r->command_low) & 3) &&
                 readable_range(r->command_low, end - r->command_low)) {

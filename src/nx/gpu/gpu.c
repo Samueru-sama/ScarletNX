@@ -5,6 +5,7 @@
 /* GM20B front end: guest memory through the GPU page table, GPFIFO, the puller (semaphores, syncpoints), I2M and the
    method dispatch to the engines (engines.c, maxwell3d.c, compute.c, fermi2d.c, dma.c). Drawing is the renderer's job. */
 #include "gpu/renderer.h"
+#include "gpu/nvn_record.h"
 #include "hle/services/nvdrv.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
@@ -443,6 +444,7 @@ int gpu_unique_cb_offset_macro(u32 method, u32 argument, int stage, u32* byte_of
 }
 
 void gpu_channel_close(u32 channel) {
+    nvn_record_forget_gpu_channel(channel);
     pm_lock(&g_gpulock);
     for (int i = 0; i < g_gpu.nchan; i++)
         if (g_gpu.chan[i]->id == channel) {
@@ -554,6 +556,7 @@ static void gpu_queue(GpuJob j) {
 volatile u64 g_gpu_submits;
 void gpu_submit(u64* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
     g_gpu_submits++;
+    nvn_record_observe_gpu_submit(e, n, channel);
     if (g_renderer->async_submit(e, n, channel, incs)) return;
     GpuJob j = {malloc((u64)n * 8 + 8), n, channel, incs, wait_id, wait_val, expect, NULL, NULL};
     if (!j.e) fatal("Out of memory queueing a GPU submission");

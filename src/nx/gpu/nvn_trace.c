@@ -124,7 +124,14 @@ static void proc_trace(CPU* c, u64 entry) {
             return;
         }
     }
+    int submit_scope = recording && (!strcmp(p->name, "nvnQueueSubmitCommands") ||
+                                     !strcmp(p->name, "nvnQueueFlush") ||
+                                     !strcmp(p->name, "nvnQueuePresentTexture") ||
+                                     !strcmp(p->name, "nvnQueueFenceSync") ||
+                                     !strcmp(p->name, "nvnQueueWaitSync"));
+    u64 previous_queue = submit_scope ? nvn_record_submit_scope(command_buffer) : 0;
     p->original(c, entry);
+    if (submit_scope) nvn_record_submit_scope(previous_queue);
     if (recording && !strcmp(p->name, "nvnCommandBufferAddCommandMemory") && arg1) {
         GuestFn getter = __atomic_load_n(&pool_address_original, __ATOMIC_ACQUIRE);
         NvnPoolSnapshot pool = {0};

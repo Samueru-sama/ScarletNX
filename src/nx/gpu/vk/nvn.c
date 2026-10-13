@@ -2839,8 +2839,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     VkRect2D scissor = {{(i32)sc_data[0], (i32)sc_data[1]}, {sc_data[2], sc_data[3]}};
     vkCmdSetScissorWithCount(cb, 1, &scissor);
     vkCmdSetCullMode(cb, (VkCullModeFlags)(command->polygon_state & 3));
-    vkCmdSetFrontFace(cb, (command->polygon_state & 4) ? VK_FRONT_FACE_COUNTER_CLOCKWISE
-                                                     : VK_FRONT_FACE_CLOCKWISE);
+    VkFrontFace front_face = (command->polygon_state & 4) ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                                                          : VK_FRONT_FACE_CLOCKWISE;
+    if (command->window_flip_state == 2)
+        front_face = front_face == VK_FRONT_FACE_CLOCKWISE ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                                                           : VK_FRONT_FACE_CLOCKWISE;
+    vkCmdSetFrontFace(cb, front_face);
     vkCmdSetPrimitiveTopology(cb, (indexed_triangles || triangles) ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
                                                    : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
     vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);

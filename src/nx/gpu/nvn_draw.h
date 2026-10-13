@@ -77,6 +77,8 @@ typedef struct {
 typedef struct {
     u64 sequence;
     u64 queue_key;
+    u64 source_list, source_visit;
+    u64 source_command_low, source_command_high;
     u64 last_unmodeled_write; /* earlier operations whose image effects are not in the semantic stream */
     NvnStageProgram program[NVN_DRAW_SHADER_STAGES];
     u8 program_bound;
@@ -115,6 +117,7 @@ typedef struct {
     u32 blend_state[8][2];
     u32 polygon_state;
     u8 polygon_state_known;
+    u8 window_flip_state; /* 0 unknown, 1 no flip, 2 flip, 3 conflicting writes */
     u32 depth_stencil_state[2];
     u8 depth_stencil_state_known;
     u8 depth_mode, depth_mode_known;

@@ -1345,7 +1345,26 @@ new path seeds its 1280×720 RGBA8 shadow image with transparent black. Repeated
 probes for that address are suppressed. A temporary experiment combining this seed
 with the observed facing transition matched the sampled native target exactly
 (`0/921,600` differing pixels, `0/3,686,400` differing bytes). The facing override
-was removed; the normal direct path still needs ordered queue-state capture.
+was removed.
+
+Ordered queue-state capture now observes GPFIFO submissions on the submitting thread,
+tracks the 3D window-origin register per GPU channel, and associates each command-pool
+entry with a recorded NVN list's used byte range. The recorder retains the command-pool
+binding across `BeginRecording`; Catherine's wrapped command-buffer writer keeps its
+cursor at offset `0x18`, mirrored at `0x28`, rather than at object offset zero. The
+wrapped cursor is accepted only when its mirrored value and pool bounds agree. A draw
+uses the front-face reversal only when its source list has an unambiguous entry with
+known window-origin state; missing or conflicting evidence retains the previous
+orientation. This preserves the first submission's zero origin even though its queue
+tail changes the register to `0x10` before direct replay executes.
+
+With `SNX_NVN_SHADOW_ZERO_PROBE=1` and the normal direct path, Catherine's second
+present target at `0x5cc420000` now matches the emulated GPU byte for byte:
+`0/921,600` differing pixels and `0/3,686,400` differing bytes. Scarlet's first
+producer target also remained exact (`0/518,400` differing pixels), as did Odyssey's
+first 1600×900 target (`0/1,440,000` differing pixels). These
+are sampled target comparisons, not whole-game parity; lists whose command memory
+cannot be bounded or whose origin changes inside a matching entry remain unresolved.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
