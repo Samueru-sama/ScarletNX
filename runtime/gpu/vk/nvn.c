@@ -726,9 +726,10 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
             return 0;
         }
         VkFormat format = nvn_vertex_format(attrib->format);
-        if (!format || command->vertex_stream[attrib->stream].stride > limits->maxVertexInputBindingStride) {
-            LOG_LIMIT(8, "nvn-pipeline: invalid format or stride location=%u format=%x stride=%u\n", location,
-                      attrib->format, command->vertex_stream[attrib->stream].stride);
+        if (!format || attrib->offset > limits->maxVertexInputAttributeOffset ||
+            command->vertex_stream[attrib->stream].stride > limits->maxVertexInputBindingStride) {
+            LOG_LIMIT(8, "nvn-pipeline: invalid format, offset, or stride location=%u format=%x offset=%u stride=%u\n",
+                      location, attrib->format, attrib->offset, command->vertex_stream[attrib->stream].stride);
             return 0;
         }
         u32 divisor = command->vertex_stream[attrib->stream].divisor;
@@ -741,6 +742,7 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         key.attr[key.nattr].loc = location;
         key.attr[key.nattr].binding = binding;
         key.attr[key.nattr].format = format;
+        key.attr[key.nattr].offset = attrib->offset;
         key.nattr++;
     }
     for (u32 i = 0; i < 8; i++) {
