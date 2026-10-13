@@ -663,6 +663,11 @@ static VkBlendOp nvn_blend_op(u32 equation) {
     }
 }
 
+static int nvn_dual_source_factor(u32 factor) {
+    return factor == VK_BLEND_FACTOR_SRC1_COLOR || factor == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR ||
+           factor == VK_BLEND_FACTOR_SRC1_ALPHA || factor == VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+}
+
 /* This key checks that the observed shader, vertex, blend, polygon, and attachment interface
    can form a Vulkan pipeline. Dynamic raster and depth state is set by a future host draw. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
@@ -806,6 +811,18 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         }
     }
     if (!key.ncolor && !key.depth) return 0;
+    for (u32 i = 0; i < key.ncolor; i++) {
+        if (key.blend[i].en && !g_vk.feat.dualSrcBlend &&
+            (nvn_dual_source_factor(key.blend[i].sc) || nvn_dual_source_factor(key.blend[i].dc) ||
+             nvn_dual_source_factor(key.blend[i].sa) || nvn_dual_source_factor(key.blend[i].da))) {
+            LOG_LIMIT(8, "nvn-pipeline: dual-source blend unsupported target=%u\n", i);
+            return 0;
+        }
+        if (i && !g_vk.feat.independentBlend && memcmp(&key.blend[i], &key.blend[0], sizeof key.blend[i])) {
+            LOG_LIMIT(8, "nvn-pipeline: independent blend unsupported target=%u\n", i);
+            return 0;
+        }
+    }
     return vk_pipeline_get(&key) != VK_NULL_HANDLE;
 }
 
