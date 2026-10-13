@@ -1386,6 +1386,17 @@ also differed at all 57,600 pixels despite full coverage. The sampled 80×45 mis
 therefore cannot be explained by missing draw coverage alone. The diagnostic culling
 override and target-specific logging were removed.
 
+A write-order trace narrows that upstream gap. For the same 320×180 target, the
+emulated GPU records one color clear and then three color draws before comparison
+(`wgen=5`). The direct replay stages several zero `ClearColor` operations against
+the target after its one issued draw, leaving its shadow image zero. These clears
+all select mip 0/layer 0 and come from distinct operations within one recorded
+list visit; the `SetRenderTargets` snapshots for that visit are present. The next
+check is to align those NVN operations with the exact GPFIFO command segments and
+render-condition state. The trace does not yet establish whether some recorded
+clears are no-ops in the SDK or whether native draws are missing from the semantic
+stream.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
