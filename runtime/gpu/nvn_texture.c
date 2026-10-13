@@ -13,10 +13,16 @@ typedef struct {
     u64 key, generation, pool, offset, pool_generation, gpu_address;
     i64 stride;
     u32 flags, target, width, height, depth, levels, format, samples, storage_size, storage_class;
-    u8 alive, size_known, address_known, stride_known, storage_class_known;
+    u8 alive, size_known, address_known, stride_known, storage_class_known, legacy_layout;
 } Texture;
 #define TEXTURE_SLOTS 32768
 static Texture textures[TEXTURE_SLOTS];
+typedef struct {
+    u64 key, words[8];
+    NvnTextureSnapshot snapshot;
+} CopiedTexture;
+#define COPIED_TEXTURE_SLOTS 8192
+static CopiedTexture copied_textures[COPIED_TEXTURE_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 initialized, failed, finalized, live, reinitialized, invalid_builders, table_full, legacy_builders;
 static u64 no_pool, untracked_pools, offset_outside_pool, unknown_finalizes;
@@ -52,6 +58,15 @@ static Texture* texture_slot(u64 key, int create) {
         Texture* t = &textures[(home + step) & (TEXTURE_SLOTS - 1)];
         if (t->key == key) return t;
         if (!t->key) return create ? t : NULL;
+    }
+    return NULL;
+}
+
+static CopiedTexture* copied_slot(u64 key) {
+    u32 home = (u32)((key >> 4) * 2654435761u) & (COPIED_TEXTURE_SLOTS - 1);
+    for (u32 step = 0; step < COPIED_TEXTURE_SLOTS; step++) {
+        CopiedTexture* copy = &copied_textures[(home + step) & (COPIED_TEXTURE_SLOTS - 1)];
+        if (copy->key == key || !copy->key) return copy;
     }
     return NULL;
 }
@@ -173,6 +188,7 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                 t->stride_known = call->stride_known;
                 t->storage_class = call->storage_class;
                 t->storage_class_known = call->storage_class_known;
+                t->legacy_layout = call->legacy_layout;
                 t->alive = 1;
                 initialized++;
                 if (call->legacy_layout) legacy_builders++;
@@ -293,9 +309,9 @@ int nvn_texture_snapshot(u64 texture, NvnTextureSnapshot* out) {
     return found;
 }
 
-NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSelection* view, NvnTextureTarget* out) {
-    NvnTextureSnapshot t;
-    if (!nvn_texture_snapshot(texture, &t)) return NVN_TARGET_MISSING;
+static NvnTargetResult resolve_target_snapshot(u64 texture, const NvnTextureSnapshot* texture_snapshot,
+                                               const NvnTextureViewSelection* view, NvnTextureTarget* out) {
+    const NvnTextureSnapshot t = *texture_snapshot;
     NvnPoolSnapshot pool;
     if (!nvn_pool_snapshot(t.pool, &pool) || pool.generation != t.pool_generation || t.offset >= pool.size ||
         t.storage_size > pool.size - t.offset)
@@ -331,4 +347,75 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
                               .storage_class_known = t.storage_class_known,
                               .view = selection};
     return NVN_TARGET_RESOLVED;
+}
+
+NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSelection* view, NvnTextureTarget* out) {
+    NvnTextureSnapshot t;
+    if (!nvn_texture_snapshot(texture, &t)) return NVN_TARGET_MISSING;
+    return resolve_target_snapshot(texture, &t, view, out);
+}
+
+NvnTargetResult nvn_texture_resolve_copied_target(u64 texture, const NvnTextureViewSelection* view,
+                                                  NvnTextureTarget* out) {
+    /* Older SDK clients can memcpy an initialized texture object before SetRenderTargets. Accept a copy only when
+       its complete old-layout identity matches one observed Initialize record in the same live pool generation. */
+    if (!readable_range(texture, 0x40)) return NVN_TARGET_MISSING;
+    u64 words[8];
+    memcpy(words, GP(texture), sizeof words);
+    u64 pool_key = words[2], offset = words[3];
+    NvnPoolSnapshot pool = {0};
+    if (!pool_key || !nvn_pool_snapshot(pool_key, &pool)) return NVN_TARGET_MISSING;
+    u32 flags = (u32)words[4], target = (u32)(words[4] >> 32);
+    u32 width = (u32)words[5], height = (u32)(words[5] >> 32);
+    u32 depth = (u32)words[6], levels = (u32)(words[6] >> 32);
+    u32 format = (u32)words[7], samples = (u32)(words[7] >> 32);
+    NvnTextureSnapshot match = {0};
+    int found = 0, ambiguous = 0;
+    pm_lock(&lock);
+    CopiedTexture* copy = copied_slot(texture);
+    if (copy && copy->key == texture && !memcmp(copy->words, words, sizeof words) &&
+        copy->snapshot.pool_generation == pool.generation) {
+        match = copy->snapshot;
+        pm_unlock(&lock);
+        return resolve_target_snapshot(texture, &match, view, out);
+    }
+    for (u32 i = 0; i < TEXTURE_SLOTS; i++) {
+        const Texture* t = &textures[i];
+        if (!t->key || !t->legacy_layout || !t->address_known || t->pool != pool_key ||
+            t->pool_generation != pool.generation || t->offset != offset || t->flags != flags || t->target != target ||
+            t->width != width || t->height != height || t->depth != depth || t->levels != levels ||
+            t->format != format || t->samples != samples)
+            continue;
+        if (found && (match.gpu_address != t->gpu_address || match.storage_size != t->storage_size)) {
+            ambiguous = 1;
+            break;
+        }
+        match = (NvnTextureSnapshot){.generation = t->generation,
+                                     .pool = t->pool,
+                                     .pool_generation = t->pool_generation,
+                                     .offset = t->offset,
+                                     .storage_size = t->storage_size,
+                                     .gpu_address = t->gpu_address,
+                                     .stride = t->stride,
+                                     .stride_known = t->stride_known,
+                                     .storage_class = t->storage_class,
+                                     .storage_class_known = t->storage_class_known,
+                                     .address_known = t->address_known,
+                                     .flags = t->flags,
+                                     .target = t->target,
+                                     .width = t->width,
+                                     .height = t->height,
+                                     .depth = t->depth,
+                                     .levels = t->levels,
+                                     .format = t->format,
+                                     .samples = t->samples};
+        found = 1;
+    }
+    if (found && !ambiguous && copy) {
+        copy->key = texture;
+        memcpy(copy->words, words, sizeof words);
+        copy->snapshot = match;
+    }
+    pm_unlock(&lock);
+    return found && !ambiguous ? resolve_target_snapshot(texture, &match, view, out) : NVN_TARGET_MISSING;
 }

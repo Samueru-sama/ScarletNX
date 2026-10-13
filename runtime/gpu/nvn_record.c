@@ -6,6 +6,7 @@
 #include "gpu/nvn_draw.h"
 #include "gpu/nvn_sampler_descriptor.h"
 #include "gpu/nvn_program.h"
+#include "gpu/nvn_pool.h"
 #include "gpu/nvn_texture.h"
 #include "gpu/gpu.h"
 #include "gpu/renderer.h"
@@ -56,9 +57,10 @@ typedef struct {
 } NvnView;
 typedef struct {
     u32 count;
-    u8 color_views, depth_view, valid;
+    u8 color_views, depth_view, valid, color_resolved, depth_resolved;
     u64 color[8], depth;
     NvnView color_view[8], depth_view_data;
+    NvnTextureTarget color_target[8], depth_target;
 } NvnTargets;
 typedef struct {
     u32 color[4];
@@ -368,6 +370,16 @@ static void replay_float_args(const NvnOp* op, u32* values, u32 count, u8* known
     if (*known) memcpy(values, op->payload, (size_t)count * sizeof(u32));
 }
 
+static NvnTargetResult replay_target(u64 texture, const NvnTextureViewSelection* view,
+                                     const NvnTextureTarget* captured, int captured_valid, NvnTextureTarget* out) {
+    if (!captured_valid) return nvn_texture_resolve_target(texture, view, out);
+    NvnPoolSnapshot pool = {0};
+    if (!nvn_pool_snapshot(captured->pool, &pool) || pool.generation != captured->pool_generation)
+        return NVN_TARGET_STALE_POOL;
+    *out = *captured;
+    return NVN_TARGET_RESOLVED;
+}
+
 /* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
 static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
@@ -497,9 +509,11 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             } else {
                 const NvnView* view = &state->targets.color_view[clear->index];
                 NvnTextureTarget target;
-                NvnTargetResult result = nvn_texture_resolve_target(
+                NvnTargetResult result = replay_target(
                     state->targets.color[clear->index],
-                    (state->targets.color_views & (1u << clear->index)) ? &view->selection : NULL, &target);
+                    (state->targets.color_views & (1u << clear->index)) ? &view->selection : NULL,
+                    &state->targets.color_target[clear->index],
+                    !!(state->targets.color_resolved & (1u << clear->index)), &target);
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_color_target_resolved++;
                     if (queue) queue->pending_clears++;
@@ -528,9 +542,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (queue) queue->observed_clear_only = 0;
             } else {
                 NvnTextureTarget target;
-                NvnTargetResult result = nvn_texture_resolve_target(
+                NvnTargetResult result = replay_target(
                     state->targets.depth, state->targets.depth_view ? &state->targets.depth_view_data.selection : NULL,
-                    &target);
+                    &state->targets.depth_target, state->targets.depth_resolved, &target);
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_depth_target_resolved++;
                     if (queue) queue->pending_clears++;
@@ -919,7 +933,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 }
                 const NvnTextureViewSelection* view =
                     (state->targets.color_views & (1u << j)) ? &state->targets.color_view[j].selection : NULL;
-                if (nvn_texture_resolve_target(state->targets.color[j], view, &draw.color_target[j]) ==
+                if (replay_target(state->targets.color[j], view, &state->targets.color_target[j],
+                                  !!(state->targets.color_resolved & (1u << j)), &draw.color_target[j]) ==
                     NVN_TARGET_RESOLVED)
                     draw.color_target_mask |= 1u << j;
                 else
@@ -931,7 +946,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 } else {
                     const NvnTextureViewSelection* view =
                         state->targets.depth_view ? &state->targets.depth_view_data.selection : NULL;
-                    if (nvn_texture_resolve_target(state->targets.depth, view, &draw.depth_target) ==
+                    if (replay_target(state->targets.depth, view, &state->targets.depth_target,
+                                      state->targets.depth_resolved, &draw.depth_target) ==
                         NVN_TARGET_RESOLVED)
                         draw.depth_target_bound = 1;
                     else
@@ -1067,6 +1083,13 @@ static void snapshot_view(u64 ptr, NvnView* view) {
     for (u32 i = 0; i < 6; i++) view_flags[i] += !!(view->selection.flags & (1u << i));
     view->valid = 1;
     view_snapshots++;
+}
+
+static int snapshot_target(u64 texture, const NvnTextureViewSelection* view, NvnTextureTarget* out) {
+    NvnTargetResult result = nvn_texture_resolve_target(texture, view, out);
+    if (result == NVN_TARGET_MISSING)
+        result = nvn_texture_resolve_copied_target(texture, view, out);
+    return result == NVN_TARGET_RESOLVED;
 }
 
 /* The SDK consumes these pointers immediately. Copy them before the caller can reuse its stack. */
@@ -1215,10 +1238,21 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
                     snapshot_view(view, &targets->color_view[i]);
                 }
             }
+            if (targets->color[i] && (!(targets->color_views & (1u << i)) || targets->color_view[i].valid)) {
+                const NvnTextureViewSelection* view =
+                    (targets->color_views & (1u << i)) ? &targets->color_view[i].selection : NULL;
+                if (snapshot_target(targets->color[i], view, &targets->color_target[i]))
+                    targets->color_resolved |= 1u << i;
+            }
         }
         targets->depth = op->args[3];
         targets->depth_view = !!op->args[4];
         if (targets->depth_view) snapshot_view(op->args[4], &targets->depth_view_data);
+        if (targets->depth && (!targets->depth_view || targets->depth_view_data.valid)) {
+            const NvnTextureViewSelection* view =
+                targets->depth_view ? &targets->depth_view_data.selection : NULL;
+            targets->depth_resolved = snapshot_target(targets->depth, view, &targets->depth_target);
+        }
         op->payload = targets;
         target_snapshots++;
     } else if (!strcmp(op->name, "nvnCommandBufferBindVertexBuffers")) {
