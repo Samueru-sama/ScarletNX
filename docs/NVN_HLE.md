@@ -1316,6 +1316,20 @@ The recorder now queries the exported pool-address getter when command memory is
 added, so command pools have a GPU base even when the game does not explicitly call
 that getter.
 
+The GPFIFO layout pins down the timing. Catherine's first present issues one
+six-entry submission: queue packets at `0x5ec0323f8` and `0x5ec032444`, recorded
+command segments at `0x50c031a00` and `0x50c031a30`, then the 58-word queue tail at
+`0x5ec0324d4` containing the paired `0x10` writes. The second present has the same
+layout with command segments at `0x50c531b00` and `0x50c531b30` and a queue tail at
+`0x5ec032698`. `nvnQueueSubmitCommands` itself emits no GPFIFO submission in this
+run; `nvnQueuePresentTexture` emits one. The first native draws therefore run with
+the initial zero, and the tail changes the register for the following submission.
+Direct replay currently queues its batch after the guest present, so reading the
+register during direct replay picks up the tail state from the same present and is
+one submission too late. A safe fix must retain the state at the command segment's
+position, including queue packets before and after it, rather than using the GPU
+register at the later replay callback.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
