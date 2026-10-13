@@ -1163,6 +1163,13 @@ In a 65-second ABI-6 TotK run without writer-submit probes, both the first and s
 58,848-byte dispatch inputs and outputs matched Maxwell byte-for-byte. The separate-submit
 result is consistent with incidental descriptor contents; it is not needed for this chain.
 Later graphics and image parity remains unproven.
+The next mixed-path batch can invalidate the direct shadow buffer before its matching replay:
+Maxwell has already updated the guest backing when the cross-batch check runs. In a diagnostic
+run that kept the shadow buffer despite that failed check, a later `0x403936c00` dispatch had
+240 or 480 differing input bytes but produced an output byte-exact with its paired QMD; the
+following `0x403938c00` dispatch then matched at both input and output. This override cannot
+be used for normal execution because an unrelated guest write could change a shader's result.
+The verifier needs operation-aligned snapshots before these later batches can certify parity.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
