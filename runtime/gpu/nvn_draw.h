@@ -12,6 +12,7 @@
 #define NVN_DRAW_SHADER_STAGES  6
 #define NVN_DRAW_UNIFORM_SLOTS  16
 #define NVN_DRAW_TEXTURE_SLOTS  32
+#define NVN_DRAW_IMAGE_SLOTS    8
 #define NVN_DRAW_VIEWPORT_SLOTS 16
 enum {
     NVN_DRAW_PREPARED = 1,
@@ -79,6 +80,10 @@ typedef struct {
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
     u32 texture_descriptor_valid[NVN_DRAW_SHADER_STAGES];
     u32 sampler_descriptor_valid[NVN_DRAW_SHADER_STAGES];
+    u64 image[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
+    NvnDescriptorSnapshot image_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
+    u8 image_bound[NVN_DRAW_SHADER_STAGES];
+    u8 image_descriptor_valid[NVN_DRAW_SHADER_STAGES];
     NvnTextureTarget color_target[8], depth_target;
     u8 color_target_mask, depth_target_bound, target_complete;
     u32 channel_mask;

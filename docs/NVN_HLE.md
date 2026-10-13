@@ -673,6 +673,13 @@ Its memory budget accounts for shrinking mip depths, and the selected slice is c
 mip. In a repeat Scarlet scene, attachment readiness rose from 7,227/7,851 to 7,955/7,955 and pipeline readiness
 rose from 6,603 to 7,322; 634 pipeline probes still failed for other reasons. Catherine and TotK boot probes
 retained zero attachment or pipeline failures. This is host image/view preparation, not a rendered NVN draw.
+The command-list recorder now preserves NVN `BindImage` and `BindImages` state alongside sampled-texture state,
+including handle-array snapshots at recording time and descriptor snapshots at draw replay. The texture-pool
+observer also accepts `RegisterImage`, which writes a hardware image descriptor into the same pool. In one
+fifteen-second Scarlet probe, 7,810 draws with a bound image had complete descriptor snapshots, where none resolved
+before observing image registrations. Catherine, TotK, and Odyssey boot probes did not bind images and retained
+their previous texture and pipeline results. A bound image is not necessarily accessed by its shader; image
+format, storage usage, shader operations, and write ordering still need validation before a host draw can use it.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

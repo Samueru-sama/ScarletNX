@@ -138,6 +138,8 @@ typedef struct {
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
+    u64 image[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
+    u8 image_bound[NVN_DRAW_SHADER_STAGES];
 } ReplayState;
 typedef struct {
     u64 key;
@@ -213,6 +215,8 @@ static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bin
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
 static u64 draw_with_texture, draw_without_texture;
+static u64 image_handle_snapshots, image_handle_snapshot_failures, image_bind_invalid;
+static u64 draw_with_image, draw_image_descriptors_complete, draw_image_descriptors_incomplete;
 static u64 draw_texture_descriptors_complete, draw_texture_descriptors_incomplete;
 static u64 draw_texture_tics_complete, draw_texture_tics_incomplete;
 static u64 draw_texture_views_complete, draw_texture_views_incomplete;
@@ -621,6 +625,27 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     state->texture_bound[stage] |= 1u << (first + j);
                 }
             }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindImage")) {
+            u32 stage = (u32)op->args[0], index = (u32)op->args[1];
+            if (stage >= NVN_DRAW_SHADER_STAGES || index >= NVN_DRAW_IMAGE_SLOTS)
+                image_bind_invalid++;
+            else {
+                state->image[stage][index] = op->args[2];
+                state->image_bound[stage] |= (u8)(1u << index);
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindImages")) {
+            u32 stage = (u32)op->args[0], first = (u32)op->args[1], count = (u32)op->args[2];
+            if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_IMAGE_SLOTS ||
+                count > NVN_DRAW_IMAGE_SLOTS - first || (count && !op->payload)) {
+                image_bind_invalid++;
+                if (stage < NVN_DRAW_SHADER_STAGES) state->image_bound[stage] = 0;
+            } else {
+                const u64* handles = op->payload;
+                for (u32 j = 0; j < count; j++) {
+                    state->image[stage][first + j] = handles[j];
+                    state->image_bound[stage] |= (u8)(1u << (first + j));
+                }
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferBindProgram")) {
             replay_program_binds++;
             NvnProgramSnapshot program = {0};
@@ -868,6 +893,26 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
             memcpy(draw.texture, state->texture, sizeof draw.texture);
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
+            memcpy(draw.image, state->image, sizeof draw.image);
+            memcpy(draw.image_bound, state->image_bound, sizeof draw.image_bound);
+            int image_complete = 1, has_image = 0;
+            for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
+                for (u32 index = 0; index < NVN_DRAW_IMAGE_SLOTS; index++) {
+                    if (!(draw.image_bound[stage] & (1u << index))) continue;
+                    has_image = 1;
+                    if (nvn_descriptor_snapshot(state->texture_pool, draw.image[stage][index],
+                                                &draw.image_descriptor[stage][index]) == 1)
+                        draw.image_descriptor_valid[stage] |= (u8)(1u << index);
+                    else
+                        image_complete = 0;
+                }
+            if (has_image) {
+                draw_with_image++;
+                if (image_complete)
+                    draw_image_descriptors_complete++;
+                else
+                    draw_image_descriptors_incomplete++;
+            }
             int descriptors_complete = 1, tics_complete = 1, views_complete = 1, samplers_complete = 1,
                 tscs_complete = 1, filter_wrap_complete = 1, has_texture = 0;
             for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
@@ -1321,22 +1366,34 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
         }
         op->payload = ranges;
         uniform_range_snapshots++;
-    } else if (!strcmp(op->name, "nvnCommandBufferBindTextures")) {
+    } else if (!strcmp(op->name, "nvnCommandBufferBindTextures") ||
+               !strcmp(op->name, "nvnCommandBufferBindImages")) {
+        int images = !strcmp(op->name, "nvnCommandBufferBindImages");
+        u32 limit = images ? NVN_DRAW_IMAGE_SLOTS : NVN_DRAW_TEXTURE_SLOTS;
         u32 stage = (u32)op->args[0], first = (u32)op->args[1], count = (u32)op->args[2];
-        if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_TEXTURE_SLOTS ||
-            count > NVN_DRAW_TEXTURE_SLOTS - first || (count && !readable_range(op->args[3], (u64)count * 8))) {
-            texture_handle_snapshot_failures++;
+        if (stage >= NVN_DRAW_SHADER_STAGES || first >= limit || count > limit - first ||
+            (count && !readable_range(op->args[3], (u64)count * 8))) {
+            if (images)
+                image_handle_snapshot_failures++;
+            else
+                texture_handle_snapshot_failures++;
             return;
         }
         u64* handles = calloc(count ? count : 1, sizeof *handles);
         if (!handles) {
             allocation_failures++;
-            texture_handle_snapshot_failures++;
+            if (images)
+                image_handle_snapshot_failures++;
+            else
+                texture_handle_snapshot_failures++;
             return;
         }
         for (u32 i = 0; i < count; i++) handles[i] = gr64(op->args[3] + (u64)i * 8);
         op->payload = handles;
-        texture_handle_snapshots++;
+        if (images)
+            image_handle_snapshots++;
+        else
+            texture_handle_snapshots++;
     }
 }
 
@@ -1887,6 +1944,12 @@ void nvn_record_report(void) {
             (unsigned long long)texture_bind_invalid);
         LOG("nvn-texture-replay: draws-with-binding=%llu without=%llu\n", (unsigned long long)draw_with_texture,
             (unsigned long long)draw_without_texture);
+        LOG("nvn-image-replay: handles=%llu failed=%llu invalid-binds=%llu draws-with-binding=%llu "
+            "descriptors-complete=%llu incomplete=%llu\n",
+            (unsigned long long)image_handle_snapshots, (unsigned long long)image_handle_snapshot_failures,
+            (unsigned long long)image_bind_invalid, (unsigned long long)draw_with_image,
+            (unsigned long long)draw_image_descriptors_complete,
+            (unsigned long long)draw_image_descriptors_incomplete);
         LOG("nvn-texture-draw: descriptors-complete=%llu incomplete=%llu\n",
             (unsigned long long)draw_texture_descriptors_complete,
             (unsigned long long)draw_texture_descriptors_incomplete);

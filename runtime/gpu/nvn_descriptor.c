@@ -106,8 +106,13 @@ static CommandBufferPool* command_slot(u64 key, int create) {
 
 int nvn_descriptor_wants(const char* name) {
     return !strcmp(name, "nvnTexturePoolInitialize") || !strcmp(name, "nvnTexturePoolFinalize") ||
-           !strcmp(name, "nvnTexturePoolRegisterTexture") || !strcmp(name, "nvnCommandBufferSetTexturePool") ||
+           !strcmp(name, "nvnTexturePoolRegisterTexture") || !strcmp(name, "nvnTexturePoolRegisterImage") ||
+           !strcmp(name, "nvnCommandBufferSetTexturePool") ||
            !strcmp(name, "nvnCommandBufferBindTexture");
+}
+
+static int registering_descriptor(const char* name) {
+    return !strcmp(name, "nvnTexturePoolRegisterTexture") || !strcmp(name, "nvnTexturePoolRegisterImage");
 }
 
 void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* call) {
@@ -117,7 +122,7 @@ void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* ca
         call->count = (u32)c->x[3];
         call->memory_pool = c->x[1];
         call->memory_offset = (i64)c->x[2];
-    } else if (!strcmp(name, "nvnTexturePoolRegisterTexture")) {
+    } else if (registering_descriptor(name)) {
         call->index = (u32)c->x[1];
         call->texture = c->x[2];
         call->view = c->x[3];
@@ -133,9 +138,9 @@ void nvn_descriptor_before(const CPU* c, const char* name, NvnDescriptorCall* ca
 void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCall* call) {
     NvnTextureSnapshot texture = {0};
     int texture_found = 0;
-    if (!strcmp(name, "nvnTexturePoolRegisterTexture")) texture_found = nvn_texture_snapshot(call->texture, &texture);
+    if (registering_descriptor(name)) texture_found = nvn_texture_snapshot(call->texture, &texture);
     NvnTextureTarget copied = {0};
-    int copied_found = !strcmp(name, "nvnTexturePoolRegisterTexture") && !texture_found &&
+    int copied_found = registering_descriptor(name) && !texture_found &&
                        nvn_texture_resolve_copied_target(call->texture, NULL, &copied) == NVN_TARGET_RESOLVED;
     NvnPoolSnapshot memory = {0};
     int memory_found =
@@ -143,7 +148,7 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
     TexturePool registration_pool = {0};
     u32 tic[8] = {0};
     int tic_state = 0; /* 0 = no readable base, 1 = GPU copy, 2 = storage copy, 3 = address mismatch */
-    if (!strcmp(name, "nvnTexturePoolRegisterTexture")) {
+    if (registering_descriptor(name)) {
         pm_lock(&lock);
         TexturePool* p = pool_slot(call->object, 0);
         if (p && p->alive && call->index < p->count) registration_pool = *p;
@@ -206,7 +211,7 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
         } else {
             unknown_pools++;
         }
-    } else if (!strcmp(name, "nvnTexturePoolRegisterTexture")) {
+    } else if (registering_descriptor(name)) {
         TexturePool* p = pool_slot(call->object, 0);
         if (!p || !p->alive)
             unknown_pools++;
