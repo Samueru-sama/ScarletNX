@@ -1871,15 +1871,20 @@ void vk_nvn_shadow_compare(void) {
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++)
         if (images[i].shadow_draw_stamp && (!shadow || images[i].shadow_draw_stamp > shadow->shadow_draw_stamp))
             shadow = &images[i];
-    if (!shadow || !shadow->transfer_src || shadow->format != 0x25 || shadow->levels != 1 || shadow->layers != 1 ||
-        !shadow->width || !shadow->height || (u64)shadow->width * shadow->height > (16ull << 20) / 4)
+    if (!shadow || !shadow->transfer_src || shadow->levels != 1 || shadow->layers != 1 ||
+        !shadow->width || !shadow->height)
+        return;
+    VkFmt format = nvn_format(shadow->format);
+    if (!format.vk || !format.bpp || format.depth || format.bw > 1 || format.bh > 1 ||
+        (u64)shadow->width * shadow->height > (16ull << 20) / format.bpp)
         return;
     Surf* emulated = vk_rt_find(shadow->address);
-    if (!emulated || emulated->f.vk != VK_FORMAT_R8G8B8A8_UNORM || emulated->w != shadow->width ||
+    if (!emulated || emulated->f.vk != format.vk || emulated->f.bpp != format.bpp ||
+        emulated->w != shadow->width ||
         emulated->h != shadow->height || emulated->sw != emulated->w || emulated->sh != emulated->h ||
         emulated->layout == VK_IMAGE_LAYOUT_UNDEFINED)
         return;
-    u64 bytes = (u64)shadow->width * shadow->height * 4;
+    u64 bytes = (u64)shadow->width * shadow->height * format.bpp;
     VkBuffer readback;
     u8* pixels = vk_readback_buffer(bytes * 2, &readback);
     if (!pixels) return;
@@ -1907,18 +1912,46 @@ void vk_nvn_shadow_compare(void) {
     vkCmdPipelineBarrier2(cb, &dependency);
     vk_finish();
     vk_readback_ready();
-    u64 different = 0, rgb_different = 0, alpha_different = 0;
-    for (u64 i = 0; i < bytes; i += 4) {
-        different += memcmp(pixels + i, pixels + bytes + i, 4) != 0;
-        rgb_different += memcmp(pixels + i, pixels + bytes + i, 3) != 0;
-        alpha_different += pixels[i + 3] != pixels[bytes + i + 3];
+    u64 different = 0, different_bytes = 0, first_different = ~0ull;
+    u64 components[4] = {0};
+    u32 min_x = shadow->width, min_y = shadow->height, max_x = 0, max_y = 0;
+    for (u64 i = 0; i < bytes; i += format.bpp) {
+        if (memcmp(pixels + i, pixels + bytes + i, format.bpp)) {
+            different++;
+            if (first_different == ~0ull) first_different = i;
+            u64 pixel = i / format.bpp;
+            u32 x = (u32)(pixel % shadow->width), y = (u32)(pixel / shadow->width);
+            if (x < min_x) min_x = x;
+            if (y < min_y) min_y = y;
+            if (x > max_x) max_x = x;
+            if (y > max_y) max_y = y;
+        }
+        for (u32 b = 0; b < format.bpp; b++)
+            different_bytes += pixels[i + b] != pixels[bytes + i + b];
+        if (format.bpp == 8)
+            for (u32 component = 0; component < 4; component++)
+                components[component] += memcmp(pixels + i + component * 2,
+                                                pixels + bytes + i + component * 2, 2) != 0;
     }
-    u64 center = ((u64)(shadow->height / 2) * shadow->width + shadow->width / 2) * 4;
-    LOG("nvn-shadow-compare: target=%llx different=%llu/%llu rgb=%llu alpha=%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
-        (unsigned long long)shadow->address, (unsigned long long)different, (unsigned long long)(bytes / 4),
-        (unsigned long long)rgb_different, (unsigned long long)alpha_different, emulated->wgen,
+    u64 center = ((u64)(shadow->height / 2) * shadow->width + shadow->width / 2) * format.bpp;
+    LOG("nvn-shadow-compare: target=%llx format=%x bpp=%u different=%llu/%llu bytes=%llu/%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
+        (unsigned long long)shadow->address, shadow->format, format.bpp,
+        (unsigned long long)different, (unsigned long long)(bytes / format.bpp),
+        (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],
         pixels[bytes + center], pixels[bytes + center + 1], pixels[bytes + center + 2], pixels[bytes + center + 3]);
+    if (different) {
+        u64 first_shadow = 0, first_emulated = 0;
+        memcpy(&first_shadow, pixels + first_different, format.bpp < 8 ? format.bpp : 8);
+        memcpy(&first_emulated, pixels + bytes + first_different, format.bpp < 8 ? format.bpp : 8);
+        LOG("nvn-shadow-difference: bbox=%u,%u-%u,%u first=%llu,%llu values=%016llx/%016llx components=%llu,%llu,%llu,%llu\n",
+            min_x, min_y, max_x, max_y,
+            (unsigned long long)((first_different / format.bpp) % shadow->width),
+            (unsigned long long)((first_different / format.bpp) / shadow->width),
+            (unsigned long long)first_shadow, (unsigned long long)first_emulated,
+            (unsigned long long)components[0], (unsigned long long)components[1],
+            (unsigned long long)components[2], (unsigned long long)components[3]);
+    }
     compared = 1;
 }
 
