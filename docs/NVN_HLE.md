@@ -838,8 +838,9 @@ Host descriptor writes, storage-image layout transitions, write ordering, and dr
 In a TotK boot comparison, the first 640×360 RGBA16F shadow target differed from the Maxwell target in exactly
 its top 36 rows (23,040 pixels). The direct NVN path issued all 31 recorded draws for that target, but the Maxwell
 renderer had issued three earlier draws on the same target with one vertex attribute and index counts 1,656, 3,384,
-and 3,384. All three used GPU channel 20, the same channel as the subsequent recorded draw, but none appeared among
-those 31 recorded NVN draws. Temporarily omitting only those three Maxwell draws
+and 3,384. All three used GPU channel 20, the same channel as the subsequent recorded draw, and occupied one GPFIFO
+entry immediately before the first recorded draw's entry. None appeared among those 31 recorded NVN draws.
+Temporarily omitting only those three Maxwell draws
 made the two targets match byte-for-byte (0/230,400 different pixels); that omission was removed after diagnosis.
 The direct draw itself left a forced magenta target unchanged, including with depth testing, culling, and blending
 disabled independently. This establishes a command-coverage gap for the first three draws, not a wrong color value
