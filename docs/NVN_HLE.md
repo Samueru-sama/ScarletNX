@@ -1243,12 +1243,17 @@ both formats already map to supported Vulkan attachments but were omitted from t
 whitelist now includes them. Sequence 32 then executes and preserves the depth source, but sequence 48 remains
 ineligible later in the direct draw path and invalidates it again. Its seventh fragment texture is a 2D-array
 image at `0x543850000`. Maxwell has a fresh render target there, so the direct path cannot safely fall back
-to guest memory. NVN recorded a clear of an R8 UINT (`0x03`) target with two layers at that address, but the
-shadow image format table does not yet map R8 UINT, and the clear selects only one layer. Mapping the format
-alone would not certify both sampled layers. Scarlet passes float `1.0` bits (`0x3f800000`) to this clear;
-the native Maxwell path receives those bits unchanged in its UINT clear registers. Numerically converting
-the value to integer `1` in the direct path would diverge. Integer clear interpretation and per-layer
-provenance need checking before certifying this image.
+to guest memory. NVN recorded a `ClearColor` on an R8 UINT (`0x03`) target with two backing layers at that
+address. The bound 2D view selects only layer 0.
+The SDK's 16-byte view has all six selection flags set, with target 2D, format R8 UINT, identity swizzle
+(`2,3,4,5`), and depth mode 0. The shadow clear now maps R8 UINT and accepts explicitly selected identity
+swizzle/depth mode, which models the layer-0 clear; it still cannot certify layer 1 of the two-layer image
+sampled by draw 48.
+Scarlet passes float `1.0` bits (`0x3f800000`) to this color-target clear; the native Maxwell path receives
+those bits unchanged in its UINT clear registers. Numerically converting the value to integer `1` in the direct
+path would diverge. One-pixel readbacks immediately after the native clear and direct shadow clear both returned
+`0xff` on this host. The native render target has one layer, while the sampled texture has two. Layer-1 guest
+storage needs independent freshness and upload checks before the direct path can sample the complete array.
 The sequence-50 draw and the 1920×1080 comparison therefore remain uncovered. This is a chained
 producer-coverage gap, not a channel-mask issue with the compared draw.
 

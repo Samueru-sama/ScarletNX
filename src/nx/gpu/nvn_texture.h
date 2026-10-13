@@ -27,6 +27,7 @@ typedef struct {
 
 typedef struct {
     u8 flags; /* levels, layers, format, swizzle, depth mode, target */
+    u8 swizzle_identity, depth_mode_depth;
     u32 base_level, level_count, first_layer, layer_count, format, target;
 } NvnTextureViewSelection;
 

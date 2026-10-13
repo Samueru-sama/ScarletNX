@@ -182,6 +182,7 @@ static NvnImage* evict_old_image(void) {
 static VkFmt nvn_format(u32 format) {
     switch (format) {
         case 0x01: return (VkFmt){.vk = VK_FORMAT_R8_UNORM, .bpp = 1};            /* R8 */
+        case 0x03: return (VkFmt){.vk = VK_FORMAT_R8_UINT, .bpp = 1, .is_int = 1}; /* R8UI */
         case 0x05: return (VkFmt){.vk = VK_FORMAT_R16_SFLOAT, .bpp = 2};          /* R16F */
         case 0x0a: return (VkFmt){.vk = VK_FORMAT_R32_SFLOAT, .bpp = 4};          /* R32F */
         case 0x0b: return (VkFmt){.vk = VK_FORMAT_R32_UINT, .bpp = 4, .is_int = 1}; /* R32UI */
@@ -510,7 +511,10 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         (target->target != target->storage_target && target->target != 1) || !target->width || !target->height ||
         !target->depth || (target->storage_target == 1 && target->depth != 1) || !target->levels ||
         target->samples > 1 || mip >= target->levels || mip >= 16 || layer >= target->depth ||
-        target->view.level_count > 1 || target->view.layer_count > 1 || (target->view.flags & (8 | 16))) {
+        target->view.level_count > 1 || target->view.layer_count > 1 ||
+        /* These view settings do not alter a color clear when they select their defaults. */
+        ((target->view.flags & 8) && !target->view.swizzle_identity) ||
+        ((target->view.flags & 16) && !target->view.depth_mode_depth)) {
         LOG_LIMIT(12, "nvn-clear-shape: target=%u backing=%u %ux%ux%u levels=%u samples=%u view=%x/%u/%u/%u/%u\n",
                   target->target, target->storage_target, target->width, target->height, target->depth, target->levels,
                   target->samples, target->view.flags, mip, layer, target->view.level_count, target->view.layer_count);
@@ -2888,8 +2892,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     writable_ssbo_count += !!(vertex->si.gbuf_wmask || fragment->si.gbuf_wmask);
     color_write_count += any_color_written;
     if (issued <= 8 || !(issued % 100))
-        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu storage=%llu ssbo=%llu writable-ssbo=%llu color-writes=%llu target=%llx size=%ux%u\n",
-            (unsigned long long)issued, (unsigned long long)preserved_count,
+        LOG("nvn-shadow-draw: seq=%llu issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu storage=%llu ssbo=%llu writable-ssbo=%llu color-writes=%llu target=%llx size=%ux%u\n",
+            (unsigned long long)command->sequence, (unsigned long long)issued, (unsigned long long)preserved_count,
             (unsigned long long)semantic_sample_count, (unsigned long long)embedded_bank1_count,
             (unsigned long long)storage_draw_count, (unsigned long long)ssbo_count,
             (unsigned long long)writable_ssbo_count,
@@ -3042,8 +3046,8 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
     scoped_draws++;
     scoped_storage_draws += storage_writes;
     if (scoped_draws == 1 || !(scoped_draws % 100))
-        LOG("nvn-shadow-scoped-draw: count=%llu storage=%llu target=%llx colors=%x depth=%d\n",
-            (unsigned long long)scoped_draws, (unsigned long long)scoped_storage_draws,
+        LOG("nvn-shadow-scoped-draw: seq=%llu count=%llu storage=%llu target=%llx colors=%x depth=%d\n",
+            (unsigned long long)command->sequence, (unsigned long long)scoped_draws, (unsigned long long)scoped_storage_draws,
             (unsigned long long)command->color_target[0].gpu_address,
             command->color_target_mask, command->depth_target_bound);
 }

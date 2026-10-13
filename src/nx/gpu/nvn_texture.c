@@ -105,6 +105,9 @@ int nvn_texture_view_snapshot(u64 ptr, NvnTextureViewSelection* out) {
         out->layer_count = (packed >> 16) & 0xffff;
         memcpy(&out->format, bytes + 8, 4);
         out->target = (packed >> 48) & 0xff;
+        /* The compact view stores the four NVN swizzle enums bytewise and depth mode in its top two bits. */
+        out->swizzle_identity = bytes[12] == 2 && bytes[13] == 3 && bytes[14] == 4 && bytes[15] == 5;
+        out->depth_mode_depth = !(packed >> 62);
     } else {
         out->flags = bytes[0] & 0x3f;
         out->base_level = bytes[1];
@@ -113,6 +116,11 @@ int nvn_texture_view_snapshot(u64 ptr, NvnTextureViewSelection* out) {
         memcpy(&out->layer_count, bytes + 6, 2);
         memcpy(&out->format, bytes + 8, 4);
         memcpy(&out->target, bytes + 32, 4);
+        static const u32 identity[4] = {2, 3, 4, 5};
+        out->swizzle_identity = !memcmp(bytes + 12, identity, sizeof identity);
+        u32 depth_mode;
+        memcpy(&depth_mode, bytes + 28, sizeof depth_mode);
+        out->depth_mode_depth = depth_mode == 0;
     }
     return 1;
 }
