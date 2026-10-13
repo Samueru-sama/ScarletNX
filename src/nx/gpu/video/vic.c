@@ -121,8 +121,9 @@ static void plane_row(const VicPlane* pl, u32 xb, u32 y, u8* buf, u32 n, int wri
     }
 }
 /* one slot row of pixels through the matrix and the soft clamp, as Eden's Blend does; without an enabled
-   matrix the pixels are left alone (the samples are copied as they are). The alpha is left as the planar
-   alpha, as Eden's main (SSE) path keeps it out of the matrix and the clamp */
+   matrix the pixels are left alone (the samples are copied as they are). The alpha stays the planar alpha,
+   out of the matrix and the clamp. Eden keeps it out of the matrix but clamps all four channels, in both its
+   paths: which of the two the console does is unmeasured */
 static void pixels_convert(const VicSlot* sl, VicPixel* px, u32 n) {
     u32 i;
     if (!sl->mat_enable) return;
