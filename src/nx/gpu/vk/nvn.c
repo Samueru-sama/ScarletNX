@@ -2455,6 +2455,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                    color_target->format == 0x29 || color_target->format == 0x3f);
     int capture_full = 0;
     if (capture) {
+        LOG("nvn-shadow-capture-draw: count=%u indexed=%d primitive=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
+            command->count, command->indexed, command->primitive,
+            vp_data[0], vp_data[1], vp_data[2], vp_data[3],
+            sc_data[0], sc_data[1], sc_data[2], sc_data[3], color_width, color_height,
+            command->polygon_state & 3, command->depth_stencil_state[0]);
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
         if (depth) {
@@ -2915,8 +2920,9 @@ void vk_nvn_shadow_compare(void) {
                                                 pixels + bytes + i + component * 2, 2) != 0;
     }
     u64 center = ((u64)(shadow->height / 2) * shadow->width + shadow->width / 2) * format.bpp;
-    LOG("nvn-shadow-compare: eligible=%llu target=%llx format=%x bpp=%u different=%llu/%llu bytes=%llu/%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
+    LOG("nvn-shadow-compare: eligible=%llu target=%llx format=%x bpp=%u covered=%d different=%llu/%llu bytes=%llu/%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
         (unsigned long long)eligible_count, (unsigned long long)shadow->address, shadow->format, format.bpp,
+        !!(shadow->color_layers[0] & 1),
         (unsigned long long)different, (unsigned long long)(bytes / format.bpp),
         (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],

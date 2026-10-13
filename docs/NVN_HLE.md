@@ -1067,9 +1067,13 @@ fatal error. This confirms continued execution coverage, not presented-frame par
 After the Vulkan headless merge, an ABI-matched Odyssey rebuild issued over 6,200 direct shadow draws in 30 seconds
 without a fatal error. Its first 1600×900 comparison had previously been skipped because the direct RGBA8 UNORM
 image and Maxwell's RGBA8 sRGB view have different Vulkan format tags. The diagnostic now compares their identical
-four-byte storage layouts. All 1,440,000 pixels differed in that first target: the direct image was magenta across
-the surface, while Maxwell's had 518,400 nonblack pixels. The comparison exposes a real early rendering mismatch;
-it does not imply the sRGB transfer behavior itself is correct.
+four-byte storage layouts. All 1,440,000 pixels differed in that first target: the direct image retained the
+diagnostic magenta clear across the surface, while Maxwell's had 518,400 nonblack pixels. That direct draw did not
+establish full target coverage, so the comparison is a useful failure location but not a pixel-parity verdict on a
+completed pass. The comparator now reports coverage alongside the pixel count.
+The first direct Odyssey draw is a six-index triangle list with a 1280×720 viewport and scissor inside the
+1600×900 target. Its magenta sentinel remained unchanged even in a temporary no-culling probe, so face culling
+alone does not explain the missing coverage. Vertex/index inputs and shader output are the next suspects.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
