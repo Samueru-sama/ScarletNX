@@ -196,6 +196,19 @@ if(NOT WIN32)
     set_tests_properties(ldr_service PROPERTIES TIMEOUT 60)
 endif()
 
+# Deterministic FFmpeg API double: no decoder dependency in tools-only builds.
+add_executable(snx-test-nvdec-packets nvdec_packets.c)
+snx_test_target(snx-test-nvdec-packets 11)
+target_include_directories(snx-test-nvdec-packets BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg_stub")
+add_test(NAME nvdec_packets COMMAND snx-test-nvdec-packets)
+if(SNX_H264 AND NOT SNX_TOOLS_ONLY)
+    add_executable(snx-test-nvdec-decode nvdec_packets.c)
+    snx_test_target(snx-test-nvdec-decode 11)
+    target_compile_definitions(snx-test-nvdec-decode PRIVATE SNX_TEST_REAL_FFMPEG)
+    target_link_libraries(snx-test-nvdec-decode PRIVATE FFmpeg::avcodec)
+    add_test(NAME nvdec_decode COMMAND snx-test-nvdec-decode)
+endif()
+
 add_executable(snx_recompiler_test recompiler_native.c)
 snx_test_target(snx_recompiler_test 23)
 target_include_directories(snx_recompiler_test PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
@@ -350,7 +363,7 @@ endif()
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode crc32_helper)
+    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode nvdec_packets crc32_helper)
     if(TEST native_recompiler)
         list(APPEND snx_sanitized_tests native_recompiler)
     endif()
@@ -359,6 +372,10 @@ if(SNX_TEST_SANITIZERS AND WIN32)
     endif()
     set_tests_properties(${snx_sanitized_tests}
         PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
+    if(TARGET snx-test-nvdec-decode)
+        set_tests_properties(nvdec_decode PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
+    endif()
 endif()
 
 endif() # SNX_BUILD_NX
