@@ -105,9 +105,7 @@ static int tex_upload(Surf* t) {
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    if (f->depth && f->stencil) {
-        LOG_LIMIT(1, "vulkan: packed depth/stencil textures from memory aren't loaded yet, they read as 1.0\n");
-        /* defined contents rather than whatever the image's memory held: far, so shadow tests pass */
+    if (f->depth && f->stencil && f->bpp != 4) {
         VkClearDepthStencilValue far = {1.0f, 0};
         VkImageSubresourceRange all = {vk_aspect(f), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         vkCmdClearDepthStencilImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far, 1, &all);
@@ -115,7 +113,8 @@ static int tex_upload(Surf* t) {
     }
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
-    VkBufferImageCopy* reg = f->conv == VKC_ASTC ? NULL : calloc((size_t)layers * t->levels, sizeof *reg);
+    VkBufferImageCopy* reg = f->conv == VKC_ASTC ? NULL
+        : calloc((size_t)layers * t->levels * (f->depth && f->stencil && f->bpp == 4 ? 2 : 1), sizeof *reg);
     if (f->conv != VKC_ASTC && !reg) return 0;
     u32 nreg = 0;
     int complete = 1;
@@ -172,6 +171,44 @@ static int tex_upload(Surf* t) {
             if (f->conv == VKC_ASTC) {
                 vk_astc_upload(cb, t, lin, lw, lh, ld, l, layer);
                 free(lin);
+                at += lsz;
+                continue;
+            }
+            if (f->depth && f->stencil && f->bpp == 4) {
+                /* Maxwell stores S8 in the low byte and D24 in the upper three. Vulkan
+                   buffer-to-image copies take separate, tightly packed aspect planes. */
+                u64 texels = (u64)lw * lh * ld;
+                for (u32 aspect_index = 0; aspect_index < 2; aspect_index++) {
+                    u64 bytes = texels * (aspect_index ? 1 : 4);
+                    u8* p = vk_stage(bytes, 16, &buf, &off);
+                    if (!p) {
+                        complete = 0;
+                        break;
+                    }
+                    if (nreg && buf != regbuf) {
+                        vkCmdCopyBufferToImage(cb, regbuf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, nreg, reg);
+                        nreg = 0;
+                    }
+                    regbuf = buf;
+                    for (u64 i = 0; i < texels; i++) {
+                        u32 packed;
+                        memcpy(&packed, lin + i * 4, 4);
+                        if (aspect_index) {
+                            p[i] = (u8)packed;
+                        } else if (f->vk == VK_FORMAT_D24_UNORM_S8_UINT) {
+                            ((u32*)p)[i] = packed >> 8;
+                        } else {
+                            ((float*)p)[i] = (float)(packed >> 8) / 16777215.0f;
+                        }
+                    }
+                    reg[nreg++] = (VkBufferImageCopy){
+                        .bufferOffset = off,
+                        .imageSubresource = {aspect_index ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT,
+                                             l, layer, 1},
+                        .imageExtent = {lw, lh, ld}};
+                }
+                free(lin);
+                if (!complete) goto done;
                 at += lsz;
                 continue;
             }

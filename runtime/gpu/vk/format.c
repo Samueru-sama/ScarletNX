@@ -200,7 +200,11 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
                  VK_FORMAT_R16G16_UNORM, 4);
         case 0x0E:
             /* G24R8 with an unsigned stencil byte and normalized depth: Scarlet's depth TIC. */
-            if ((w0 & 0x3ffffu) == 0x24a0eu) return vk_zt_format(0x14);
+            if ((w0 & 0x3ffffu) == 0x24a0eu) {
+                VkFmt r = vk_zt_format(0x14);
+                r.bpp = 4; /* S8D24 guest storage, even when the host uses D32F S8. */
+                return r;
+            }
             break;
         case 0x0F:
             return flt  ? T(VK_FORMAT_R32_SFLOAT, 4, 0, 0)
@@ -243,12 +247,12 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x45: return TA(10, 10, srgb);
         case 0x54: return TA(12, 10, srgb);
         case 0x46: return TA(12, 12, srgb);
-        /* depth: sampled from render targets. From memory they aren't loaded yet (their packing differs from
-           Vulkan's buffer layout for depth copies) */
+        /* S8D24 guest storage has four bytes per texel on every host depth format. */
         case 0x29:
         case 0x2A:
         case 0x2B: {
             VkFmt r = vk_zt_format(0x14);
+            r.bpp = 4;
             r.raw = 0;
             return r;
         }

@@ -1991,16 +1991,8 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                     continue;
                 }
                 Surf* surf = vk_tex_from_tic(descriptor->tic);
-                if (!surf || (surf->f.depth && surf->f.stencil && !surf->is_rt)) {
-                    failure = !surf ? NVN_DRAW_TEXTURE_IMAGE_MISSING : NVN_DRAW_TEXTURE_IMAGE_DEPTH;
-                    if (failure == NVN_DRAW_TEXTURE_IMAGE_DEPTH) {
-                        const u32* tic = command->texture_descriptor[stage][i].tic;
-                        LOG_LIMIT(
-                            1,
-                            "nvn-texture-depth-memory: tic-format=%x vk-format=%u width=%u height=%u levels=%u address=%llx\n",
-                            tic[0] & 0x7f, surf->f.vk, (tic[4] & 0xffff) + 1, (tic[5] & 0xffff) + 1,
-                            ((tic[3] >> 28) & 15) + 1, (unsigned long long)surf->gva);
-                    }
+                if (!surf) {
+                    failure = NVN_DRAW_TEXTURE_IMAGE_MISSING;
                     ready = 0;
                     break;
                 }
