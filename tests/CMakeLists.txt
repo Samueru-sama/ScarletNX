@@ -137,6 +137,13 @@ snx_test_target(snx-test-audio-out 11)
 target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
 add_test(NAME audio_out COMMAND snx-test-audio-out)
 
+if(UNIX)
+    add_executable(snx-test-audren audren_render.c)
+    snx_test_target(snx-test-audren 11)
+    target_link_libraries(snx-test-audren PRIVATE m)
+    add_test(NAME audren_render COMMAND snx-test-audren)
+endif()
+
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
 snx_test_target(snx-test-render-enable 23)

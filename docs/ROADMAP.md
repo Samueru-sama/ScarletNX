@@ -13,7 +13,7 @@ Implemented: Clang/CMake, Linux/Windows CI, SDL3/Vulkan, shader caches, componen
 - **Regression:** ARM ISA, IPC, VM, GPU-cache tests. Headless smoke runs + reference images.
 - **Diagnostics:** stricter warnings, shader vector-boundary tests at R254/RZ. Import thread-dump
   reader and Maxwell instruction scanner.
-- **Audio:** `audren` mixing/routing/FX. Validate hwopus playback.
+- **Audio:** `audren` splitters, voice biquads, delay/reverb/biquad effects. Validate hwopus playback.
 - **GPU:** per-channel scheduling so a blocked channel cannot stall its fence producer.
   90-degree framebuffer rotation, attachment feedback, BCn fallback.
 - **CPU:** ARM NaN propagation/default-NaN and directed FP rounding. Thread suspension at WFE.

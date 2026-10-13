@@ -111,6 +111,11 @@ void plat_audio_clear(PAudio* a) {
     if (a && !SDL_ClearAudioStream(a->stream)) WARN_LIMIT(4, "audio: SDL could not clear PCM: %s\n", SDL_GetError());
 }
 
+u32 plat_audio_queued(PAudio* a) {
+    int n = a ? SDL_GetAudioStreamQueued(a->stream) : 0;
+    return n > 0 ? (u32)n : 0;
+}
+
 void plat_audio_volume(PAudio* a, float volume) {
     if (a && !SDL_SetAudioStreamGain(a->stream, volume))
         WARN_LIMIT(4, "audio: SDL could not set output volume: %s\n", SDL_GetError());

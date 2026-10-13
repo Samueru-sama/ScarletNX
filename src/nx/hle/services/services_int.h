@@ -81,5 +81,7 @@ SvcObj* new_audin(void);
 
 /* audren.c */
 int audren_update(SvcObj* o, IpcCtx* c);
+void audren_open(SvcObj* o, const u8* params); /* OpenAudioRenderer's parameters into the renderer's state */
+void audren_tick(void);                        /* the audio clock's frame of every started renderer */
 
 #endif

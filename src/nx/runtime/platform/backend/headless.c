@@ -36,6 +36,10 @@ void plat_audio_start(PAudio* a, int started) {
     (void)started;
 }
 void plat_audio_clear(PAudio* a) { (void)a; }
+u32 plat_audio_queued(PAudio* a) {
+    (void)a;
+    return 0;
+}
 void plat_audio_volume(PAudio* a, float volume) {
     (void)a;
     (void)volume;

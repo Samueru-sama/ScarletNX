@@ -2,8 +2,8 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* audio services: audout sends guest PCM to the host, audren currently only answers renderer updates, and hwopus
-   decodes the game's Opus packets with FFmpeg */
+/* audio services: audout sends guest PCM to the host, audren renders the game's voices (audren.c, audren_dsp.c),
+   and hwopus decodes the game's Opus packets with FFmpeg */
 #include "hle/services/services_int.h"
 #ifndef SNX_NO_H264
 #include "gpu/video/host1x.h"
@@ -75,6 +75,7 @@ void audio_clock(void* arg) {
             plat_sleep_ns((i64)(next - now));
         else if (now - next > 50000000ull)
             next = now;
+        audren_tick(); /* the frame first: a game waiting on the event reads what it rendered */
         kevent_signal(audio.ev);
         now = plat_ns();
         pm_lock(&audio.outs_lk);
@@ -90,7 +91,7 @@ void audio_clock(void* arg) {
 }
 
 /* IAudioRenderer: u[0..2] sample rate, sample count and mix buffer count, u[3] state (0 started, 1 stopped),
-   u[4] and u[5] audren.c's, u[6] the rendering time limit */
+   u[4] audren.c's renderer, u[6] the rendering time limit */
 static int audren_obj(SvcObj* o, IpcCtx* c) {
     switch (c->cmd) {
         case 0: out32(c, (u32)o->u[0]); return 0;
@@ -169,6 +170,12 @@ static int audren_disp(SvcObj* o, IpcCtx* c) {
             r->u[2] = in32(c, 8);
             r->u[3] = 1;
             r->u[6] = 100; /* the rendering time limit starts at 100% */
+            u8 params[0x34];
+            for (u32 i = 0; i < sizeof params; i += 4) {
+                u32 v = in32(c, i);
+                memcpy(params + i, &v, 4);
+            }
+            audren_open(r, params);
             out_obj(c, r);
             return 0;
         }

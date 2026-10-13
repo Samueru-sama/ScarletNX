@@ -118,6 +118,11 @@ int stub_ok(SvcObj* o, IpcCtx* c) {
 }
 int quiet_ok(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
 int audren_update(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
+void audren_open(SvcObj* o, const u8* params) {
+    (void)o;
+    (void)params;
+}
+void audren_tick(void) {}
 int buf_in(IpcCtx* c, int i, u64* addr, u64* size) {
     *addr = *size = 0;
     if (i >= c->na) return 0;

@@ -58,6 +58,7 @@ void plat_audio_close(PAudio* a);
 int plat_audio_queue(PAudio* a, const void* samples, u32 bytes);
 void plat_audio_start(PAudio* a, int started);
 void plat_audio_clear(PAudio* a);
+u32 plat_audio_queued(PAudio* a); /* bytes queued and not yet played; 0 without a device */
 void plat_audio_volume(PAudio* a, float volume);
 void plat_yield(void);
 u64 plat_ns(void); /* monotonic */
