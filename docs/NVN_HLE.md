@@ -625,24 +625,25 @@ The texture binder can now select a prior NVN-owned RGBA8 image when the capture
 the image's required subresources were fully initialized by modeled operations after the last unknown write, and
 the draw does not sample its own attachment. The first magenta diagnostic draw can also establish full coverage
 when its readback shows that every pixel changed; later draws preserve provenance only after such initialization.
-The command recorder marks every guest draw as unknown while GPFIFO remains authoritative, so the shadow path cancels only the synthetic marker
-for its immediately preceding successfully executed draw when no other unknown operation intervened. This enables
-ordered host-image read-after-write without treating a failed or unsupported draw as modeled. Catherine's first
+The command recorder marks guest draws and clears as unknown while GPFIFO remains authoritative. The shadow path
+bridges synthetic markers for successfully executed full clears and draws in order; an unmodeled, failed, or
+unsupported operation breaks that chain. This enables ordered host-image read-after-write without treating an
+unmodeled operation as a valid producer. Catherine's first
 batch now executes a three-draw chain: a fullscreen strip certifies all 921,600 color pixels written, a 12-index
 triangle-list draw updates that same image, and a later strip samples the NVN-owned image into a target that VI
 presents. The shadow path rejects earlier textured draws whose inputs only have Maxwell render-target contents.
 Immediately before the modeled chain, Maxwell makes an unblended four-vertex pass to that intermediate target;
 the NVN fragment shader uses embedded CBUF 1 and three sampled textures. The bank-1 mapping removes its uniform
-blocker, but the repeated eight-second probe issued zero bank-1 shadow draws because other eligibility checks still
-failed. A focused probe found the first fragment texture samples render target `0x5acba2c00`, which has no complete
-NVN-owned source at that point; accepting its Maxwell surface would invalidate the direct-path comparison. The
-current semantic replay staged no draw, clear, or buffer-to-texture copy targeting that address in the sampled boot,
-so its producer may be an unmodeled operation or an address alias and needs to be traced at submission. A Maxwell
-surface probe confirmed this is live render output: its write generation advanced from 2 to 9 over the first eight
-presented frames while its last guest-memory generation remained 1. Importing those pixels would reintroduce a
-dependency on GPU emulation. A broader semantic target trace also found no staged draw, clear, or copy target within
-1 MiB of that surface address in the boot sample, making a small view-offset mismatch unlikely; the Maxwell draw
-that writes it must be associated with its originating NVN call or command list.
+blocker, but an earlier probe issued zero bank-1 shadow draws because the first fragment texture lacked an NVN-owned
+producer. The sampled texture is render target `0x5acba2c00`; Maxwell clears it to black each frame without drawing
+to it. The producer is `nvnCommandBufferClearTexture`, which the recorder had classified as a clear without
+snapshotting its texture, view, region, or color. The shadow path now snapshots that command and executes full
+subresource clears against an NVN-owned image. Partial regions remain unsupported because they cannot establish
+complete sampled-image coverage. In an eight-second Catherine run, all 766 texture clear targets resolved, 1,900
+of 1,915 staged clears executed, and the shadow path issued 1,300 draws, including 364 that used embedded bank 1.
+These counts establish direct draw execution, not visual parity or guest-memory coherence. The Maxwell surface's
+write generation advanced from 2 to 9 over the first eight presented frames while its last guest-memory generation
+remained 1, so importing those pixels would reintroduce a dependency on GPU emulation.
 Maxwell then uses two blend configurations on the target, including an indexed pass with a different source-alpha
 factor. Its sampled inputs still need ordered provenance checks, and diagnostic magenta initialization limits what
 the black-frame comparison can establish.
@@ -654,8 +655,8 @@ The three-draw chain's first presented-target comparison also had identical RGB 
 (`0` against `255`). One later boot run matched all 921,600 RGBA pixels on that black frame, but a repeat with the
 same bank-1 mapping again showed the full alpha mismatch; no bank-1 shadow draw executed in that repeat. The
 comparison samples after the guest submission, so later Maxwell operations may affect its contents. Neither result
-proves gameplay parity. Later batches
-do not yet certify the producer's full coverage, so the sampled chain currently executes only in the first batch.
+proves gameplay parity. Texture-clear replay now certifies the sampled producer in later batches too, but the alpha
+mismatch and other unmodeled rendering behavior remain to be resolved.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still

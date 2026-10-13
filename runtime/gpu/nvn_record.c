@@ -181,6 +181,7 @@ static u64 view_snapshots, view_snapshot_failures;
 static u64 view_flags[6];
 static u64 replay_color_clears, replay_color_target_resolved, replay_color_missing_target, replay_color_view_unknown,
     replay_color_stale_target;
+static u64 replay_texture_clears, replay_texture_target_resolved, replay_texture_missing_target;
 static u64 replay_depth_clears, replay_depth_target_resolved, replay_depth_missing_target, replay_depth_view_unknown,
     replay_depth_stale_target;
 static u64 replay_target_stale_pool, replay_target_no_address, replay_target_bad_view;
@@ -413,11 +414,13 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     }
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
+        u64 prior_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
         if (queue &&
             (op->kind == OP_CLEAR || op->kind == OP_TRANSFER || op->kind == OP_DISPATCH || op->kind == OP_OTHER))
             queue->last_unmodeled_write = queue->next_sequence++;
         if (queue && op->kind != OP_MEMORY && strcmp(op->name, "nvnCommandBufferSetRenderTargets") &&
-            strcmp(op->name, "nvnCommandBufferClearColor") && strcmp(op->name, "nvnCommandBufferClearDepthStencil") &&
+            strcmp(op->name, "nvnCommandBufferClearColor") && strcmp(op->name, "nvnCommandBufferClearTexture") &&
+            strcmp(op->name, "nvnCommandBufferClearDepthStencil") &&
             strcmp(op->name, "nvnCommandBufferCallCommands"))
             queue->observed_clear_only = 0;
         if (!strcmp(op->name, "nvnCommandBufferSetCopyRowStride")) {
@@ -501,6 +504,22 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 state->targets = *(const NvnTargets*)op->payload;
             else
                 memset(&state->targets, 0, sizeof state->targets);
+        } else if (!strcmp(op->name, "nvnCommandBufferClearTexture")) {
+            replay_texture_clears++;
+            const NvnClearCommand* clear = op->payload;
+            if (!clear || !clear->target.gpu_address) {
+                replay_texture_missing_target++;
+                if (queue) queue->observed_clear_only = 0;
+            } else {
+                replay_texture_target_resolved++;
+                if (queue) queue->pending_clears++;
+                if (clear_execute && queue) {
+                    NvnClearCommand packet = *clear;
+                    packet.unknown_marker = queue->last_unmodeled_write;
+                    packet.prior_unmodeled_write = prior_unmodeled_write;
+                    stage_clear(queue, packet);
+                }
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferClearColor")) {
             replay_color_clears++;
             const NvnClearColor* clear = op->payload;
@@ -525,6 +544,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     if (queue) queue->pending_clears++;
                     if (clear_execute && queue) {
                         NvnClearCommand packet = {.kind = NVN_CLEAR_COLOR, .target = target, .mask = clear->mask};
+                        packet.unknown_marker = queue->last_unmodeled_write;
+                        packet.prior_unmodeled_write = prior_unmodeled_write;
                         memcpy(packet.color, clear->color, sizeof packet.color);
                         stage_clear(queue, packet);
                     }
@@ -562,6 +583,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                                   .stencil = clear->stencil,
                                                   .depth_mask = clear->depth_mask,
                                                   .stencil_mask = clear->stencil_mask};
+                        packet.unknown_marker = queue->last_unmodeled_write;
+                        packet.prior_unmodeled_write = prior_unmodeled_write;
                         stage_clear(queue, packet);
                     }
                 } else if (result == NVN_TARGET_STALE_POOL)
@@ -1240,6 +1263,31 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
         copy->valid = !copy->has_view || copy->view.valid;
         op->payload = copy;
         copy_snapshots++;
+    } else if (!strcmp(op->name, "nvnCommandBufferClearTexture")) {
+        if (!readable_range(op->args[2], 24) || !readable_range(op->args[3], 16)) {
+            clear_snapshot_failures++;
+            return;
+        }
+        NvnClearCommand* clear = calloc(1, sizeof *clear);
+        if (!clear) {
+            allocation_failures++;
+            clear_snapshot_failures++;
+            return;
+        }
+        NvnView view = {0};
+        if (op->args[1]) snapshot_view(op->args[1], &view);
+        if (!op->args[1] || view.valid) {
+            NvnTextureTarget target = {0};
+            if (snapshot_target(op->args[0], op->args[1] ? &view.selection : NULL, &target))
+                clear->target = target;
+        }
+        clear->kind = NVN_CLEAR_COLOR;
+        clear->mask = (u32)op->args[4];
+        clear->region_known = 1;
+        for (u32 i = 0; i < 6; i++) clear->region[i] = (i32)gr32(op->args[2] + (u64)i * 4);
+        for (u32 i = 0; i < 4; i++) clear->color[i] = gr32(op->args[3] + (u64)i * 4);
+        op->payload = clear;
+        clear_snapshots++;
     } else if (!strcmp(op->name, "nvnCommandBufferClearColor")) {
         if (!readable_range(op->args[1], 16)) {
             clear_snapshot_failures++;
@@ -1819,6 +1867,9 @@ void nvn_record_report(void) {
             (unsigned long long)replay_color_clears, (unsigned long long)replay_color_target_resolved,
             (unsigned long long)replay_color_missing_target, (unsigned long long)replay_color_view_unknown,
             (unsigned long long)replay_color_stale_target);
+        LOG("nvn-clear-replay: texture=%llu target-resolved=%llu missing-target=%llu\n",
+            (unsigned long long)replay_texture_clears, (unsigned long long)replay_texture_target_resolved,
+            (unsigned long long)replay_texture_missing_target);
         LOG("nvn-depth-replay: clears=%llu target-resolved=%llu missing-target=%llu view-unknown=%llu stale-target=%llu\n",
             (unsigned long long)replay_depth_clears, (unsigned long long)replay_depth_target_resolved,
             (unsigned long long)replay_depth_missing_target, (unsigned long long)replay_depth_view_unknown,

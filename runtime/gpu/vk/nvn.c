@@ -45,9 +45,21 @@ static NvnImage images[NVN_IMAGE_SLOTS];
 static u64 image_bytes;
 static u64 batch_serial;
 static u64 shadow_draw_stamp;
+static u64 modeled_unknown_marker, modeled_unknown_prior;
+
+static u64 effective_unknown_write(u64 marker) {
+    return marker == modeled_unknown_marker ? modeled_unknown_prior : marker;
+}
+
+static void mark_modeled_unknown(u64 marker, u64 prior) {
+    if (!marker) return;
+    modeled_unknown_prior = effective_unknown_write(prior);
+    modeled_unknown_marker = marker;
+}
 
 void vk_nvn_batch_begin(void) {
     batch_serial++;
+    modeled_unknown_marker = modeled_unknown_prior = 0;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         memset(images[i].color_layers, 0, sizeof images[i].color_layers);
         memset(images[i].depth_layers, 0, sizeof images[i].depth_layers);
@@ -381,6 +393,16 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     if (target->format != target->storage_format) return 0;
     u32 mip = target->view.base_level;
     u32 layer = target->view.first_layer;
+    if (command->region_known) {
+        u32 width = mip < 32 ? target->width >> mip : 0;
+        u32 height = mip < 32 ? target->height >> mip : 0;
+        if (!width) width = 1;
+        if (!height) height = 1;
+        if (command->region[0] || command->region[1] || command->region[2] ||
+            command->region[3] != (i32)width || command->region[4] != (i32)height ||
+            command->region[5] != 1)
+            return 0; /* only a full subresource can establish sampled-image provenance */
+    }
     if ((target->storage_target != 1 && target->storage_target != 4 && target->storage_target != 8) ||
         (target->target != target->storage_target && target->target != 1) || !target->width || !target->height ||
         !target->depth || (target->storage_target == 1 && target->depth != 1) || !target->levels ||
@@ -445,6 +467,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         if (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) image->depth_layers[mip] |= 1ull << layer;
     }
     image->last_batch = batch_serial;
+    mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
     return 1;
 }
 
@@ -1100,7 +1123,6 @@ static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format
 static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
                               VkPipeline pipeline, const PipeKey* key, const u64 embedded_bank1[2]) {
     static int enabled = -1;
-    static u64 last_draw_batch, last_draw_sequence, last_draw_unknown;
     if (enabled < 0) {
         const char* opt = getenv("SNX_NVN_SHADOW_DRAW");
         enabled = opt && !strcmp(opt, "1");
@@ -1130,12 +1152,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
           command->color_target[0].height != command->depth_target.height)) ||
         key->nbind != key->nattr || key->nbind > 32)
         return 0;
-    /* The recorder marks every draw as unmodeled because the GPFIFO remains authoritative. Once this
-       isolated host draw succeeds, its synthetic marker can be bypassed for the next draw only if no other
-       unknown write intervened. A failed or unsupported draw leaves its marker intact. */
-    u64 effective_unknown = command->last_unmodeled_write;
-    if (last_draw_batch == batch_serial && effective_unknown == last_draw_sequence + 1)
-        effective_unknown = last_draw_unknown;
+    /* The recorder marks guest writes as unknown while GPFIFO remains authoritative. Successful
+       shadow clears and draws can bridge their own synthetic markers; any other unknown write breaks
+       the chain, so a failed or unsupported operation cannot certify sampled-image contents. */
+    u64 effective_unknown = effective_unknown_write(command->last_unmodeled_write);
     const NvnTextureTarget* color_target = &command->color_target[0];
     const NvnTextureTarget* depth_target = &command->depth_target;
     float vp_data[4];
@@ -1413,9 +1433,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     } else {
         color->color_layers[0] &= ~1ull;
     }
-    last_draw_batch = batch_serial;
-    last_draw_sequence = command->sequence;
-    last_draw_unknown = effective_unknown;
+    mark_modeled_unknown(command->sequence + 1, command->last_unmodeled_write);
     color->shadow_draw_stamp = ++shadow_draw_stamp;
     static u64 issued;
     static u64 preserved_count, semantic_sample_count, embedded_bank1_count;
