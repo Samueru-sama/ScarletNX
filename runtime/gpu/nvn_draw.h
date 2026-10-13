@@ -90,6 +90,10 @@ typedef struct {
     u32 scissor[NVN_DRAW_VIEWPORT_SLOTS][4];
     u32 depth_range[NVN_DRAW_VIEWPORT_SLOTS][2];
     u16 viewport_known, scissor_known, depth_range_known;
+    u32 blend_color[4];
+    u8 blend_color_known;
+    u32 stencil_value_mask[2], stencil_write_mask[2], stencil_ref[2];
+    u8 stencil_value_mask_known, stencil_write_mask_known, stencil_ref_known;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;
