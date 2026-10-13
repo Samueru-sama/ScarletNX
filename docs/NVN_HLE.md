@@ -690,6 +690,11 @@ issued no shadow draw; descriptor, sampled-image provenance, and later resource 
 continued to issue 1,300 shadow draws in its eight-second check; TotK and Scarlet booted without direct draws.
 Odyssey remained at zero frames even in a twelve-second control run with shadow drawing disabled, before any NVN
 draw was recorded, so that boot did not test the new executor behavior.
+A focused Scarlet probe identified the sampled-image blocker: repeated sRGB fullscreen draws request render targets
+at `0x55bb70000` and `0x55c3e0000`. Maxwell owns their current contents, so the shadow executor correctly rejects
+them rather than importing a dependent image. The direct draw format gate now admits the already mapped NVN `0x3f`
+R11G11B10F target used by earlier passes, but an eight-second boot still issued no direct draw. Replaying its producer
+chain requires storage-image descriptors and write ordering in addition to this target format.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still

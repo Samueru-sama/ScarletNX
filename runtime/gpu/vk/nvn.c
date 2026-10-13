@@ -1210,7 +1210,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
         (command->color_target[0].format != 0x25 && command->color_target[0].format != 0x38 &&
-         command->color_target[0].format != 0x3d) ||
+         command->color_target[0].format != 0x3d && command->color_target[0].format != 0x3f) ||
         command->color_target[0].target != 1 || command->color_target[0].storage_target != 1 ||
         command->color_target[0].view.base_level || command->color_target[0].view.first_layer ||
         (command->depth_target_bound &&
