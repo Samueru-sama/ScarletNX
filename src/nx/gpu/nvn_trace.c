@@ -269,6 +269,7 @@ void nvn_trace_init(void) {
     const char* shader_materialize_env = getenv("SNX_NVN_SHADER_MATERIALIZE");
     const char* pipeline_prepare_env = getenv("SNX_NVN_PIPELINE_PREPARE");
     const char* shadow_draw_env = getenv("SNX_NVN_SHADOW_DRAW");
+    const char* shadow_dispatch_env = getenv("SNX_NVN_SHADOW_DISPATCH");
     const char* inlined_draw_env = getenv("SNX_NVN_INLINED_DRAW");
     const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
@@ -276,6 +277,7 @@ void nvn_trace_init(void) {
     verify = hle && verify_env && !strcmp(verify_env, "1");
     int shader_translate = shader_translate_env && !strcmp(shader_translate_env, "1");
     int shadow_draw = shadow_draw_env && !strcmp(shadow_draw_env, "1");
+    int shadow_dispatch = shadow_dispatch_env && !strcmp(shadow_dispatch_env, "1");
     int clear_execute = shadow_draw || (clear_execute_env && !strcmp(clear_execute_env, "1"));
     int copy_execute = shadow_draw || (copy_execute_env && !strcmp(copy_execute_env, "1"));
     int texture_load = shadow_draw || (texture_load_env && !strcmp(texture_load_env, "1"));
@@ -284,8 +286,8 @@ void nvn_trace_init(void) {
     int pipeline_prepare = shadow_draw || (pipeline_prepare_env && !strcmp(pipeline_prepare_env, "1"));
     int draw_prepare = texture_load || attachment_prepare || shader_materialize || pipeline_prepare ||
                        (draw_prepare_env && !strcmp(draw_prepare_env, "1"));
-    descriptor_replay =
-        shader_translate || clear_execute || copy_execute || draw_prepare || (replay_env && !strcmp(replay_env, "1"));
+    descriptor_replay = shader_translate || clear_execute || copy_execute || draw_prepare || shadow_dispatch ||
+                        (replay_env && !strcmp(replay_env, "1"));
     recording = descriptor_replay || (record_env && !strcmp(record_env, "1"));
     aliases = alias_env && !strcmp(alias_env, "1");
     descriptors = descriptor_replay || (descriptor_env && !strcmp(descriptor_env, "1"));
@@ -299,6 +301,7 @@ void nvn_trace_init(void) {
     if (clear_execute) nvn_record_enable_clear_execute();
     if (copy_execute) nvn_record_enable_copy_execute();
     if (draw_prepare) nvn_record_enable_draw_prepare();
+    if (shadow_dispatch) nvn_record_enable_dispatch_execute();
     if (texture_load) nvn_record_enable_texture_load();
     if (attachment_prepare) nvn_record_enable_attachment_prepare();
     if (shader_materialize) nvn_record_enable_shader_materialize();

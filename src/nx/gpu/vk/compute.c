@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "gpu/gpu.h"
+#include "hle/services/nvdrv.h"
 #include "gpu/shader/shader.h"
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
@@ -42,8 +43,23 @@ typedef struct {
     u64 addr;
     u64 off;
     u32 size;
+    u64 code;
 } CsOut;
 static CsOut g_out[256];
+static u64 cs_probe_hash(const u8* bytes, u32 size) {
+    u64 hash = 1469598103934665603ull;
+    for (u32 i = 0; i < size; i++) hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+}
+static void cs_trace_output(const CsOut* output) {
+    const char* trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
+    if (output->size != 58848 || !trace || strcmp(trace, "1")) return;
+    const u8* bytes = g_ar_ptr + output->off;
+    LOG_LIMIT(8, "nvn-qmd-storage-output: code=%llx addr=%llx hash=%llx bytes29,304,354=%02x,%02x,%02x\n",
+              (unsigned long long)output->code, (unsigned long long)output->addr,
+              (unsigned long long)cs_probe_hash(bytes, output->size),
+              bytes[29], bytes[304], bytes[354]);
+}
 static int g_nout;
 static u64 g_out_lo = ~0ull, g_out_hi;
 
@@ -70,6 +86,17 @@ static int cs_cb_read(u32 idx, u32 off, u32* out) {
         return 1;
     }
     return 0;
+}
+
+static u64 cs_used_hash(u32 bank, const ShaderInfo* si) {
+    u64 hash = 1469598103934665603ull;
+    u32 size = si->cbuf_max[bank] < g_cbn[bank] ? si->cbuf_max[bank] : g_cbn[bank];
+    for (u32 off = 0; off < size; off++) {
+        if (bank == 0 && (off / 128 >= 13 ||
+                          !(si->cbuf0_read_words[off / 128] & (1u << ((off / 4) & 31))))) continue;
+        hash = (hash ^ g_cb[bank][off]) * 1099511628211ull;
+    }
+    return hash;
 }
 
 static void cs_init(void) {
@@ -199,8 +226,10 @@ static void cs_land(void) {
     g_vk_cs_wait_ns += plat_ns() - t0;
     vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
     g_inflight = 0;
-    for (int i = 0; i < g_nout; i++)
+    for (int i = 0; i < g_nout; i++) {
+        cs_trace_output(&g_out[i]);
         vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size, 1);
+    }
     /* only now: until the results are in memory, readers on other threads wait for this landing in
        vk_compute_mem_need */
     g_cs_any = 0;
@@ -323,6 +352,81 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm) {
     return p;
 }
 
+/* NVN's compute shader reference points to a 0x100-byte SDK blob header. The QMD emitted by the
+   guest SDK uses the raw Maxwell program at +0x100. Prepare the same CBUF view for translation,
+   while the caller keeps storage results in NVN-owned buffers. */
+int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipeline,
+                            const ShaderInfo** info) {
+    *pipeline = VK_NULL_HANDLE;
+    *info = NULL;
+    if (!command->control_known || !command->program.snapshot.refs_known ||
+        command->program.snapshot.shader_count != 1) return 0;
+    u64 address = command->program.snapshot.refs[0].code_candidate;
+    if (!address || address > UINT64_MAX - 0x100 - 0x10000) return 0;
+    u32 header[2] = {0};
+    gmem_read_code(address, header, sizeof header);
+    if (header[0] != 0x12345679 || header[1] < 0x80 || header[1] > 0x10000) return 0;
+    for (u32 bank = 0; bank < 8; bank++) g_cbn[bank] = 0;
+    memset(g_cb[0], 0, 0x680);
+    g_cbn[0] = 0x680;
+    memcpy(g_cb[0] + 0x200, command->groups, sizeof command->groups);
+    for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+        if (!(command->storage_bound & (1u << slot))) continue;
+        const NvnBufferRange* range = &command->storage[slot];
+        if (!range->address || !range->size || range->size > UINT32_MAX) return 0;
+        u32 descriptor[3] = {(u32)range->address, (u32)(range->address >> 32), (u32)range->size};
+        memcpy(g_cb[0] + 0x310 + slot * 16, descriptor, sizeof descriptor);
+    }
+    if (command->embedded_cbuf1_offset) {
+        u64 offset = command->embedded_cbuf1_offset;
+        if (offset < 0x100 || offset > 0x10000 || address > UINT64_MAX - offset ||
+            !gmmu_translate(address + offset)) return 0;
+        gmem_read_code(address + offset, g_cb[1], 256);
+        g_cbn[1] = 256;
+    }
+    memset(g_cb[2], 0, 512);
+    g_cbn[2] = 512;
+    for (u32 slot = 0; slot < NVN_DRAW_TEXTURE_SLOTS; slot++)
+        if (command->texture_bound & (1u << slot))
+            memcpy(g_cb[2] + (8 + slot * 2) * 4, &command->texture[slot], sizeof(u32));
+    for (u32 slot = 0; slot < 5; slot++) {
+        if (!(command->uniform_bound & (1u << slot))) continue;
+        const NvnBufferRange* range = &command->uniform[slot];
+        if (!range->address || !range->size || range->size > 0x10000) return 0;
+        u32 size = (u32)(range->size + 255) & ~255u;
+        if (size > 0x10000) size = 0x10000;
+        /* The SDK binds compute CBUFs to Maxwell at 256-byte granularity. Read that
+           padded range, matching the QMD path when a shader uses its final words. */
+        if (slot == 0 && command->uniform0_snapshot_size == size)
+            memcpy(g_cb[3], command->uniform0_snapshot, size);
+        else
+            gmem_read(range->address, g_cb[3 + slot], size);
+        g_cbn[3 + slot] = size;
+    }
+    static u8 code_buf[0x10000 + 80];
+    memset(code_buf, 0, 80);
+    gmem_read_code(address + 0x100, code_buf + 80, 0x10000);
+    CsPipe* p = cs_pipe(code_buf, command->local[0], command->local[1], command->local[2],
+                        command->shared_size);
+    if (!p || p->failed) return 0;
+    const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
+    if (trace && !strcmp(trace, "1"))
+        LOG("nvn-cbuf-hash: path=direct code=%llx mask=%x b0=%llx b1=%llx b3=%llx b4=%llx\n",
+            (unsigned long long)(address + 0x100), p->si.cbuf_mask,
+            (unsigned long long)cs_used_hash(0, &p->si),
+            (unsigned long long)cs_used_hash(1, &p->si),
+            (unsigned long long)cs_used_hash(3, &p->si),
+            (unsigned long long)cs_used_hash(4, &p->si));
+    *pipeline = p->p;
+    *info = &p->si;
+    return 1;
+}
+
+const u8* vk_nvn_compute_cbuf(u32 bank, u32* size) {
+    *size = bank < 8 ? g_cbn[bank] : 0;
+    return bank < 8 ? g_cb[bank] : NULL;
+}
+
 void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     u32* rc = ch->rcomp;
     u32 gx = q[12] & 0x7FFFFFFF, gy = q[13] & 0xFFFF, gz = q[13] >> 16, lx = q[18] >> 16, ly = q[19] & 0xFFFF,
@@ -374,6 +478,14 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         g_vk_cs_skipped++;
         return;
     }
+    const char* cbuf_trace = getenv("SNX_NVN_DISPATCH_TRACE");
+    if (cbuf_trace && !strcmp(cbuf_trace, "1"))
+        LOG("nvn-cbuf-hash: path=qmd code=%llx mask=%x b0=%llx b1=%llx b3=%llx b4=%llx\n",
+            (unsigned long long)pa, p->si.cbuf_mask,
+            (unsigned long long)cs_used_hash(0, &p->si),
+            (unsigned long long)cs_used_hash(1, &p->si),
+            (unsigned long long)cs_used_hash(3, &p->si),
+            (unsigned long long)cs_used_hash(4, &p->si));
     if (p->si.nimg) {
         LOG_LIMIT(1, "vulkan: compute that writes images isn't done yet (skipped)\n");
         g_vk_cs_skipped++;
@@ -397,14 +509,27 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     }
     const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
     if (dispatch_trace && !strcmp(dispatch_trace, "1"))
-        LOG("nvn-qmd-dispatch: code=%llx groups=%ux%ux%u local=%ux%ux%u buffers=%d writes=%x textures=%d cbuf=%x desc0=%x desc1=%x g0=%llx/%u g1=%llx/%u cb1=%llx/%u cb2=%llx/%u cb3=%llx/%u cb4=%llx/%u\n",
-            (unsigned long long)pa, gx, gy, gz, lx, ly, lz, ng, p->si.gbuf_wmask,
+        LOG("nvn-qmd-dispatch: code=%llx groups=%ux%ux%u local=%ux%ux%u shared=%u buffers=%d writes=%x textures=%d cbuf=%x desc0=%x desc1=%x g0=%llx/%u g1=%llx/%u cb1=%llx/%u cb2=%llx/%u cb3=%llx/%u cb4=%llx/%u cb0_200=%08x,%08x,%08x cb0_640=%08x\n",
+            (unsigned long long)pa, gx, gy, gz, lx, ly, lz, shm, ng, p->si.gbuf_wmask,
             p->si.ntex, p->si.cbuf_mask, ng > 0 ? p->si.gbuf_cbuf_off[0] : 0,
             ng > 1 ? p->si.gbuf_cbuf_off[1] : 0,
             (unsigned long long)(ng > 0 ? sa[0] : 0), ng > 0 ? ss[0] : 0,
             (unsigned long long)(ng > 1 ? sa[1] : 0), ng > 1 ? ss[1] : 0,
             (unsigned long long)cba[1], g_cbn[1], (unsigned long long)cba[2], g_cbn[2],
-            (unsigned long long)cba[3], g_cbn[3], (unsigned long long)cba[4], g_cbn[4]);
+            (unsigned long long)cba[3], g_cbn[3], (unsigned long long)cba[4], g_cbn[4],
+            g_cbn[0] >= 0x204 ? *(const u32*)(g_cb[0] + 0x200) : 0,
+            g_cbn[0] >= 0x208 ? *(const u32*)(g_cb[0] + 0x204) : 0,
+            g_cbn[0] >= 0x20c ? *(const u32*)(g_cb[0] + 0x208) : 0,
+            g_cbn[0] >= 0x644 ? *(const u32*)(g_cb[0] + 0x640) : 0);
+    if (dispatch_trace && !strcmp(dispatch_trace, "1") && p->si.ntex) {
+        const ShTex* t = &p->si.tex[0];
+        u32 h = 0, h2 = 0, bank = t->bindless ? t->bl_cbuf : (rc[0x982] & 7);
+        cs_cb_read(bank, t->cbuf_off * 4, &h);
+        if (t->bl2 && cs_cb_read(t->bl2_cbuf, t->bl2_off * 4, &h2)) h |= h2;
+        LOG("nvn-qmd-texture: code=%llx bank=%u word=%x handle=%08x type=%u array=%u shadow=%u bindless=%u bl2=%u second=%u/%x\n",
+            (unsigned long long)pa, bank, t->cbuf_off, h, t->type, t->array, t->shadow,
+            t->bindless, t->bl2, t->bl2_cbuf, t->bl2_off);
+    }
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + 256;
     need += 2048;
@@ -479,6 +604,11 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             gmem_read(sa[i], g_ar_ptr + o, ss[i]);
         else
             memset(g_ar_ptr + o, 0, ss[i]);
+        const char* input_trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
+        if (ss[i] == 58848 && input_trace && !strcmp(input_trace, "1"))
+            LOG_LIMIT(8, "nvn-qmd-storage-input: code=%llx addr=%llx hash=%llx byte304=%02x\n",
+                      (unsigned long long)pa, (unsigned long long)sa[i],
+                      (unsigned long long)cs_probe_hash(g_ar_ptr + o, ss[i]), g_ar_ptr[o + 304]);
         bi[nw] = (VkDescriptorBufferInfo){g_ar, o, ss[i]};
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
@@ -551,7 +681,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     for (int i = 0; i < ng; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
             memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
-            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
+            g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i], pa};
             if (sa[i] < g_out_lo) g_out_lo = sa[i];
             if (sa[i] + ss[i] > g_out_hi) g_out_hi = sa[i] + ss[i];
         }
@@ -596,8 +726,10 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         vk_finish();
         vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
-        for (int i = 0; i < g_nout; i++)
+        for (int i = 0; i < g_nout; i++) {
+            cs_trace_output(&g_out[i]);
             vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size, 1);
+        }
         g_nout = 0;
         g_out_lo = ~0ull;
         g_out_hi = 0;

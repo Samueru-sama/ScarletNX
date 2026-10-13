@@ -28,6 +28,7 @@
 #include "gpu/nvn_clear.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
+#include "gpu/nvn_dispatch.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include "gpu/shader/shader.h"
@@ -39,6 +40,10 @@ int vk_nvn_clear(const NvnClearCommand* command);
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command);
 void vk_nvn_batch_begin(void);
 int vk_nvn_draw_prepare(const NvnDrawCommand* command);
+int vk_nvn_dispatch(const NvnDispatchCommand* command);
+int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipeline,
+                            const ShaderInfo** info);
+const u8* vk_nvn_compute_cbuf(u32 bank, u32* size);
 
 typedef struct {
     VkInstance instance;

@@ -11,6 +11,7 @@
 #include "gpu/nvn_clear.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
+#include "gpu/nvn_dispatch.h"
 
 typedef struct Renderer {
     const char* name;
@@ -27,6 +28,7 @@ typedef struct Renderer {
     int (*nvn_copy_buffer_texture)(const NvnCopyBufferTextureCommand* command);
     /* NVN_DRAW_* result bits from gpu/nvn_draw.h. */
     int (*nvn_draw_prepare)(const NvnDrawCommand* command);
+    int (*nvn_dispatch)(const NvnDispatchCommand* command);
     void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                  u32 instances);
     void (*cb_bind)(GpuChannel* ch, int stage, u32 v);

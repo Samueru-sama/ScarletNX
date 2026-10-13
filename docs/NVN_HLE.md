@@ -991,15 +991,32 @@ would hide it rather than establish parity.
 
 A writeback-origin probe resolved the largest missing dependency. In one TotK batch, emulated compute dispatches
 wrote 722 bytes to the 58,848-byte SSBO and 6,916 bytes to the 48,544-byte SSBO before graphics writes landed.
-Further compute writes to the latter followed the graphics work. The direct NVN batch replays clears, copies, and
-draws, but does not yet replay `nvnCommandBufferDispatchCompute`, so its private SSBOs cannot reproduce this chain.
+Further compute writes to the latter followed the graphics work. The direct NVN batch initially replayed clears,
+copies, and draws but not `nvnCommandBufferDispatchCompute`, so its private SSBOs could not reproduce this chain.
 The semantic dispatch recorder sees the same `32×18×1` and `1×1×1` workgroups that Maxwell's QMD executes. For
 captured dispatches, the QMD shader address is the NVN program's code candidate plus `0x100`, and its CBUF0 SSBO
 descriptor is at byte offset `0x310`. Several of these writers have no sampled textures. NVN compute uniform slot
-zero matches Maxwell CBUF bank 3, slot one matches bank 4, as with graphics. Compute storage-buffer calls retain
-their semantic addresses and sizes, but the graphics-specific macro proof marks stage 5 storage as unknown. Direct
-compute replay needs to construct and verify its CBUF0 descriptors, bind the captured program and uniforms, issue
-dispatches in list order against shadow storage, and synchronize those writes with later draws.
+zero matches Maxwell CBUF bank 3, slot one matches bank 4, as with graphics. Compute storage-buffer calls now retain
+their semantic addresses and sizes independently of the graphics-only macro proof. The opt-in
+`SNX_NVN_SHADOW_DISPATCH=1` path stages dispatches in command order, reads local workgroup sizes and shared memory
+from the NVN control object, translates the raw Maxwell program at code candidate `+0x100`, reconstructs CBUF0
+dispatch dimensions and storage descriptors, and issues compute writes into shadow SSBOs on the graphics queue.
+The observed embedded CBUF1 offset comes from control metadata; NVN compute uniform slots map to Maxwell CBUF
+banks 3 and above. Compute texture slot 0 maps to CBUF2 word 8 in the captured TotK shaders.
+
+All twelve compute shaders in TotK's first captured dispatch sequence now issue in the direct path, including
+textureless writers, textured writers, and the `8×8×1` shared-memory dispatch. With guest-write verification,
+the first 48,544-byte and 128-byte shadow buffers match Maxwell byte-for-byte after that sequence, while the
+58,848-byte buffer differs in 741 bytes. The first 640×360 color comparison with compute enabled differs in about
+12,000 of 230,400 pixels, so this is still a diagnostic path, not a parity result. A 512-byte submit-time
+snapshot of NVN compute uniform slot zero makes the shader-read CBUF0, CBUF1, CBUF3, and CBUF4 hashes match
+Maxwell across the first twelve dispatches. Storage input had a separate timing error: when the direct path
+created its shadow SSBO on the GPU thread, it copied guest bytes from after Maxwell's first batch. The recorder
+now captures bounded, deduplicated storage seeds during semantic replay. In a TotK probe, the first 58,848-byte
+shadow input and the first kernel's entire output matched Maxwell hashes exactly. Maxwell's input to the second
+kernel differs from the first kernel's output because graphics writes occur between them; the direct path's
+second-kernel output still differs. Graphics storage writes and cross-batch coherence therefore remain the next
+parity boundary. Subsequent emulated guest writes still invalidate the affected shadow SSBOs.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.

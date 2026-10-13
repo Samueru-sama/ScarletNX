@@ -5,6 +5,7 @@
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
+#include "gpu/nvn_dispatch.h"
 #include "gpu/nvn_sampler_descriptor.h"
 #include "gpu/nvn_program.h"
 #include "gpu/nvn_pool.h"
@@ -43,6 +44,10 @@ typedef struct {
     u32 count, capacity;
     NvnCopyBufferTextureCommand commands[];
 } NvnCopyBatch;
+typedef struct {
+    u32 count, capacity;
+    NvnDispatchCommand commands[];
+} NvnDispatchBatch;
 typedef struct {
     u8 kind;
     u8 refs_truncated;
@@ -185,14 +190,20 @@ typedef struct {
     NvnClearBatch* clears;
     NvnCopyBatch* copies;
     NvnDrawBatch* draws;
+    NvnDispatchBatch* dispatches;
+    NvnStorageSeed* storage_seeds;
+    u64 storage_seed_bytes;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
 static int descriptor_replay;
+static int readable_range(u64 addr, u64 size);
 static int shader_transport;
 static int clear_execute;
 static int copy_execute;
 static int draw_prepare;
+static int dispatch_execute;
+#define NVN_DISPATCH_SEED_BUDGET (16u << 20)
 static int texture_load;
 static int attachment_prepare;
 static int shader_materialize;
@@ -303,6 +314,7 @@ void nvn_record_enable_shader_transport(void) { shader_transport = 1; }
 void nvn_record_enable_clear_execute(void) { clear_execute = 1; }
 void nvn_record_enable_copy_execute(void) { copy_execute = 1; }
 void nvn_record_enable_draw_prepare(void) { draw_prepare = 1; }
+void nvn_record_enable_dispatch_execute(void) { dispatch_execute = 1; }
 void nvn_record_enable_texture_load(void) {
     draw_prepare = 1;
     texture_load = 1;
@@ -331,6 +343,30 @@ static ReplayQueue* replay_queue_slot(u64 key) {
         if (q->key == key || !q->key) return q;
     }
     return NULL;
+}
+
+static const NvnStorageSeed* replay_storage_seed(ReplayQueue* queue, NvnBufferRange range) {
+    if (!queue || !range.address || !range.size || range.size > (16u << 20) - 3) return NULL;
+    u32 size = (u32)((range.size + 3) & ~3ull);
+    const u8* host = gmem_ptr_untracked(range.address, size);
+    if (!host) return NULL;
+    for (const NvnStorageSeed* seed = queue->storage_seeds; seed; seed = seed->next)
+        if (seed->address == range.address && seed->size == size && seed->guest_host == host &&
+            !memcmp(seed->bytes, host, size)) return seed;
+    if (queue->storage_seed_bytes > NVN_DISPATCH_SEED_BUDGET - size) return NULL;
+    NvnStorageSeed* seed = malloc(sizeof *seed + size);
+    if (!seed) {
+        allocation_failures++;
+        return NULL;
+    }
+    seed->address = range.address;
+    seed->size = size;
+    seed->guest_host = host;
+    memcpy(seed->bytes, host, size);
+    seed->next = queue->storage_seeds;
+    queue->storage_seeds = seed;
+    queue->storage_seed_bytes += size;
+    return seed;
 }
 
 static void stage_clear(ReplayQueue* queue, NvnClearCommand command) {
@@ -467,6 +503,15 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
         u64 prior_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
+        if (!strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) {
+            const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
+            if (dispatch_trace && !strcmp(dispatch_trace, "1"))
+                LOG("nvn-uniform-update: seq=%llu args=%llx,%llx,%llx,%llx,%llx\n",
+                    (unsigned long long)(queue ? queue->next_sequence : 0),
+                    (unsigned long long)op->args[0], (unsigned long long)op->args[1],
+                    (unsigned long long)op->args[2], (unsigned long long)op->args[3],
+                    (unsigned long long)op->args[4]);
+        }
         /* UpdateUniformBuffer writes buffer bytes, not a texture subresource. It must not invalidate
            independent NVN-owned images while the shadow path tracks unknown image writes globally. */
         if (queue &&
@@ -1253,15 +1298,107 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             if (queue) queue->last_unmodeled_write = queue->next_sequence++;
         } else if (op->kind == OP_DISPATCH) {
             const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
+            if (!dispatch_execute && (!trace || strcmp(trace, "1"))) continue;
+            NvnDispatchCommand dispatch = {.sequence = queue ? queue->last_unmodeled_write : 0,
+                                           .prior_unmodeled_write = prior_unmodeled_write,
+                                           .program = state->program[5],
+                                           .uniform_bound = state->uniform_bound[5],
+                                           .storage_bound = state->storage_known[5]};
+            for (u32 axis = 0; axis < 3; axis++) dispatch.groups[axis] = (u32)op->args[axis];
+            memcpy(dispatch.uniform, state->uniform[5], sizeof dispatch.uniform);
+            if (dispatch_execute && (dispatch.uniform_bound & 1) &&
+                dispatch.uniform[0].size && dispatch.uniform[0].size <= sizeof dispatch.uniform0_snapshot) {
+                u64 padded = (dispatch.uniform[0].size + 255) & ~255ull;
+                if (padded <= sizeof dispatch.uniform0_snapshot) {
+                    const u8* host = gmem_ptr_untracked(dispatch.uniform[0].address, padded);
+                    if (host) {
+                        memcpy(dispatch.uniform0_snapshot, host, padded);
+                        dispatch.uniform0_snapshot_size = (u16)padded;
+                    }
+                }
+            }
+            for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+                dispatch.storage[slot] = state->storage[5][slot].range;
+                if (dispatch_execute && queue && (dispatch.storage_bound & (1u << slot)))
+                    dispatch.storage_seed[slot] = replay_storage_seed(queue, dispatch.storage[slot]);
+            }
+            const char* input_trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
+            if (input_trace && !strcmp(input_trace, "1")) {
+                static u32 storage_probes;
+                for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS && storage_probes < 4; slot++) {
+                    const NvnBufferRange* range = &dispatch.storage[slot];
+                    if (!(dispatch.storage_bound & (1u << slot)) || range->size != 58848) continue;
+                    const u8* host = gmem_ptr_untracked(range->address, range->size);
+                    if (!host) continue;
+                    u64 hash = 1469598103934665603ull;
+                    for (u64 byte = 0; byte < range->size; byte++)
+                        hash = (hash ^ host[byte]) * 1099511628211ull;
+                    LOG("nvn-dispatch-storage-snapshot: addr=%llx seq=%llu hash=%llx byte304=%02x\n",
+                        (unsigned long long)range->address, (unsigned long long)dispatch.sequence,
+                        (unsigned long long)hash, host[304]);
+                    storage_probes++;
+                }
+            }
+            memcpy(dispatch.texture, state->texture[5], sizeof dispatch.texture);
+            dispatch.texture_bound = state->texture_bound[5];
+            if (dispatch_execute && (dispatch.texture_bound & 1)) {
+                dispatch.texture0_descriptor_valid =
+                    nvn_descriptor_snapshot(state->texture_pool, dispatch.texture[0],
+                                            &dispatch.texture0_descriptor) == 1;
+                dispatch.texture0_sampler_valid =
+                    nvn_sampler_descriptor_snapshot(state->sampler_pool, dispatch.texture[0],
+                                                    &dispatch.texture0_sampler) == 1;
+            }
+            if (dispatch.program.snapshot.refs_known && dispatch.program.snapshot.shader_count) {
+                u64 control = dispatch.program.snapshot.refs[0].control_candidate;
+                if (readable_range(control, 0x758)) {
+                    const u32* words = (const u32*)GP(control);
+                    if (words[0] == 0x98761234 && words[0x20 / 4] == 0x880) {
+                        memcpy(dispatch.local, words + 0x748 / 4, sizeof dispatch.local);
+                        dispatch.shared_size = words[0x754 / 4];
+                        dispatch.embedded_cbuf1_offset = words[0x700 / 4];
+                        dispatch.control_known = 1;
+                    }
+                }
+            }
+            if (queue && dispatch_execute) {
+                NvnDispatchBatch* batch = queue->dispatches;
+                if (!batch || batch->count == batch->capacity) {
+                    u32 capacity = batch ? batch->capacity * 2 : 8;
+                    if (capacity > 4096) capacity = 4096;
+                    if (!batch || batch->capacity < capacity) {
+                        NvnDispatchBatch* grown =
+                            realloc(batch, sizeof *batch + (size_t)capacity * sizeof dispatch);
+                        if (grown) {
+                            if (!batch) grown->count = 0;
+                            grown->capacity = capacity;
+                            queue->dispatches = batch = grown;
+                        }
+                    }
+                }
+                if (batch && batch->count < batch->capacity)
+                    batch->commands[batch->count++] = dispatch;
+                else
+                    allocation_failures++;
+            }
             if (trace && !strcmp(trace, "1")) {
                 const NvnStageProgram* program = &state->program[5];
-                LOG("nvn-dispatch-replay: seq=%llu name=%s args=%llx,%llx,%llx,%llx,%llx program=%llx code=%llx refs=%d uniforms=%04x storage=%04x u0=%llx/%llu u1=%llx/%llu u2=%llx/%llu u3=%llx/%llu\n",
+                LOG("nvn-dispatch-textures: code=%llx bound=%08x handles=%llx,%llx,%llx,%llx\n",
+                    (unsigned long long)program->snapshot.refs[0].code_candidate,
+                    state->texture_bound[5],
+                    (unsigned long long)state->texture[5][0],
+                    (unsigned long long)state->texture[5][1],
+                    (unsigned long long)state->texture[5][2],
+                    (unsigned long long)state->texture[5][3]);
+                LOG("nvn-dispatch-replay: seq=%llu name=%s args=%llx,%llx,%llx,%llx,%llx program=%llx code=%llx refs=%d uniforms=%04x storage=%04x local=%ux%ux%u shared=%u known=%d u0=%llx/%llu u1=%llx/%llu u2=%llx/%llu u3=%llx/%llu\n",
                     (unsigned long long)(queue ? queue->last_unmodeled_write : 0), op->name,
                     (unsigned long long)op->args[0], (unsigned long long)op->args[1],
                     (unsigned long long)op->args[2], (unsigned long long)op->args[3],
                     (unsigned long long)op->args[4], (unsigned long long)program->handle,
                     (unsigned long long)program->snapshot.refs[0].code_candidate,
                     program->snapshot.refs_known, state->uniform_bound[5], state->storage_known[5],
+                    dispatch.local[0], dispatch.local[1], dispatch.local[2], dispatch.shared_size,
+                    dispatch.control_known,
                     (unsigned long long)state->uniform[5][0].address,
                     (unsigned long long)state->uniform[5][0].size,
                     (unsigned long long)state->uniform[5][1].address,
@@ -1972,20 +2109,32 @@ typedef struct {
     NvnClearBatch* clears;
     NvnCopyBatch* copies;
     NvnDrawBatch* draws;
+    NvnDispatchBatch* dispatches;
+    NvnStorageSeed* storage_seeds;
 } NvnGpuBatch;
+
+static void free_storage_seeds(NvnStorageSeed* seed) {
+    while (seed) {
+        NvnStorageSeed* next = seed->next;
+        free(seed);
+        seed = next;
+    }
+}
 
 static void execute_nvn_batch(void* arg) {
     NvnGpuBatch* batch = arg;
     if (g_renderer->nvn_batch_begin) g_renderer->nvn_batch_begin();
-    u32 clear = 0, copy = 0, draw = 0;
+    u32 clear = 0, copy = 0, draw = 0, dispatch = 0;
     u32 clear_count = batch->clears ? batch->clears->count : 0;
     u32 copy_count = batch->copies ? batch->copies->count : 0;
     u32 draw_count = batch->draws ? batch->draws->count : 0;
-    while (clear < clear_count || copy < copy_count || draw < draw_count) {
+    u32 dispatch_count = batch->dispatches ? batch->dispatches->count : 0;
+    while (clear < clear_count || copy < copy_count || draw < draw_count || dispatch < dispatch_count) {
         u64 clear_seq = clear < clear_count ? batch->clears->commands[clear].sequence : UINT64_MAX;
         u64 copy_seq = copy < copy_count ? batch->copies->commands[copy].sequence : UINT64_MAX;
         u64 draw_seq = draw < draw_count ? batch->draws->commands[draw].sequence : UINT64_MAX;
-        if (clear_seq < copy_seq && clear_seq < draw_seq) {
+        u64 dispatch_seq = dispatch < dispatch_count ? batch->dispatches->commands[dispatch].sequence : UINT64_MAX;
+        if (clear_seq < copy_seq && clear_seq < draw_seq && clear_seq < dispatch_seq) {
             int result = g_renderer->nvn_clear(&batch->clears->commands[clear++]);
             if (result > 0) {
                 __atomic_fetch_add(&clear_issued, 1, __ATOMIC_RELAXED);
@@ -1998,7 +2147,7 @@ static void execute_nvn_batch(void* arg) {
             if (result == -1) __atomic_fetch_add(&clear_image_full, 1, __ATOMIC_RELAXED);
             continue;
         }
-        if (copy_seq < draw_seq) {
+        if (copy_seq < draw_seq && copy_seq < dispatch_seq) {
             const NvnCopyBufferTextureCommand* packet = &batch->copies->commands[copy++];
             int result = g_renderer->nvn_copy_buffer_texture(packet);
             if (result == 2) __atomic_fetch_add(&texture_blit_issued, 1, __ATOMIC_RELAXED);
@@ -2006,6 +2155,10 @@ static void execute_nvn_batch(void* arg) {
                                ? (result > 0 ? &scoped_copy_issued : &scoped_copy_unsupported)
                                : (result > 0 ? &copy_issued : &copy_unsupported);
             __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (dispatch_seq < draw_seq) {
+            g_renderer->nvn_dispatch(&batch->dispatches->commands[dispatch++]);
             continue;
         }
         int result = g_renderer->nvn_draw_prepare(&batch->draws->commands[draw++]);
@@ -2054,6 +2207,8 @@ static void execute_nvn_batch(void* arg) {
     free(batch->clears);
     free(batch->copies);
     free(batch->draws);
+    free(batch->dispatches);
+    free_storage_seeds(batch->storage_seeds);
     free(batch);
 }
 
@@ -2097,6 +2252,8 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
         NvnClearBatch* clear_batch = NULL;
         NvnCopyBatch* copy_batch = NULL;
         NvnDrawBatch* draw_batch = NULL;
+        NvnDispatchBatch* dispatch_batch = NULL;
+        NvnStorageSeed* storage_seeds = NULL;
         pm_lock(&lock);
         ReplayQueue* queue = replay_queue_slot(command_buffer);
         if (queue && queue->key == command_buffer) {
@@ -2149,23 +2306,37 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
                     free(queue->draws);
                 queue->draws = NULL;
             }
+            if (queue->dispatches) {
+                if (dispatch_execute && queue->dispatches->count)
+                    dispatch_batch = queue->dispatches;
+                else
+                    free(queue->dispatches);
+                queue->dispatches = NULL;
+            }
+            storage_seeds = queue->storage_seeds;
+            queue->storage_seeds = NULL;
+            queue->storage_seed_bytes = 0;
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
-        if (clear_batch || copy_batch || draw_batch) {
+        if (clear_batch || copy_batch || draw_batch || dispatch_batch) {
             NvnGpuBatch* owned = malloc(sizeof *owned);
             if (owned) {
                 owned->clears = clear_batch;
                 owned->copies = copy_batch;
                 owned->draws = draw_batch;
+                owned->dispatches = dispatch_batch;
+                owned->storage_seeds = storage_seeds;
                 gpu_call(execute_nvn_batch, owned);
             } else {
                 free(clear_batch);
                 free(copy_batch);
                 free(draw_batch);
+                free(dispatch_batch);
+                free_storage_seeds(storage_seeds);
                 __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
             }
-        }
+        } else free_storage_seeds(storage_seeds);
         return;
     }
     if (strcmp(name, "nvnCommandBufferEndRecording")) return;
