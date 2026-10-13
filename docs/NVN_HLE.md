@@ -288,19 +288,24 @@ draws, with no shader-module or attachment failures. Neither title's guest draws
 The same option checks the eight [NVN vertex formats](https://codeviewer.zeldamods.org/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html)
 observed in those boots against Vulkan vertex-buffer format support. Unknown or unsupported formats are reported
 separately. In later boots, Catherine passed this format check for all 3,773 prepared draws and TotK for all 2,946,
-with zero format failures. Vertex stream bindings, offsets, and divisors still need a complete pipeline layout.
+with zero format failures. The shader-only option does not create a vertex pipeline layout; the pipeline preparation
+option below checks bindings, offsets, and divisors.
 
 `SNX_NVN_PIPELINE_PREPARE=1` enables the shader and attachment preflights, then creates a cached Vulkan graphics
-pipeline from the observed vertex/fragment modules, primitive class, used vertex attributes and stream divisors, and
-color/depth attachment formats. This checks whether those interfaces can form a host pipeline. Vertex attributes each
-use a rebased binding in the probe; blend and raster state still have placeholders. Integer texture typing,
-clip-distance enables, full descriptor binding, exact vertex offsets, image coherence, and command recording remain
-unmodeled, so the pipeline cannot replace the guest draw. In opt-in boots, Catherine reported no pipeline failures.
-TotK reported one rejection among roughly 2,900 prepared draws because a used attribute's stream had no bound vertex
-buffer; its other sampled pipelines were created. The guest produced both displayed frames.
-The recorder now copies `BindChannelMaskState`'s 32-bit value before the guest can reuse the state object and replays
-its RGBA nibble for each color target into the pipeline key. Both games retained the same pipeline readiness in
-opt-in boots; blend enable and factors remain unresolved.
+pipeline from the observed vertex/fragment modules, primitive class, vertex formats, attribute offsets, stream
+divisors, blend state, polygon mode, and color/depth attachment formats. The recorder copies the SDK's pointer-based
+channel-mask, color, blend, polygon, depth/stencil, and multisample state at each bind before the caller can reuse the
+object, then replays the values in submitted command-list order. The probe checks depth/stencil compatibility with
+the attached target, rejects multisample and coverage modes that the single-sample image path cannot represent, and
+rejects blend state that the Vulkan device would silently simplify without dual-source or independent blending.
+Each used vertex attribute gets its recorded byte offset and a rebased binding; offsets and strides are checked
+against device limits. In eight-second Catherine and twenty-two-second TotK boot samples, 3,967/3,967 and
+3,946/3,958 sampled pipelines were ready, respectively. TotK's twelve rejections were draws with no vertex buffer
+bound for an attribute used by the vertex shader. Counts vary with run timing and scene progression.
+This remains an opt-in preparation probe. It does not bind texture descriptors, issue NVN draws, synchronize NVN
+images with guest Maxwell surfaces, or replace a whole guest command-list submission. Integer texture typing and
+clip-distance enables also need coverage before those pipelines can reproduce every shader's behavior. The guest GPU
+path still produces the displayed frames.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
