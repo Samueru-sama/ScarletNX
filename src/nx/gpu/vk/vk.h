@@ -242,6 +242,7 @@ void vk_astc_upload(VkCommandBuffer cb, Surf* t, const u8* blocks, u32 w, u32 h,
 /* texture.c */
 Surf* vk_tex_from_tic(const u32* tic);
 Surf* vk_tex_from_tic_guest(const u32* tic); /* guest-backed input without Maxwell target imports */
+Surf* vk_tex_from_tic_guest_layer(const u32* tic, u32 layer); /* one array slice with an independent freshness check */
 /* a view of s as the shader declares it, sRGB or linear (color formats that have both), with a component mapping;
    VK_NULL_HANDLE when the image can't be viewed that way */
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map);

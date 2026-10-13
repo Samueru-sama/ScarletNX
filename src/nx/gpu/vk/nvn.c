@@ -54,7 +54,7 @@ typedef struct {
     VkImageLayout layout;
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
-    u64 color_layers[16], depth_layers[16];
+    u64 color_layers[16], depth_layers[16], guest_seed_layers[16];
     int sampled;
     int attachment;
     int storage;
@@ -136,6 +136,7 @@ static void shadow_check_backing(NvnImage* image) {
     if (!image->guest_host || host != image->guest_host || gpu_dirty || cpu_dirty) {
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
+        memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         image->guest_host = NULL;
         return;
     }
@@ -150,6 +151,7 @@ void vk_nvn_batch_begin(void) {
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         memset(images[i].color_layers, 0, sizeof images[i].color_layers);
         memset(images[i].depth_layers, 0, sizeof images[i].depth_layers);
+        memset(images[i].guest_seed_layers, 0, sizeof images[i].guest_seed_layers);
     }
 }
 
@@ -590,6 +592,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         vkCmdClearAttachments(cb, 1, &clear, 1, &rect);
         vkCmdEndRendering(cb);
         if (covered) image->subresource_sequence[mip][layer] = command->sequence;
+        if (layer < 64) image->guest_seed_layers[mip] &= ~(1ull << layer);
         image->image_was_written = 1;
         image->last_batch = batch_serial;
         mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
@@ -619,6 +622,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     }
     if (layer < 64 && (range.aspectMask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))) {
         image->subresource_sequence[mip][layer] = command->sequence;
+        image->guest_seed_layers[mip] &= ~(1ull << layer);
         if (range.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) image->color_layers[mip] |= 1ull << layer;
         if (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) image->depth_layers[mip] |= 1ull << layer;
     }
@@ -644,6 +648,7 @@ static void shadow_invalidate_backing(const NvnTextureTarget* target) {
             continue;
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
+        memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         image->image_was_written = 1;
         image->guest_host = NULL;
     }
@@ -900,8 +905,43 @@ static VkImageView image_sample_view(NvnImage* image, VkFormat format, VkImageVi
     return view;
 }
 
+/* A one-layer render-target clear can share its backing with an array whose other slice is still in guest memory.
+   Import only that nonoverlapping slice; the guest-only texture loader rejects fresh Maxwell targets itself. */
+static int seed_guest_array_layer(NvnImage* image, const NvnDescriptorSnapshot* descriptor, VkFmt format,
+                                  u32 layer, u64 sequence) {
+    if (!sequence || layer >= 64 || image->levels != 1 || image->target != 4 ||
+        !format.vk || format.conv) return 0;
+    Surf* source = vk_tex_from_tic_guest_layer(descriptor->tic, layer);
+    if (!source || source->f.vk != format.vk || source->w != image->width || source->h != image->height ||
+        source->sw != image->width || source->sh != image->height ||
+        source->levels != 1 || source->layers != 1 || source->layout == VK_IMAGE_LAYOUT_UNDEFINED ||
+        source->gva < image->address || source->gva - image->address > image->storage_size ||
+        source->size > image->storage_size - (source->gva - image->address))
+        return 0;
+    VkImageAspectFlags aspect = format.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_barrier(cb, image->image, vk_aspect(&format), image->stage, image->access, image->layout,
+               VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    image->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    image->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    VkImageCopy copy = {.srcSubresource = {aspect, 0, 0, 1},
+                        .dstSubresource = {aspect, 0, layer, 1},
+                        .extent = {image->width, image->height, 1}};
+    vkCmdCopyImage(cb, source->img, source->layout, image->image, image->layout, 1, &copy);
+    image->subresource_sequence[0][layer] = sequence;
+    if (format.depth) image->depth_layers[0] |= 1ull << layer;
+    else image->color_layers[0] |= 1ull << layer;
+    image->guest_seed_layers[0] |= 1ull << layer;
+    image->last_batch = batch_serial;
+    return 1;
+}
+
 static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write,
-                                            int* pending) {
+                                            u64 sequence, int* pending) {
     if (pending) *pending = 0;
     u64 address;
     u32 width, height, layers, levels;
@@ -932,6 +972,20 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
             !(levels == 1 && image->levels > 1
                   ? (alt ? image->base_view_alt : image->base_view)
                   : (alt ? image->sampled_view_alt : image->sampled_view))) continue;
+        /* One native layer and one guest layer, with no mip or format reinterpretation. Revisit a guest-seeded
+           slice on every lookup so the texture loader can observe subsequent guest writes. */
+        if (sequence && levels == 1 && layers == 2 && image->levels == 1 && !alt &&
+            ((source.depth ? image->depth_layers[0] : image->color_layers[0]) & 1) &&
+            image->subresource_sequence[0][0] > last_unmodeled_write) {
+            u64 known = source.depth ? image->depth_layers[0] : image->color_layers[0];
+            if (!(known & 2) || (image->guest_seed_layers[0] & 2)) {
+                if (!seed_guest_array_layer(image, descriptor, source, 1, sequence)) {
+                    image->guest_seed_layers[0] &= ~2ull;
+                    image->color_layers[0] &= ~2ull;
+                    image->depth_layers[0] &= ~2ull;
+                }
+            }
+        }
         int complete = 1;
         for (u32 level = 0; level < levels; level++)
             for (u32 layer = 0; layer < layers; layer++) {
@@ -2006,7 +2060,8 @@ static int shadow_dispatch_simple(const NvnDispatchCommand* command) {
         vk_render_end();
         int pending = 0;
         VkImageView view = image_view_from_semantic(descriptor,
-                                                    effective_unknown_write(command->prior_unmodeled_write), &pending);
+                                                    effective_unknown_write(command->prior_unmodeled_write),
+                                                    command->sequence, &pending);
         if (!view) {
             if (pending) return 0;
             Surf* sampled = vk_tex_from_tic_guest(descriptor->tic);
@@ -2460,7 +2515,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                     view = depth_feedback_view;
                 }
                 else if (!color_feedback && !depth_feedback)
-                    view = image_view_from_semantic(descriptor, effective_unknown, &pending);
+                    view = image_view_from_semantic(descriptor, effective_unknown, command->sequence, &pending);
             }
             if ((color_feedback || depth_feedback) && !view) return 0;
             semantic_sampled += view != VK_NULL_HANDLE;
@@ -2845,11 +2900,21 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     for (u32 i = 0; i < key->ncolor; i++)
         if (colors[i]) colors[i]->last_batch = batch_serial;
     if (depth) {
-        if (command->depth_stencil_state[0] & 2) depth->image_was_written = 1;
+        if (command->depth_stencil_state[0] & 2) {
+            u32 mip = depth_target->view.base_level, layer = depth_target->view.first_layer;
+            u64 bit = 1ull << layer;
+            depth->image_was_written = 1;
+            depth->guest_seed_layers[mip] &= ~bit;
+            if ((depth->depth_layers[mip] & bit) && depth->subresource_sequence[mip][layer] > effective_unknown)
+                depth->subresource_sequence[mip][layer] = command->sequence;
+            else
+                depth->depth_layers[mip] &= ~bit;
+        }
         depth->last_batch = batch_serial;
     }
     for (int k = 0; k < fragment->si.nimg; k++) {
         storage_images[k]->color_layers[0] &= ~1ull;
+        storage_images[k]->guest_seed_layers[0] &= ~1ull;
         storage_images[k]->image_was_written = 1;
         storage_images[k]->last_batch = batch_serial;
     }
@@ -2867,6 +2932,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         if (!written) continue;
         any_color_written = 1;
         attachment->image_was_written = 1;
+        attachment->guest_seed_layers[mip] &= ~(1ull << layer);
         int covered = (attachment->color_layers[mip] & (1ull << layer)) &&
                       attachment->subresource_sequence[mip][layer] > effective_unknown;
         if (i == 0) covered = zero_seed || (capture ? capture_full : prior_covered);
@@ -2963,6 +3029,7 @@ static int scope_storage_writes(const NvnDrawCommand* command, const VkSh* verte
         if (!invalidate[i]) continue;
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
+        memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         image->guest_host = NULL;
     }
     return 1;
@@ -3009,6 +3076,7 @@ int vk_nvn_memory_write(const NvnMemoryWriteCommand* command) {
         NvnImage* image = &images[i];
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
+        memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         image->guest_host = NULL;
     }
     for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++)
@@ -3380,7 +3448,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                 int pending = 0;
                 VkImageView view = image_view_from_semantic(descriptor,
                                                             effective_unknown_write(command->last_unmodeled_write),
-                                                            &pending);
+                                                            command->sequence, &pending);
                 if (view) {
                     from_clear = 1;
                     continue;

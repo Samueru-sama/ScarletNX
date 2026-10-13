@@ -1252,10 +1252,14 @@ sampled by draw 48.
 Scarlet passes float `1.0` bits (`0x3f800000`) to this color-target clear; the native Maxwell path receives
 those bits unchanged in its UINT clear registers. Numerically converting the value to integer `1` in the direct
 path would diverge. One-pixel readbacks immediately after the native clear and direct shadow clear both returned
-`0xff` on this host. The native render target has one layer, while the sampled texture has two. Layer-1 guest
-storage needs independent freshness and upload checks before the direct path can sample the complete array.
-The sequence-50 draw and the 1920×1080 comparison therefore remain uncovered. This is a chained
-producer-coverage gap, not a channel-mask issue with the compared draw.
+`0xff` on this host. The native render target has one layer, while the sampled texture has two. A second D32F
+array at `0x554650000` has the same split: layer 0 comes from a native clear, and its mapped layer-1 guest range
+starts at `0x554a50000` without an overlapping fresh Maxwell target. The direct path now checks each missing
+slice independently and uploads it through the existing guest texture decoder before sampling the combined
+shadow image. It rechecks guest freshness on subsequent samples and drops that slice's certification if the
+upload fails. This lets Scarlet direct draws 48 and 50 execute. The first 1920×1080 comparison is now covered,
+but 921,600 of 2,073,600 pixels still differ, in the 1280×720 active region. The remaining difference needs an
+operation-aligned comparison of draw 50's inputs and output; coverage alone does not establish image parity.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

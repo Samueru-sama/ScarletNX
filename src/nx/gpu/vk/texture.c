@@ -1070,3 +1070,21 @@ Surf* vk_tex_from_tic_guest(const u32* tic) {
     if (t->maxwell_imported && !tex_upload(t)) return NULL;
     return t;
 }
+Surf* vk_tex_from_tic_guest_layer(const u32* tic, u32 layer) {
+    TicHeader header = {0};
+    if (!tic_header(tic, &header) || header.type != 5 || header.glevels != 1 || layer >= header.d ||
+        (tic[7] & 0xff) || ((tic[7] >> 8) & 0xf) || header.f.conv)
+        return NULL;
+    u64 stride = header.bl ? bl_layer_size(header.w, header.h, 1, &header.f, header.bh, header.bd, 1)
+                           : (u64)header.pitch * ((header.h + header.f.bh - 1) / header.f.bh);
+    if (!stride || layer > (UINT64_MAX - header.gva) / stride) return NULL;
+    u64 address = header.gva + stride * layer;
+    if (address >> 48) return NULL;
+    u32 slice[8];
+    memcpy(slice, tic, sizeof slice);
+    slice[1] = (u32)address;
+    slice[2] = (slice[2] & ~0xffffu) | (u32)(address >> 32);
+    slice[4] = (slice[4] & ~(0xfu << 23)) | (1u << 23); /* one 2D slice */
+    slice[5] &= 0xffffu; /* depth = 1 */
+    return vk_tex_from_tic_guest(slice);
+}
