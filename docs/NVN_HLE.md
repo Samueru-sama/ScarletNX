@@ -1139,6 +1139,12 @@ made the second dispatch input and output byte-exact. Completion or memory barri
 those draws did not help; barriers at both also left 239 differing bytes. The submit probe remains
 diagnostic because its broader use changes results; it does not by itself establish a resource-lifetime
 cause for the missing draw writes.
+An ABI-6 repeat of the TotK writer pair kept all 239 differences when the second writer's depth
+test was disabled, its culling was disabled, or the first writer was forced to write depth.
+The direct shader's coordinate uniforms contained the expected 1/64 X/Y scales and stride 20.
+The two paths used the same vertex and index addresses, strides, offsets, and formats for both
+draws. At a later image-comparison point, their 1280×720 feedback target at 0x511cc0000 was
+byte-exact; that result does not yet prove its contents matched when the writer sampled it.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
