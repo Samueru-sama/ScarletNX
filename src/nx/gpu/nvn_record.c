@@ -1342,6 +1342,21 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 draw_with_texture++;
             else
                 draw_without_texture++;
+            static int initial_target_trace;
+            if (!initial_target_trace && getenv("SNX_NVN_SHADOW_INPUT_TRACE") &&
+                (draw.color_target_mask & 1)) {
+                const NvnTextureTarget* target = &draw.color_target[0];
+                const u8* host = target->storage_size && target->storage_size <= (16u << 20)
+                                     ? gmem_ptr_untracked(target->gpu_address, target->storage_size) : NULL;
+                if (host) {
+                    u64 nonzero = 0;
+                    for (u32 byte = 0; byte < target->storage_size; byte++) nonzero += !!host[byte];
+                    LOG("nvn-shadow-target-input: addr=%llx size=%u nonzero=%llu\n",
+                        (unsigned long long)target->gpu_address, target->storage_size,
+                        (unsigned long long)nonzero);
+                    initial_target_trace = 1;
+                }
+            }
             if (queue) {
                 NvnDrawBatch* batch = queue->draws;
                 if (!batch || batch->count == batch->capacity) {

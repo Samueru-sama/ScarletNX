@@ -1081,6 +1081,9 @@ The same Odyssey probe then changed all 921,600 pixels inside its 1280×720 view
 readback; the 518,400 differing pixels were outside the viewport, where the diagnostic magenta clear remained and
 Maxwell's surface was black. Full-surface coverage and a presented-frame comparison still need a proven initial
 image state. Compute dispatch uniforms do not yet consume these replayed update payloads.
+An opt-in queue-submission trace found all 6,553,600 bytes of that Odyssey target's guest backing zero before the
+first draw. This makes an initial zero image a plausible source for Maxwell's black area outside the viewport, but
+the direct path still needs to carry and validate that initialization before treating the whole image as covered.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
