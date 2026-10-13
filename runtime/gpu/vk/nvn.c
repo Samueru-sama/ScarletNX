@@ -130,13 +130,17 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     }
     VkFmt guest_format = backing_format;
     const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
-    if (!guest_format.bpp || !target->levels || !target->depth || target->depth > limits->maxImageArrayLayers ||
-        target->width > limits->maxImageDimension2D || target->height > limits->maxImageDimension2D)
+    int is_3d = target->storage_target == 2;
+    if (!guest_format.bpp || !target->levels || !target->depth ||
+        target->depth > (is_3d ? limits->maxImageDimension3D : limits->maxImageArrayLayers) ||
+        target->width > (is_3d ? limits->maxImageDimension3D : limits->maxImageDimension2D) ||
+        target->height > (is_3d ? limits->maxImageDimension3D : limits->maxImageDimension2D))
         return NULL;
     if (target->storage_target == 8 &&
         (target->width != target->height || target->width > limits->maxImageDimensionCube || target->depth != 6))
         return NULL;
     u32 max_dimension = target->width > target->height ? target->width : target->height;
+    if (is_3d && target->depth > max_dimension) max_dimension = target->depth;
     u32 max_levels = 1;
     while (max_dimension >> max_levels) max_levels++;
     if (target->levels > max_levels || target->levels > 16) return NULL;
@@ -147,7 +151,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         u32 width = target->width >> level ? target->width >> level : 1;
         u32 height = target->height >> level ? target->height >> level : 1;
         bytes += (u64)((width + block_width - 1) / block_width) * ((height + block_height - 1) / block_height) *
-                 guest_format.bpp * target->depth;
+                 guest_format.bpp * (is_3d ? (target->depth >> level ? target->depth >> level : 1) : target->depth);
     }
     if (bytes > NVN_IMAGE_BUDGET) return NULL;
     while (bytes > NVN_IMAGE_BUDGET - image_bytes)
@@ -189,13 +193,14 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                                                .pViewFormats = pair_formats};
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .pNext = mutable_rgba8 ? &format_list : NULL,
-                              .imageType = VK_IMAGE_TYPE_2D,
-                              .flags = (target->storage_target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
+                              .imageType = is_3d ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                              .flags = (is_3d ? VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT : 0) |
+                                       (target->storage_target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
                                        (mutable_rgba8 ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0),
                               .format = backing_format.vk,
-                              .extent = {target->width, target->height, 1},
+                              .extent = {target->width, target->height, is_3d ? target->depth : 1},
                               .mipLevels = target->levels,
-                              .arrayLayers = target->depth,
+                              .arrayLayers = is_3d ? 1 : target->depth,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
@@ -226,14 +231,15 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     if (sampled) {
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                       .image = image,
-                                      .viewType = target->storage_target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
+                                      .viewType = is_3d                         ? VK_IMAGE_VIEW_TYPE_3D
+                                                  : target->storage_target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE
                                                   : target->storage_target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                                                                                 : VK_IMAGE_VIEW_TYPE_2D,
                                       .format = backing_format.vk,
                                       .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT
                                                                ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                : VK_IMAGE_ASPECT_COLOR_BIT,
-                                                           0, target->levels, 0, target->depth}};
+                                                           0, target->levels, 0, is_3d ? 1u : target->depth}};
         if (vkCreateImageView(g_vk.dev, &view, NULL, &empty->sampled_view) != VK_SUCCESS) empty->sampled = 0;
         if (empty->sampled && target->levels > 1) {
             view.subresourceRange.levelCount = 1;
@@ -260,20 +266,35 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
    actually executes on the host path. */
 static int prepare_attachment(const NvnTextureTarget* target, int depth) {
     u32 mip = target->view.base_level, layer = target->view.first_layer;
-    if ((target->storage_target != 1 && target->storage_target != 4 && target->storage_target != 8) ||
+    if ((target->storage_target != 1 && target->storage_target != 2 && target->storage_target != 4 &&
+         target->storage_target != 8) ||
         (target->target != target->storage_target && target->target != 1) || !target->width || !target->height ||
         !target->depth || (target->storage_target == 1 && target->depth != 1) || !target->levels ||
-        target->samples > 1 || mip >= target->levels || layer >= target->depth || target->view.level_count > 1 ||
-        target->view.layer_count > 1 || (target->view.flags & (8 | 16)))
+        target->samples > 1 || mip >= target->levels ||
+        layer >= (target->storage_target == 2 ? (target->depth >> mip ? target->depth >> mip : 1) : target->depth) ||
+        target->view.level_count > 1 ||
+        target->view.layer_count > 1 || (target->view.flags & (8 | 16))) {
+        LOG_LIMIT(8, "nvn-attachment-shape: target=%u storage=%u size=%ux%ux%u levels=%u samples=%u view=%x/%u/%u/%u/%u\n",
+                  target->target, target->storage_target, target->width, target->height, target->depth,
+                  target->levels, target->samples, target->view.flags, mip, layer, target->view.level_count,
+                  target->view.layer_count);
         return 0;
+    }
     VkFmt format = nvn_format(target->format);
     if (!format.vk || !!format.depth != depth || format.bw > 1 || format.bh > 1 || format.conv ||
         (target->format == 0x25 && format.vk != VK_FORMAT_R8G8B8A8_UNORM) ||
-        (target->format == 0x3f && format.vk != VK_FORMAT_B10G11R11_UFLOAT_PACK32))
+        (target->format == 0x3f && format.vk != VK_FORMAT_B10G11R11_UFLOAT_PACK32)) {
+        LOG_LIMIT(8, "nvn-attachment-format: format=%x vk=%u depth=%u storage=%x\n", target->format,
+                  format.vk, depth, target->storage_format);
         return 0;
+    }
     int full = 0;
     NvnImage* image = image_for(target, format.vk, vk_aspect(&format), &full);
-    if (!image || !image->attachment) return 0;
+    if (!image || !image->attachment) {
+        LOG_LIMIT(8, "nvn-attachment-image: format=%x storage=%x full=%d image=%d attachment=%d\n",
+                  target->format, target->storage_format, full, !!image, image && !!image->attachment);
+        return 0;
+    }
     for (u32 i = 0; i < 16; i++)
         if (image->attachments[i].view && image->attachments[i].format == format.vk &&
             image->attachments[i].mip == mip && image->attachments[i].layer == layer) {

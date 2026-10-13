@@ -667,6 +667,12 @@ IDs and unsupported texture formats. These checks do not establish descriptor wr
 Scarlet also uses NVN RGBA32F (`0x2e`) render targets. Mapping them to the renderer's existing
 `VK_FORMAT_R32G32B32A32_SFLOAT` support removed 306 target-format rejections in a fifteen-second scene;
 the remaining target failures were size mismatches, and 624 attachments still failed.
+Those attachment failures were 3D render targets. The shadow cache now allocates a Vulkan 3D image with
+`VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT`, retains a 3D sampled view, and creates 2D slice attachment views.
+Its memory budget accounts for shrinking mip depths, and the selected slice is checked against the depth of its
+mip. In a repeat Scarlet scene, attachment readiness rose from 7,227/7,851 to 7,955/7,955 and pipeline readiness
+rose from 6,603 to 7,322; 634 pipeline probes still failed for other reasons. Catherine and TotK boot probes
+retained zero attachment or pipeline failures. This is host image/view preparation, not a rendered NVN draw.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
