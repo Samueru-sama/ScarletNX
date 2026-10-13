@@ -663,10 +663,12 @@ static VkBlendOp nvn_blend_op(u32 equation) {
     }
 }
 
-/* This key checks that the observed shader, vertex, blend, and attachment interface can form
-   a Vulkan pipeline. Raster state is still a placeholder until its NVN bind is recorded. */
+/* This key checks that the observed shader, vertex, blend, polygon, and attachment interface
+   can form a Vulkan pipeline. Dynamic raster state is set when the host draw is implemented. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
-    if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known) return 0;
+    if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known ||
+        !command->polygon_state_known)
+        return 0;
     /* The existing pipeline key does not represent logic operations or alpha testing. */
     if (((command->color_state >> 16) & 0xff) != 3 || ((command->color_state >> 24) & 0xf) != 8) {
         LOG_LIMIT(8, "nvn-pipeline: unsupported color state=%08x\n", command->color_state);
@@ -675,7 +677,16 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
     PipeKey key = {0};
     key.vs = vertex->mod;
     key.fs = fragment_shader->mod;
-    key.polygon = VK_POLYGON_MODE_FILL;
+    switch ((command->polygon_state >> 3) & 3) {
+        case 0: key.polygon = VK_POLYGON_MODE_POINT; break;
+        case 1: key.polygon = VK_POLYGON_MODE_LINE; break;
+        case 2: key.polygon = VK_POLYGON_MODE_FILL; break;
+        default: LOG_LIMIT(8, "nvn-pipeline: unsupported polygon state=%08x\n", command->polygon_state); return 0;
+    }
+    if (key.polygon != VK_POLYGON_MODE_FILL && !g_vk.feat.fillModeNonSolid) {
+        LOG_LIMIT(8, "nvn-pipeline: polygon mode requires fillModeNonSolid state=%08x\n", command->polygon_state);
+        return 0;
+    }
     switch (command->primitive) {
         case 0: key.topo_class = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
         case 1: key.topo_class = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
