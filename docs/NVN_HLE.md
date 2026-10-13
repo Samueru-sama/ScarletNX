@@ -1080,7 +1080,12 @@ recording, scopes its guest write, and applies ordered updates to the direct dra
 The same Odyssey probe then changed all 921,600 pixels inside its 1280×720 viewport. Those pixels matched Maxwell's
 readback; the 518,400 differing pixels were outside the viewport, where the diagnostic magenta clear remained and
 Maxwell's surface was black. Full-surface coverage and a presented-frame comparison still need a proven initial
-image state. Compute dispatch uniforms do not yet consume these replayed update payloads.
+image state. Compute dispatches now also snapshot their padded pre-submit constant-buffer ranges and apply the
+ordered update payloads to private copies before shader translation. Runtime comparison of this compute path is
+still incomplete: a headless TotK probe reached all 12 first-sequence direct dispatch shaders with this path,
+and several constant-buffer hashes matched the emulated QMD path, but other hashes differed and later dispatches
+were conservatively skipped when storage backing could no longer be verified. This does not establish compute
+output parity.
 An opt-in queue-submission trace found all 6,553,600 bytes of that Odyssey target's guest backing zero before the
 first draw. This makes an initial zero image a plausible source for Maxwell's black area outside the viewport, but
 the direct path still needs to carry and validate that initialization before treating the whole image as covered.

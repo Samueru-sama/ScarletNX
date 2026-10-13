@@ -20,6 +20,7 @@
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
 #include "gpu/vk/vk.h"
+#include "gpu/nvn_uniform.h"
 #include "gpu/vk/spirv.h"
 #include "gpu/renderer.h"
 
@@ -360,7 +361,7 @@ int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipel
                             const ShaderInfo** info) {
     *pipeline = VK_NULL_HANDLE;
     *info = NULL;
-    if (!command->control_known || !command->program.snapshot.refs_known ||
+    if (!command->uniform_updates_complete || !command->control_known || !command->program.snapshot.refs_known ||
         command->program.snapshot.shader_count != 1) return 0;
     u64 address = command->program.snapshot.refs[0].code_candidate;
     if (!address || address > UINT64_MAX - 0x100 - 0x10000) return 0;
@@ -398,10 +399,15 @@ int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipel
         if (size > 0x10000) size = 0x10000;
         /* The SDK binds compute CBUFs to Maxwell at 256-byte granularity. Read that
            padded range, matching the QMD path when a shader uses its final words. */
-        if (slot == 0 && command->uniform0_snapshot_size == size)
+        const NvnStorageSeed* seed = command->uniform_seed[slot];
+        if (seed && seed->address == range->address && seed->size >= size)
+            memcpy(g_cb[3 + slot], seed->bytes, size);
+        else if (slot == 0 && command->uniform0_snapshot_size == size)
             memcpy(g_cb[3], command->uniform0_snapshot, size);
         else
-            gmem_read(range->address, g_cb[3 + slot], size);
+            return 0;
+        if (!nvn_uniform_updates_apply(command->uniform_updates, range->address,
+                                       size, g_cb[3 + slot])) return 0;
         g_cbn[3 + slot] = size;
     }
     static u8 code_buf[0x10000 + 80];

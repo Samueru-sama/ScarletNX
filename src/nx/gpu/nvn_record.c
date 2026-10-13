@@ -1398,6 +1398,18 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                            .storage_bound = state->storage_known[5]};
             for (u32 axis = 0; axis < 3; axis++) dispatch.groups[axis] = (u32)op->args[axis];
             memcpy(dispatch.uniform, state->uniform[5], sizeof dispatch.uniform);
+            dispatch.uniform_updates = queue ? queue->uniform_updates : NULL;
+            dispatch.uniform_updates_complete = queue && !queue->uniform_update_failed;
+            if (dispatch_execute && queue)
+                for (u32 slot = 0; slot < 5; slot++) {
+                    const NvnBufferRange* range = &dispatch.uniform[slot];
+                    if (!(dispatch.uniform_bound & (1u << slot)) || !range->address ||
+                        !range->size || range->size > 0x10000) continue;
+                    u64 padded = (range->size + 255) & ~255ull;
+                    if (padded > 0x10000) padded = 0x10000;
+                    dispatch.uniform_seed[slot] =
+                        replay_storage_seed(queue, (NvnBufferRange){range->address, padded});
+                }
             if (dispatch_execute && (dispatch.uniform_bound & 1) &&
                 dispatch.uniform[0].size && dispatch.uniform[0].size <= sizeof dispatch.uniform0_snapshot) {
                 u64 padded = (dispatch.uniform[0].size + 255) & ~255ull;

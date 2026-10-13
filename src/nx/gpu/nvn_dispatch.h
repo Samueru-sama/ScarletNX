@@ -20,6 +20,9 @@ typedef struct {
     NvnBufferRange uniform[NVN_DRAW_UNIFORM_SLOTS];
     u8 uniform0_snapshot[512];
     u16 uniform0_snapshot_size;
+    const NvnStorageSeed* uniform_seed[5];
+    const NvnUniformUpdate* uniform_updates;
+    u8 uniform_updates_complete;
     NvnBufferRange storage[NVN_DRAW_STORAGE_SLOTS];
     const NvnStorageSeed* storage_seed[NVN_DRAW_STORAGE_SLOTS];
     u16 uniform_bound, storage_bound;
