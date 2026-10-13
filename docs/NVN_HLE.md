@@ -1230,10 +1230,14 @@ producer comparisons do not establish full source parity at the consumer draw. `
 selects an intermediate GPU address for these opt-in comparisons.
 
 An ABI-7 Scarlet replay issues direct shadow draws, but its first 1920×1080 R11G11B10F comparison is still
-uncovered and differs from Maxwell. Its first native draw has no captured channel-mask or depth/stencil binding;
-the direct pipeline cannot infer the channel mask safely. Missing depth/stencil state now stops a pipeline only
-when a depth attachment is bound, since a color-only draw cannot use that state. This leaves channel-mask
-provenance as the first gate for Scarlet's initial draw.
+uncovered and differs from Maxwell. The earliest **recorded** draw lacking a channel-mask binding targets a
+different address (`0x54af60000`), with format `0x05`, texture target `2`, and six instances. A diagnostic
+replay that assumed a full mask still rejected that draw because the direct slice does not support its texture
+target and format. That assumption was removed. The first native draw into the compared 1920×1080 target uses
+a different shader pair from the first direct draw recorded for that target; the direct draw matches the native
+second draw. This is a command coverage gap, not evidence that a channel-mask default would fix the compared
+image. Missing depth/stencil state now stops a pipeline only when a depth attachment is bound, since a
+color-only draw cannot use that state.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
