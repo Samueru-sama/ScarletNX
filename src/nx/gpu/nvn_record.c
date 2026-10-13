@@ -182,6 +182,7 @@ typedef struct {
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     NvnStorageBinding storage[NVN_DRAW_SHADER_STAGES][NVN_DRAW_STORAGE_SLOTS];
+    u16 storage_bound[NVN_DRAW_SHADER_STAGES];
     u16 storage_known[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
@@ -605,6 +606,109 @@ static void replay_query_forget_reports(ReplayQueue* queue) {
     }
 }
 
+/* Compare every translated page, since a target may be physically fragmented and distinct GPU
+   addresses may alias the same CPU backing. -1 means the mapping is not fully provable. */
+static int replay_query_physical_overlap(u64 query, u64 address, u64 size) {
+    if (!address || !size || size > (16u << 20) || query > UINT64_MAX - 8 ||
+        address > UINT64_MAX - size) return -1;
+    const u8* query_host = gmem_ptr_untracked(query, 8);
+    const u8* write_host = gmem_ptr_untracked(address, size);
+    if (query_host && write_host) {
+        uintptr_t q = (uintptr_t)query_host, w = (uintptr_t)write_host;
+        return q <= w ? w - q < 8 : q - w < size;
+    }
+    for (u64 q = query; q < query + 8;) {
+        u64 q_size = 0x1000 - (q & 0xfff);
+        if (q_size > query + 8 - q) q_size = query + 8 - q;
+        u64 q_cpu = gmmu_translate(q);
+        if (!q_cpu) return -1;
+        for (u64 w = address; w < address + size;) {
+            u64 w_size = 0x1000 - (w & 0xfff);
+            if (w_size > address + size - w) w_size = address + size - w;
+            u64 w_cpu = gmmu_translate(w);
+            if (!w_cpu) return -1;
+            if (q_cpu < w_cpu + w_size && w_cpu < q_cpu + q_size) return 1;
+            w += w_size;
+        }
+        q += q_size;
+    }
+    return 0;
+}
+
+/* A resolved target or storage binding bounds a GPU write. */
+static void replay_query_forget_overlapping(ReplayQueue* queue, u64 address, u64 size) {
+    if (!queue) return;
+    for (u32 i = 0; i < queue->query_value_count; i++) {
+        ReplayQueryValue* entry = &queue->query_values[i];
+        if (!entry->known && !entry->real_report) continue;
+        if (replay_query_physical_overlap(entry->address, address, size)) {
+            entry->known = 0;
+            entry->real_report = 0;
+        }
+    }
+}
+
+/* The program-bind mask can retain stages from earlier binds. Only known vertex/pixel shader
+   headers prove that tessellation and geometry bindings cannot write during this draw. */
+static int replay_draw_only_vs_fs(const NvnDrawCommand* draw) {
+    for (u32 stage = 0; stage < 5; stage++) {
+        if (!(draw->program_bound & (1u << stage))) continue;
+        const NvnProgramSnapshot* program = &draw->program[stage].snapshot;
+        if (!program->refs_known || !program->shader_count || program->shader_count > NVN_PROGRAM_MAX_SHADERS)
+            return 0;
+        for (u32 i = 0; i < program->shader_count; i++) {
+            u64 address = program->refs[i].code_candidate;
+            if (!address || address > UINT64_MAX - 0x34) return 0;
+            const u8* blob = gmem_ptr_untracked(address, 0x34);
+            if (!blob) return 0;
+            u32 magic, sph;
+            memcpy(&magic, blob, sizeof magic);
+            memcpy(&sph, blob + 0x30, sizeof sph);
+            u32 kind = sph & 31, type = (sph >> 10) & 15;
+            if (magic != 0x12345678 || !((kind == 1 && type <= 1) || (kind == 2 && type == 5)))
+                return 0;
+        }
+    }
+    return 1;
+}
+
+static int replay_query_scope_draw(const NvnDrawCommand* draw, const ReplayState* state,
+                                   ReplayQueue* queue) {
+    if (!draw->program_known || !draw->shader_refs_known || !draw->target_complete ||
+        !(draw->color_target_mask || draw->depth_target_bound) || !replay_draw_only_vs_fs(draw)) return 0;
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++) {
+        if (stage == 5) continue; /* compute bindings cannot be written by a graphics draw */
+        if (stage >= 2) continue; /* no tessellation or geometry shader in the captured programs */
+        if (state->image_bound[stage] || state->storage_bound[stage] != state->storage_known[stage]) return 0;
+    }
+    for (u32 stage = 0; stage < 2; stage++)
+        for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++)
+            if ((state->storage_bound[stage] & (1u << slot)) &&
+                (!state->storage[stage][slot].range.address ||
+                 !state->storage[stage][slot].range.size ||
+                 state->storage[stage][slot].range.size > (16u << 20))) return 0;
+    for (u32 slot = 0; slot < 8; slot++)
+        if ((draw->color_target_mask & (1u << slot)) &&
+            (!draw->color_target[slot].gpu_address || !draw->color_target[slot].storage_size ||
+             draw->color_target[slot].storage_size > (16u << 20))) return 0;
+    if (draw->depth_target_bound &&
+        (!draw->depth_target.gpu_address || !draw->depth_target.storage_size ||
+         draw->depth_target.storage_size > (16u << 20))) return 0;
+    for (u32 stage = 0; stage < 2; stage++)
+        for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++)
+            if (state->storage_bound[stage] & (1u << slot))
+                replay_query_forget_overlapping(queue, state->storage[stage][slot].range.address,
+                                                state->storage[stage][slot].range.size);
+    for (u32 slot = 0; slot < 8; slot++)
+        if (draw->color_target_mask & (1u << slot))
+            replay_query_forget_overlapping(queue, draw->color_target[slot].gpu_address,
+                                            draw->color_target[slot].storage_size);
+    if (draw->depth_target_bound)
+        replay_query_forget_overlapping(queue, draw->depth_target.gpu_address,
+                                        draw->depth_target.storage_size);
+    return 1;
+}
+
 static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue, int require_real_reports) {
     if (state->render_condition_active == 1) return state->render_enabled;
     if (state->render_condition_active != 2 || !queue ||
@@ -800,6 +904,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     }
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
+        NvnTextureTarget query_clear_target = {0};
+        int query_clear_scoped = 0, query_draw_scoped = 0;
         if (queue &&
             (op->kind == OP_DISPATCH || op->kind == OP_OTHER ||
              (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
@@ -989,6 +1095,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 replay_texture_missing_target++;
                 if (queue) queue->observed_clear_only = 0;
             } else {
+                query_clear_target = clear->target;
+                query_clear_scoped = !!query_clear_target.storage_size;
                 replay_texture_target_resolved++;
                 if (queue) queue->pending_clears++;
                 if (clear_execute && queue) {
@@ -1018,6 +1126,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     &state->targets.color_target[clear->index],
                     !!(state->targets.color_resolved & (1u << clear->index)), &target);
                 if (result == NVN_TARGET_RESOLVED) {
+                    query_clear_target = target;
+                    query_clear_scoped = 1;
                     replay_color_target_resolved++;
                     if (queue) queue->pending_clears++;
                     if (clear_execute && queue && replay_render_enabled(state, queue, 0)) {
@@ -1051,6 +1161,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     state->targets.depth, state->targets.depth_view ? &state->targets.depth_view_data.selection : NULL,
                     &state->targets.depth_target, state->targets.depth_resolved, &target);
                 if (result == NVN_TARGET_RESOLVED) {
+                    query_clear_target = target;
+                    query_clear_scoped = 1;
                     replay_depth_target_resolved++;
                     if (queue) queue->pending_clears++;
                     if (clear_execute && queue && replay_render_enabled(state, queue, 0)) {
@@ -1285,6 +1397,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 storage_bind_invalid++;
             } else {
                 u16 bit = (u16)(1u << index);
+                if (op->args[2] && op->args[3]) state->storage_bound[stage] |= bit;
+                else state->storage_bound[stage] &= (u16)~bit;
                 /* Compute bindings are semantic NVN ranges. Graphics bindings additionally need the
                    observed MME CBUF word before a draw can use them. */
                 if ((stage == 5 || op->storage_cbuf_word_known) && op->args[2] && op->args[3]) {
@@ -1306,19 +1420,26 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_STORAGE_SLOTS ||
                 count > NVN_DRAW_STORAGE_SLOTS - first || (count && !op->payload)) {
                 storage_bind_invalid++;
-                if (stage < NVN_DRAW_SHADER_STAGES) state->storage_known[stage] = 0;
+                if (stage < NVN_DRAW_SHADER_STAGES) {
+                    state->storage_bound[stage] = UINT16_MAX;
+                    state->storage_known[stage] = 0;
+                }
             } else if (stage == 5) {
                 const NvnBufferRange* ranges = op->payload;
                 for (u32 j = 0; j < count; j++) {
                     u16 bit = (u16)(1u << (first + j));
                     state->storage[stage][first + j].range = ranges[j];
-                    if (ranges[j].address && ranges[j].size)
+                    if (ranges[j].address && ranges[j].size) {
+                        state->storage_bound[stage] |= bit;
                         state->storage_known[stage] |= bit;
-                    else
+                    } else {
+                        state->storage_bound[stage] &= (u16)~bit;
                         state->storage_known[stage] &= (u16)~bit;
+                    }
                 }
             } else {
                 /* Graphics array macro offsets have not been paired with their semantic ranges. */
+                state->storage_bound[stage] = UINT16_MAX;
                 state->storage_known[stage] = 0;
             }
         } else if (!strcmp(op->name, "nvnCommandBufferDrawArrays") ||
@@ -1598,6 +1719,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 draw_targets_complete++;
             else
                 draw_targets_incomplete++;
+            if (queue) query_draw_scoped = replay_query_scope_draw(&draw, state, queue);
             if (!strncmp(op->name, "nvnCommandBufferDrawElements", 28)) {
                 draw_elements++;
                 draw.indexed = 1;
@@ -1828,8 +1950,15 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             const u64* refs = op->ref_count > 8 ? op->payload : op->refs;
             for (u32 j = 0; j < op->ref_count; j++) replay_list(refs[j], state, queue, depth + 1);
         }
-        if (queue && (op->kind == OP_DRAW || (op->kind == OP_CLEAR && !render_clear_disabled)))
+        if (queue && op->kind == OP_DRAW && !query_draw_scoped)
             replay_query_forget_reports(queue);
+        if (queue && op->kind == OP_CLEAR && !render_clear_disabled) {
+            if (query_clear_scoped)
+                replay_query_forget_overlapping(queue, query_clear_target.gpu_address,
+                                                query_clear_target.storage_size);
+            else
+                replay_query_forget_reports(queue);
+        }
     }
 }
 

@@ -1405,13 +1405,20 @@ packets, rather than dropping clears based on their call count.
 The conditional counter trace identifies why later clears remain enabled in direct
 replay. The first clear sees a known `1 != 0` comparison. A following inlined
 16-byte puller release sets the left counter to a known zero, but the recorder
-forgets all query values after intervening clears and draws. At the next conditional
-clear, both values are unknown, so the conservative rule executes it. The next
-implementation step is a bounded write-set proof for those intervening operations:
-only when their attachment, storage, image, and guest-memory writes are known not to
-alias the counter may the released value survive to the next condition. The native
-GPU's skipped clears provide a regression target, not a license to skip unknown
-conditions globally.
+previously forgot all query values after intervening clears and draws. Replay now
+retains a counter only when it can bound every clear target and every draw attachment
+and writable storage range, confirm the draw's captured shaders are vertex/pixel
+only with no bound storage images, and prove page by page that none of those writes
+aliases the counter. TotK's later clears at list operations 755 and 781 are now
+disabled after the release. Unknown bindings, shader stages, mappings, and ranges
+still invalidate the counter.
+
+The same 320×180 producer image still differs at all 57,600 pixels. A later compute
+dispatch at operation 886 makes the released counter unknown again; later clears
+against the same target then execute conservatively. The next step is a trustworthy
+compute write-set proof, including shader writes and storage/image bindings, before
+retaining that counter across the dispatch. The native GPU's skipped clears are a
+regression target, not a license to skip unknown conditions globally.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
