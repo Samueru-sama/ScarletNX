@@ -33,6 +33,7 @@ typedef struct GpuChannel {
     /* SDK-initialized CBUF 0 bindings retained by the command front end, independent of the renderer. */
     u64 cb0_addr[5];
     u32 cb0_size[5];
+    u64 cb0_generation[5];
     /* constant buffer data (3D 0x8E4-0x8F3) a method batch is still sending, written to memory in one go */
     u64 cb_addr;
     u32 cb_n;
@@ -43,7 +44,7 @@ typedef struct {
     int nchan;
 } GpuState;
 extern GpuState g_gpu;
-int gpu_unique_cb0_binding(int stage, u64* address, u32* size);
+int gpu_unique_cb0_binding(int stage, u64* address, u32* size, u64* generation);
 /* a 2D engine surface, the source or destination of a blit */
 typedef struct {
     u32 format, linear, bh, depth, layer, pitch, width, height;

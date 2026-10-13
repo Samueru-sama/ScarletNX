@@ -99,6 +99,7 @@ void r3d_cb_bind(GpuChannel* ch, int stage, u32 v) {
     if (stage >= 0 && stage < 5 && ((v >> 4) & 31) == 0) {
         ch->cb0_addr[stage] = (v & 1) ? ((u64)ch->r3d[0x8E1] << 32) | ch->r3d[0x8E2] : 0;
         ch->cb0_size[stage] = (v & 1) ? ch->r3d[0x8E0] : 0;
+        ch->cb0_generation[stage] = gpu_mem_generation();
     }
     if (g_renderer_up) g_renderer->cb_bind(ch, stage, v);
 }

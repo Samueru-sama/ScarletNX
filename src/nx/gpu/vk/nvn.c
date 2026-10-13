@@ -1930,13 +1930,14 @@ static int scope_storage_writes(const VkSh* vertex, const VkSh* fragment) {
         if (!si->gbuf_wmask) continue;
         if (si->ngbuf < 0 || si->ngbuf > 16 || (si->gbuf_wmask >> si->ngbuf)) return 0;
         u64 cb0 = 0;
+        u64 generation = 0;
         u32 cb0_size = 0;
-        if (!gpu_unique_cb0_binding(s ? 4 : 0, &cb0, &cb0_size)) return 0;
+        if (!gpu_unique_cb0_binding(s ? 4 : 0, &cb0, &cb0_size, &generation)) return 0;
         for (u32 i = 0; i < (u32)si->ngbuf; i++) {
             if (!(si->gbuf_wmask & (1u << i))) continue;
             u32 off = si->gbuf_cbuf_off[i];
             if (off > cb0_size || cb0_size - off < 12 || cb0 > UINT64_MAX - off ||
-                !shader_bank_range_mapped(cb0 + off, 12)) return 0;
+                !shader_bank_range_mapped(cb0 + off, 12) || gpu_mem_dirty_since(generation, cb0 + off, 12)) return 0;
             u32 descriptor[3];
             gmem_read(cb0 + off, descriptor, sizeof descriptor);
             u64 address = ((u64)descriptor[1] << 32) | descriptor[0];

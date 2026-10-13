@@ -390,11 +390,12 @@ static GpuChannel* chan_get(u32 id) {
 
 /* The direct NVN probe needs the SDK's internal CBUF 0, established before the first recorded command list.
    If channels disagree, queue ownership is not known well enough to choose one. */
-int gpu_unique_cb0_binding(int stage, u64* address, u32* size) {
-    if (stage < 0 || stage >= 5 || !address || !size) return 0;
+int gpu_unique_cb0_binding(int stage, u64* address, u32* size, u64* generation) {
+    if (stage < 0 || stage >= 5 || !address || !size || !generation) return 0;
     pm_lock(&g_gpulock);
     u64 found_address = 0;
     u32 found_size = 0;
+    u64 first_generation = UINT64_MAX;
     int found = 0;
     for (int i = 0; i < g_gpu.nchan; i++) {
         const GpuChannel* ch = g_gpu.chan[i];
@@ -407,12 +408,14 @@ int gpu_unique_cb0_binding(int stage, u64* address, u32* size) {
         }
         found_address = a;
         found_size = n;
+        if (ch->cb0_generation[stage] < first_generation) first_generation = ch->cb0_generation[stage];
         found = 1;
     }
     pm_unlock(&g_gpulock);
     if (found) {
         *address = found_address;
         *size = found_size;
+        *generation = first_generation;
     }
     return found;
 }
