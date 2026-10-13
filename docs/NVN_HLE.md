@@ -1087,6 +1087,16 @@ the shader's direct and QMD constant-buffer hashes by occurrence found 1,092 mat
 probe, including dispatches later rejected by the storage-backing check. These hashes cover the shader's used
 constant-buffer banks, not storage output; later dispatches were conservatively skipped when storage backing
 could no longer be verified. This does not establish compute output parity.
+With compute GLSL dumping enabled, a later TotK probe isolated its first 58,848-byte storage dispatch.
+The direct and QMD paths started from the same buffer hash and produced the same first output hash; the
+shader's constant-buffer hashes also matched. The guest backing differed from that output by 836 bytes
+when compared later, and the next QMD storage input no longer matched the prior output. The renderer's
+writeback preserves intervening guest writes, so this remains an ordering and coherence investigation,
+not evidence that the first shader translated incorrectly.
+An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
+disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
+work area. Removing the oversized floor allowed a 100-second headless NVN probe to issue at least 55,000
+direct shadow draws without a fatal crash; pixel and presented-frame parity remain unverified.
 An opt-in queue-submission trace found all 6,553,600 bytes of that Odyssey target's guest backing zero before the
 first draw. This makes an initial zero image a plausible source for Maxwell's black area outside the viewport, but
 the direct path still needs to carry and validate that initialization before treating the whole image as covered.

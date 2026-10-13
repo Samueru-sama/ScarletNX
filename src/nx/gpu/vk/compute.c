@@ -13,12 +13,14 @@
    not the rendering backlog's (which made that ordering too slow under the old OpenGL renderer, ROADMAP.md Phase 2).
    Dispatches that read textures run on the graphics queue, after everything recorded before them. */
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include "gpu/gpu.h"
 #include "hle/services/nvdrv.h"
 #include "gpu/shader/shader.h"
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
+#include "runtime/main.h"
 #include "gpu/vk/vk.h"
 #include "gpu/nvn_uniform.h"
 #include "gpu/vk/spirv.h"
@@ -325,6 +327,16 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm) {
     size_t nw = 0;
     char err[2048] = "";
     u32* spv = vk_spirv_cached(src, ST_CS, g_vk_spirv_dir, &nw, err, sizeof err);
+    if (spv && getenv("SNX_DUMP_SHADERS")) {
+        char path[1200];
+        snprintf(path, sizeof path, "%sshader_cache/vkshader_%016llx_%d.glsl", g_exedir,
+                 (unsigned long long)key, ST_CS);
+        FILE* file = fopen(path, "w");
+        if (file) {
+            fputs(src, file);
+            fclose(file);
+        }
+    }
     free(src);
     if (!spv) {
         p->failed = 1;

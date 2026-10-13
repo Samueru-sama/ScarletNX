@@ -1501,6 +1501,9 @@ void vk_nvn_shadow_note_guest_write(u64 address, u32 size, u32 changed_bytes, in
 /* Diagnostic coherence proof for mixed HLE/GPFIFO execution. A guest write may be the
    emulated copy of the same draw; keep HLE state only if the complete results agree. */
 static int shadow_storage_matches_guest(NvnShadowStorage* entry) {
+    /* QMD output can still live in the compute arena while the guest backing remains old.
+       Materialize overlapping results before using that backing as the comparison oracle. */
+    vk_compute_mem_need(entry->address, entry->size);
     u32 cpu_before = vk_ww_now();
     u64 gpu_before = gpu_mem_generation();
     vk_render_end();
