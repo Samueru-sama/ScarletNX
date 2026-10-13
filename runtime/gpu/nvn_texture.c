@@ -37,6 +37,9 @@ void nvn_texture_set_view_layout(u32 first_instruction, u32 second_instruction, 
         layout = 16;
     else if (first_instruction == 0x6f00e400 && second_instruction == 0xb900201f && third_instruction == 0xad000000)
         layout = 36;
+    else if (first_instruction == 0xb900201f && second_instruction == 0xa9017c1f &&
+             third_instruction == 0xa9007c1f)
+        layout = 36;
     __atomic_store_n(&view_layout, layout, __ATOMIC_RELEASE);
 }
 

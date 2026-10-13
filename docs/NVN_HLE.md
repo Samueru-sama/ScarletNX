@@ -356,10 +356,13 @@ The view representation itself differs between the two inspected SDKs: TotK's `T
 and its setters pack selection and override flags into that object, while Catherine's clears 36 bytes and stores
 separate flag and value fields. An HLE view decoder therefore needs a verified SDK layout or getter-based adapter;
 interpreting a view pointer as one fixed structure would select the wrong subresource in one of these games.
-The replay now fingerprints those two observed constructors, copies the matching view object at render-target binding,
+The replay fingerprints the observed constructors, copies the matching view object at render-target binding,
 and normalizes its level, layer, format, target, and override fields. An unknown constructor or unreadable view stays
 unresolved. This is still a diagnostic snapshot: the host renderer has no NVN clear operation yet, and copied view
 fields have not been checked against texture bounds or translated to a Vulkan image view.
+Odyssey has another 36-byte constructor sequence: it clears bytes 0–31 with paired stores and byte 32 with a word
+store. Its target setter writes at `+32`, matching the 36-byte field decoder. Recognizing this constructor copied
+all 10 descriptor views in a 15-second boot, with zero view snapshot failures.
 In six-second boot runs, Catherine copied 4,845 views using the 36-byte layout with zero unreadable pointers; its
 765 submitted depth clears all reached live texture records. TotK copied 1,293 views using the 16-byte layout with
 zero unreadable pointers; its 87 submitted color clears all reached live texture records. Catherine's views in this
