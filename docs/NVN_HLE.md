@@ -596,10 +596,16 @@ The first Catherine boot draws had vertex/fragment CBUF masks `0/8`, `0/a`, or `
 bank 3, while one fragment case also reads the first 16 bytes of generated bank 1. An earlier sample of that prefix
 was zero, but a targeted Maxwell draw to Catherine's intermediate `0x5acf62e00` target read nonzero bank-1 word 0
 (`0x3f40a3d7`), and another target read three nonzero words. Neither the captured alpha reference, blend color,
-viewport, nor application uniform slot 0 matched that word. Generated bank 1 must be reconstructed, not zero-filled.
-This identified a bank-3-only shader pair for the first shadow-draw experiment.
+viewport, nor application uniform slot 0 matched that word. Bank 1 is embedded after the selected NVN shader's
+code blob: its header size `0x190` rounds to offset `0x200`, and size `0x210` rounds to offset `0x300`. Both derived
+GPU addresses match the corresponding Maxwell bank-1 bindings and their contents. The same layout is described by
+[deko3d's shader initialization](https://github.com/devkitPro/deko3d/blob/master/source/dk_shader.cpp), which
+places compiler-generated CBUF 1 in the code section. Shader materialization now reads this embedded bank, and a
+direct draw stages the bytes its shader uses. Blobs with a zero size field, seen in Odyssey, still need their data
+offset established independently.
 `SNX_NVN_SHADOW_DRAW=1` now enables an opt-in executable slice for Catherine's observed fullscreen triangle-strip
-draws. It prepares the required resources, binds application CBUF 3 and one vertex stream, and records the translated
+draws. It prepares the required resources, binds the shader's application and embedded uniforms and captured vertex
+streams, and records the translated
 shaders' Vulkan draw into NVN-owned color/depth images in command-list order. The first draw clears its isolated color
 target to magenta and reads it back: with the draw disabled for a diagnostic run, all 921,600 pixels stayed magenta;
 with the draw enabled, all became black. An eight-second run issued more than 300 shadow draws and completed normally.
@@ -611,7 +617,7 @@ The shadow descriptor setup now binds captured application uniform slots to shad
 sampled texture used by either vertex or fragment shaders. It decodes each shader's generated handle slot, binds
 the captured TIC/TSC, and uses the existing texture view and sampler rules. It accepts guest-memory-backed textures
 and independently complete NVN-owned images; sampling a Maxwell render target would make the shadow result depend
-on the emulated GPU. The supported draw shape and dynamic state remain narrow, and generated banks 0–2, storage
+on the emulated GPU. The supported draw shape and dynamic state remain narrow; generated banks 0 and 2, storage
 buffers, and images remain unsupported. The executable path now binds every pipeline-key vertex attribute to its
 captured stream, rather than requiring only attribute 0 on stream 0; it rejects unbound constant-attribute fallbacks.
 Indexed triangle draws can use either 16- or 32-bit indices and preserve the captured base vertex and instance.
@@ -624,19 +630,24 @@ for its immediately preceding successfully executed draw when no other unknown o
 ordered host-image read-after-write without treating a failed or unsupported draw as modeled. Catherine's first
 batch now executes a three-draw chain: a fullscreen strip certifies all 921,600 color pixels written, a 12-index
 triangle-list draw updates that same image, and a later strip samples the NVN-owned image into a target that VI
-presents. Earlier textured draws in the batch still read Maxwell targets because their producers are not modeled.
+presents. The shadow path rejects earlier textured draws whose inputs only have Maxwell render-target contents.
 Immediately before the modeled chain, Maxwell makes an unblended four-vertex pass to that intermediate target;
-the NVN fragment shader uses generated CBUF 1 and three sampled textures, so the shadow path does not execute it.
+the NVN fragment shader uses embedded CBUF 1 and three sampled textures. The bank-1 mapping removes its uniform
+blocker, but the repeated eight-second probe issued zero bank-1 shadow draws because other eligibility checks still
+failed. A focused probe found the first fragment texture samples render target `0x5acba2c00`, which has no complete
+NVN-owned source at that point; accepting its Maxwell surface would invalidate the direct-path comparison.
 Maxwell then uses two blend configurations on the target, including an indexed pass with a different source-alpha
-factor. The missing producer and the diagnostic magenta initialization limit what the black-frame RGB agreement
-can establish, and they are plausible contributors to the observed alpha difference.
+factor. Its sampled inputs still need ordered provenance checks, and diagnostic magenta initialization limits what
+the black-frame comparison can establish.
 With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN color target is also read back
 alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
 in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target
 was `(0,0,0,255)` at the center. This target is an intermediate image, not the VI-presented framebuffer.
 The three-draw chain's first presented-target comparison also had identical RGB and a full-image alpha mismatch
-(`0` against `255`). The comparison samples after the guest submission, so later Maxwell operations may also affect
-its contents; these black boot frames are a diagnostic rather than proof of visual parity in gameplay. Later batches
+(`0` against `255`). One later boot run matched all 921,600 RGBA pixels on that black frame, but a repeat with the
+same bank-1 mapping again showed the full alpha mismatch; no bank-1 shadow draw executed in that repeat. The
+comparison samples after the guest submission, so later Maxwell operations may affect its contents. Neither result
+proves gameplay parity. Later batches
 do not yet certify the producer's full coverage, so the sampled chain currently executes only in the first batch.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready

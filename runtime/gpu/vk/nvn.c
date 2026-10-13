@@ -5,6 +5,7 @@
 #include "gpu/vk/vk.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_pool.h"
+#include "gpu/nvn_shader.h"
 #include "gpu/shader/shader.h"
 #include "hle/nvdrv.h"
 #include "platform/log.h"
@@ -695,7 +696,31 @@ static void build_handle_bank(const NvnDrawCommand* command, u32 stage, u32* wor
         }
 }
 
-static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex, VkSh** fragment_shader) {
+/* NVN stores shader-generated CBUF 1 after the code blob, at the next 256-byte boundary. The address is
+   relative to the selected shader, not an application uniform slot. A zero blob size (seen in Odyssey) does
+   not establish the data offset and remains unavailable until its control metadata is decoded. */
+static u64 shader_embedded_bank1(u64 code_address) {
+    u32 header[2] = {0};
+    gmem_read_code(code_address, header, sizeof header);
+    if (header[0] != 0x12345678 || header[1] < 0x80 || header[1] > NVN_SHADER_CODE_MAX + 0x30)
+        return 0;
+    u64 offset = ((u64)header[1] + 255) & ~255ull;
+    u64 address = code_address <= UINT64_MAX - offset ? code_address + offset : 0;
+    return address && gmmu_translate(address) ? address : 0;
+}
+
+static int shader_bank_range_mapped(u64 address, u32 size) {
+    if (!address || !size || address > UINT64_MAX - size) return 0;
+    for (u64 cursor = address, end = address + size; cursor < end;) {
+        if (!gmmu_translate(cursor)) return 0;
+        u64 step = 0x1000 - (cursor & 0xfff);
+        cursor += step < end - cursor ? step : end - cursor;
+    }
+    return 1;
+}
+
+static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex, VkSh** fragment_shader,
+                                    u64 embedded_bank1[2]) {
     if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
     u64 vertex_a = 0, vertex_b = 0, fragment = 0;
     /* BindProgram may leave older bindings in the other four stage slots. Select the
@@ -757,15 +782,20 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
     }
     for (u32 stage = 0; stage < 2; stage++) {
         u32 row = stage ? 4 : 0;
+        u64 selected_code = stage ? fragment - 0x30 : (vertex_b ? vertex_b : vertex_a) - 0x30;
+        embedded_bank1[stage] = shader_embedded_bank1(selected_code);
         u64 saved_cb[18];
         u32 saved_size[18];
         memcpy(saved_cb, g_vk_cb[row], sizeof saved_cb);
         memcpy(saved_size, g_vk_cbsize[row], sizeof saved_size);
         memset(g_vk_cb[row], 0, sizeof saved_cb);
         memset(g_vk_cbsize[row], 0, sizeof saved_size);
-        /* NVN uniform slot 0 starts at Maxwell CBUF bank 3. Banks 0-2 are SDK-generated and cannot be
-           populated from application BindUniformBuffer calls. Leave them unbound until their contents can be
-           reconstructed from the command list; assigning slots 0-2 to those banks miskeys translation. */
+        if (embedded_bank1[stage]) {
+            g_vk_cb[row][1] = embedded_bank1[stage];
+            g_vk_cbsize[row][1] = 65536;
+        }
+        /* NVN uniform slot 0 starts at Maxwell CBUF bank 3. Bank 1 comes from the selected shader blob;
+           banks 0 and 2 require separate SDK state. Application slots must not overwrite those banks. */
         for (u32 i = 0; i < NVN_DRAW_UNIFORM_SLOTS && i + 3 < 18; i++)
             if (command->uniform_bound[stage] & (1u << i)) {
                 g_vk_cb[row][i + 3] = command->uniform[stage][i].address;
@@ -1068,7 +1098,7 @@ static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format
 /* First executable NVN slice: an isolated draw with application constant buffers and sampled textures.
    It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
 static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
-                              VkPipeline pipeline, const PipeKey* key) {
+                              VkPipeline pipeline, const PipeKey* key, const u64 embedded_bank1[2]) {
     static int enabled = -1;
     static u64 last_draw_batch, last_draw_sequence, last_draw_unknown;
     if (enabled < 0) {
@@ -1081,9 +1111,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int strip = command->primitive == 5 && !command->indexed;
     u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
     if (!enabled || !pipeline || !vertex || !fragment ||
-        (cbuf_mask & ~(((1u << 18) - 1) & ~7u)) || vertex->si.ntex < 0 ||
+        (cbuf_mask & ~(((1u << 18) - 1) & ~5u)) || vertex->si.ntex < 0 ||
         vertex->si.ntex > SH_MAXTEX || fragment->si.ntex < 0 || fragment->si.ntex > SH_MAXTEX ||
-        vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf || vertex->si.in_mask != 1 ||
+        vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !indexed_triangles) || !command->count || !command->instance_count ||
         command->polygon_state != 0x16 ||
@@ -1142,7 +1172,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                            &index_buffer, &index_offset))
         return 0;
     VkDescriptorSet sets[2];
-    VkDescriptorBufferInfo uniforms[2][NVN_DRAW_UNIFORM_SLOTS] = {0};
+    VkDescriptorBufferInfo uniforms[2][18] = {0};
     VkDescriptorImageInfo textures[2][SH_MAXTEX] = {0};
     VkWriteDescriptorSet writes[2 * (NVN_DRAW_UNIFORM_SLOTS + SH_MAXTEX)] = {0};
     u32 nwrites = 0;
@@ -1152,28 +1182,33 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
         if (!sets[stage]) return 0;
         const ShaderInfo* si = &shaders[stage]->si;
-        for (u32 bank = 3; bank < 18; bank++) {
+        for (u32 bank = 1; bank < 18; bank++) {
             if (!(si->cbuf_mask & (1u << bank))) continue;
-            u32 slot = bank - 3;
-            if (!(command->uniform_bound[stage] & (1u << slot))) return 0;
+            if (bank == 2) return 0;
+            u32 slot = bank >= 3 ? bank - 3 : 0;
+            if (bank == 1 ? !embedded_bank1[stage]
+                          : !(command->uniform_bound[stage] & (1u << slot))) return 0;
             u32 size = si->cbuf_max[bank];
             if (size < 16) size = 16;
             if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
+            if (bank == 1 && !shader_bank_range_mapped(embedded_bank1[stage], size)) return 0;
             VkBuffer buffer;
             u64 offset;
             u8* staged = vk_stage(size, vk_stage_align(), &buffer, &offset);
             if (!staged) return 0;
             memset(staged, 0, size);
-            u64 read_size = command->uniform[stage][slot].size;
+            u64 read_size = bank == 1 ? size : command->uniform[stage][slot].size;
             if (read_size > size) read_size = size;
-            if (read_size) gmem_read(command->uniform[stage][slot].address, staged, read_size);
-            uniforms[stage][slot] = (VkDescriptorBufferInfo){buffer, offset, size};
+            if (read_size)
+                gmem_read(bank == 1 ? embedded_bank1[stage] : command->uniform[stage][slot].address,
+                          staged, read_size);
+            uniforms[stage][bank] = (VkDescriptorBufferInfo){buffer, offset, size};
             writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                       .dstSet = sets[stage],
                                                       .dstBinding = SNX_VKB_CB + bank,
                                                       .descriptorCount = 1,
                                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                                      .pBufferInfo = &uniforms[stage][slot]};
+                                                      .pBufferInfo = &uniforms[stage][bank]};
         }
         for (int tex_index = 0; tex_index < si->ntex; tex_index++) {
             const ShTex* shader_texture = &si->tex[tex_index];
@@ -1383,14 +1418,16 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     last_draw_unknown = effective_unknown;
     color->shadow_draw_stamp = ++shadow_draw_stamp;
     static u64 issued;
-    static u64 preserved_count, semantic_sample_count;
+    static u64 preserved_count, semantic_sample_count, embedded_bank1_count;
     issued++;
     preserved_count += preserved;
     semantic_sample_count += semantic_sampled;
+    embedded_bank1_count += !!(cbuf_mask & 2);
     if (issued == 1 || !(issued % 100))
-        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu target=%llx size=%ux%u\n",
+        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu target=%llx size=%ux%u\n",
             (unsigned long long)issued, (unsigned long long)preserved_count,
-            (unsigned long long)semantic_sample_count, (unsigned long long)color_target->gpu_address,
+            (unsigned long long)semantic_sample_count, (unsigned long long)embedded_bank1_count,
+            (unsigned long long)color_target->gpu_address,
             color_target->width, color_target->height);
     return 1;
 }
@@ -1494,8 +1531,9 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     if (index_bytes && !vk_buf_get_strict(command->index_address, index_bytes, &buffer, &offset)) return 0;
     VkSh* vertex_shader = NULL;
     VkSh* fragment_shader = NULL;
-    int shader_ready =
-        command->materialize_shaders && materialize_draw_shaders(command, &vertex_shader, &fragment_shader);
+    u64 embedded_bank1[2] = {0};
+    int shader_ready = command->materialize_shaders &&
+                       materialize_draw_shaders(command, &vertex_shader, &fragment_shader, embedded_bank1);
     int image_storage_ready = 0;
     if (shader_ready && fragment_shader->si.nimg) {
         image_storage_ready = 1;
@@ -1726,6 +1764,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_VIEW;
         }
     }
-    if (draw_pipeline) shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key);
+    if (draw_pipeline)
+        shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key, embedded_bank1);
     return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_SHARED_TARGET;
 }
