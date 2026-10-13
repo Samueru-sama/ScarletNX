@@ -561,6 +561,11 @@ pipeline preflight now uses the same constant-attribute binding and numeric type
 created 2,588 of 2,727 pipelines; the 139 remaining failures lacked captured multisample state. Those draws stay
 conservative because the missing state may affect sample coverage even when the current attachment has one sample.
 The future NVN draw command must bind the constant buffer described by the pipeline layout.
+Scarlet also uses NVN RG16 signed-normalized (`0x13`) render targets. The shadow-image format table now maps that
+format to Vulkan RG16 SNORM. A twelve-second Scarlet clear probe no longer reported format `0x13` as unsupported;
+648 clear packets still failed because their target shapes were outside the current 2D/array/cubemap shadow-image
+model, including 3D textures and 2D targets whose captured depth was greater than one. The format mapping alone
+does not make those clear packets executable.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

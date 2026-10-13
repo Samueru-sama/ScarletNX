@@ -72,6 +72,7 @@ static VkFmt nvn_format(u32 format) {
         case 0x0d: return (VkFmt){.vk = VK_FORMAT_R8G8_UNORM, .bpp = 2};          /* RG8 */
         case 0x11: return (VkFmt){.vk = VK_FORMAT_R16G16_SFLOAT, .bpp = 4};       /* RG16F */
         case 0x12: return (VkFmt){.vk = VK_FORMAT_R16G16_UNORM, .bpp = 4};        /* RG16 */
+        case 0x13: return (VkFmt){.vk = VK_FORMAT_R16G16_SNORM, .bpp = 4};        /* RG16SN */
         case 0x25: return vk_rt_format(0xd5);                                     /* RGBA8 */
         case 0x29: return (VkFmt){.vk = VK_FORMAT_R16G16B16A16_SFLOAT, .bpp = 8}; /* RGBA16F */
         case 0x38: return (VkFmt){.vk = VK_FORMAT_R8G8B8A8_SRGB, .bpp = 4};       /* RGBA8 SRGB */
