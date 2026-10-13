@@ -181,7 +181,13 @@ typedef struct {
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
     u64 image[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
     u8 image_bound[NVN_DRAW_SHADER_STAGES];
+    u64 render_condition_address;
+    u8 render_condition_mode, render_condition_active, render_enabled;
 } ReplayState;
+typedef struct {
+    u64 address, value;
+    u8 known;
+} ReplayQueryValue;
 typedef struct {
     u64 key;
     u64 next_sequence;
@@ -203,6 +209,8 @@ typedef struct {
     NvnUniformUpdate* uniform_updates;
     u64 uniform_update_bytes;
     u8 uniform_update_failed;
+    ReplayQueryValue query_values[256];
+    u16 query_value_count;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
@@ -354,6 +362,48 @@ static ReplayQueue* replay_queue_slot(u64 key) {
         if (q->key == key || !q->key) return q;
     }
     return NULL;
+}
+
+static ReplayQueryValue* replay_query_value(ReplayQueue* queue, u64 address, int seed) {
+    for (u32 i = 0; i < queue->query_value_count; i++)
+        if (queue->query_values[i].address == address) return &queue->query_values[i];
+    if (queue->query_value_count == 256) return NULL;
+    ReplayQueryValue* value = &queue->query_values[queue->query_value_count++];
+    *value = (ReplayQueryValue){.address = address};
+    if (seed && address <= UINT64_MAX - 8) {
+        const u8* host = gmem_ptr_untracked(address, 8);
+        if (host) {
+            memcpy(&value->value, host, 8);
+            value->known = 1;
+        }
+    }
+    return value;
+}
+
+static void replay_query_write(ReplayQueue* queue, u64 address, u32 size, u8 kind,
+                               u32 payload, int payload_known) {
+    if (!queue || !address || !size) return;
+    for (u32 i = 0; i < queue->query_value_count; i++) {
+        ReplayQueryValue* entry = &queue->query_values[i];
+        if (address < entry->address + 8 && entry->address < address + size) entry->known = 0;
+    }
+    if (kind == NVN_GAP_WRITE_PULLER && size == 16 && payload_known) {
+        ReplayQueryValue* value = replay_query_value(queue, address, 0);
+        if (value) {
+            value->value = payload;
+            value->known = 1;
+        }
+    }
+}
+
+static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue) {
+    if (state->render_condition_active == 1) return state->render_enabled;
+    if (state->render_condition_active != 2 || !queue ||
+        state->render_condition_address > UINT64_MAX - 24) return 1;
+    ReplayQueryValue* lhs = replay_query_value(queue, state->render_condition_address, 1);
+    ReplayQueryValue* rhs = replay_query_value(queue, state->render_condition_address + 16, 1);
+    if (!lhs || !rhs || !lhs->known || !rhs->known) return 1; /* unknown: retain the draw */
+    return state->render_condition_mode ? lhs->value != rhs->value : lhs->value == rhs->value;
 }
 
 static const NvnStorageSeed* replay_storage_seed(ReplayQueue* queue, NvnBufferRange range) {
@@ -536,6 +586,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
         u64 prior_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
+        int render_clear_disabled = queue &&
+            (!strcmp(op->name, "nvnCommandBufferClearColor") ||
+             !strcmp(op->name, "nvnCommandBufferClearDepthStencil")) &&
+            !replay_render_enabled(state, queue);
         if (!strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) {
             const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
             if (dispatch_trace && !strcmp(dispatch_trace, "1"))
@@ -574,7 +628,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         /* A captured uniform update has its own bounded write marker. Its payload is applied to
            later direct draws without modifying the guest buffer while GPFIFO remains authoritative. */
         if (queue &&
-            (op->kind == OP_CLEAR ||
+            ((op->kind == OP_CLEAR && !render_clear_disabled) ||
              (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
               strcmp(op->name, "nvnInlinedMemoryWrite")) ||
              op->kind == OP_DISPATCH || op->kind == OP_OTHER)) {
@@ -586,7 +640,11 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             strcmp(op->name, "nvnCommandBufferCallCommands"))
             queue->observed_clear_only = 0;
         if (!strcmp(op->name, "nvnInlinedMemoryWrite")) {
-            if (queue) stage_memory_write(queue, op->args[0], (u32)op->args[1], (u8)op->args[2]);
+            if (queue) {
+                stage_memory_write(queue, op->args[0], (u32)op->args[1], (u8)op->args[2]);
+                replay_query_write(queue, op->args[0], (u32)op->args[1], (u8)op->args[2],
+                                   (u32)op->args[3], !!op->args[4]);
+            }
             continue;
         }
         if (!strcmp(op->name, "nvnCommandBufferSetCopyRowStride")) {
@@ -691,6 +749,13 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 state->targets = *(const NvnTargets*)op->payload;
             else
                 memset(&state->targets, 0, sizeof state->targets);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetRenderEnable")) {
+            state->render_condition_active = 1;
+            state->render_enabled = !!op->args[0];
+        } else if (!strcmp(op->name, "nvnCommandBufferSetRenderEnableConditional")) {
+            state->render_condition_active = op->args[0] <= 1 ? 2 : 0;
+            state->render_condition_mode = (u8)op->args[0];
+            state->render_condition_address = op->args[1];
         } else if (!strcmp(op->name, "nvnCommandBufferClearTexture")) {
             replay_texture_clears++;
             const NvnClearCommand* clear = op->payload;
@@ -729,7 +794,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_color_target_resolved++;
                     if (queue) queue->pending_clears++;
-                    if (clear_execute && queue) {
+                    if (clear_execute && queue && replay_render_enabled(state, queue)) {
                         NvnClearCommand packet = {.kind = NVN_CLEAR_COLOR, .target = target, .mask = clear->mask};
                         packet.unknown_marker = queue->last_unmodeled_write;
                         packet.prior_unmodeled_write = prior_unmodeled_write;
@@ -762,7 +827,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_depth_target_resolved++;
                     if (queue) queue->pending_clears++;
-                    if (clear_execute && queue) {
+                    if (clear_execute && queue && replay_render_enabled(state, queue)) {
                         const NvnClearDepth* clear = op->payload;
                         NvnClearCommand packet = {.kind = NVN_CLEAR_DEPTH_STENCIL,
                                                   .target = target,
@@ -2055,6 +2120,7 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         ReplayState state = queue && queue->key ? queue->state : (ReplayState){0};
         if (descriptor_replay && !queue) replay_queue_full++;
         if (queue) {
+            if (!queue->pending_roots) queue->query_value_count = 0;
             /* Cross-batch shadow images check CPU and GPU backing-memory writes before reuse. Without that
                opt-in check, a submit boundary remains an unknown write to every NVN image. */
             const char* cross = getenv("SNX_NVN_CROSS_BATCH");
@@ -2110,7 +2176,8 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                                                   &r->memory_state, writes, 32, &write_count)) {
                     parsed_writes = 1;
                     for (u32 i = 0; i < write_count; i++) {
-                        u64 args[7] = {writes[i].address, writes[i].size, writes[i].kind};
+                        u64 args[7] = {writes[i].address, writes[i].size, writes[i].kind,
+                                       writes[i].value, writes[i].value_known};
                         append_inlined_op(r, OP_TRANSFER, "nvnInlinedMemoryWrite", args);
                     }
                 }

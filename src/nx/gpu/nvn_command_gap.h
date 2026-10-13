@@ -13,14 +13,14 @@ typedef struct {
     u32 words[3];
 } NvnGapMacroData3;
 typedef struct {
-    u32 puller_high, puller_low, query_high, query_low;
+    u32 puller_high, puller_low, puller_payload, query_high, query_low;
     u32 cbuf_high, cbuf_low, cbuf_offset;
     u8 puller_known, query_known, cbuf_known;
 } NvnGapMemoryState;
 typedef struct {
     u64 address;
-    u32 size;
-    u8 kind;
+    u32 size, value;
+    u8 kind, value_known;
 } NvnGapMemoryWrite;
 enum { NVN_GAP_WRITE_PULLER, NVN_GAP_WRITE_QUERY, NVN_GAP_WRITE_CBUF, NVN_GAP_WRITE_UNIFORM };
 

@@ -67,7 +67,8 @@ static void emit_memory_write(MemoryScan* scan, u64 address, u32 size, u8 kind) 
         return;
     }
     if (scan->count == scan->capacity) { scan->invalid = 1; return; }
-    if (scan->writes) scan->writes[scan->count] = (NvnGapMemoryWrite){address, size, kind};
+    if (scan->writes)
+        scan->writes[scan->count] = (NvnGapMemoryWrite){.address = address, .size = size, .kind = kind};
     scan->count++;
     scan->last_address = address;
     scan->last_size = size;
@@ -78,10 +79,15 @@ static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* conte
     MemoryScan* scan = context;
     if (method == 0x4) { scan->state.puller_high = value; scan->state.puller_known |= 1; return; }
     if (method == 0x5) { scan->state.puller_low = value; scan->state.puller_known |= 2; return; }
+    if (method == 0x6) { scan->state.puller_payload = value; scan->state.puller_known |= 4; return; }
     if (method == 0x7 && (value & 0x1f) == 2) {
-        if (scan->state.puller_known != 3) { scan->invalid = 1; return; }
+        if ((scan->state.puller_known & 3) != 3) { scan->invalid = 1; return; }
         u64 address = ((u64)(scan->state.puller_high & 0xff) << 32) | scan->state.puller_low;
         emit_memory_write(scan, address, (value & (1u << 24)) ? 4 : 16, NVN_GAP_WRITE_PULLER);
+        if (!scan->invalid && scan->writes) {
+            scan->writes[scan->count - 1].value = scan->state.puller_payload;
+            scan->writes[scan->count - 1].value_known = !!(scan->state.puller_known & 4);
+        }
         return;
     }
     if (subchannel) return;

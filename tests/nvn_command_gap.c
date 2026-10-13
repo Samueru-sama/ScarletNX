@@ -82,10 +82,15 @@ int main(void) {
     const u32 puller_address[] = {0x20030004, 6, 0x22ad0000, 1};
     const u32 puller_word_release[] = {0x60010007, 0x01000002};
     assert(nvn_command_gap_memory_writes(puller_address, 4, &report_state, writes, 2, &write_count));
-    assert(write_count == 0 && report_state.puller_known == 3);
+    assert(write_count == 0 && report_state.puller_known == 7 && report_state.puller_payload == 1);
     assert(nvn_command_gap_memory_writes(puller_word_release, 2, &report_state, writes, 2, &write_count));
     assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_PULLER &&
-           writes[0].address == 0x622ad0000ull && writes[0].size == 4);
+           writes[0].address == 0x622ad0000ull && writes[0].size == 4 &&
+           writes[0].value_known && writes[0].value == 1);
+    const u32 puller_zero_release[] = {0x60010006, 0, 0x60010007, 2};
+    assert(nvn_command_gap_memory_writes(puller_zero_release, 4, &report_state, writes, 2, &write_count));
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_PULLER &&
+           writes[0].size == 16 && writes[0].value_known && writes[0].value == 0);
     assert(nvn_command_gap_memory_writes(counter_packet, 5, &report_state, writes, 2, &write_count));
     assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY && writes[0].size == 16);
     const u32 two_releases[] = {0x60010007, 2, 0x60010007, 2};

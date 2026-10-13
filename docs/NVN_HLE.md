@@ -1104,6 +1104,21 @@ The paired input probe now finds 0 differing bytes before the first dispatch and
 That places the first confirmed mismatch between the two dispatches, before the second compute shader runs.
 The second output differs by 242 bytes, so fixing compute translation alone cannot close this gap; the
 intervening storage-writing draws and their ordering need per-draw comparison.
+A paired readback narrowed TotK's second 58,848-byte dispatch mismatch to a fragment shader
+that atomically increments a storage-buffer counter when its render-target feedback sample is dark.
+Both paths produced the same solid-white 320×180 target in the preceding draw. The direct path
+then replayed two black `ClearColor` calls that Maxwell skipped, making its feedback source black
+and changing byte 29 of the storage buffer from `0x00` to `0xE1` (57,600 increments).
+
+Those clears followed `SetRenderEnableConditional` calls. The submitted list also contains
+inlined puller releases that change the 64-bit counter value between clears. Reading guest memory
+only after the list cannot reconstruct those decisions. The sidecar now captures the release
+payload and keeps a bounded, command-order shadow of counter values. It evaluates the NVN
+equal/not-equal render condition for color and depth clears; unknown values conservatively leave
+the clear enabled. In the TotK trace, the first clear executes, the two later clears are skipped,
+and the direct feedback source matches Maxwell's solid-white image. Conditional draws and other
+query-write mechanisms still need the same treatment before whole-list GPU replacement.
+
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
 work area. Removing the oversized floor allowed a 100-second headless NVN probe to issue at least 55,000
