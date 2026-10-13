@@ -24,6 +24,7 @@ typedef struct {
     u32 width, height, levels, layers, target, format;
     u64 bytes;
     u64 last_batch;
+    u64 shadow_draw_stamp;
     VkImage image;
     VkImageView sampled_view, base_view, sampled_view_alt, base_view_alt;
     VkFormat alt_format;
@@ -42,6 +43,7 @@ typedef struct {
 static NvnImage images[NVN_IMAGE_SLOTS];
 static u64 image_bytes;
 static u64 batch_serial;
+static u64 shadow_draw_stamp;
 
 void vk_nvn_batch_begin(void) {
     batch_serial++;
@@ -1254,10 +1256,73 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         sample_first = 0;
     }
     color->last_batch = depth->last_batch = batch_serial;
+    color->shadow_draw_stamp = ++shadow_draw_stamp;
     static u64 issued;
     issued++;
-    if (issued == 1 || !(issued % 100)) LOG("nvn-shadow-draw: issued=%llu\n", (unsigned long long)issued);
+    if (issued == 1 || !(issued % 100))
+        LOG("nvn-shadow-draw: issued=%llu target=%llx size=%ux%u\n", (unsigned long long)issued,
+            (unsigned long long)color_target->gpu_address, color_target->width, color_target->height);
     return 1;
+}
+
+/* Compare the first completed shadow target with its Maxwell surface after the guest submission. This is a
+   diagnostic of the corresponding intermediate image, which need not be the VI-presented image. */
+void vk_nvn_shadow_compare(void) {
+    static int compared;
+    if (compared || !shadow_draw_stamp) return;
+    NvnImage* shadow = NULL;
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++)
+        if (images[i].shadow_draw_stamp && (!shadow || images[i].shadow_draw_stamp > shadow->shadow_draw_stamp))
+            shadow = &images[i];
+    if (!shadow || !shadow->transfer_src || shadow->format != 0x25 || shadow->levels != 1 || shadow->layers != 1 ||
+        !shadow->width || !shadow->height || (u64)shadow->width * shadow->height > (16ull << 20) / 4)
+        return;
+    Surf* emulated = vk_rt_find(shadow->address);
+    if (!emulated || emulated->f.vk != VK_FORMAT_R8G8B8A8_UNORM || emulated->w != shadow->width ||
+        emulated->h != shadow->height || emulated->sw != emulated->w || emulated->sh != emulated->h ||
+        emulated->layout == VK_IMAGE_LAYOUT_UNDEFINED)
+        return;
+    u64 bytes = (u64)shadow->width * shadow->height * 4;
+    VkBuffer readback;
+    u8* pixels = vk_readback_buffer(bytes * 2, &readback);
+    if (!pixels) return;
+    VkCommandBuffer cb = vk_cmd();
+    vk_barrier(cb, shadow->image, VK_IMAGE_ASPECT_COLOR_BIT, shadow->stage, shadow->access, shadow->layout,
+               VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    shadow->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    shadow->access = VK_ACCESS_2_TRANSFER_READ_BIT;
+    shadow->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    vk_surf_use(cb, emulated, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageExtent = {shadow->width, shadow->height, 1}};
+    vkCmdCopyImageToBuffer(cb, shadow->image, shadow->layout, readback, 1, &copy);
+    copy.bufferOffset = bytes;
+    vkCmdCopyImageToBuffer(cb, emulated->img, emulated->layout, readback, 1, &copy);
+    VkMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                   .memoryBarrierCount = 1,
+                                   .pMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(cb, &dependency);
+    vk_finish();
+    vk_readback_ready();
+    u64 different = 0, rgb_different = 0, alpha_different = 0;
+    for (u64 i = 0; i < bytes; i += 4) {
+        different += memcmp(pixels + i, pixels + bytes + i, 4) != 0;
+        rgb_different += memcmp(pixels + i, pixels + bytes + i, 3) != 0;
+        alpha_different += pixels[i + 3] != pixels[bytes + i + 3];
+    }
+    u64 center = ((u64)(shadow->height / 2) * shadow->width + shadow->width / 2) * 4;
+    LOG("nvn-shadow-compare: target=%llx different=%llu/%llu rgb=%llu alpha=%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
+        (unsigned long long)shadow->address, (unsigned long long)different, (unsigned long long)(bytes / 4),
+        (unsigned long long)rgb_different, (unsigned long long)alpha_different, emulated->wgen,
+        pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],
+        pixels[bytes + center], pixels[bytes + center + 1], pixels[bytes + center + 2], pixels[bytes + center + 3]);
+    compared = 1;
 }
 
 /* Prepare exact guest buffer snapshots on the GPU thread. These are inputs for a future

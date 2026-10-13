@@ -25,7 +25,8 @@ Commands: [development](DEVELOPMENT.md).
 
 Port upstream releases manually to retain independent component layouts.
 
-NVN HLE remains exploratory: Catherine requests 468 exports and uses ~178. Submitted NVN shaders and clear commands
-can now execute through opt-in host probes, while the displayed frame still uses guest Maxwell command decoding.
+NVN HLE remains exploratory: Catherine requests 468 exports and uses ~178. Submitted NVN shaders, clears, and a
+narrow Catherine draw slice can now execute through opt-in host probes, while the displayed frame still uses guest
+Maxwell command decoding.
 The [NVN HLE investigation](NVN_HLE.md) records the resource path and the remaining image-coherence and
 whole-submission migration boundaries.

@@ -9,6 +9,7 @@
    thread reads their memory first. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "core/main.h"
 #include "core/options.h"
 #include "gpu/gpu.h"
@@ -208,6 +209,8 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     vk_lock();
     vk_buf_writable_abort(); /* a draw abandoned during setup has no shader writes to land */
     vk_render_end();
+    const char* shadow_compare = getenv("SNX_NVN_SHADOW_COMPARE");
+    if (shadow_compare && !strcmp(shadow_compare, "1")) vk_nvn_shadow_compare();
     Surf* src = NULL;
     if (w && h && w <= g_vk.props.limits.maxImageDimension2D && h <= g_vk.props.limits.maxImageDimension2D) {
         src = vk_rt_for_cpu(cpu_addr, w, h);

@@ -605,6 +605,12 @@ The SDK's GPFIFO still supplies the displayed frame; this path does not replace 
 image writes with guest memory, or establish visual parity. It deliberately accepts only the verified bank-3-only,
 one-attribute, non-indexed, single-color-plus-depth triangle-strip state until more generated buffers and dynamic
 state are modeled.
+With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN color target is also read back
+alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
+in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target
+was `(0,0,0,255)` at the center. This target is an intermediate image, not the VI-presented framebuffer. The
+comparison samples after the guest submission, so later Maxwell operations may also affect its contents; it is a
+diagnostic rather than proof of full draw parity.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
