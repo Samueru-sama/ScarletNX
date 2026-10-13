@@ -4,6 +4,7 @@
    guest-memory coherence are implemented. */
 #include "gpu/vk/vk.h"
 #include "gpu/gpu.h"
+#include "gpu/shader/shader.h"
 #include "hle/nvdrv.h"
 #include "platform/log.h"
 #include <stdlib.h>
@@ -446,6 +447,78 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
     return VK_NULL_HANDLE;
 }
 
+/* Only the NVN blob wrapper and Maxwell SPH are needed to select a stage. An unrecognized
+   reference must stay unresolved; SetShadersExt does not always put code in its first word. */
+static int shader_code_stage(u64 address, u32* type) {
+    if (!address || address > UINT64_MAX - 0x34) return -1;
+    u32 header[2], sph;
+    gmem_read_code(address, header, sizeof header);
+    if (header[0] != 0x12345678 || header[1] < 0x80 || header[1] > 0x10030) return -1;
+    gmem_read_code(address + 0x30, &sph, sizeof sph);
+    *type = (sph >> 10) & 15;
+    if ((sph & 31) == 1 && *type <= 1) return ST_VS;
+    if ((sph & 31) == 2 && *type == 5) return ST_FS;
+    return -1;
+}
+
+static int materialize_draw_shaders(const NvnDrawCommand* command) {
+    if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
+    u64 vertex_a = 0, vertex_b = 0, fragment = 0;
+    u64 seen[NVN_DRAW_SHADER_STAGES] = {0}, seen_generation[NVN_DRAW_SHADER_STAGES] = {0};
+    u32 seen_count = 0;
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++) {
+        if (!(command->program_bound & (1u << stage))) continue;
+        u64 handle = command->program[stage].handle;
+        const NvnProgramSnapshot* program = &command->program[stage].snapshot;
+        if (!handle) return 0;
+        int duplicate = 0;
+        for (u32 i = 0; i < seen_count; i++)
+            duplicate |= seen[i] == handle && seen_generation[i] == program->generation;
+        if (duplicate) continue;
+        seen[seen_count] = handle;
+        seen_generation[seen_count++] = program->generation;
+        if (!program->refs_known || !program->shader_count || program->shader_count > NVN_PROGRAM_MAX_SHADERS) return 0;
+        for (u32 i = 0; i < program->shader_count; i++) {
+            u32 type = 0;
+            u64 address = program->refs[i].code_candidate;
+            int found = shader_code_stage(address, &type);
+            if (found == ST_VS) {
+                u64* slot = type == 0 ? &vertex_a : &vertex_b;
+                if (*slot && *slot != address + 0x30) return 0;
+                *slot = address + 0x30;
+            } else if (found == ST_FS) {
+                if (fragment && fragment != address + 0x30) return 0;
+                fragment = address + 0x30;
+            } else {
+                LOG_LIMIT(8, "nvn-shader-module: unresolved ref stage=%u index=%u code=%llx extension=%llx\n", stage, i,
+                          (unsigned long long)address, (unsigned long long)program->refs[i].extension);
+                return 0;
+            }
+        }
+    }
+    if ((!vertex_a && !vertex_b) || !fragment) return 0;
+    for (u32 stage = 0; stage < 2; stage++) {
+        u32 row = stage ? 4 : 0;
+        u64 saved_cb[18];
+        u32 saved_size[18];
+        memcpy(saved_cb, g_vk_cb[row], sizeof saved_cb);
+        memcpy(saved_size, g_vk_cbsize[row], sizeof saved_size);
+        memset(g_vk_cb[row], 0, sizeof saved_cb);
+        memset(g_vk_cbsize[row], 0, sizeof saved_size);
+        for (u32 i = 0; i < NVN_DRAW_UNIFORM_SLOTS; i++)
+            if (command->uniform_bound[stage] & (1u << i)) {
+                g_vk_cb[row][i] = command->uniform[stage][i].address;
+                g_vk_cbsize[row][i] = (u32)command->uniform[stage][i].size;
+            }
+        VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
+                                     stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, 0, 0, 0, 0, 0);
+        memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
+        memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
+        if (!shader || !shader->mod || shader->failed || shader->si.unsupported) return 0;
+    }
+    return 1;
+}
+
 /* Prepare exact guest buffer snapshots on the GPU thread. These are inputs for a future
    host draw; the guest GPFIFO remains responsible for rendering and presentation. */
 int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
@@ -547,6 +620,9 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                 : NVN_DRAW_TEXTURE_IMAGE_FAILED | failure;
     }
     int resource_status = sampler_status | texture_status;
+    if (command->materialize_shaders)
+        resource_status |=
+            materialize_draw_shaders(command) ? NVN_DRAW_SHADER_MODULE_READY : NVN_DRAW_SHADER_MODULE_FAILED;
     int has_target = command->color_target_mask || command->depth_target_bound;
     if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED | resource_status;
     if (command->prepare_attachments) {

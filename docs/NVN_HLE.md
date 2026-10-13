@@ -273,6 +273,19 @@ prepared attachments for all 3,637 completed draws and TotK for all 2,506, with 
 loss. This establishes attachment allocation and subresource selection for the observed targets, not shader execution
 or image coherence.
 
+`SNX_NVN_SHADER_MATERIALIZE=1` also checks the recorded NVN program references on the GPU thread and requests cached
+Vulkan shader modules from the existing Maxwell translator. It recognizes the NVN blob wrapper and vertex-A,
+vertex-B, and fragment SPH types, combines vertex-A/B where both exist, and maps the recorded uniform-buffer ranges
+while translating. It restores the Maxwell renderer's constant-buffer bindings afterward. A program bound to multiple
+NVN stage slots is inspected once. Unknown references, duplicate stage candidates, unsupported instructions, and
+module creation failures leave the draw on the guest path. This is a preflight only: integer attribute and render
+target masks, pipeline state, descriptor sets, command recording, and image coherence are not yet supplied by the
+NVN draw. Successful module creation does not mean a Vulkan pipeline can render the draw correctly.
+In an eight-second Catherine boot, both modules were available for all 3,887 prepared draws, with no failures. A
+22-second TotK boot prepared 2,858 draw attachments, but no draw passed shader materialization: its sampled
+`SetShadersExt` programs include a second reference whose first word does not contain a valid NVN code blob. The
+existing shader reference layout needs to be established from the SDK code before those draws can be materialized.
+
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported

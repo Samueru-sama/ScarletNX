@@ -31,7 +31,9 @@ enum {
     NVN_DRAW_TEXTURE_IMAGE_MISSING = 32768,
     NVN_DRAW_TEXTURE_IMAGE_SEMANTIC = 65536,
     NVN_DRAW_ATTACHMENT_READY = 131072,
-    NVN_DRAW_ATTACHMENT_FAILED = 262144
+    NVN_DRAW_ATTACHMENT_FAILED = 262144,
+    NVN_DRAW_SHADER_MODULE_READY = 524288,
+    NVN_DRAW_SHADER_MODULE_FAILED = 1048576
 };
 typedef struct {
     u64 address, size;
@@ -73,6 +75,6 @@ typedef struct {
     i32 base_vertex;
     u16 vertex_bound;
     u8 indexed, program_known, shader_refs_known;
-    u8 load_textures, prepare_attachments;
+    u8 load_textures, prepare_attachments, materialize_shaders;
 } NvnDrawCommand;
 #endif
