@@ -572,6 +572,10 @@ lose the second layer and break aliasing. The probe now keys and allocates the b
 view's layer for attachment and clear operations. Scarlet's observed view also sets swizzle and depth-mode flags
 whose effects are not decoded, so those clears remain rejected. Separate Catherine and TotK boots retained ready
 attachments for all 3,818 and 2,655 observed draws after this change.
+The target packet also retains its backing format separately from any view format override. The shadow cache now
+rejects a format reinterpretation until it can create one mutable-format image with compatible views, rather than
+silently creating unrelated images for the same texture object. Catherine, TotK, and Scarlet boot probes did not hit
+that guard in their observed clear or attachment packets.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

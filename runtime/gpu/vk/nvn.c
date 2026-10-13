@@ -93,6 +93,12 @@ static VkFmt nvn_format(u32 format) {
 }
 
 static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkImageAspectFlags aspect, int* full) {
+    /* Reinterpreting one backing allocation through another format needs a mutable-format image and compatible
+       views. Until that path exists, do not create two unrelated shadow images for the same guest texture. */
+    if (target->format != target->storage_format) {
+        LOG_LIMIT(4, "nvn-image-view-format: backing=%x view=%x\n", target->storage_format, target->format);
+        return NULL;
+    }
     NvnImage* empty = NULL;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
