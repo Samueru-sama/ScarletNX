@@ -1397,6 +1397,11 @@ render-condition state. The trace does not yet establish whether some recorded
 clears are no-ops in the SDK or whether native draws are missing from the semantic
 stream.
 
+The repeated exported `ClearColor` calls are not empty SDK calls: each examined
+operation advances the command-buffer cursor by 48 bytes. A safe fix therefore
+needs to decode the effective GPU render-target and condition state at those
+packets, rather than dropping clears based on their call count.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
