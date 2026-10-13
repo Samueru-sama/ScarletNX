@@ -615,6 +615,26 @@ The target packet also retains its backing format separately from any view forma
 rejects a format reinterpretation until it can create one mutable-format image with compatible views, rather than
 silently creating unrelated images for the same texture object. Catherine, TotK, and Scarlet boot probes did not hit
 that guard in their observed clear or attachment packets.
+Odyssey's older texture builder places its memory-pool pointer and storage offset at `+8` and `+16`, eight bytes
+before the newer layout. The observer selects it only when that pointer names a tracked pool and the newer pool
+field does not. Before this correction, all 18,669 textures in one long Odyssey trace appeared to have no pool or
+an untracked pool, so every replayed clear target was stale. A short corrected boot associated all 42 observed
+textures with tracked pools and found no out-of-range offsets. A later long scene associated all 19,061 initialized
+textures with tracked pools and reached 2,060 complete draw-target snapshots, but all 8,022 replayed clears still
+found stale target objects. That remaining failure is a texture-object lifetime or replay-ordering problem, not the
+builder's pool pointer.
+Odyssey also copies initialized sampler objects before registration. The copied pointer has no observed initialize
+generation, but the registered descriptor's 32-byte TSC is still readable. The descriptor observer now accepts
+that TSC under the sampler-pool generation without claiming to know the copied object's builder state. In one
+long scene this made all 140,921 draw sampler descriptors and TSCs complete, while filter and wrap state remained
+unknown to the NVN observer. The existing Maxwell sampler path can decode TSC bytes directly; NVN draw submission
+still needs to bind a host sampler.
+Vertex-format preflight now checks only attributes referenced by the translated vertex shader. It also maps NVN
+R8 UINT (`0x03`), RG8 UINT (`0x0f`), RGBA8 UINT (`0x27`), and RGBA8 SNORM (`0x26`) to their Vulkan vertex formats.
+The [NVN format enum](https://code.botw.link/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html) identifies these
+numeric values. An Odyssey long scene before the last mapping had 125,651 vertex-format-ready draws and 15,148
+failures; the next run with RGBA8 SNORM mapped reported 138,407/138,407 ready. These checks still do not validate
+actual host vertex-buffer bindings or output pixels.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

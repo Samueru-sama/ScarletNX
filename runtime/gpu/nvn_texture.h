@@ -13,7 +13,7 @@ typedef struct {
     int size_known;
     int address_known;
     int stride_known, storage_class_known;
-    int valid;
+    int valid, legacy_layout;
 } NvnTextureCall;
 
 typedef struct {

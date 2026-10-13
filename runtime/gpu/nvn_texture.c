@@ -18,7 +18,7 @@ typedef struct {
 #define TEXTURE_SLOTS 32768
 static Texture textures[TEXTURE_SLOTS];
 static PMutex lock = PMUTEX_INIT;
-static u64 initialized, failed, finalized, live, reinitialized, invalid_builders, table_full;
+static u64 initialized, failed, finalized, live, reinitialized, invalid_builders, table_full, legacy_builders;
 static u64 no_pool, untracked_pools, offset_outside_pool, unknown_finalizes;
 static u64 sizes_known, sizes_unavailable, footprint_outside_pool;
 static u64 addresses_known, addresses_unavailable, address_mismatches;
@@ -110,20 +110,25 @@ void nvn_texture_before(const CPU* c, const char* name, NvnTextureCall* call) {
     memset(call, 0, sizeof *call);
     call->texture = c->x[0];
     if (strcmp(name, "nvnTextureInitialize")) return;
-    /* These builder fields agree in both inspected SDKs. Do not derive storage size from dimensions: compressed,
-       tiled, multisample, and mipmapped textures need the SDK's layout calculation. */
+    /* Odyssey places pool/offset/flags at +8/+16/+24, one word before the newer builder. Identify the older
+       layout by its live pool at +8; an unrelated pointer there must not displace a valid pool at +16. */
     u64 builder = c->x[1];
     if (!readable_range(builder, 0x40)) return;
-    call->pool = gr64(builder + 0x10);
-    call->offset = gr64(builder + 0x18);
-    call->flags = gr32(builder + 0x20);
-    call->target = gr32(builder + 0x24);
-    call->width = gr32(builder + 0x28);
-    call->height = gr32(builder + 0x2c);
-    call->depth = gr32(builder + 0x30);
-    call->levels = gr32(builder + 0x34);
-    call->format = gr32(builder + 0x38);
-    call->samples = gr32(builder + 0x3c);
+    NvnPoolSnapshot pool = {0};
+    u64 old_pool = gr64(builder + 8), new_pool = gr64(builder + 0x10);
+    call->legacy_layout = old_pool && nvn_pool_snapshot(old_pool, &pool) &&
+                          !nvn_pool_snapshot(new_pool, &pool);
+    u32 shift = call->legacy_layout ? 8 : 0x10;
+    call->pool = gr64(builder + shift);
+    call->offset = gr64(builder + shift + 8);
+    call->flags = gr32(builder + shift + 0x10);
+    call->target = gr32(builder + shift + 0x14);
+    call->width = gr32(builder + shift + 0x18);
+    call->height = gr32(builder + shift + 0x1c);
+    call->depth = gr32(builder + shift + 0x20);
+    call->levels = gr32(builder + shift + 0x24);
+    call->format = gr32(builder + shift + 0x28);
+    call->samples = gr32(builder + shift + 0x2c);
     call->valid = 1;
 }
 
@@ -170,6 +175,7 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
                 t->storage_class_known = call->storage_class_known;
                 t->alive = 1;
                 initialized++;
+                if (call->legacy_layout) legacy_builders++;
                 nvn_alias_retire(NVN_ALIAS_TEXTURE, t->key);
                 if (call->size_known)
                     sizes_known++;
@@ -234,10 +240,10 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
 
 void nvn_texture_report(void) {
     pm_lock(&lock);
-    LOG("nvn-texture: initialized=%llu failed=%llu finalized=%llu live=%llu reinitialized=%llu invalid-builders=%llu table-full=%llu\n",
+    LOG("nvn-texture: initialized=%llu failed=%llu finalized=%llu live=%llu reinitialized=%llu invalid-builders=%llu table-full=%llu legacy-builders=%llu\n",
         (unsigned long long)initialized, (unsigned long long)failed, (unsigned long long)finalized,
         (unsigned long long)live, (unsigned long long)reinitialized, (unsigned long long)invalid_builders,
-        (unsigned long long)table_full);
+        (unsigned long long)table_full, (unsigned long long)legacy_builders);
     LOG("nvn-texture: no-pool=%llu untracked-pools=%llu offset-outside-pool=%llu unknown-finalizes=%llu\n",
         (unsigned long long)no_pool, (unsigned long long)untracked_pools, (unsigned long long)offset_outside_pool,
         (unsigned long long)unknown_finalizes);
