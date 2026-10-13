@@ -18,6 +18,7 @@ typedef struct {
 } TexturePool;
 typedef struct {
     u64 pool, pool_generation, texture, texture_generation, view;
+    u64 memory_pool, memory_pool_generation, descriptor_memory_pool, descriptor_memory_generation, gpu_address;
     u32 index;
     u32 tic[8];
     NvnTextureViewSelection view_selection;
@@ -41,6 +42,21 @@ static u64 view_snapshots, view_snapshot_failures;
 static u64 tic_snapshots, tic_gpu_snapshots, tic_storage_snapshots, tic_missing_base, tic_address_mismatch;
 
 static int texture_current(const Descriptor* d, NvnTextureSnapshot* out) {
+    if (d->tic_valid && d->memory_pool && d->descriptor_memory_pool) {
+        NvnPoolSnapshot backing = {0}, descriptor_memory = {0};
+        if (!nvn_pool_snapshot(d->memory_pool, &backing) ||
+            backing.generation != d->memory_pool_generation ||
+            !nvn_pool_snapshot(d->descriptor_memory_pool, &descriptor_memory) ||
+            descriptor_memory.generation != d->descriptor_memory_generation)
+            return 0;
+        if (out)
+            *out = (NvnTextureSnapshot){.generation = d->texture_generation,
+                                        .pool = d->memory_pool,
+                                        .pool_generation = d->memory_pool_generation,
+                                        .gpu_address = d->gpu_address,
+                                        .address_known = 1};
+        return 1;
+    }
     NvnTextureSnapshot texture = {0};
     if (!nvn_texture_snapshot(d->texture, &texture) || texture.generation != d->texture_generation) return 0;
     if (!texture.pool) {
@@ -118,6 +134,9 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
     NvnTextureSnapshot texture = {0};
     int texture_found = 0;
     if (!strcmp(name, "nvnTexturePoolRegisterTexture")) texture_found = nvn_texture_snapshot(call->texture, &texture);
+    NvnTextureTarget copied = {0};
+    int copied_found = !strcmp(name, "nvnTexturePoolRegisterTexture") && !texture_found &&
+                       nvn_texture_resolve_copied_target(call->texture, NULL, &copied) == NVN_TARGET_RESOLVED;
     NvnPoolSnapshot memory = {0};
     int memory_found =
         !strcmp(name, "nvnTexturePoolInitialize") && call->memory_pool && nvn_pool_snapshot(call->memory_pool, &memory);
@@ -129,7 +148,9 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
         TexturePool* p = pool_slot(call->object, 0);
         if (p && p->alive && call->index < p->count) registration_pool = *p;
         pm_unlock(&lock);
-        if (registration_pool.alive && texture_found && texture.address_known && registration_pool.memory_pool &&
+        u64 expected_address = texture_found ? texture.gpu_address : copied.gpu_address;
+        if (registration_pool.alive && (texture_found ? texture.address_known : copied_found) &&
+            registration_pool.memory_pool &&
             registration_pool.memory_offset >= 0) {
             NvnPoolSnapshot backing = {0};
             if (nvn_pool_snapshot(registration_pool.memory_pool, &backing) &&
@@ -142,7 +163,7 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
                                                    registration_pool.memory_pool_generation, offset, tic, sizeof tic);
                 if (copied) {
                     u64 tic_address = ((u64)(tic[2] & 0xffff) << 32) | tic[1];
-                    tic_state = tic_address == texture.gpu_address ? copied : 3;
+                    tic_state = tic_address == expected_address ? copied : 3;
                 }
             }
         }
@@ -201,7 +222,14 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
                 *d = (Descriptor){.pool = call->object,
                                   .pool_generation = p->generation,
                                   .texture = call->texture,
-                                  .texture_generation = texture_found ? texture.generation : 0,
+                                  .texture_generation = texture_found ? texture.generation
+                                                        : copied_found ? copied.texture_generation : 0,
+                                  .memory_pool = texture_found ? texture.pool : copied.pool,
+                                  .memory_pool_generation = texture_found ? texture.pool_generation
+                                                            : copied.pool_generation,
+                                  .descriptor_memory_pool = registration_pool.memory_pool,
+                                  .descriptor_memory_generation = registration_pool.memory_pool_generation,
+                                  .gpu_address = texture_found ? texture.gpu_address : copied.gpu_address,
                                   .view = call->view,
                                   .index = call->index,
                                   .view_selection = call->view_selection,
@@ -220,7 +248,7 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
                     tic_missing_base++;
                 }
                 registered++;
-                if (!texture_found) untracked_textures++;
+                if (!texture_found && !copied_found) untracked_textures++;
                 if (call->view) {
                     if (call->view_known)
                         view_snapshots++;

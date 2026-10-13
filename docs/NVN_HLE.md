@@ -657,6 +657,13 @@ rejected. A repeat Odyssey scene prepared all 5,469 observed attachments and pip
 zero attachment or pipeline failures in their boot probes; Scarlet still had unrelated target-shape and pipeline
 failures. Clearing through an alternate sRGB view remains rejected because `vkCmdClearColorImage` operates on the
 image's backing format; a correct view-based clear needs a rendering operation.
+Odyssey also registers copied texture objects after the original SDK wrapper has been finalized. The descriptor
+observer now resolves those copies against initialized texture metadata, verifies their encoded TIC GPU address,
+and retains the backing and descriptor-pool generations. The texture loader validates those pools and TIC/GMMU
+mapping rather than requiring the short-lived wrapper to survive replay. In a long scene, 1,191 formerly untracked
+registrations resolved; 82,544 textured draws prepared with no missing headers or stale bindings. Catherine and
+TotK retained complete texture-descriptor coverage in boot probes. Scarlet still has separate missing descriptor
+IDs and unsupported texture formats. These checks do not establish descriptor writes or host draw execution.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

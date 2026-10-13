@@ -1017,15 +1017,16 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
                 if (!(texture_slots[stage] & (1u << i))) continue;
                 const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[stage][i];
-                NvnTextureSnapshot current = {0};
                 NvnPoolSnapshot backing = {0};
-                /* The callback runs later than the guest bind. A recycled object or pool address must not turn an
-                   older draw's copied TIC into a read of the replacement allocation. */
-                if (!nvn_texture_snapshot(descriptor->texture, &current) ||
-                    current.generation != descriptor->texture_generation || current.pool != descriptor->memory_pool ||
-                    current.pool_generation != descriptor->memory_pool_generation ||
-                    (current.pool &&
-                     (!nvn_pool_snapshot(current.pool, &backing) || backing.generation != current.pool_generation))) {
+                /* The hardware TIC outlives SDK texture-object copies and finalization. Keep its captured backing
+                   pool generation, then let the TIC/GMMU loader validate the mapped bytes at draw preparation. */
+                NvnTextureSnapshot external = {0};
+                if ((descriptor->memory_pool &&
+                     (!nvn_pool_snapshot(descriptor->memory_pool, &backing) ||
+                      backing.generation != descriptor->memory_pool_generation)) ||
+                    (!descriptor->memory_pool &&
+                     (!nvn_texture_snapshot(descriptor->texture, &external) ||
+                      external.generation != descriptor->texture_generation))) {
                     failure = NVN_DRAW_TEXTURE_IMAGE_STALE;
                     ready = 0;
                     break;
