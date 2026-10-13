@@ -514,12 +514,16 @@ static int nvn_integer_format(u32 format) {
 
 static VkFormat nvn_vertex_format(u32 format) {
     switch (format) {
+        case 0x03: return VK_FORMAT_R8_UINT;
         case 0x0d: return VK_FORMAT_R8G8_UNORM;
+        case 0x0f: return VK_FORMAT_R8G8_UINT;
         case 0x11: return VK_FORMAT_R16G16_SFLOAT;
         case 0x12: return VK_FORMAT_R16G16_UNORM;
         case 0x16: return VK_FORMAT_R32G32_SFLOAT;
         case 0x22: return VK_FORMAT_R32G32B32_SFLOAT;
         case 0x25: return VK_FORMAT_R8G8B8A8_UNORM;
+        case 0x26: return VK_FORMAT_R8G8B8A8_SNORM;
+        case 0x27: return VK_FORMAT_R8G8B8A8_UINT;
         case 0x29: return VK_FORMAT_R16G16B16A16_SFLOAT;
         case 0x2a: return VK_FORMAT_R16G16B16A16_UNORM;
         case 0x2e: return VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -528,8 +532,9 @@ static VkFormat nvn_vertex_format(u32 format) {
     }
 }
 
-static int prepare_vertex_formats(const NvnDrawCommand* command) {
+static int prepare_vertex_formats(const NvnDrawCommand* command, u32 shader_inputs) {
     for (u32 i = 0; i < command->vertex_attrib_count; i++) {
+        if (!(shader_inputs & (1u << i))) continue;
         const NvnVertexAttrib* attrib = &command->vertex_attrib[i];
         if (!attrib->enabled) continue;
         VkFormat format = nvn_vertex_format(attrib->format);
@@ -999,7 +1004,8 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     if (slots_mapped && !textureless_shader) resource_status |= NVN_DRAW_TEXTURE_SLOTS_MAPPED;
     if (command->materialize_shaders)
         resource_status |=
-            prepare_vertex_formats(command) ? NVN_DRAW_VERTEX_FORMAT_READY : NVN_DRAW_VERTEX_FORMAT_FAILED;
+            prepare_vertex_formats(command, shader_ready ? vertex_shader->si.in_mask : UINT32_MAX)
+                ? NVN_DRAW_VERTEX_FORMAT_READY : NVN_DRAW_VERTEX_FORMAT_FAILED;
     if (command->materialize_shaders) {
         if (shader_ready) {
             resource_status |= NVN_DRAW_SHADER_MODULE_READY;

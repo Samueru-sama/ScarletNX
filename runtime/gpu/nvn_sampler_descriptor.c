@@ -86,7 +86,9 @@ void nvn_sampler_descriptor_after(const CPU* c, const char* name, const NvnSampl
         SamplerPool* p = pool_slot(call->object, 0);
         if (p && p->alive && call->index < p->count) registration_pool = *p;
         pm_unlock(&lock);
-        if (registration_pool.alive && found && registration_pool.memory_pool && registration_pool.memory_offset >= 0) {
+        /* Some SDK clients initialize a temporary sampler and copy its object before registration. The TSC in
+           descriptor memory is authoritative even when that copied object has no observed Initialize call. */
+        if (registration_pool.alive && registration_pool.memory_pool && registration_pool.memory_offset >= 0) {
             NvnPoolSnapshot backing = {0};
             if (nvn_pool_snapshot(registration_pool.memory_pool, &backing) &&
                 backing.generation == registration_pool.memory_pool_generation &&
@@ -174,7 +176,10 @@ int nvn_sampler_descriptor_check(u64 pool, u64 handle) {
     int result = 0;
     if (d && d->pool_generation == p->generation) {
         NvnSamplerSnapshot snapshot = {0};
-        result = nvn_sampler_snapshot(d->sampler, &snapshot) && snapshot.generation == d->sampler_generation ? 1 : -1;
+        result = (!d->sampler_generation && d->tsc_valid) ||
+                         (nvn_sampler_snapshot(d->sampler, &snapshot) && snapshot.generation == d->sampler_generation)
+                     ? 1
+                     : -1;
     }
     pm_unlock(&lock);
     return result;
@@ -188,7 +193,8 @@ int nvn_sampler_descriptor_snapshot(u64 pool, u64 handle, NvnSamplerDescriptorSn
     int result = 0;
     if (d && d->pool_generation == p->generation) {
         NvnSamplerSnapshot snapshot = {0};
-        if (nvn_sampler_snapshot(d->sampler, &snapshot) && snapshot.generation == d->sampler_generation) {
+        if ((!d->sampler_generation && d->tsc_valid) ||
+            (nvn_sampler_snapshot(d->sampler, &snapshot) && snapshot.generation == d->sampler_generation)) {
             *out = (NvnSamplerDescriptorSnapshot){.sampler = d->sampler,
                                                   .sampler_generation = d->sampler_generation,
                                                   .pool_generation = d->pool_generation,
