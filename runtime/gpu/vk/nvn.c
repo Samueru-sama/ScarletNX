@@ -529,22 +529,29 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     return 1;
 }
 
+static int shadow_range_known(const NvnTextureTarget* target) {
+    return target->gpu_address && target->storage_size &&
+           target->gpu_address <= UINT64_MAX - target->storage_size;
+}
+
+static void shadow_invalidate_backing(const NvnTextureTarget* target) {
+    u64 end = target->gpu_address + target->storage_size;
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        NvnImage* image = &images[i];
+        if (!image->image) continue;
+        if (image->storage_size && image->address <= UINT64_MAX - image->storage_size &&
+            (image->address >= end || target->gpu_address >= image->address + image->storage_size))
+            continue;
+        memset(image->color_layers, 0, sizeof image->color_layers);
+        memset(image->depth_layers, 0, sizeof image->depth_layers);
+    }
+}
+
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     const NvnTextureTarget* target = &command->target;
     if (command->scoped_texture_write) {
-        if (!target->gpu_address || !target->storage_size ||
-            target->gpu_address > UINT64_MAX - target->storage_size)
-            return 0;
-        u64 end = target->gpu_address + target->storage_size;
-        for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
-            NvnImage* image = &images[i];
-            if (!image->image) continue;
-            if (image->storage_size && image->address <= UINT64_MAX - image->storage_size &&
-                (image->address >= end || target->gpu_address >= image->address + image->storage_size))
-                continue;
-            memset(image->color_layers, 0, sizeof image->color_layers);
-            memset(image->depth_layers, 0, sizeof image->depth_layers);
-        }
+        if (!shadow_range_known(target)) return 0;
+        shadow_invalidate_backing(target);
         mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
         return 1;
     }
@@ -1412,8 +1419,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                    ((descriptor->tic[0] >> 22) & 7) == 3 &&
                                    ((descriptor->tic[0] >> 25) & 7) == 4 &&
                                    ((descriptor->tic[0] >> 28) & 7) == 5;
+            /* G24R8's G component is depth; a depth-aspect Vulkan view exposes that as R,
+               with the same zero/one values for its other components. */
+            int depth_swizzle = descriptor->tic[0] == 0x60124a0eu &&
+                                sampled_format == nvn_format(0x35).vk;
             if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0 &&
-                identity_swizzle)
+                (identity_swizzle || depth_swizzle))
                 view = image_view_from_semantic(descriptor, effective_unknown);
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
@@ -1500,8 +1511,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     int color_written = (fragment->si.sph[18] & 15) && key->blend[0].mask;
+    int prior_covered = (color->color_layers[0] & 1) &&
+                        color->subresource_sequence[0][0] > effective_unknown;
     static int sample_first = 1;
-    int capture = sample_first && color_written &&
+    int capture = sample_first && color_written && !prior_covered &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||
                    color_target->format == 0x3f);
     int capture_full = 0;
@@ -1612,8 +1625,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     /* The magenta first-draw probe certifies full coverage only when no pixel retains that initial color.
        Other draws preserve provenance only after modeled full-subresource initialization. */
-    int preserved = (color->color_layers[0] & 1) &&
-                    color->subresource_sequence[0][0] > effective_unknown;
+    int preserved = prior_covered;
     if (color_written) {
         preserved = capture ? capture_full : preserved;
         if (preserved) {
@@ -1641,6 +1653,30 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             (unsigned long long)color_target->gpu_address,
             color_target->width, color_target->height);
     return 1;
+}
+
+/* A guest draw can be ineligible for HLE while still having a fully known write set. Preserve
+   unrelated shadow images across that draw, but discard every target it could have modified. */
+static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment) {
+    const char* shadow = getenv("SNX_NVN_SHADOW_DRAW");
+    if (!shadow || strcmp(shadow, "1") || !vertex || !fragment || !command->target_complete ||
+        (!command->color_target_mask && !command->depth_target_bound) ||
+        vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf ||
+        vertex->si.gbuf_wmask || fragment->si.gbuf_wmask)
+        return;
+    for (u32 i = 0; i < 8; i++)
+        if ((command->color_target_mask & (1u << i)) && !shadow_range_known(&command->color_target[i])) return;
+    if (command->depth_target_bound && !shadow_range_known(&command->depth_target)) return;
+    for (u32 i = 0; i < 8; i++)
+        if (command->color_target_mask & (1u << i)) shadow_invalidate_backing(&command->color_target[i]);
+    if (command->depth_target_bound) shadow_invalidate_backing(&command->depth_target);
+    mark_modeled_unknown(command->sequence + 1, command->last_unmodeled_write);
+    static u64 scoped_draws;
+    scoped_draws++;
+    if (scoped_draws == 1 || !(scoped_draws % 100))
+        LOG("nvn-shadow-scoped-draw: count=%llu target=%llx colors=%x depth=%d\n",
+            (unsigned long long)scoped_draws, (unsigned long long)command->color_target[0].gpu_address,
+            command->color_target_mask, command->depth_target_bound);
 }
 
 /* Compare the first completed shadow target with its Maxwell surface after the guest submission. This is a
@@ -1975,7 +2011,8 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_TARGET_VIEW;
         }
     }
-    if (draw_pipeline)
-        shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key, embedded_bank1);
+    if (draw_pipeline &&
+        !shadow_draw_simple(command, vertex_shader, fragment_shader, draw_pipeline, &draw_key, embedded_bank1))
+        scope_unmodeled_draw(command, vertex_shader, fragment_shader);
     return NVN_DRAW_PREPARED | resource_status | NVN_DRAW_SHARED_TARGET;
 }

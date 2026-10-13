@@ -198,6 +198,10 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x0C:
             PICK(VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16_SINT,
                  VK_FORMAT_R16G16_UNORM, 4);
+        case 0x0E:
+            /* G24R8 with an unsigned stencil byte and normalized depth: Scarlet's depth TIC. */
+            if ((w0 & 0x3ffffu) == 0x24a0eu) return vk_zt_format(0x14);
+            break;
         case 0x0F:
             return flt  ? T(VK_FORMAT_R32_SFLOAT, 4, 0, 0)
                    : ui ? T(VK_FORMAT_R32_UINT, 4, 1, 0)
