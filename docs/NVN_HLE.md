@@ -935,12 +935,18 @@ GPU write generations advanced throughout that sample. The current write-generat
 can reject a descriptor whose twelve bytes did not change. The trace does not prove the value for every submitted
 NVN draw, and a direct path cannot depend on the emulated draw boundary as its source of state. The next step is to
 decode the command-list writes and pair their per-draw buffer state with the NVN semantic draw stream.
-A separate temporary scan decoded 9,526 single-allocation NVN command-memory spans of at most 64 KiB during a
-15-second TotK run; 1,359 candidate spans did not meet those bounds. The decoded spans contained 51,392 Maxwell
-constant-buffer data methods, but no method wrote the twelve descriptor bytes at `0x500390550–0x50039055b`.
-Sample writes addressed `0x502950000`. The descriptor source therefore remains unlocated: CPU updates, larger or
-multi-allocation command lists, and queue work outside those spans still need to be traced. The direct path must
-recover that state independently of the emulated GPU draw.
+A temporary raw-method scan decoded 9,526 single-allocation NVN command-memory spans of at most 64 KiB during a
+15-second TotK run; 1,359 candidate spans did not meet those bounds. It found 51,392 explicit Maxwell
+constant-buffer data methods, but initially missed the descriptor upload because the scanner ignored MME effects.
+The actual GPFIFO entry mapped back to a recorded 80-byte NVN list span. That span calls macro `0xe20` with parameter
+`0x154`, followed by three `0x8e4–0x8e6` data words. The GPU executed those as a 12-byte write at
+`0x500390550` (`0x154` words past CBUF 0), repeatedly during the workload. TotK's uploaded macro index 16 began
+at word `0xfe` in the captured MME program. A direct command-list decoder must retain the inherited CBUF binding,
+execute or validate the macro's offset effect, and attach the resulting descriptor words to draws in list order.
+The recorder now snapshots the syntactic `0xe20` plus three-data-word packet at EndRecording, before command memory
+can be reused. A 16-second TotK run captured 1,273 such packets while still issuing 900 direct shadow draws. This
+snapshot proves packet order and values only; interpreting the macro and associating its effect with each semantic
+draw remain required before the packet can drive rendering or narrow unknown-write markers.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.

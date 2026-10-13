@@ -73,5 +73,22 @@ int main(void) {
     assert(!nvn_command_gap_methods(altered, 12, capture, &methods) && !methods.count);
     assert(!nvn_command_gap_indexed_draw(packet, 11, &draw));
     assert(!nvn_command_gap_indexed_draw(NULL, 12, &draw));
+
+    /* TotK's descriptor upload: the MME argument is a word offset, but that interpretation belongs
+       to its uploaded macro program and is not inferred by this packet parser. */
+    const u32 descriptor_packet[] = {
+        0x60010e0e, 4, 0x6001068b, 0, 0x600108e3, 0xa8, 0x600108e4, 0x14d0103c,
+        0x60010e20, 0x154, 0x200308e4, 0x23130000, 6, 0xe5e0,
+    };
+    NvnGapMacroData3 descriptor = {0};
+    assert(nvn_command_gap_macro_data3(descriptor_packet, 14, 0xe20, &descriptor));
+    assert(descriptor.macro_argument == 0x154);
+    assert(descriptor.words[0] == 0x23130000 && descriptor.words[1] == 6 && descriptor.words[2] == 0xe5e0);
+    assert(!nvn_command_gap_macro_data3(descriptor_packet, 14, 0xe18, &descriptor));
+    u32 interrupted[14];
+    memcpy(interrupted, descriptor_packet, sizeof interrupted);
+    interrupted[10] = 0x200308e3; /* An offset setter in place of the first data word breaks the sequence. */
+    assert(!nvn_command_gap_macro_data3(interrupted, 14, 0xe20, &descriptor));
+    assert(!nvn_command_gap_macro_data3(descriptor_packet, 13, 0xe20, &descriptor));
     return 0;
 }

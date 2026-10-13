@@ -65,3 +65,41 @@ int nvn_command_gap_indexed_draw(const u32* words, u32 length, NvnGapIndexedDraw
     }
     return 0;
 }
+
+typedef struct {
+    u32 macro_method;
+    NvnGapMacroData3 packet;
+    u8 phase, found, invalid;
+} MacroData3Scan;
+
+static void scan_macro_data3(u32 subchannel, u32 method, u32 value, void* context) {
+    MacroData3Scan* scan = context;
+    if (scan->invalid) return;
+    if (!subchannel && method == scan->macro_method) {
+        if (scan->phase || scan->found) scan->invalid = 1;
+        else {
+            scan->packet.macro_argument = value;
+            scan->phase = 1;
+        }
+        return;
+    }
+    if (!scan->phase) return;
+    if (subchannel || method != 0x8e3 + scan->phase) {
+        scan->invalid = 1;
+        return;
+    }
+    scan->packet.words[scan->phase - 1] = value;
+    if (++scan->phase == 4) {
+        scan->found = 1;
+        scan->phase = 0;
+    }
+}
+
+int nvn_command_gap_macro_data3(const u32* words, u32 count, u32 macro_method, NvnGapMacroData3* out) {
+    if (!out || macro_method < 0xe00 || macro_method > 0xfff) return 0;
+    MacroData3Scan scan = {.macro_method = macro_method};
+    if (!nvn_command_gap_methods(words, count, scan_macro_data3, &scan) ||
+        !scan.found || scan.phase || scan.invalid) return 0;
+    *out = scan.packet;
+    return 1;
+}

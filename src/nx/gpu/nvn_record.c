@@ -92,6 +92,8 @@ typedef struct {
 typedef struct {
     u64 key;
     u64 command_cursor, command_low, command_high;
+    NvnGapMacroData3 cbuf_macro_data;
+    u8 cbuf_macro_data_known;
     u32 cb_size, cb_high, cb_low;
     u8 cb_known;
     struct {
@@ -114,6 +116,7 @@ static PMutex lock = PMUTEX_INIT;
 static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_found, submitted_missing, submitted_opaque;
 static u64 inlined_draws, inlined_uniform_binds, inlined_uniform_unknown, inlined_vertex_binds,
     inlined_vertex_unknown, inlined_gaps, inlined_unparsed;
+static u64 cbuf_macro_packets;
 static int inlined_draw_replay;
 static u64 calls, call_refs, call_ref_missing, call_ref_opaque, truncated_refs;
 static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, invalid_arrays, allocation_failures;
@@ -2072,6 +2075,14 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
     if (r) {
         if (inlined_draw_replay && r->command_cursor && readable_range(command_buffer, 8)) {
             u64 end = gr64(command_buffer);
+            if (r->command_memory_count == 1 && end > r->command_low && end <= r->command_high &&
+                end - r->command_low <= 65536 && !((end - r->command_low) & 3) &&
+                readable_range(r->command_low, end - r->command_low)) {
+                r->cbuf_macro_data_known = nvn_command_gap_macro_data3(
+                    (const u32*)GP(r->command_low), (u32)((end - r->command_low) / 4),
+                    0xe20, &r->cbuf_macro_data);
+                cbuf_macro_packets += r->cbuf_macro_data_known;
+            }
             if (end == r->command_cursor)
                 r->command_tail_known = 1;
             else if (end > r->command_cursor && end <= r->command_high &&
@@ -2116,11 +2127,11 @@ void nvn_record_report(void) {
     report_ops("submitted", submitted_ops);
     report_ops("referenced", referenced_ops);
     if (inlined_draw_replay)
-        LOG("nvn-record: inlined-gaps=%llu indexed-draws=%llu uniform-binds=%llu unknown-uniforms=%llu vertex-binds=%llu unknown-vertices=%llu unparsed-gaps=%llu\n",
+        LOG("nvn-record: inlined-gaps=%llu indexed-draws=%llu uniform-binds=%llu unknown-uniforms=%llu vertex-binds=%llu unknown-vertices=%llu unparsed-gaps=%llu cbuf-macro-packets=%llu\n",
             (unsigned long long)inlined_gaps, (unsigned long long)inlined_draws,
             (unsigned long long)inlined_uniform_binds, (unsigned long long)inlined_uniform_unknown,
             (unsigned long long)inlined_vertex_binds, (unsigned long long)inlined_vertex_unknown,
-            (unsigned long long)inlined_unparsed);
+            (unsigned long long)inlined_unparsed, (unsigned long long)cbuf_macro_packets);
     LOG("nvn-record: refs=%llu missing_refs=%llu opaque_refs=%llu truncated_refs=%llu\n", (unsigned long long)call_refs,
         (unsigned long long)call_ref_missing, (unsigned long long)call_ref_opaque, (unsigned long long)truncated_refs);
     LOG("nvn-record: calls=%llu active_collisions=%llu list_collisions=%llu truncated_lists=%llu dropped_ops=%llu "
