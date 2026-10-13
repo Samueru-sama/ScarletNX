@@ -265,6 +265,7 @@ void nvn_trace_init(void) {
     const char* copy_execute_env = getenv("SNX_NVN_COPY_EXECUTE");
     const char* draw_prepare_env = getenv("SNX_NVN_DRAW_PREPARE");
     const char* texture_load_env = getenv("SNX_NVN_TEXTURE_LOAD");
+    const char* attachment_prepare_env = getenv("SNX_NVN_ATTACHMENT_PREPARE");
     const char* replay_env = getenv("SNX_NVN_DESC_REPLAY");
     tracing = trace_env && !strcmp(trace_env, "1");
     hle = hle_env && !strcmp(hle_env, "1");
@@ -273,7 +274,8 @@ void nvn_trace_init(void) {
     int clear_execute = clear_execute_env && !strcmp(clear_execute_env, "1");
     int copy_execute = copy_execute_env && !strcmp(copy_execute_env, "1");
     int texture_load = texture_load_env && !strcmp(texture_load_env, "1");
-    int draw_prepare = texture_load || (draw_prepare_env && !strcmp(draw_prepare_env, "1"));
+    int attachment_prepare = attachment_prepare_env && !strcmp(attachment_prepare_env, "1");
+    int draw_prepare = texture_load || attachment_prepare || (draw_prepare_env && !strcmp(draw_prepare_env, "1"));
     descriptor_replay =
         shader_translate || clear_execute || copy_execute || draw_prepare || (replay_env && !strcmp(replay_env, "1"));
     recording = descriptor_replay || (record_env && !strcmp(record_env, "1"));
@@ -290,6 +292,7 @@ void nvn_trace_init(void) {
     if (copy_execute) nvn_record_enable_copy_execute();
     if (draw_prepare) nvn_record_enable_draw_prepare();
     if (texture_load) nvn_record_enable_texture_load();
+    if (attachment_prepare) nvn_record_enable_attachment_prepare();
     if (shader_translate) {
         nvn_program_enable_translation();
         nvn_record_enable_shader_transport();

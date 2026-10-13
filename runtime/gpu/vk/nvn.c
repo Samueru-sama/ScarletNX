@@ -12,6 +12,10 @@
 #define NVN_IMAGE_SLOTS  128
 #define NVN_IMAGE_BUDGET (256ull << 20)
 typedef struct {
+    VkImageView view;
+    u16 mip, layer;
+} NvnAttachmentView;
+typedef struct {
     u64 texture, pool, address, texture_generation, pool_generation;
     u64 subresource_sequence[16][64];
     u32 width, height, levels, layers, target, format;
@@ -19,12 +23,14 @@ typedef struct {
     u64 last_batch;
     VkImage image;
     VkImageView sampled_view, base_view;
+    NvnAttachmentView attachments[16];
     VmaAllocation allocation;
     VkImageLayout layout;
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
     u64 color_layers[16], depth_layers[16];
     int sampled;
+    int attachment;
 } NvnImage;
 static NvnImage images[NVN_IMAGE_SLOTS];
 static u64 image_bytes;
@@ -46,6 +52,9 @@ static NvnImage* evict_old_image(void) {
         if (!oldest || image->last_batch < oldest->last_batch) oldest = image;
     }
     if (!oldest) return NULL;
+    for (u32 i = 0; i < 16; i++)
+        if (oldest->attachments[i].view)
+            vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->attachments[i].view, VK_NULL_HANDLE);
     vk_defer_image(oldest->image, oldest->allocation, oldest->sampled_view, oldest->base_view);
     image_bytes -= oldest->bytes;
     memset(oldest, 0, sizeof *oldest);
@@ -137,6 +146,14 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, format, &properties);
     if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) return NULL;
     int sampled = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    VkFormatFeatureFlags attachment_feature = aspect & VK_IMAGE_ASPECT_DEPTH_BIT
+                                                  ? VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                  : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+    int attachment = !!(properties.optimalTilingFeatures & attachment_feature);
+    VkImageUsageFlags attachment_usage =
+        attachment ? (aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                                         : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+                   : 0;
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .imageType = VK_IMAGE_TYPE_2D,
                               .flags = target->target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
@@ -146,7 +163,8 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                               .arrayLayers = target->depth,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0)};
+                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT : 0) |
+                                       attachment_usage};
     VmaAllocationCreateInfo allocation = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkImage image = VK_NULL_HANDLE;
     VmaAllocation memory = NULL;
@@ -169,6 +187,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     empty->stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
     empty->sampled = sampled;
+    empty->attachment = attachment;
     if (sampled) {
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                       .image = image,
@@ -187,6 +206,45 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         }
     }
     return empty;
+}
+
+/* Materialize the exact mip and layer a future host draw would attach. No pixels are marked written until that draw
+   actually executes on the host path. */
+static int prepare_attachment(const NvnTextureTarget* target, int depth) {
+    u32 mip = target->view.base_level, layer = target->view.first_layer;
+    if ((target->target != 1 && target->target != 4 && target->target != 8) || !target->width || !target->height ||
+        !target->depth || (target->target == 1 && target->depth != 1) || !target->levels || target->samples > 1 ||
+        mip >= target->levels || layer >= target->depth || target->view.level_count > 1 ||
+        target->view.layer_count > 1 || (target->view.flags & (8 | 16)))
+        return 0;
+    VkFmt format = nvn_format(target->format);
+    if (!format.vk || !!format.depth != depth || format.bw > 1 || format.bh > 1 || format.conv ||
+        (target->format == 0x25 && format.vk != VK_FORMAT_R8G8B8A8_UNORM) ||
+        (target->format == 0x3f && format.vk != VK_FORMAT_B10G11R11_UFLOAT_PACK32))
+        return 0;
+    int full = 0;
+    NvnImage* image = image_for(target, format.vk, vk_aspect(&format), &full);
+    if (!image || !image->attachment) return 0;
+    for (u32 i = 0; i < 16; i++)
+        if (image->attachments[i].view && image->attachments[i].mip == mip && image->attachments[i].layer == layer) {
+            image->last_batch = batch_serial;
+            return 1;
+        }
+    for (u32 i = 0; i < 16; i++) {
+        NvnAttachmentView* slot = &image->attachments[i];
+        if (slot->view) continue;
+        VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                      .image = image->image,
+                                      .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                      .format = format.vk,
+                                      .subresourceRange = {vk_aspect(&format), mip, 1, layer, 1}};
+        if (vkCreateImageView(g_vk.dev, &view, NULL, &slot->view) != VK_SUCCESS) return 0;
+        slot->mip = mip;
+        slot->layer = layer;
+        image->last_batch = batch_serial;
+        return 1;
+    }
+    return 0;
 }
 
 int vk_nvn_clear(const NvnClearCommand* command) {
@@ -491,6 +549,14 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     int resource_status = sampler_status | texture_status;
     int has_target = command->color_target_mask || command->depth_target_bound;
     if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED | resource_status;
+    if (command->prepare_attachments) {
+        int ready = 1;
+        for (u32 i = 0; i < 8; i++)
+            if ((command->color_target_mask & (1u << i)) && !prepare_attachment(&command->color_target[i], 0))
+                ready = 0;
+        if (command->depth_target_bound && !prepare_attachment(&command->depth_target, 1)) ready = 0;
+        resource_status |= ready ? NVN_DRAW_ATTACHMENT_READY : NVN_DRAW_ATTACHMENT_FAILED;
+    }
     for (u32 i = 0; i < 8; i++) {
         if (!(command->color_target_mask & (1u << i))) continue;
         const NvnTextureTarget* target = &command->color_target[i];

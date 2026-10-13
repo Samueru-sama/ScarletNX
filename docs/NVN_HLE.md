@@ -266,6 +266,13 @@ stream. Keeping those draws as global invalidations is conservative; relaxing it
 storage-image writes and their aliases. The source bytes are still read after guest GPFIFO execution, so this shadow
 path does not establish historical texture contents at each NVN command.
 
+`SNX_NVN_ATTACHMENT_PREPARE=1` additionally materializes NVN-owned image views for the exact mip and layer selected
+by each recorded draw target. It checks host color or depth attachment support and keeps views in the bounded image
+cache. It does not mark those subresources written: the guest draw still owns their pixels. In opt-in boots, Catherine
+prepared attachments for all 3,637 completed draws and TotK for all 2,506, with zero failures or image-cache capacity
+loss. This establishes attachment allocation and subresource selection for the observed targets, not shader execution
+or image coherence.
+
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported

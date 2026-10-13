@@ -130,6 +130,7 @@ static int clear_execute;
 static int copy_execute;
 static int draw_prepare;
 static int texture_load;
+static int attachment_prepare;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
@@ -155,6 +156,7 @@ static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_ot
 static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_staged, draw_stage_full, draw_flushed;
 static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_target_no_surf, draw_target_format,
     draw_target_size, draw_target_view;
+static u64 draw_attachment_ready, draw_attachment_failed;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
 static u64 draw_texture_header_ready, draw_texture_header_missing, draw_texture_header_unsupported;
 static u64 draw_texture_image_ready, draw_texture_image_failed, draw_texture_image_semantic;
@@ -218,6 +220,10 @@ void nvn_record_enable_draw_prepare(void) { draw_prepare = 1; }
 void nvn_record_enable_texture_load(void) {
     draw_prepare = 1;
     texture_load = 1;
+}
+void nvn_record_enable_attachment_prepare(void) {
+    draw_prepare = 1;
+    attachment_prepare = 1;
 }
 
 static ReplayQueue* replay_queue_slot(u64 key) {
@@ -560,6 +566,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             NvnDrawCommand draw = {0};
             draw.last_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
             draw.load_textures = texture_load;
+            draw.prepare_attachments = attachment_prepare;
             draw.program_bound = state->program_bound;
             memcpy(draw.program, state->program, sizeof draw.program);
             draw.program_known = !!state->program_bound;
@@ -1213,6 +1220,8 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_TARGET_FORMAT) __atomic_fetch_add(&draw_target_format, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_TARGET_SIZE) __atomic_fetch_add(&draw_target_size, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_TARGET_VIEW) __atomic_fetch_add(&draw_target_view, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_ATTACHMENT_READY) __atomic_fetch_add(&draw_attachment_ready, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_ATTACHMENT_FAILED) __atomic_fetch_add(&draw_attachment_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_READY) __atomic_fetch_add(&draw_sampler_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_MISSING) __atomic_fetch_add(&draw_sampler_missing, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_FAILED) __atomic_fetch_add(&draw_sampler_failed, 1, __ATOMIC_RELAXED);
@@ -1456,6 +1465,10 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_target_format, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_target_size, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_target_view, __ATOMIC_RELAXED));
+        if (attachment_prepare)
+            LOG("nvn-draw-attachment: ready=%llu failed=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_attachment_ready, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_attachment_failed, __ATOMIC_RELAXED));
         if (draw_prepare)
             LOG("nvn-draw-sampler: ready=%llu missing=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_sampler_ready, __ATOMIC_RELAXED),
