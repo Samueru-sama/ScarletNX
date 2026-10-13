@@ -501,6 +501,40 @@ static int nvn_integer_format(u32 format) {
     }
 }
 
+static VkFormat nvn_vertex_format(u32 format) {
+    switch (format) {
+        case 0x0d: return VK_FORMAT_R8G8_UNORM;
+        case 0x16: return VK_FORMAT_R32G32_SFLOAT;
+        case 0x22: return VK_FORMAT_R32G32B32_SFLOAT;
+        case 0x25: return VK_FORMAT_R8G8B8A8_UNORM;
+        case 0x29: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case 0x2a: return VK_FORMAT_R16G16B16A16_UNORM;
+        case 0x2e: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case 0x69: return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
+        default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+static int prepare_vertex_formats(const NvnDrawCommand* command) {
+    for (u32 i = 0; i < command->vertex_attrib_count; i++) {
+        const NvnVertexAttrib* attrib = &command->vertex_attrib[i];
+        if (!attrib->enabled) continue;
+        VkFormat format = nvn_vertex_format(attrib->format);
+        if (!format) {
+            LOG_LIMIT(8, "nvn-vertex-format: unmapped format=%x attribute=%u\n", attrib->format, i);
+            return 0;
+        }
+        VkFormatProperties properties;
+        vkGetPhysicalDeviceFormatProperties(g_vk.phys, format, &properties);
+        if (!(properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
+            LOG_LIMIT(8, "nvn-vertex-format: device rejected format=%x vk=%u attribute=%u\n", attrib->format, format,
+                      i);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int materialize_draw_shaders(const NvnDrawCommand* command) {
     if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
     u64 vertex_a = 0, vertex_b = 0, fragment = 0;
@@ -690,6 +724,9 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                 : NVN_DRAW_TEXTURE_IMAGE_FAILED | failure;
     }
     int resource_status = sampler_status | texture_status;
+    if (command->materialize_shaders)
+        resource_status |=
+            prepare_vertex_formats(command) ? NVN_DRAW_VERTEX_FORMAT_READY : NVN_DRAW_VERTEX_FORMAT_FAILED;
     if (command->materialize_shaders)
         resource_status |=
             materialize_draw_shaders(command) ? NVN_DRAW_SHADER_MODULE_READY : NVN_DRAW_SHADER_MODULE_FAILED;

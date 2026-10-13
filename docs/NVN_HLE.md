@@ -285,6 +285,10 @@ clip-distance enables, pipeline state, descriptor sets, command recording, and i
 the NVN draw. Successful module creation does not mean a Vulkan pipeline can render the draw correctly.
 In opt-in boots, both modules were available for all 3,827 prepared Catherine draws and all 2,858 prepared TotK
 draws, with no shader-module or attachment failures. Neither title's guest draws were replaced.
+The same option checks the eight [NVN vertex formats](https://codeviewer.zeldamods.org/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html)
+observed in those boots against Vulkan vertex-buffer format support. Unknown or unsupported formats are reported
+separately. In later boots, Catherine passed this format check for all 3,773 prepared draws and TotK for all 2,946,
+with zero format failures. Vertex stream bindings, offsets, and divisors still need a complete pipeline layout.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each

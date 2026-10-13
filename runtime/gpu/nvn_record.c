@@ -159,6 +159,7 @@ static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_tar
     draw_target_size, draw_target_view;
 static u64 draw_attachment_ready, draw_attachment_failed;
 static u64 draw_shader_module_ready, draw_shader_module_failed;
+static u64 draw_vertex_format_ready, draw_vertex_format_failed;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
 static u64 draw_texture_header_ready, draw_texture_header_missing, draw_texture_header_unsupported;
 static u64 draw_texture_image_ready, draw_texture_image_failed, draw_texture_image_semantic;
@@ -1231,6 +1232,8 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_ATTACHMENT_FAILED) __atomic_fetch_add(&draw_attachment_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SHADER_MODULE_READY) __atomic_fetch_add(&draw_shader_module_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SHADER_MODULE_FAILED) __atomic_fetch_add(&draw_shader_module_failed, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_VERTEX_FORMAT_READY) __atomic_fetch_add(&draw_vertex_format_ready, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_VERTEX_FORMAT_FAILED) __atomic_fetch_add(&draw_vertex_format_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_READY) __atomic_fetch_add(&draw_sampler_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_MISSING) __atomic_fetch_add(&draw_sampler_missing, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_FAILED) __atomic_fetch_add(&draw_sampler_failed, 1, __ATOMIC_RELAXED);
@@ -1482,6 +1485,10 @@ void nvn_record_report(void) {
             LOG("nvn-draw-shader-module: ready=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_shader_module_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_shader_module_failed, __ATOMIC_RELAXED));
+        if (shader_materialize)
+            LOG("nvn-draw-vertex-format: ready=%llu failed=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_vertex_format_ready, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_vertex_format_failed, __ATOMIC_RELAXED));
         if (draw_prepare)
             LOG("nvn-draw-sampler: ready=%llu missing=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_sampler_ready, __ATOMIC_RELAXED),
