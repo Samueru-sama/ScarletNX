@@ -538,7 +538,7 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
             if (f.sint) rs |= 1u << i;
         }
     }
-    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0);
+    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0);
     if (!s0) return s0;
     u32 tm = 0, ts = 0;
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
@@ -555,7 +555,7 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
     }
     rm &= s0->si.sph[18] ? 0xFF : 0;
     if (!tm && !rm) return s0;
-    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0);
+    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0, 0, 0);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -834,11 +834,13 @@ retry:
     }
     /* SetUserClipEnable (0x544): a clip distance the program writes clips only when its bit is set */
     VkSh* vs = vk_shader_get(code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                             r[0x544] & 0xFF);
+                             r[0x544] & 0xFF, 0, 0);
     TexRes fres[SH_MAXTEX];
     for (int i = 0; i < SH_MAXTEX; i++) fres[i].have = 0;
     VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres) : NULL;
-    if (!vs || vs->failed || (fs && fs->failed)) {
+    /* Graphics storage-image writes still need image descriptors and writeback on this Maxwell path. Keep the
+       previous unsupported-shader behavior until those bindings are implemented. */
+    if (!vs || vs->failed || (fs && (fs->failed || fs->si.nimg))) {
         g_vk_skipped++;
         return;
     }

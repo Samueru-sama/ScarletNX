@@ -680,6 +680,17 @@ fifteen-second Scarlet probe, 7,810 draws with a bound image had complete descri
 before observing image registrations. Catherine, TotK, and Odyssey boot probes did not bind images and retained
 their previous texture and pipeline results. A bound image is not necessarily accessed by its shader; image
 format, storage usage, shader operations, and write ordering still need validation before a host draw can use it.
+Scarlet's two fragment image shaders use `SUST` and the U32 2D maximum form of `SURED`. The translator now emits
+fragment storage-image stores and that verified reduction as `imageAtomicMax`; other `SURED` encodings remain
+unsupported. The [Ryujinx decoder](https://git.axenov.dev/Museum/ryujinx/src/commit/888402ecaf76c0ead448baaf52abbb3d48bb4ae9/src/Ryujinx.Graphics.Shader/Decoders/InstDecoders.cs)
+identifies the instruction fields, and [NVIDIA's PTX ISA](https://docs.nvidia.com/cuda/archive/12.8.0/parallel-thread-execution/index.html)
+describes surface reduction semantics. The observed image handle is bound at fragment slot 1, and the translated
+shader reads its handle from CBUF 2 word 74. Its TIC is R32_UINT, so NVN shader materialization now keys image
+store declarations on the captured TIC's integer type. A fifteen-second Scarlet probe prepared all 7,332 observed
+shader modules and 7,330 pipelines, with two unrelated pipeline misses. The Maxwell GPFIFO renderer still skips
+graphics shaders with storage-image writes until it can bind and synchronize those images; the direct NVN probe
+still does not issue draws. Catherine, TotK, and Odyssey scene probes retained their previous shader and texture
+coverage.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

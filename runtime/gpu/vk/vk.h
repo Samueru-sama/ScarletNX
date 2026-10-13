@@ -294,7 +294,7 @@ u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read)
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[5]; /* the key: vk_shader_get's masks */
+    u32 mask[7]; /* the key: vk_shader_get's masks */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -311,7 +311,8 @@ extern char g_vk_spirv_dir[1100]; /* shader_cache/spirv next to the games, set b
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
    vertex stage, textures and render target outputs for the fragment stage. clip: the clip distances the 3D engine
    enables (vertex stage) */
-VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip);
+VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip,
+                    u32 img_int, u32 img_sint);
 /* the bound constant buffers per stage, which the translator also reads to resolve indirect branches */
 extern u64 g_vk_cb[5][18];
 extern u32 g_vk_cbsize[5][18];

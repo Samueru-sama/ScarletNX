@@ -696,7 +696,44 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
             }
         VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
                                      stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, stage ? 0 : attr_int,
-                                     stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0, 0);
+                                     stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0, 0, 0, 0);
+        if (stage && shader && shader->mod && !shader->failed && !shader->si.unsupported && shader->si.nimg) {
+            u32 image_int = 0, image_sint = 0;
+            int images_known = 1;
+            for (int k = 0; k < shader->si.nimg; k++) {
+                u32 word = shader->si.img[k].cbuf_off;
+                if (!shader->si.img[k].bindless || shader->si.img[k].bl_cbuf != 2 || word < 72 ||
+                    ((word - 72) & 1) || (word - 72) / 2 >= NVN_DRAW_IMAGE_SLOTS) {
+                    images_known = 0;
+                    break;
+                }
+                u32 slot = (word - 72) / 2;
+                const NvnDescriptorSnapshot* descriptor = &command->image_descriptor[stage][slot];
+                if (!(command->image_bound[stage] & (1u << slot)) ||
+                    !(command->image_descriptor_valid[stage] & (1u << slot)) || !descriptor->tic_valid) {
+                    images_known = 0;
+                    break;
+                }
+                VkFmt format = vk_tic_format(descriptor->tic[0], 0);
+                if (!format.vk) {
+                    images_known = 0;
+                    break;
+                }
+                if (format.is_int) {
+                    image_int |= 1u << k;
+                    if (format.sint) image_sint |= 1u << k;
+                }
+                if (shader->si.img[k].number_type &&
+                    (format.vk != VK_FORMAT_R32_UINT || shader->si.img[k].number_type != 1)) {
+                    images_known = 0;
+                    break;
+                }
+            }
+            if (images_known && (image_int || image_sint))
+                shader = vk_shader_get(fragment, 0, ST_FS, 0, 0, rt_int, rt_sint, 0, image_int, image_sint);
+            else if (!images_known)
+                shader = NULL;
+        }
         memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
         memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
         if (!shader || !shader->mod || shader->failed || shader->si.unsupported) {

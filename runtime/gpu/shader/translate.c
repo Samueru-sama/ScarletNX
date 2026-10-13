@@ -1859,11 +1859,11 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
         }
         case O_SULD:
         case O_SUST: {
-            /* compute images. SUST -> imageStore, SULD -> texelFetch on the same texture.
+            /* SUST writes storage images in compute and fragment shaders. SULD reads via texelFetch.
        .P = formatted (mask 20..23), .D = raw bytes (size 20..22) converted using the format class
        uniforms snx_ic / snx_tc the runtime sets at dispatch */
             u32 isd = B(w, 52, 1), bound = B(w, 51, 1), ty = B(w, 33, 3), ra = a, rdd = d;
-            if (c->stage != ST_CS || ty == 1 || ty > 5) {
+            if ((c->stage != ST_CS && c->stage != ST_FS) || ty == 1 || ty > 5) {
                 unsupported(c, id == O_SUST ? "SUST" : "SULD", w);
                 if (id == O_SULD && rdd != 255) { setr(c, rdd, "0u"); }
                 break;
@@ -1906,6 +1906,9 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
                     si->img[k].type = (u8)ty;
                     si->img[k].bindless = (u8)bl;
                     si->img[k].bl_cbuf = (u8)bank;
+                    si->img[k].number_type = (si->img_int_mask & (1u << k))
+                                                  ? (si->img_sint_mask & (1u << k) ? 2 : 1)
+                                                  : 0;
                     si->nimg++;
                     if (bl && bank < 18) {
                         si->cbuf_mask |= 1u << bank;
@@ -1919,13 +1922,24 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
                 if (!isd) {
                     u32 m = B(w, 20, 4), r = rdd;
                     const char* cc[4] = {"0.0", "0.0", "0.0", "1.0"};
+                    if (si->img[k].number_type)
+                        for (int q = 0; q < 4; q++) cc[q] = "0";
                     for (int q = 0; q < 4; q++)
                         if (m & (1u << q)) {
-                            cc[q] = r == 255 ? "0.0" : T("uintBitsToFloat(%s)", R(c, r));
+                            cc[q] = r == 255 ? (si->img[k].number_type ? "0" : "0.0")
+                                         : si->img[k].number_type == 1 ? R(c, r)
+                                         : si->img[k].number_type == 2 ? T("int(%s)", R(c, r))
+                                                                        : T("uintBitsToFloat(%s)", R(c, r));
                             if (r != 255) r++;
                         }
-                    emitl(c, "imageStore(img%d, %s, vec4(%s, %s, %s, %s));", k, crd, cc[0], cc[1], cc[2], cc[3]);
+                    emitl(c, "imageStore(img%d, %s, %svec4(%s, %s, %s, %s));", k, crd,
+                          si->img[k].number_type == 1 ? "u" : si->img[k].number_type == 2 ? "i" : "", cc[0], cc[1],
+                          cc[2], cc[3]);
                 } else {
+                    if (si->img[k].number_type) {
+                        unsupported(c, "SUST.D integer image", w);
+                        break;
+                    }
                     c->uses_img_raw = 1;
                     emitl(c, "imageStore(img%d, %s, snx_r2v(uvec4(%s, %s, %s, %s), %uu, %uu, snx_ic[%d]));", k, crd,
                           R(c, rdd), nw > 1 ? R(c, rdd + 1) : "0u", nw > 2 ? R(c, rdd + 2) : "0u",
@@ -1954,6 +1968,52 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
                     emitl(c, "}");
                 }
             }
+            break;
+        }
+        case O_SURED: {
+            /* Maxwell SURED: the destination field names the reduction value, not a result register.
+               Start with the U32 2D maximum form used by Scarlet; other size/op encodings remain unsupported. */
+            u32 ty = B(w, 33, 3), sz = B(w, 20, 3), op = B(w, 24, 3);
+            if ((c->stage != ST_FS && c->stage != ST_CS) || ty != 3 || sz != 0 || op != 2 || B(w, 23, 1)) {
+                unsupported(c, "SURED", w);
+                break;
+            }
+            u32 bound = B(w, 51, 1), off = 0, bank = 0;
+            int bindless = 0;
+            if (bound)
+                off = B(w, 36, 13);
+            else {
+                u32 bo = 0;
+                if (!track_handle(c, idx, B(w, 39, 8), &bank, &bo) || c->bl2) {
+                    unsupported(c, "SURED.B (untracked handle)", w);
+                    break;
+                }
+                off = bo / 4;
+                bindless = 1;
+            }
+            ShaderInfo* si = c->si;
+            int k = 0;
+            for (; k < si->nimg; k++)
+                if (si->img[k].cbuf_off == off && si->img[k].type == ty && si->img[k].bindless == bindless &&
+                    si->img[k].number_type == 1 && (!bindless || si->img[k].bl_cbuf == bank))
+                    break;
+            if (k == si->nimg) {
+                if (si->nimg >= 8) {
+                    unsupported(c, "SURED (too many images)", w);
+                    break;
+                }
+                si->img[k].cbuf_off = off;
+                si->img[k].type = (u8)ty;
+                si->img[k].bindless = (u8)bindless;
+                si->img[k].bl_cbuf = (u8)bank;
+                si->img[k].number_type = 1;
+                si->nimg++;
+                if (bindless && bank < 18) {
+                    si->cbuf_mask |= 1u << bank;
+                    if (off * 4 + 4 > si->cbuf_max[bank]) si->cbuf_max[bank] = ((off * 4) | 15) + 1;
+                }
+            }
+            emitl(c, "imageAtomicMax(img%d, ivec2(int(%s), int(%s)), %s);", k, R(c, a), R(c, a + 1), R(c, d));
             break;
         }
         case O_TLDS: {

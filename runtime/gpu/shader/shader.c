@@ -551,6 +551,7 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
     /* the key's inputs (the caller's masks, compute's group size and shared memory) survive the reset */
     u32 attr_int = si->attr_int_mask, attr_sint = si->attr_sint_mask, kclip = si->clip_enable;
     u32 ktm = si->tex_int_mask, kts = si->tex_sint_mask, krm = si->rt_int_mask, krs = si->rt_sint_mask;
+    u32 kim = si->img_int_mask, kis = si->img_sint_mask;
     u32 kcl[3] = {si->cs_local[0], si->cs_local[1], si->cs_local[2]};
     int ksh = si->shared_size;
     memset(si, 0, sizeof *si);
@@ -564,6 +565,8 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
     si->tex_sint_mask = kts;
     si->rt_int_mask = krm;
     si->rt_sint_mask = krs;
+    si->img_int_mask = kim;
+    si->img_sint_mask = kis;
     memcpy(si->sph, code, 80);
     u32 len;
     shader_hash(code, max_bytes, &len);
@@ -869,11 +872,15 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
     if (c->uses_local) sb_f(D, "uint lmem[%u];\n", lmem_words(c));
     if (c->uses_shared)
         sb_f(D, "shared uint smem[%d];\n", stage == ST_CS && si->shared_size > 0 ? (si->shared_size + 3) / 4 : 16384);
-    if (stage == ST_CS) {
+    if (stage == ST_CS || stage == ST_FS) {
         static const char* it[6] = {"image1D", "imageBuffer", "image1DArray", "image2D", "image2DArray", "image3D"};
         for (int k = 0; k < si->nimg; k++)
-            sb_f(D, "layout(%s) writeonly uniform %s img%d;\n", bind_at(stage, SNX_VKB_IMG + k), it[si->img[k].type],
-                 k);
+            sb_f(D, "layout(%s%s) %suniform %s%s img%d;\n",
+                 si->img[k].number_type == 1 ? "r32ui, " : si->img[k].number_type == 2 ? "r32i, " : "",
+                 bind_at(stage, SNX_VKB_IMG + k),
+                 si->img[k].number_type ? "" : "writeonly ",
+                 si->img[k].number_type == 1 ? "u" : si->img[k].number_type == 2 ? "i" : "",
+                 it[si->img[k].type], k);
         if (c->uses_img_raw) {
             /* format class: 0 f32, 1 f16, 2 unorm8, 3 unorm16 */
             sb_put(

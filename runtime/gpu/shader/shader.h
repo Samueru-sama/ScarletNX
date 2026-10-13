@@ -39,16 +39,17 @@ typedef struct {
     u32 gbuf_wmask; /* global buffers written by compute or graphics shaders */
     struct {
         u32 cbuf_off;
-        u8 type, bindless, bl_cbuf, pad;
+        u8 type, bindless, bl_cbuf, number_type; /* 0 float store, 1 U32 atomic, 2 S32 atomic */
     } img[8];
-    int nimg;                                                   /* SUST targets (compute) */
+    int nimg;                                                   /* SUST targets (compute or fragment) */
+    u32 img_int_mask, img_sint_mask; /* image descriptor types used to key fragment shader translation */
     u32 tex_int_mask, tex_sint_mask, rt_int_mask, rt_sint_mask; /* FS key: integer textures / outputs */
 } ShaderInfo;
 /* the GLSL is for Vulkan: one descriptor set per stage (shader_vk_set), bindings in it by kind */
 #define SNX_VKB_CB   0  /* 18 constant buffers */
 #define SNX_VKB_SSBO 18 /* 16 global memory buffers */
 #define SNX_VKB_TEX  34 /* 32 combined image samplers */
-#define SNX_VKB_IMG  66 /* 8 storage images (compute) */
+#define SNX_VKB_IMG  66 /* 8 storage images */
 #define SNX_VKB_RS   74 /* fragment: 1/resolution scale (SNX_RS) */
 #define SNX_VKB_FMT  75 /* compute: image format classes (SNX_FMT) */
 #define SNX_VKB_SMAP 76 /* graphics: storage-buffer page indices for aliased bindings */
