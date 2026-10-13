@@ -69,27 +69,48 @@ int main(void) {
     assert(!nvn_command_gap_no_writes(counter_packet, 5));
     assert(nvn_command_gap_no_writes(puller_acquire, 5));
     assert(!nvn_command_gap_no_writes(puller_release, 5));
-    NvnGapReportState report_state = {0};
-    NvnGapReportWrite writes[2] = {0};
+    NvnGapMemoryState report_state = {0};
+    NvnGapMemoryWrite writes[2] = {0};
     u32 write_count = 99;
-    assert(!nvn_command_gap_report_writes(report_packet, 5, &report_state, writes, 0, &write_count));
+    assert(!nvn_command_gap_memory_writes(report_packet, 5, &report_state, writes, 0, &write_count));
     assert(write_count == 99 && !report_state.query_known);
-    assert(nvn_command_gap_report_writes(report_packet, 5, &report_state, writes, 2, &write_count));
-    assert(write_count == 1 && writes[0].query && writes[0].address == 0x622ad0000ull && writes[0].size == 16);
-    assert(nvn_command_gap_report_writes(acquire_packet, 5, &report_state, writes, 2, &write_count));
+    assert(nvn_command_gap_memory_writes(report_packet, 5, &report_state, writes, 2, &write_count));
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY &&
+           writes[0].address == 0x622ad0000ull && writes[0].size == 16);
+    assert(nvn_command_gap_memory_writes(acquire_packet, 5, &report_state, writes, 2, &write_count));
     assert(write_count == 0);
     const u32 puller_address[] = {0x20030004, 6, 0x22ad0000, 1};
     const u32 puller_word_release[] = {0x60010007, 0x01000002};
-    assert(nvn_command_gap_report_writes(puller_address, 4, &report_state, writes, 2, &write_count));
+    assert(nvn_command_gap_memory_writes(puller_address, 4, &report_state, writes, 2, &write_count));
     assert(write_count == 0 && report_state.puller_known == 3);
-    assert(nvn_command_gap_report_writes(puller_word_release, 2, &report_state, writes, 2, &write_count));
-    assert(write_count == 1 && !writes[0].query && writes[0].address == 0x622ad0000ull && writes[0].size == 4);
-    assert(nvn_command_gap_report_writes(counter_packet, 5, &report_state, writes, 2, &write_count));
-    assert(write_count == 1 && writes[0].query && writes[0].size == 16);
+    assert(nvn_command_gap_memory_writes(puller_word_release, 2, &report_state, writes, 2, &write_count));
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_PULLER &&
+           writes[0].address == 0x622ad0000ull && writes[0].size == 4);
+    assert(nvn_command_gap_memory_writes(counter_packet, 5, &report_state, writes, 2, &write_count));
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_QUERY && writes[0].size == 16);
     const u32 two_releases[] = {0x60010007, 2, 0x60010007, 2};
-    NvnGapReportState before_overflow = report_state;
-    assert(!nvn_command_gap_report_writes(two_releases, 4, &report_state, writes, 1, &write_count));
+    NvnGapMemoryState before_overflow = report_state;
+    assert(!nvn_command_gap_memory_writes(two_releases, 4, &report_state, writes, 1, &write_count));
     assert(!memcmp(&report_state, &before_overflow, sizeof report_state));
+    const u32 cbuf_words[] = {0x200308e1, 6, 0x22ad0000, 0x20,
+                              0x600408e4, 0x11111111, 0x22222222, 0x33333333, 0x44444444};
+    assert(nvn_command_gap_memory_writes(cbuf_words, 9, &report_state, writes, 2, &write_count));
+    assert(write_count == 1 && writes[0].kind == NVN_GAP_WRITE_CBUF &&
+           writes[0].address == 0x622ad0020ull && writes[0].size == 16);
+    assert(report_state.cbuf_offset == 0x30);
+    const u32 cbuf_then_report[] = {0x600108e4, 0x55555555, 0x60010007, 2};
+    assert(nvn_command_gap_memory_writes(cbuf_then_report, 4, &report_state, writes, 2, &write_count));
+    assert(write_count == 2 && writes[0].kind == NVN_GAP_WRITE_CBUF &&
+           writes[0].address == 0x622ad0030ull && writes[1].kind == NVN_GAP_WRITE_PULLER);
+    const u32 macro_then_data[] = {0x60010e20, 1, 0x600108e4, 0xdeadbeef};
+    before_overflow = report_state;
+    assert(!nvn_command_gap_memory_writes(macro_then_data, 4, &report_state, writes, 2, &write_count));
+    assert(!memcmp(&report_state, &before_overflow, sizeof report_state));
+    NvnGapMemoryState wrapped_address = {.cbuf_high = UINT32_MAX, .cbuf_low = UINT32_MAX,
+                                         .cbuf_offset = 1, .cbuf_known = 7};
+    const u32 one_data_word[] = {0x600108e4, 1};
+    assert(!nvn_command_gap_memory_writes(one_data_word, 2, &wrapped_address, writes, 2, &write_count));
+    assert(wrapped_address.cbuf_offset == 1);
     assert(!nvn_command_gap_no_writes(other_subchannel, 2));
     assert(!nvn_command_gap_no_writes(binding_packets, 7));
 

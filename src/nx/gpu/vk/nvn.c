@@ -4,6 +4,7 @@
    guest-memory coherence are implemented. */
 #include "gpu/vk/vk.h"
 #include "gpu/gpu.h"
+#include "gpu/nvn_command_gap.h"
 #include "gpu/nvn_pool.h"
 #include "gpu/nvn_shader.h"
 #include "gpu/shader/shader.h"
@@ -2757,12 +2758,13 @@ int vk_nvn_memory_write(const NvnMemoryWriteCommand* command) {
     for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++)
         if (invalidate_storage[i]) shadow_storage[i].invalid = 1;
     mark_modeled_unknown(command->sequence, command->prior_unmodeled_write);
-    static u64 scoped_writes;
+    static u64 scoped_writes, scoped_cbuf_writes;
     scoped_writes++;
+    scoped_cbuf_writes += command->kind == NVN_GAP_WRITE_CBUF;
     if (scoped_writes <= 8 || !(scoped_writes % 1000))
-        LOG("nvn-shadow-memory-write: scoped=%llu addr=%llx size=%u marker=%llu\n",
-            (unsigned long long)scoped_writes, (unsigned long long)command->address, command->size,
-            (unsigned long long)command->sequence);
+        LOG("nvn-shadow-memory-write: scoped=%llu cbuf=%llu addr=%llx size=%u marker=%llu\n",
+            (unsigned long long)scoped_writes, (unsigned long long)scoped_cbuf_writes,
+            (unsigned long long)command->address, command->size, (unsigned long long)command->sequence);
     return 1;
 }
 

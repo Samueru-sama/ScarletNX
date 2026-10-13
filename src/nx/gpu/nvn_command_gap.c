@@ -49,44 +49,83 @@ int nvn_command_gap_no_writes(const u32* words, u32 length) {
 }
 
 typedef struct {
-    NvnGapReportState state;
-    NvnGapReportWrite* writes;
+    NvnGapMemoryState state;
+    NvnGapMemoryWrite* writes;
     u32 count, capacity;
-    u8 invalid;
-} ReportScan;
+    u64 last_address;
+    u32 last_size;
+    u8 last_kind, invalid;
+} MemoryScan;
 
-static void scan_report_write(u32 subchannel, u32 method, u32 value, void* context) {
-    ReportScan* scan = context;
-    if (method == 0x4) { scan->state.puller_high = value; scan->state.puller_known |= 1; }
-    else if (method == 0x5) { scan->state.puller_low = value; scan->state.puller_known |= 2; }
-    else if (!subchannel && method == 0x6c0) { scan->state.query_high = value; scan->state.query_known |= 1; }
-    else if (!subchannel && method == 0x6c1) { scan->state.query_low = value; scan->state.query_known |= 2; }
-    else {
-        int puller = method == 0x7 && (value & 0x1f) == 2;
-        int query = !subchannel && method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2);
-        if (!puller && !query) return;
-        u8 known = puller ? scan->state.puller_known : scan->state.query_known;
-        if (known != 3 || scan->count == scan->capacity) { scan->invalid = 1; return; }
-        u32 high = puller ? scan->state.puller_high : scan->state.query_high;
-        u32 low = puller ? scan->state.puller_low : scan->state.query_low;
-        u32 size = puller ? ((value & (1u << 24)) ? 4 : 16)
-                          : ((value & 3) == 0 ? ((value & ((1u << 4) | (1u << 28))) ? 4 : 16)
-                                               : ((value & (1u << 28)) ? 4 : 16));
-        if (scan->writes)
-            scan->writes[scan->count] = (NvnGapReportWrite){((u64)(high & 0xff) << 32) | low, size, !!query};
-        scan->count++;
+static void emit_memory_write(MemoryScan* scan, u64 address, u32 size, u8 kind) {
+    if (scan->invalid) return;
+    if (kind == NVN_GAP_WRITE_CBUF && scan->count && scan->last_kind == kind &&
+        scan->last_address <= UINT64_MAX - scan->last_size &&
+        scan->last_address + scan->last_size == address && scan->last_size <= (16u << 20) - size) {
+        scan->last_size += size;
+        if (scan->writes) scan->writes[scan->count - 1].size = scan->last_size;
+        return;
+    }
+    if (scan->count == scan->capacity) { scan->invalid = 1; return; }
+    if (scan->writes) scan->writes[scan->count] = (NvnGapMemoryWrite){address, size, kind};
+    scan->count++;
+    scan->last_address = address;
+    scan->last_size = size;
+    scan->last_kind = kind;
+}
+
+static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* context) {
+    MemoryScan* scan = context;
+    if (method == 0x4) { scan->state.puller_high = value; scan->state.puller_known |= 1; return; }
+    if (method == 0x5) { scan->state.puller_low = value; scan->state.puller_known |= 2; return; }
+    if (method == 0x7 && (value & 0x1f) == 2) {
+        if (scan->state.puller_known != 3) { scan->invalid = 1; return; }
+        u64 address = ((u64)(scan->state.puller_high & 0xff) << 32) | scan->state.puller_low;
+        emit_memory_write(scan, address, (value & (1u << 24)) ? 4 : 16, NVN_GAP_WRITE_PULLER);
+        return;
+    }
+    if (subchannel) return;
+    if (!method) { scan->state.query_known = scan->state.cbuf_known = 0; return; }
+    if (method >= 0xe00) { scan->state.query_known = scan->state.cbuf_known = 0; return; }
+    switch (method) {
+        case 0x6c0: scan->state.query_high = value; scan->state.query_known |= 1; return;
+        case 0x6c1: scan->state.query_low = value; scan->state.query_known |= 2; return;
+        case 0x8e1: scan->state.cbuf_high = value; scan->state.cbuf_known |= 1; return;
+        case 0x8e2: scan->state.cbuf_low = value; scan->state.cbuf_known |= 2; return;
+        case 0x8e3: scan->state.cbuf_offset = value; scan->state.cbuf_known |= 4; return;
+        case 0x6c3:
+            if ((value & 3) == 0 || (value & 3) == 2) {
+                if (scan->state.query_known != 3) { scan->invalid = 1; return; }
+                u64 address = ((u64)(scan->state.query_high & 0xff) << 32) | scan->state.query_low;
+                u32 size = (value & 3) == 0 ? ((value & ((1u << 4) | (1u << 28))) ? 4 : 16)
+                                            : ((value & (1u << 28)) ? 4 : 16);
+                emit_memory_write(scan, address, size, NVN_GAP_WRITE_QUERY);
+            }
+            return;
+        default: break;
+    }
+    if (method >= 0x8e4 && method <= 0x8f3) {
+        if (scan->state.cbuf_known != 7) { scan->invalid = 1; return; }
+        u64 base = ((u64)scan->state.cbuf_high << 32) | scan->state.cbuf_low;
+        if (base > UINT64_MAX - scan->state.cbuf_offset) { scan->invalid = 1; return; }
+        u64 address = base + scan->state.cbuf_offset;
+        if (address > UINT64_MAX - 4) { scan->invalid = 1; return; }
+        emit_memory_write(scan, address, 4, NVN_GAP_WRITE_CBUF);
+        scan->state.cbuf_offset += 4;
     }
 }
 
-int nvn_command_gap_report_writes(const u32* words, u32 count, NvnGapReportState* state,
-                                  NvnGapReportWrite* writes, u32 capacity, u32* write_count) {
+int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState* state,
+                                  NvnGapMemoryWrite* writes, u32 capacity, u32* write_count) {
     if (!state || !write_count || (capacity && !writes)) return 0;
-    ReportScan scan = {.state = *state, .capacity = capacity};
-    if (!nvn_command_gap_methods(words, count, scan_report_write, &scan) || scan.invalid) return 0;
+    MemoryScan scan = {.state = *state, .capacity = capacity};
+    if (!nvn_command_gap_methods(words, count, scan_memory_write, &scan) || scan.invalid) return 0;
     scan.state = *state;
     scan.writes = writes;
     scan.count = 0;
-    if (!nvn_command_gap_methods(words, count, scan_report_write, &scan) || scan.invalid) return 0;
+    scan.last_address = scan.last_size = 0;
+    scan.last_kind = 0;
+    if (!nvn_command_gap_methods(words, count, scan_memory_write, &scan) || scan.invalid) return 0;
     *state = scan.state;
     *write_count = scan.count;
     return 1;

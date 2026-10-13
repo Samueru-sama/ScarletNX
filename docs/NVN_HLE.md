@@ -1047,13 +1047,18 @@ in that run, but does not classify the list's constant-data uploads, macros, or 
 The cursor-gap parser can now extract puller semaphore and Maxwell query write ranges in packet order, carrying
 address-register state across gaps and rejecting incomplete addresses or overflowing output. These ranges still need
 to be checked against each live shadow image's physical backing before the opaque-list marker can be narrowed.
-Decoded report writes now enter the semantic batch in command order. On the GPU thread, the direct path compares
+Decoded report and explicit constant-buffer data writes now enter the semantic batch in command order. Contiguous
+constant-buffer words are coalesced into one bounded range; an MME macro invalidates the tracked constant-buffer
+address until explicit registers re-establish it. On the GPU thread, the direct path compares
 their physical backing with every covered shadow image and cached storage buffer; it invalidates only aliases and
 bridges each write's synthetic marker when every translation succeeds. The opaque-list boundary marker remains for
-other hidden effects, including constant-data uploads and macros, so this does not yet certify the sampled TotK image.
+other hidden effects, including macro-generated writes and unclassified methods, so this does not yet certify the
+sampled TotK image.
 A 105-second TotK shadow draw and compute probe reached more than 14,300 direct draws and at least 15,000 scoped
 report writes without a fatal error. A prior extended probe hit `VK_ERROR_DEVICE_LOST` during a compute fence wait;
 that failure has not been reproduced consistently and remains a stability concern.
+After adding explicit constant-buffer uploads, a 75-second TotK shadow-draw probe scoped at least 56,000 memory writes,
+including 41,000 constant-buffer upload ranges, and issued more than 11,200 direct draws without a fatal error.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

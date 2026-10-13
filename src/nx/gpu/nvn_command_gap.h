@@ -14,13 +14,15 @@ typedef struct {
 } NvnGapMacroData3;
 typedef struct {
     u32 puller_high, puller_low, query_high, query_low;
-    u8 puller_known, query_known;
-} NvnGapReportState;
+    u32 cbuf_high, cbuf_low, cbuf_offset;
+    u8 puller_known, query_known, cbuf_known;
+} NvnGapMemoryState;
 typedef struct {
     u64 address;
     u32 size;
-    u8 query; /* zero for a puller semaphore, one for a Maxwell 3D query */
-} NvnGapReportWrite;
+    u8 kind;
+} NvnGapMemoryWrite;
+enum { NVN_GAP_WRITE_PULLER, NVN_GAP_WRITE_QUERY, NVN_GAP_WRITE_CBUF };
 
 typedef void (*NvnGapMethodVisitor)(u32 subchannel, u32 method, u32 value, void* context);
 
@@ -30,10 +32,10 @@ int nvn_command_gap_methods(const u32* words, u32 count, NvnGapMethodVisitor vis
 /* True only for validated register writes with no direct guest-memory or attachment write effect. */
 int nvn_command_gap_no_writes(const u32* words, u32 count);
 
-/* Extract bounded report writes in packet order. The caller retains state across adjacent cursor gaps.
+/* Extract bounded guest-memory writes in packet order. The caller retains state across adjacent cursor gaps.
    Returns zero if the packets, address state, or output capacity are incomplete; on failure state is unchanged. */
-int nvn_command_gap_report_writes(const u32* words, u32 count, NvnGapReportState* state,
-                                  NvnGapReportWrite* writes, u32 capacity, u32* write_count);
+int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState* state,
+                                  NvnGapMemoryWrite* writes, u32 capacity, u32* write_count);
 
 /* Recognize one complete indexed draw packet at the end of a command-buffer cursor gap. */
 int nvn_command_gap_indexed_draw(const u32* words, u32 count, NvnGapIndexedDraw* out);

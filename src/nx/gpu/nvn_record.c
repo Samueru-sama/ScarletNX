@@ -106,7 +106,7 @@ typedef struct {
     u32 record_generation;
     u64 command_cursor, command_low, command_high;
     NvnGapMacroData3 cbuf_macro_data;
-    NvnGapReportState report_state;
+    NvnGapMemoryState memory_state;
     u8 cbuf_macro_data_known;
     u32 cb_size, cb_high, cb_low;
     u8 cb_known;
@@ -423,7 +423,7 @@ static int stage_copy(ReplayQueue* queue, NvnCopyBufferTextureCommand command) {
     return 1;
 }
 
-static int stage_memory_write(ReplayQueue* queue, u64 address, u32 size) {
+static int stage_memory_write(ReplayQueue* queue, u64 address, u32 size, u8 kind) {
     NvnMemoryWriteBatch* batch = queue->memory_writes;
     if (!batch || batch->count == batch->capacity) {
         u32 capacity = batch ? batch->capacity * 2 : 8;
@@ -441,7 +441,7 @@ static int stage_memory_write(ReplayQueue* queue, u64 address, u32 size) {
     u64 sequence = queue->next_sequence++;
     queue->last_unmodeled_write = sequence;
     if (!batch || batch->count == batch->capacity) return 0;
-    batch->commands[batch->count++] = (NvnMemoryWriteCommand){sequence, prior, address, size};
+    batch->commands[batch->count++] = (NvnMemoryWriteCommand){sequence, prior, address, size, kind};
     return 1;
 }
 
@@ -546,7 +546,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         if (queue &&
             (op->kind == OP_CLEAR ||
              (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
-              strcmp(op->name, "nvnInlinedReportWrite")) ||
+              strcmp(op->name, "nvnInlinedMemoryWrite")) ||
              op->kind == OP_DISPATCH || op->kind == OP_OTHER)) {
             queue->last_unmodeled_write = queue->next_sequence++;
         }
@@ -555,8 +555,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             strcmp(op->name, "nvnCommandBufferClearDepthStencil") &&
             strcmp(op->name, "nvnCommandBufferCallCommands"))
             queue->observed_clear_only = 0;
-        if (!strcmp(op->name, "nvnInlinedReportWrite")) {
-            if (queue) stage_memory_write(queue, op->args[0], (u32)op->args[1]);
+        if (!strcmp(op->name, "nvnInlinedMemoryWrite")) {
+            if (queue) stage_memory_write(queue, op->args[0], (u32)op->args[1], (u8)op->args[2]);
             continue;
         }
         if (!strcmp(op->name, "nvnCommandBufferSetCopyRowStride")) {
@@ -2030,13 +2030,13 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                 !nvn_command_gap_no_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
                 r->command_gaps_safe = 0;
             if (gap_size <= 65536 && !(gap_size & 3) && readable_range(r->command_cursor, gap_size)) {
-                NvnGapReportWrite reports[32];
-                u32 report_count = 0;
-                if (nvn_command_gap_report_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
-                                                  &r->report_state, reports, 32, &report_count))
-                    for (u32 i = 0; i < report_count; i++) {
-                        u64 args[7] = {reports[i].address, reports[i].size, reports[i].query};
-                        append_inlined_op(r, OP_TRANSFER, "nvnInlinedReportWrite", args);
+                NvnGapMemoryWrite writes[32];
+                u32 write_count = 0;
+                if (nvn_command_gap_memory_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
+                                                  &r->memory_state, writes, 32, &write_count))
+                    for (u32 i = 0; i < write_count; i++) {
+                        u64 args[7] = {writes[i].address, writes[i].size, writes[i].kind};
+                        append_inlined_op(r, OP_TRANSFER, "nvnInlinedMemoryWrite", args);
                     }
             }
             const char* state_opt = getenv("SNX_NVN_INLINED_STATE");

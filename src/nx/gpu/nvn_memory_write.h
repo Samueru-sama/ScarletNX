@@ -9,5 +9,6 @@ typedef struct {
     u64 sequence, prior_unmodeled_write;
     u64 address;
     u32 size;
+    u8 kind; /* NVN_GAP_WRITE_* from the decoded command-memory packet */
 } NvnMemoryWriteCommand;
 #endif
