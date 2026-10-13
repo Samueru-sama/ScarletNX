@@ -524,6 +524,16 @@ compute only, and the graphics descriptor path has no storage-image bindings for
 Fragment storage-image resource translation and ordering are required before those modules can participate in host
 draws.
 
+The shader translator now gates texture and sampler preparation on actual resource use. If both ready graphics
+shaders contain no texture instructions, preflight marks their texture state unused and avoids loading descriptors
+that cannot affect the draw. This covered 634 of 7,982 prepared Scarlet draws in one fifteen-second run; the other
+7,348 still lacked a texture header. In Catherine and TotK boot runs, the same check skipped unused texture state
+for 881 and 110 draws while the remaining 2,906 and 2,544 retained ready texture headers. Of Scarlet's 6,714
+ready textured draws with a zero-valued bound handle, none used exclusively bindless texture accesses. The existing
+GPFIFO renderer derives non-bindless handles from a texture constant-buffer selector and shader offsets, so the
+captured `BindTexture(0)` calls alone cannot establish the images those shaders read. The HLE path must obtain that
+resource mapping before replacing their emulated draws.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

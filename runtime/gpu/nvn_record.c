@@ -195,6 +195,9 @@ static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_tar
     draw_target_size, draw_target_view;
 static u64 draw_attachment_ready, draw_attachment_failed;
 static u64 draw_shader_module_ready, draw_shader_module_failed;
+static u64 draw_zero_bind_textureless, draw_zero_bind_textured;
+static u64 draw_zero_bind_all_bindless;
+static u64 draw_texture_unused;
 static u64 draw_vertex_format_ready, draw_vertex_format_failed;
 static u64 draw_pipeline_ready, draw_pipeline_failed;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
@@ -1528,6 +1531,12 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_ATTACHMENT_FAILED) __atomic_fetch_add(&draw_attachment_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SHADER_MODULE_READY) __atomic_fetch_add(&draw_shader_module_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SHADER_MODULE_FAILED) __atomic_fetch_add(&draw_shader_module_failed, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_ZERO_BIND_TEXTURELESS)
+            __atomic_fetch_add(&draw_zero_bind_textureless, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_ZERO_BIND_TEXTURED) __atomic_fetch_add(&draw_zero_bind_textured, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_ZERO_BIND_ALL_BINDLESS)
+            __atomic_fetch_add(&draw_zero_bind_all_bindless, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_UNUSED) __atomic_fetch_add(&draw_texture_unused, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_VERTEX_FORMAT_READY) __atomic_fetch_add(&draw_vertex_format_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_VERTEX_FORMAT_FAILED) __atomic_fetch_add(&draw_vertex_format_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_PIPELINE_READY) __atomic_fetch_add(&draw_pipeline_ready, 1, __ATOMIC_RELAXED);
@@ -1797,6 +1806,11 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_shader_module_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_shader_module_failed, __ATOMIC_RELAXED));
         if (shader_materialize)
+            LOG("nvn-draw-zero-bind: shader-textureless=%llu shader-textured=%llu all-bindless=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_zero_bind_textureless, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_zero_bind_textured, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_zero_bind_all_bindless, __ATOMIC_RELAXED));
+        if (shader_materialize)
             LOG("nvn-draw-vertex-format: ready=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_vertex_format_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_vertex_format_failed, __ATOMIC_RELAXED));
@@ -1810,10 +1824,11 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_sampler_missing, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_sampler_failed, __ATOMIC_RELAXED));
         if (draw_prepare)
-            LOG("nvn-draw-texture-header: ready=%llu missing=%llu unsupported=%llu\n",
+            LOG("nvn-draw-texture-header: ready=%llu missing=%llu unsupported=%llu unused=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_texture_header_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_header_missing, __ATOMIC_RELAXED),
-                (unsigned long long)__atomic_load_n(&draw_texture_header_unsupported, __ATOMIC_RELAXED));
+                (unsigned long long)__atomic_load_n(&draw_texture_header_unsupported, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_unused, __ATOMIC_RELAXED));
         if (texture_load)
             LOG("nvn-draw-texture-image: ready=%llu failed=%llu depth-memory=%llu missing=%llu stale=%llu "
                 "semantic-source=%llu\n",

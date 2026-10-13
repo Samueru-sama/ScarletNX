@@ -868,8 +868,13 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                    &offset))
                 return 0;
     if (index_bytes && !vk_buf_get_strict(command->index_address, index_bytes, &buffer, &offset)) return 0;
+    VkSh* vertex_shader = NULL;
+    VkSh* fragment_shader = NULL;
+    int shader_ready =
+        command->materialize_shaders && materialize_draw_shaders(command, &vertex_shader, &fragment_shader);
+    int textureless_shader = shader_ready && !vertex_shader->si.ntex && !fragment_shader->si.ntex;
     int sampler_status = 0, has_sampler = 0;
-    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !sampler_status; stage++)
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !sampler_status && !textureless_shader; stage++)
         for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
             if (!(command->texture_bound[stage] & (1u << i))) continue;
             has_sampler = 1;
@@ -885,7 +890,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
         }
     if (has_sampler && !sampler_status) sampler_status = NVN_DRAW_SAMPLER_READY;
     int texture_status = 0, has_texture = 0;
-    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !texture_status; stage++)
+    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !texture_status && !textureless_shader; stage++)
         for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
             if (!(command->texture_bound[stage] & (1u << i))) continue;
             has_texture = 1;
@@ -945,15 +950,33 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                 : NVN_DRAW_TEXTURE_IMAGE_FAILED | failure;
     }
     int resource_status = sampler_status | texture_status;
-    VkSh* vertex_shader = NULL;
-    VkSh* fragment_shader = NULL;
+    if (textureless_shader) resource_status |= NVN_DRAW_TEXTURE_UNUSED;
     if (command->materialize_shaders)
         resource_status |=
             prepare_vertex_formats(command) ? NVN_DRAW_VERTEX_FORMAT_READY : NVN_DRAW_VERTEX_FORMAT_FAILED;
-    if (command->materialize_shaders)
-        resource_status |= materialize_draw_shaders(command, &vertex_shader, &fragment_shader)
-                               ? NVN_DRAW_SHADER_MODULE_READY
-                               : NVN_DRAW_SHADER_MODULE_FAILED;
+    if (command->materialize_shaders) {
+        if (shader_ready) {
+            resource_status |= NVN_DRAW_SHADER_MODULE_READY;
+            int zero_bound = 0;
+            for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
+                for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++)
+                    zero_bound |= (command->texture_bound[stage] & (1u << i)) && !command->texture[stage][i];
+            if (zero_bound) {
+                int textured = vertex_shader->si.ntex || fragment_shader->si.ntex;
+                resource_status |= textured ? NVN_DRAW_ZERO_BIND_TEXTURED : NVN_DRAW_ZERO_BIND_TEXTURELESS;
+                if (textured) {
+                    int all_bindless = 1;
+                    VkSh* shaders[2] = {vertex_shader, fragment_shader};
+                    for (u32 stage = 0; stage < 2; stage++)
+                        for (int i = 0; i < shaders[stage]->si.ntex; i++)
+                            all_bindless &= shaders[stage]->si.tex[i].bindless;
+                    if (all_bindless) resource_status |= NVN_DRAW_ZERO_BIND_ALL_BINDLESS;
+                }
+            }
+        } else {
+            resource_status |= NVN_DRAW_SHADER_MODULE_FAILED;
+        }
+    }
     int has_target = command->color_target_mask || command->depth_target_bound;
     if (!has_target || !command->target_complete) {
         if (command->prepare_pipeline) resource_status |= NVN_DRAW_PIPELINE_FAILED;
