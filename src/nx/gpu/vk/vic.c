@@ -164,11 +164,12 @@ int vk_vic_compose(const VicJob* j) {
         }
     }
     u64 ol_off = (at + al - 1) & ~(al - 1), ol_size = (j->oy.lim + 3) & ~3ull;
-    u64 oc_off = ol_off + ol_size, oc_size = (j->oc.lim + 3) & ~3ull;
+    /* every binding offset, the chroma's too, is storage aligned */
+    u64 oc_off = (ol_off + ol_size + al - 1) & ~(al - 1), oc_size = (j->oc.lim + 3) & ~3ull;
     if (oc_size < 4) oc_size = 4;
     u64 total = oc_off + oc_size;
     u64 range_max = g_vk.props.limits.maxStorageBufferRange;
-    if (total > range_max || ol_size > range_max || oc_size > range_max || at - in_off > range_max) {
+    if (total > range_max || ol_size > range_max || oc_size > range_max || at > range_max) {
         LOG_LIMIT(4, "video: VIC job too large for the GPU (%llu bytes), composed in guest memory\n",
                   (unsigned long long)total);
         return 0;
@@ -221,7 +222,8 @@ int vk_vic_compose(const VicJob* j) {
     }
     VkDescriptorBufferInfo buffers[4] = {
         {g_vic_buf, params_off, sizeof(GpuParams)},
-        {g_vic_buf, in_off, at - in_off < 4 ? 4 : at - in_off},
+        /* from 0: in_offs count from the start of the buffer */
+        {g_vic_buf, 0, at},
         {g_vic_buf, ol_off, ol_size},
         {g_vic_buf, oc_off, oc_size}};
     VkWriteDescriptorSet writes[4];

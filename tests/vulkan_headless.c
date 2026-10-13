@@ -49,6 +49,60 @@ static int check_viewport_orientation(void) {
     return 0;
 }
 
+/* VIC through the compute shader: raw YUV and alpha, odd starts kept, luma-only NV12, bytes outside untouched */
+static int check_vic(void) {
+    enum { W = 32, H = 16, SENTINEL = 0xA5 };
+    static u8 y[W * H], uv[W * H / 2], out[W * 4 * H];
+    for (u32 j = 0; j < H; ++j)
+        for (u32 i = 0; i < W; ++i) y[j * W + i] = (u8)(16 + i + 4 * j);
+    for (u32 j = 0; j < H / 2; ++j)
+        for (u32 i = 0; i < W / 2; ++i) {
+            uv[j * W + i * 2] = (u8)(40 + i + 8 * j);
+            uv[j * W + i * 2 + 1] = (u8)(240 - i - 8 * j);
+        }
+    static const struct {
+        u32 fmt, sx0, sy0, dx0, dy0, w, h;
+    } cases[] = {{0x1F, 0, 0, 0, 0, W, H}, {0x1F, 3, 1, 5, 3, 10, 7}, {0x44, 0, 0, 0, 0, W, H}};
+    for (u32 c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
+        const int rgba = cases[c].fmt != 0x44;
+        const u32 bpp = rgba ? 4 : 1;
+        VicJob job;
+        memset(&job, 0, sizeof job);
+        memset(out, SENTINEL, sizeof out);
+        job.fmt = cases[c].fmt;
+        job.sw = W;
+        job.sh = H;
+        job.oy = (VicPlane){out, (u64)W * bpp * H, W * bpp, H, 0, 0};
+        VicSlot* sl = &job.slots[0];
+        sl->on = 1;
+        sl->sx0 = cases[c].sx0;
+        sl->sy0 = cases[c].sy0;
+        sl->dx0 = cases[c].dx0;
+        sl->dy0 = cases[c].dy0;
+        sl->w = cases[c].w;
+        sl->h = cases[c].h;
+        sl->alpha = 0x3FF;
+        sl->clamp_hi = 0x3FF;
+        sl->iy = (VicPlane){y, sizeof y, W, H, 0, 0};
+        sl->ic = (VicPlane){uv, sizeof uv, W, H / 2, 0, 0};
+        CHECK(g_renderer->vic_compose(&job));
+        for (u32 j = 0; j < H; ++j)
+            for (u32 i = 0; i < W; ++i) {
+                const u8* o = out + (j * W + i) * bpp;
+                const int in = i >= sl->dx0 && i < sl->dx0 + sl->w && j >= sl->dy0 && j < sl->dy0 + sl->h;
+                const u32 sx = sl->sx0 + i - sl->dx0, sy = sl->sy0 + j - sl->dy0;
+                if (!in) {
+                    CHECK(o[0] == SENTINEL);
+                } else if (!rgba) {
+                    CHECK(o[0] == y[sy * W + sx]);
+                } else {
+                    const u8* p = uv + (sy / 2) * W + (sx & ~1u);
+                    CHECK(o[0] == y[sy * W + sx] && o[1] == p[0] && o[2] == p[1] && o[3] == 255);
+                }
+            }
+    }
+    return 0;
+}
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = 4096;
@@ -64,6 +118,7 @@ int main(int argc, char** argv) {
     video_init("Headless Vulkan fixture");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_viewport_orientation());
+    CHECK(!check_vic());
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */
     vkCreateSwapchainKHR = NULL;
@@ -116,6 +171,7 @@ int main(int argc, char** argv) {
     free(root);
     free(shot);
     free(ppm);
-    puts("PASS headless Vulkan: viewport orientation, 8 cropped/transformed readbacks and PPMs, no WSI");
+    puts("PASS headless Vulkan: viewport orientation, 3 VIC compositions, 8 cropped/transformed readbacks and PPMs, "
+         "no WSI");
     return 0;
 }
