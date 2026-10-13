@@ -1184,19 +1184,28 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                             (command->index_type == 1 || command->index_type == 2);
     int strip = command->primitive == 5 && !command->indexed;
     u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
+    /* The observed packed-color triangle passes all use fill, CCW front face and no culling.
+       Their higher polygon-state bits vary, but have no effect while bias, depth clamp and
+       rasterizer discard are explicitly disabled. */
+    int packed_fill = command->color_target[0].format == 0x3d && !command->depth_target_bound &&
+                      (command->polygon_state & 0x1f) == 0x14 &&
+                      !command->polygon_offset[0] && !command->polygon_offset[1] &&
+                      !command->polygon_offset[2] && !command->depth_clamp && !command->rasterizer_discard;
     if (!enabled || !pipeline || !vertex || !fragment ||
         (cbuf_mask & ~(((1u << 18) - 1) & ~5u)) || vertex->si.ntex < 0 ||
         vertex->si.ntex > SH_MAXTEX || fragment->si.ntex < 0 || fragment->si.ntex > SH_MAXTEX ||
         vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !indexed_triangles) || !command->count || !command->instance_count ||
-        (command->polygon_state != 0x16 && command->polygon_state != 0xa400476) ||
-        command->color_state != (command->depth_target_bound ? 0x08030100u : 0x08030000u) ||
+        (command->polygon_state != 0x16 && command->polygon_state != 0xa400476 && !packed_fill) ||
+        (command->color_state != 0x08030000u && command->color_state != 0x08030100u) ||
+        (key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
          command->depth_stencil_state[0] != (indexed_triangles ? 0x40u : 0x42u)) ||
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
-        (command->color_target[0].format != 0x25 && command->color_target[0].format != 0x38) ||
+        (command->color_target[0].format != 0x25 && command->color_target[0].format != 0x38 &&
+         command->color_target[0].format != 0x3d) ||
         command->color_target[0].target != 1 || command->color_target[0].storage_target != 1 ||
         command->color_target[0].view.base_level || command->color_target[0].view.first_layer ||
         (command->depth_target_bound &&

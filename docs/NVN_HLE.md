@@ -675,6 +675,11 @@ instead of requiring identical object pointers, and semantic sampling accepts ma
 least eight direct draws, each sampling the NVN-owned RGB10A2 image. The first diagnostic draw changed 921,600 of
 1,440,000 target pixels,
 so it did not certify full target coverage. This is an isolated shadow pass, not a complete or presented frame.
+Odyssey's following indexed passes blend into an RGB10A2 target. Their polygon-state low bits specify fill, CCW
+front face, and no culling; higher bits varied across six observed values while corresponding Maxwell draws kept
+depth bias disabled. With zero captured polygon offset, depth clamp, and rasterizer discard, the executor now uses
+the prepared blend pipeline for this state family. A ten-second boot issued more than 800 shadow draws and retained
+full-image provenance after 165 of them. It still needs a pixel comparison on the actual presented image.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still
