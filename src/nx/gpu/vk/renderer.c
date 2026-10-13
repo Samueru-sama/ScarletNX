@@ -83,8 +83,8 @@ static void vkr_nvn_batch_begin(void) {
     vk_nvn_batch_begin();
     vk_unlock();
 }
-static void vkr_nvn_probe_initial_color(u64 address, u32 size, u64 sequence, u64 prior_unmodeled_write,
-                                         int prior_writes_scoped) {
+static void vkr_nvn_probe_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key,
+                                        u64 prior_unmodeled_write, int prior_writes_scoped) {
     vk_lock();
     vk_compute_mem_need(address, size);
     vk_buf_mem_need(address, size);
@@ -94,7 +94,7 @@ static void vkr_nvn_probe_initial_color(u64 address, u32 size, u64 sequence, u64
         for (u32 i = 0; i < size; i++) nonzero += !!host[i];
     int prior_target = vk_rt_fresh_in(address, address + size);
     int certified = host && !nonzero && !prior_target && prior_writes_scoped;
-    if (certified) vk_nvn_seed_initial_color(address, size, sequence);
+    if (certified) vk_nvn_seed_initial_color(address, size, sequence, queue_key);
     LOG("nvn-shadow-target-pre-submit: addr=%llx size=%u mapped=%d nonzero=%llu prior-target=%d sequence=%llu prior-unmodeled=%llu scoped=%d certified=%d\n",
         (unsigned long long)address, size, !!host, (unsigned long long)nonzero, prior_target,
         (unsigned long long)sequence, (unsigned long long)prior_unmodeled_write,

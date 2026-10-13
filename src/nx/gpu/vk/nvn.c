@@ -81,16 +81,26 @@ static u64 shadow_capture_target;
 static u32 shadow_capture_scissor[4];
 static u64 modeled_unknown_marker, modeled_unknown_prior;
 static struct {
-    u64 address, sequence;
+    u64 address, sequence, queue_key;
     u32 size;
     int valid;
-} initial_color_seed;
+} initial_color_seeds[64];
+static u32 initial_color_seed_cursor;
 
-void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence) {
-    initial_color_seed.address = address;
-    initial_color_seed.size = size;
-    initial_color_seed.sequence = sequence;
-    initial_color_seed.valid = 1;
+void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key) {
+    u32 slot = initial_color_seed_cursor++ % 64;
+    for (u32 i = 0; i < 64; i++)
+        if (!initial_color_seeds[i].valid ||
+            (initial_color_seeds[i].address == address && initial_color_seeds[i].sequence == sequence &&
+             initial_color_seeds[i].queue_key == queue_key)) {
+            slot = i;
+            break;
+        }
+    initial_color_seeds[slot].address = address;
+    initial_color_seeds[slot].size = size;
+    initial_color_seeds[slot].sequence = sequence;
+    initial_color_seeds[slot].queue_key = queue_key;
+    initial_color_seeds[slot].valid = 1;
 }
 
 static int cross_batch_enabled(void) {
@@ -2715,14 +2725,23 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int color_written = (fragment->si.sph[18] & 15) && key->blend[0].mask;
     int prior_covered = (color->color_layers[color_mip] & (1ull << color_layer)) &&
                         color->subresource_sequence[color_mip][color_layer] > effective_unknown;
-    int zero_seed = initial_color_seed.valid &&
-                    command->color_initial_zero &&
-                    initial_color_seed.address == color_target->gpu_address &&
-                    initial_color_seed.size == color_target->storage_size &&
-                    initial_color_seed.sequence == command->sequence &&
+    int zero_seed = command->color_initial_zero &&
                     color_written && !color->image_was_written && !prior_covered &&
                     !color_mip && !color_layer && command->color_target_mask == 1 &&
                     (color_target->format == 0x25 || color_target->format == 0x38);
+    if (zero_seed) {
+        zero_seed = 0;
+        for (u32 i = 0; i < 64; i++) {
+            if (!initial_color_seeds[i].valid ||
+                initial_color_seeds[i].address != color_target->gpu_address ||
+                initial_color_seeds[i].size != color_target->storage_size ||
+                initial_color_seeds[i].sequence != command->sequence ||
+                initial_color_seeds[i].queue_key != command->queue_key) continue;
+            initial_color_seeds[i].valid = 0;
+            zero_seed = 1;
+            break;
+        }
+    }
     static int sample_first = 1;
     static u64 captured_targets[8];
     static u32 captured_target_count;
@@ -2754,7 +2773,6 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (zero_seed) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}};
-        initial_color_seed.valid = 0;
         LOG("nvn-shadow-initial-color: target=%llx sequence=%llu size=%u\n",
             (unsigned long long)color_target->gpu_address,
             (unsigned long long)command->sequence, color_target->storage_size);

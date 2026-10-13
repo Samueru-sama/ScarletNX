@@ -1335,6 +1335,18 @@ instead of native transparent black (`0x00000000`). This does not establish pari
 the direct path must also prove and reproduce the target's initial contents when a
 draw is culled. The diagnostic override was removed.
 
+The opt-in zero-backing probe now checks the first draw for each bounded target in
+the current queue, rather than only the first draw of the process. It accounts for
+prior copies, clears, memory writes, color draws, and depth writes by guest backing
+range, and rejects sequence gaps or possible overlaps. Pre-submit checks on the GPU
+thread still require mapped zero bytes and no older native render target. Catherine's
+later consumer target (`0x5cc420000`) meets those conditions at sequence 166: the
+new path seeds its 1280×720 RGBA8 shadow image with transparent black. Repeated
+probes for that address are suppressed. A temporary experiment combining this seed
+with the observed facing transition matched the sampled native target exactly
+(`0/921,600` differing pixels, `0/3,686,400` differing bytes). The facing override
+was removed; the normal direct path still needs ordered queue-state capture.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

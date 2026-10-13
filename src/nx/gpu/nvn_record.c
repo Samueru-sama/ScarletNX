@@ -196,7 +196,10 @@ typedef struct {
 typedef struct {
     u64 key;
     u64 next_sequence;
+    u64 batch_start_sequence;
     u64 last_unmodeled_write;
+    u64 color_probe_seen[128];
+    u16 color_probe_seen_count;
     ReplayState state;
     u32 pending_roots, pending_clears;
     u8 observed_clear_only;
@@ -1513,8 +1516,6 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                         (unsigned long long)target->gpu_address, target->storage_size,
                         (unsigned long long)nonzero, draw.count, draw.indexed,
                         (unsigned long long)(queue ? queue->next_sequence : 0));
-                    if (zero_probe && !strcmp(zero_probe, "1") && !nonzero)
-                        draw.color_initial_zero = 1;
                     initial_target_trace = 1;
                 }
             }
@@ -1534,6 +1535,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 }
                 if (batch && batch->count < batch->capacity) {
                     draw.sequence = queue->next_sequence++;
+                    draw.queue_key = queue->key;
                     batch->commands[batch->count++] = draw;
                     draw_staged++;
                 } else {
@@ -2192,7 +2194,7 @@ int nvn_record_wants(const char* name) {
 }
 
 typedef struct {
-    u64 address, sequence, prior_unmodeled_write;
+    u64 address, sequence, prior_unmodeled_write, queue_key;
     u32 size;
     u8 prior_writes_scoped;
 } NvnPreSubmitColorProbe;
@@ -2205,40 +2207,77 @@ static int probe_ranges_overlap(u64 address, u32 size, u64 other, u32 other_size
     return first <= second ? second - first < size : first - second < other_size;
 }
 
-/* A zero backing can seed the first image only when every earlier write has a bounded,
-   disjoint destination. Missing semantic commands and unsafe command-memory gaps leave
-   holes in the sequence mask, so they cannot accidentally certify initialization. */
+/* A pre-submit backing is authoritative only if every earlier operation in this batch
+   is a known write to a disjoint range. Unknown markers leave a sequence gap. */
 static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawCommand* draw) {
-    if (!draw->sequence || draw->sequence >= 64) return 0;
+    if (draw->sequence < queue->batch_start_sequence ||
+        draw->sequence - queue->batch_start_sequence > 8192) return 0;
     const NvnTextureTarget* target = &draw->color_target[0];
-    u64 accounted = 0;
-    if (queue->clears)
-        for (u32 i = 0; i < queue->clears->count; i++) {
-            const NvnClearCommand* clear = &queue->clears->commands[i];
-            if (clear->sequence >= draw->sequence) continue;
-            if (!clear->target.gpu_address || !clear->target.storage_size ||
-                probe_ranges_overlap(target->gpu_address, target->storage_size,
-                                     clear->target.gpu_address, clear->target.storage_size)) return 0;
-            accounted |= 1ull << clear->sequence;
-            if (clear->unknown_marker < clear->sequence)
-                accounted |= 1ull << clear->unknown_marker;
-        }
+    if (!target->gpu_address || !target->storage_size) return 0;
+    u64 start = queue->batch_start_sequence;
+    u32 span = (u32)(draw->sequence - start);
+    u8 accounted[8192] = {0};
     if (queue->memory_writes)
         for (u32 i = 0; i < queue->memory_writes->count; i++) {
             const NvnMemoryWriteCommand* write = &queue->memory_writes->commands[i];
-            if (write->sequence >= draw->sequence) continue;
+            if (write->sequence < start || write->sequence >= draw->sequence) continue;
             if (!write->address || !write->size ||
                 probe_ranges_overlap(target->gpu_address, target->storage_size,
                                      write->address, write->size)) return 0;
-            accounted |= 1ull << write->sequence;
+            accounted[write->sequence - start] = 1;
         }
-    return accounted == ((1ull << draw->sequence) - 1);
+    if (queue->draws)
+        for (u32 i = 0; i < queue->draws->count; i++) {
+            const NvnDrawCommand* prior = &queue->draws->commands[i];
+            if (prior->sequence < start || prior->sequence >= draw->sequence) continue;
+            if (prior->sequence + 1 >= draw->sequence || !prior->program_known ||
+                !prior->shader_refs_known || prior->color_target_mask != 1 ||
+                prior->storage_known[0] || prior->storage_known[1] ||
+                !prior->color_target[0].gpu_address || !prior->color_target[0].storage_size ||
+                probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                     prior->color_target[0].gpu_address,
+                                     prior->color_target[0].storage_size)) return 0;
+            if (prior->depth_target_bound &&
+                (!prior->depth_target.gpu_address || !prior->depth_target.storage_size ||
+                 probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                      prior->depth_target.gpu_address,
+                                      prior->depth_target.storage_size))) return 0;
+            for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
+                if (prior->image_bound[stage]) return 0;
+            accounted[prior->sequence - start] = 1;
+            accounted[prior->sequence + 1 - start] = 1; /* draw's following unknown-write marker */
+        }
+    if (queue->clears)
+        for (u32 i = 0; i < queue->clears->count; i++) {
+            const NvnClearCommand* clear = &queue->clears->commands[i];
+            if (clear->sequence < start || clear->sequence >= draw->sequence) continue;
+            if (clear->unknown_marker + 1 != clear->sequence || clear->unknown_marker < start ||
+                !clear->target.gpu_address || !clear->target.storage_size ||
+                probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                     clear->target.gpu_address, clear->target.storage_size)) return 0;
+            accounted[clear->unknown_marker - start] = 1;
+            accounted[clear->sequence - start] = 1;
+        }
+    if (queue->copies)
+        for (u32 i = 0; i < queue->copies->count; i++) {
+            const NvnCopyBufferTextureCommand* copy = &queue->copies->commands[i];
+            if (copy->sequence < start || copy->sequence >= draw->sequence) continue;
+            if (copy->unknown_marker + 1 != copy->sequence || copy->unknown_marker < start ||
+                !copy->target.gpu_address || !copy->target.storage_size ||
+                probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                     copy->target.gpu_address, copy->target.storage_size)) return 0;
+            accounted[copy->unknown_marker - start] = 1;
+            accounted[copy->sequence - start] = 1;
+        }
+    for (u32 i = 0; i < span; i++)
+        if (!accounted[i]) return 0;
+    return 1;
 }
 
 static void execute_pre_submit_color_probe(void* arg) {
     NvnPreSubmitColorProbe* probe = arg;
     if (g_renderer->nvn_probe_initial_color)
-        g_renderer->nvn_probe_initial_color(probe->address, probe->size, probe->sequence,
+        g_renderer->nvn_probe_initial_color(probe->address, probe->size, probe->sequence, probe->queue_key,
                                              probe->prior_unmodeled_write,
                                              probe->prior_writes_scoped);
     free(probe);
@@ -2254,7 +2293,8 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         !strcmp(name, "nvnQueuePresentTexture"))
         return 0;
     if (!strcmp(name, "nvnQueueSubmitCommands")) {
-        NvnPreSubmitColorProbe* color_probe = NULL;
+        NvnPreSubmitColorProbe* color_probes[32] = {0};
+        u32 color_probe_count = 0;
         u32 count = (u32)c->x[1];
         u64 ptr = c->x[2];
         if (count > 4096 || (count && !readable_range(ptr, (u64)count * 8))) {
@@ -2307,26 +2347,34 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         if (queue) {
             queue->key = c->x[0];
             queue->state = state;
-            static int initial_color_probe_sent;
             const char* zero_probe = getenv("SNX_NVN_SHADOW_ZERO_PROBE");
-            if (!initial_color_probe_sent && zero_probe && !strcmp(zero_probe, "1") && queue->draws)
+            if (zero_probe && !strcmp(zero_probe, "1") && queue->draws) {
                 for (u32 i = 0; i < queue->draws->count; i++) {
-                    const NvnDrawCommand* draw = &queue->draws->commands[i];
+                    NvnDrawCommand* draw = &queue->draws->commands[i];
                     const NvnTextureTarget* target = &draw->color_target[0];
-                    if (!draw->color_initial_zero || !(draw->color_target_mask & 1) || !target->storage_size ||
+                    if (!target->gpu_address) continue;
+                    if (color_probe_count == 32 || queue->color_probe_seen_count == 128) break;
+                    int seen = 0;
+                    for (u32 j = 0; j < queue->color_probe_seen_count; j++)
+                        seen |= queue->color_probe_seen[j] == target->gpu_address;
+                    if (seen) continue;
+                    queue->color_probe_seen[queue->color_probe_seen_count++] = target->gpu_address;
+                    if (draw->color_target_mask != 1 || !target->storage_size ||
                         target->storage_size > (16u << 20) ||
-                        target->gpu_address > UINT64_MAX - target->storage_size) continue;
-                    color_probe = malloc(sizeof *color_probe);
-                    if (!color_probe) break;
-                    *color_probe = (NvnPreSubmitColorProbe){target->gpu_address, draw->sequence,
-                                                            draw->last_unmodeled_write, target->storage_size,
-                                                            probe_prior_writes_scoped(queue, draw)};
-                    initial_color_probe_sent = 1;
-                    break;
+                        target->gpu_address > UINT64_MAX - target->storage_size ||
+                        !probe_prior_writes_scoped(queue, draw)) continue;
+                    NvnPreSubmitColorProbe* probe = malloc(sizeof *probe);
+                    if (!probe) break;
+                    *probe = (NvnPreSubmitColorProbe){.address = target->gpu_address,
+                        .sequence = draw->sequence, .prior_unmodeled_write = draw->last_unmodeled_write,
+                        .queue_key = queue->key, .size = target->storage_size, .prior_writes_scoped = 1};
+                    draw->color_initial_zero = 1;
+                    color_probes[color_probe_count++] = probe;
                 }
+            }
         }
         pm_unlock(&lock);
-        if (color_probe) gpu_call(execute_pre_submit_color_probe, color_probe);
+        for (u32 i = 0; i < color_probe_count; i++) gpu_call(execute_pre_submit_color_probe, color_probes[i]);
         return 0;
     }
     pm_lock(&lock);
@@ -2741,6 +2789,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 ar
             queue->uniform_updates = NULL;
             queue->uniform_update_bytes = 0;
             queue->uniform_update_failed = 0;
+            queue->batch_start_sequence = queue->next_sequence;
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
