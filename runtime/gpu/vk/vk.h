@@ -64,6 +64,7 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;      /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int has_border_color; /* VK_EXT_custom_border_color */
+    int has_index_uint8;  /* VK_KHR_index_type_uint8 or VK_EXT_index_type_uint8 */
     int has_mirror_clamp; /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
 } VkState;
 extern VkState g_vk;

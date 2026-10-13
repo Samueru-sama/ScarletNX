@@ -1374,17 +1374,19 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         enabled = opt && !strcmp(opt, "1");
     }
     int indexed_triangles = command->primitive == 4 && command->indexed &&
-                            (command->index_type == 1 || command->index_type == 2);
+                            (command->index_type == 1 || command->index_type == 2 ||
+                             (command->index_type == 0 && g_vk.has_index_uint8));
     int triangles = command->primitive == 4 && !command->indexed;
     int strip = command->primitive == 5 && !command->indexed;
     u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
-    /* The observed color-only triangle passes use fill, CCW front face and no culling.
-       Their higher polygon-state bits vary; depth clamp is keyed in the pipeline while
-       polygon offset and rasterizer discard remain disabled for this slice. */
-    int simple_fill = !command->depth_target_bound &&
-                      (command->polygon_state & 0x1f) == 0x14 &&
-                      !command->polygon_offset[0] && !command->polygon_offset[1] &&
-                      !command->polygon_offset[2] && !command->rasterizer_discard;
+    /* NVNpolygonState stores cull/front-face, polygon mode, then point/line/fill
+       polygon-offset enables in its low byte. Other observed bits do not change
+       fill rasterization; the actual fill offset is supplied by its own command. */
+    int fill_offset = !!(command->polygon_state & 0x80);
+    int fill_polygon = ((command->polygon_state >> 3) & 3) == 2 &&
+                       !command->rasterizer_discard &&
+                       (!fill_offset || (command->polygon_offset_known &&
+                                         (g_vk.feat.depthBiasClamp || !command->polygon_offset[2])));
     if (!enabled || !pipeline || !vertex || !fragment ||
         (cbuf_mask & ~((1u << 18) - 1)) ||
         ((vertex->si.cbuf_mask & 1) && !vertex->si.cbuf0_draw_params_only) ||
@@ -1396,7 +1398,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         vertex->si.ngbuf || fragment->si.ngbuf ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !triangles && !indexed_triangles) || !command->count || !command->instance_count ||
-        (command->polygon_state != 0x16 && command->polygon_state != 0xa400476 && !simple_fill) ||
+        !fill_polygon ||
         (command->color_state != 0x08030000u && command->color_state != 0x08030100u) ||
         (key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
@@ -1405,12 +1407,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
           ((command->depth_stencil_state[0] >> 4) & 15) > 8)) ||
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
-        (command->color_target[0].format != 0x25 && command->color_target[0].format != 0x38 &&
+        (command->color_target[0].format != 0x0a && command->color_target[0].format != 0x25 &&
+         command->color_target[0].format != 0x29 && command->color_target[0].format != 0x38 &&
          command->color_target[0].format != 0x3d && command->color_target[0].format != 0x3f) ||
         command->color_target[0].target != 1 || command->color_target[0].storage_target != 1 ||
         command->color_target[0].view.base_level || command->color_target[0].view.first_layer ||
         (command->depth_target_bound &&
-         (command->depth_target.format != 0x35 || command->depth_target.target != 1 ||
+         ((command->depth_target.format != 0x32 && command->depth_target.format != 0x34 &&
+           command->depth_target.format != 0x35) || command->depth_target.target != 1 ||
           command->depth_target.storage_target != 1 || command->depth_target.view.base_level ||
           command->depth_target.view.first_layer || command->color_target[0].width != command->depth_target.width ||
           command->color_target[0].height != command->depth_target.height)) ||
@@ -1724,8 +1728,16 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
     vkCmdSetLineWidth(cb, 1.0f);
-    vkCmdSetDepthBiasEnable(cb, VK_FALSE);
-    vkCmdSetDepthBias(cb, 0, 0, 0);
+    vkCmdSetDepthBiasEnable(cb, fill_offset);
+    if (fill_offset) {
+        float factor, units, clamp;
+        memcpy(&factor, &command->polygon_offset[0], sizeof factor);
+        memcpy(&units, &command->polygon_offset[1], sizeof units);
+        memcpy(&clamp, &command->polygon_offset[2], sizeof clamp);
+        vkCmdSetDepthBias(cb, units, clamp, factor);
+    } else {
+        vkCmdSetDepthBias(cb, 0, 0, 0);
+    }
     float blend[4] = {0};
     if (command->blend_color_known) memcpy(blend, command->blend_color, sizeof blend);
     vkCmdSetBlendConstants(cb, blend);
@@ -1747,7 +1759,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, push);
     if (indexed_triangles) {
         vkCmdBindIndexBuffer(cb, index_buffer, index_offset,
-                             command->index_type == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+                             command->index_type == 0 ? VK_INDEX_TYPE_UINT8
+                             : command->index_type == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cb, command->count, command->instance_count, 0, command->base_vertex,
                          command->base_instance);
     } else {
