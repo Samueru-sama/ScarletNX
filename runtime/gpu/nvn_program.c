@@ -157,11 +157,24 @@ void nvn_program_before(const CPU* c, const char* name, NvnProgramCall* call) {
     call->program = c->x[0];
     call->shader_count =
         !strcmp(name, "nvnProgramSetShaders") || !strcmp(name, "nvnProgramSetShadersExt") ? (u32)c->x[1] : 0;
-    if (call->shader_count && call->shader_count <= NVN_PROGRAM_MAX_SHADERS &&
-        readable_range(c->x[2], (u64)call->shader_count * sizeof(NvnShaderRef))) {
+    if (!call->shader_count || call->shader_count > NVN_PROGRAM_MAX_SHADERS) return;
+    if (!strcmp(name, "nvnProgramSetShadersExt")) {
+        if (!readable_range(c->x[2], (u64)call->shader_count * sizeof(NvnShaderRef))) return;
         memcpy(call->refs, GP(c->x[2]), (size_t)call->shader_count * sizeof(NvnShaderRef));
-        call->refs_valid = 1;
+    } else if (!strcmp(name, "nvnProgramSetShaders")) {
+        /* The plain entry is a 16-byte code/control pair. The Ext wrapper copies those same two
+           words plus an optional third word from each 24-byte entry before calling shared setup. */
+        u64 pair[NVN_PROGRAM_MAX_SHADERS][2];
+        if (!readable_range(c->x[2], (u64)call->shader_count * sizeof pair[0])) return;
+        memcpy(pair, GP(c->x[2]), (size_t)call->shader_count * sizeof pair[0]);
+        for (u32 i = 0; i < call->shader_count; i++) {
+            call->refs[i].code_candidate = pair[i][0];
+            call->refs[i].control_candidate = pair[i][1];
+        }
+    } else {
+        return;
     }
+    call->refs_valid = 1;
 }
 
 void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* call) {

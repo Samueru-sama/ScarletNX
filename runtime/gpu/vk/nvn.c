@@ -464,39 +464,44 @@ static int shader_code_stage(u64 address, u32* type) {
 static int materialize_draw_shaders(const NvnDrawCommand* command) {
     if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
     u64 vertex_a = 0, vertex_b = 0, fragment = 0;
-    u64 seen[NVN_DRAW_SHADER_STAGES] = {0}, seen_generation[NVN_DRAW_SHADER_STAGES] = {0};
-    u32 seen_count = 0;
-    for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++) {
-        if (!(command->program_bound & (1u << stage))) continue;
-        u64 handle = command->program[stage].handle;
+    /* BindProgram may leave older bindings in the other four stage slots. Select the
+       vertex and fragment programs explicitly, even when both slots name one program. */
+    for (u32 stage = 0; stage < 2; stage++) {
         const NvnProgramSnapshot* program = &command->program[stage].snapshot;
-        if (!handle) return 0;
-        int duplicate = 0;
-        for (u32 i = 0; i < seen_count; i++)
-            duplicate |= seen[i] == handle && seen_generation[i] == program->generation;
-        if (duplicate) continue;
-        seen[seen_count] = handle;
-        seen_generation[seen_count++] = program->generation;
+        if (!command->program[stage].handle) return 0;
         if (!program->refs_known || !program->shader_count || program->shader_count > NVN_PROGRAM_MAX_SHADERS) return 0;
         for (u32 i = 0; i < program->shader_count; i++) {
             u32 type = 0;
             u64 address = program->refs[i].code_candidate;
             int found = shader_code_stage(address, &type);
-            if (found == ST_VS) {
+            if (stage == 0 && found == ST_VS) {
                 u64* slot = type == 0 ? &vertex_a : &vertex_b;
-                if (*slot && *slot != address + 0x30) return 0;
+                if (*slot && *slot != address + 0x30) {
+                    LOG_LIMIT(8, "nvn-shader-module: duplicate vertex type=%u old=%llx new=%llx\n", type,
+                              (unsigned long long)*slot, (unsigned long long)(address + 0x30));
+                    return 0;
+                }
                 *slot = address + 0x30;
-            } else if (found == ST_FS) {
-                if (fragment && fragment != address + 0x30) return 0;
+            } else if (stage == 1 && found == ST_FS) {
+                if (fragment && fragment != address + 0x30) {
+                    LOG_LIMIT(8, "nvn-shader-module: duplicate fragment old=%llx new=%llx\n",
+                              (unsigned long long)fragment, (unsigned long long)(address + 0x30));
+                    return 0;
+                }
                 fragment = address + 0x30;
-            } else {
+            } else if (found < 0) {
                 LOG_LIMIT(8, "nvn-shader-module: unresolved ref stage=%u index=%u code=%llx extension=%llx\n", stage, i,
                           (unsigned long long)address, (unsigned long long)program->refs[i].extension);
                 return 0;
             }
         }
     }
-    if ((!vertex_a && !vertex_b) || !fragment) return 0;
+    if ((!vertex_a && !vertex_b) || !fragment) {
+        LOG_LIMIT(8, "nvn-shader-module: missing stage vertex-a=%llx vertex-b=%llx fragment=%llx bound=%x\n",
+                  (unsigned long long)vertex_a, (unsigned long long)vertex_b, (unsigned long long)fragment,
+                  command->program_bound);
+        return 0;
+    }
     for (u32 stage = 0; stage < 2; stage++) {
         u32 row = stage ? 4 : 0;
         u64 saved_cb[18];
@@ -514,7 +519,12 @@ static int materialize_draw_shaders(const NvnDrawCommand* command) {
                                      stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, 0, 0, 0, 0, 0);
         memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
         memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
-        if (!shader || !shader->mod || shader->failed || shader->si.unsupported) return 0;
+        if (!shader || !shader->mod || shader->failed || shader->si.unsupported) {
+            LOG_LIMIT(8, "nvn-shader-module: compile failure stage=%u code=%llx failed=%d unsupported=%d\n", stage,
+                      (unsigned long long)(stage ? fragment : (vertex_b ? vertex_b : vertex_a)),
+                      shader ? shader->failed : -1, shader ? shader->si.unsupported : -1);
+            return 0;
+        }
     }
     return 1;
 }

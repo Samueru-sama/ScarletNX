@@ -276,24 +276,23 @@ or image coherence.
 `SNX_NVN_SHADER_MATERIALIZE=1` also checks the recorded NVN program references on the GPU thread and requests cached
 Vulkan shader modules from the existing Maxwell translator. It recognizes the NVN blob wrapper and vertex-A,
 vertex-B, and fragment SPH types, combines vertex-A/B where both exist, and maps the recorded uniform-buffer ranges
-while translating. It restores the Maxwell renderer's constant-buffer bindings afterward. A program bound to multiple
-NVN stage slots is inspected once. Unknown references, duplicate stage candidates, unsupported instructions, and
+while translating. It restores the Maxwell renderer's constant-buffer bindings afterward. It selects the vertex and
+fragment stage slots, so older bindings in the other four slots do not introduce unrelated shaders. Unknown references,
+duplicate stage candidates, unsupported instructions, and
 module creation failures leave the draw on the guest path. This is a preflight only: integer attribute and render
 target masks, pipeline state, descriptor sets, command recording, and image coherence are not yet supplied by the
 NVN draw. Successful module creation does not mean a Vulkan pipeline can render the draw correctly.
-In an eight-second Catherine boot, both modules were available for all 3,887 prepared draws, with no failures. A
-22-second TotK boot prepared 2,858 draw attachments, but no draw passed shader materialization: its sampled
-`SetShadersExt` programs include a second reference whose first word does not contain a valid NVN code blob. The
-existing shader reference layout needs to be established from the SDK code before those draws can be materialized.
+In opt-in boots, both modules were available for all 3,827 prepared Catherine draws and all 2,858 prepared TotK
+draws, with no shader-module or attachment failures. Neither title's guest draws were replaced.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported
-program pointer and setup return value. It also snapshots up to eight 24-byte shader references before the guest SDK
-can reuse the input array. In the ordinary entries observed so far, the first word names GPU code, the second names
-CPU control data, and the third is an extension word; the TotK exception below prevents treating that as a universal
-layout. The inspected TotK `SetShadersExt` copies entries in 24-byte steps, and Catherine's shared setup
-routine advances by the same stride. This is a source for future program materialization, not a copy of shader code.
+program pointer and setup return value. It snapshots up to eight shader references before the guest SDK can reuse the
+input array. The plain `SetShaders` path passes 16-byte code/control pairs to shared setup; `SetShadersExt` copies
+24-byte entries into those pairs plus a separate array of optional third words. The observer preserves that distinction.
+Reading the plain pairs as 24-byte entries previously shifted TotK's second shader reference, making CPU control data
+appear to be an unrecognized code address. These snapshots record references, not copies of shader code.
 In a 120-frame Catherine run, all 1,462 replayed program binds found configured live programs. Its 133 initialized
 programs each received a successful shader setup, with no failed or untracked setup calls.
 In a 279-frame TotK run, all 1,028 replayed program binds resolved, and all 3,449 initialized programs received
@@ -310,12 +309,10 @@ headers; other stages are reported as unknown. The resulting SPIR-V is discarded
 not bind constant buffers or use the compiled shader for a draw, so successful compilation is not yet evidence of
 correct rendered output. In initial Catherine and TotK boot samples, eight sampled shaders from each title compiled
 to SPIR-V with no unsupported instructions when translated at program setup. At the submitted-program boundary,
-Catherine again compiled eight of eight sampled references. TotK compiled four of eight: the other four all named
-one repeated address whose GPU-memory read returned zeros. One TotK `SetShadersExt` call has a second 24-byte entry
-whose first word is CPU-address-shaped, while its preceding entry's extension word is GPU-address-shaped. The current
-observer cannot assign that entry to a shader stage safely, so these lists must stay on the guest path. This is the
-first direct NVN-to-host shader execution path, while command recording, resource binding, synchronization, and
-presentation still run through the guest SDK.
+Catherine again compiled eight of eight sampled references. An earlier TotK sample compiled four of eight because
+the observer used the wrong stride for plain `SetShaders` entries; that capture error is corrected above. This is a
+shader-translation preflight, while command recording, resource binding, synchronization, and presentation still run
+through the guest SDK.
 
 Descriptor replay now also snapshots the scalar values of `ClearColor` and `ClearDepthStencil`, including the depth
 float passed in an ARM SIMD register, and copies `SetRenderTargets` texture-handle arrays before the caller can reuse
