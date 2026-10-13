@@ -1098,9 +1098,12 @@ An output snapshot taken at each QMD landing now lets the opt-in TotK trace comp
 its matching QMD dispatch, before later guest-memory writes obscure the result. The first 58,848-byte pair
 matched byte for byte (0 differences); its later guest-backing comparison still differed by 836 bytes.
 The second matching dispatch differed by 242 bytes, starting at offset 29. Between those dispatches, the
-direct path logged several fragment-shader draws that write the same storage buffer. The next step is to
-compare that buffer at the second dispatch's input and isolate the first differing draw or intervening write;
-the output mismatch alone does not identify which stage is wrong.
+direct path logged several fragment-shader draws that write the same storage buffer. The output mismatch
+alone does not identify which stage is wrong.
+The paired input probe now finds 0 differing bytes before the first dispatch and 240 before the second.
+That places the first confirmed mismatch between the two dispatches, before the second compute shader runs.
+The second output differs by 242 bytes, so fixing compute translation alone cannot close this gap; the
+intervening storage-writing draws and their ordering need per-draw comparison.
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
 work area. Removing the oversized floor allowed a 100-second headless NVN probe to issue at least 55,000

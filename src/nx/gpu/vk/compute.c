@@ -57,6 +57,7 @@ static u64 cs_probe_hash(const u8* bytes, u32 size) {
 typedef struct {
     u64 address, code;
     u32 size;
+    int input;
     u8* bytes;
 } CsShadowExpected;
 static CsShadowExpected g_shadow_expected[64];
@@ -64,32 +65,35 @@ static u32 g_shadow_expected_count;
 
 /* QMD finishes before the captured NVN batch is replayed. Retain each QMD result so a
    direct dispatch can be compared with its own result, not later guest-memory contents. */
-static void cs_shadow_expect(const CsOut* output) {
-    if (!output->size || output->size > (1u << 20)) return;
+static void cs_shadow_expect(u64 address, u32 size, u64 code, const u8* source, int input) {
+    if (!address || !size || size > (1u << 20)) return;
     if (g_shadow_expected_count == 64) {
         free(g_shadow_expected[0].bytes);
         memmove(g_shadow_expected, g_shadow_expected + 1, 63 * sizeof g_shadow_expected[0]);
         g_shadow_expected_count--;
     }
-    u8* bytes = malloc(output->size);
+    u8* bytes = malloc(size);
     if (!bytes) return;
-    memcpy(bytes, g_ar_ptr + output->off, output->size);
+    memcpy(bytes, source, size);
     g_shadow_expected[g_shadow_expected_count++] = (CsShadowExpected){
-        .address = output->addr, .code = output->code, .size = output->size, .bytes = bytes};
+        .address = address, .code = code, .size = size, .input = input, .bytes = bytes};
 }
 
-void vk_compute_shadow_compare(u64 address, u32 size, u64 code, const u8* bytes) {
+void vk_compute_shadow_compare(u64 address, u32 size, u64 code, const u8* bytes, int input) {
     for (u32 i = 0; i < g_shadow_expected_count; i++) {
         CsShadowExpected expected = g_shadow_expected[i];
-        if (expected.address != address || expected.size != size || expected.code != code + 0x100) continue;
+        /* Observed QMD code addresses follow the captured NVN program address by 0x100 bytes. */
+        if (expected.address != address || expected.size != size || expected.code != code + 0x100 ||
+            expected.input != input) continue;
         u32 different = 0, first = size;
         for (u32 b = 0; b < size; b++)
             if (expected.bytes[b] != bytes[b]) {
                 if (first == size) first = b;
                 different++;
             }
-        LOG_LIMIT(16, "nvn-shadow-qmd-compare: code=%llx qmd=%llx addr=%llx size=%u different=%u first=%u "
+        LOG_LIMIT(16, "nvn-shadow-qmd-compare: phase=%s code=%llx qmd=%llx addr=%llx size=%u different=%u first=%u "
                       "qmd/direct=%02x/%02x\n",
+                  input ? "input" : "output",
                   (unsigned long long)code, (unsigned long long)expected.code,
                   (unsigned long long)address, size, different, first,
                   first < size ? expected.bytes[first] : 0, first < size ? bytes[first] : 0);
@@ -103,7 +107,7 @@ void vk_compute_shadow_compare(u64 address, u32 size, u64 code, const u8* bytes)
 static void cs_trace_output(const CsOut* output) {
     const char* trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
     if (!trace || strcmp(trace, "1")) return;
-    cs_shadow_expect(output);
+    cs_shadow_expect(output->addr, output->size, output->code, g_ar_ptr + output->off, 0);
     if (output->size != 58848) return;
     const u8* bytes = g_ar_ptr + output->off;
     LOG_LIMIT(8, "nvn-qmd-storage-output: code=%llx addr=%llx hash=%llx bytes29,304,354=%02x,%02x,%02x\n",
@@ -672,6 +676,9 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         else
             memset(g_ar_ptr + o, 0, ss[i]);
         const char* input_trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
+        /* A chained input lives in a GPU-written arena region, so its host copy is not an oracle yet. */
+        if (input_trace && !strcmp(input_trace, "1") && chain[i] < 0 && (p->si.gbuf_wmask & (1u << i)))
+            cs_shadow_expect(sa[i], ss[i], pa, g_ar_ptr + o, 1);
         if (ss[i] == 58848 && input_trace && !strcmp(input_trace, "1"))
             LOG_LIMIT(8, "nvn-qmd-storage-input: code=%llx addr=%llx hash=%llx byte304=%02x\n",
                       (unsigned long long)pa, (unsigned long long)sa[i],

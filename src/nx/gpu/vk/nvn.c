@@ -1500,7 +1500,7 @@ void vk_nvn_shadow_note_guest_write(u64 address, u32 size, u32 changed_bytes, in
 
 /* Diagnostic coherence proof for mixed HLE/GPFIFO execution. A guest write may be the
    emulated copy of the same draw; keep HLE state only if the complete results agree. */
-static int shadow_storage_matches_guest(NvnShadowStorage* entry, u64 dispatch_code) {
+static int shadow_storage_matches_guest(NvnShadowStorage* entry, u64 dispatch_code, int input) {
     /* QMD output can still live in the compute arena while the guest backing remains old.
        Materialize overlapping results before using that backing as the comparison oracle. */
     vk_compute_mem_need(entry->address, entry->size);
@@ -1538,7 +1538,7 @@ static int shadow_storage_matches_guest(NvnShadowStorage* entry, u64 dispatch_co
     vkCmdPipelineBarrier2(cb, &dependency);
     vk_finish();
     vk_readback_ready();
-    if (dispatch_code) vk_compute_shadow_compare(entry->address, (u32)entry->size, dispatch_code, pixels);
+    if (dispatch_code) vk_compute_shadow_compare(entry->address, (u32)entry->size, dispatch_code, pixels, input);
     entry->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     entry->access = VK_ACCESS_2_TRANSFER_READ_BIT;
     u64 different = 0, first = entry->size;
@@ -1606,7 +1606,7 @@ static int shadow_storage_get(u64 address, u32 size, int writable, const NvnStor
             const char* verify_guest = getenv("SNX_NVN_SHADOW_VERIFY_GUEST_WRITES");
             if ((gpu_dirty || cpu_dirty) &&
                 (!verify_guest || strcmp(verify_guest, "1") || cpu_dirty < 0 ||
-                 !shadow_storage_matches_guest(entry, 0))) {
+                 !shadow_storage_matches_guest(entry, 0, 0))) {
                 LOG_LIMIT(12, "nvn-shadow-storage-reject: guest-write addr=%llx size=%u gpu=%d cpu=%d batch=%llu\n",
                           (unsigned long long)address, size, gpu_dirty, cpu_dirty,
                           (unsigned long long)batch_serial);
@@ -1904,6 +1904,15 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
                                                   .pImageInfo = &sampled_info};
     }
     vkUpdateDescriptorSets(g_vk.dev, nwrites, writes, 0, NULL);
+    const char* input_trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
+    if (input_trace && !strcmp(input_trace, "1")) {
+        static u32 input_probes;
+        for (int i = 0; i < si->ngbuf && input_probes < 4; i++)
+            if (buffers[i] && buffers[i]->size == 58848) {
+                input_probes++;
+                shadow_storage_matches_guest(buffers[i], command->program.snapshot.refs[0].code_candidate, 1);
+            }
+    }
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     VkBufferMemoryBarrier2 barriers[NVN_DRAW_STORAGE_SLOTS] = {0};
@@ -1934,14 +1943,13 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk_playout, 0, 1, &set, 0, NULL);
     vkCmdDispatch(cb, command->groups[0], command->groups[1], command->groups[2]);
-    const char* input_trace = getenv("SNX_NVN_SHADOW_INPUT_TRACE");
     if (input_trace && !strcmp(input_trace, "1")) {
         static u32 probes;
         for (int i = 0; i < si->ngbuf && probes < 4; i++)
             if (buffers[i] && buffers[i]->size == 58848) {
                 LOG("nvn-shadow-storage-probe: code=%llx probe=%u\n",
                     (unsigned long long)command->program.snapshot.refs[0].code_candidate, probes++);
-                shadow_storage_matches_guest(buffers[i], command->program.snapshot.refs[0].code_candidate);
+                shadow_storage_matches_guest(buffers[i], command->program.snapshot.refs[0].code_candidate, 0);
             }
     }
     mark_modeled_unknown(command->sequence, command->prior_unmodeled_write);
