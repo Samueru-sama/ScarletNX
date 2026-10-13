@@ -878,6 +878,19 @@ disabled independently. This established the initial command-coverage gap, rathe
 31 staged draws. The new draw records close that count gap, but full encoded-state capture and image comparison are
 still required before replacing GPFIFO execution.
 
+The next TotK probe found those missing bindings in complete command-buffer cursor gaps before the first draw.
+Maxwell methods `0x8e0..0x8e2` set the constant-buffer size and address, and methods `0x904`/`0x924` bind vertex and
+fragment banks. The same gaps also set vertex stream starts through `0x701/0x702` and inclusive ends through
+`0x7c0/0x7c1`. The opt-in decoder now validates the whole gap before applying any method, retains these registers
+in list order, and inserts uniform and vertex bind records before the indexed draw. An ABI-matched TotK build ran
+35 seconds with 9,757 captured indexed draws, 37,104 recovered uniform binds, 9,005 recovered vertex binds, no
+unknown ranges, and no dropped operations. Its first 1,656/3,384/3,384-index draws all issued on the shadow target.
+With `SNX_NVN_SHADOW_COMPARE=1`, `SNX_NVN_SHADOW_COMPARE_SIZE=640x360`, and
+`SNX_NVN_SHADOW_COMPARE_FORMAT=0x29`, both images covered exactly 23,040 nonblack pixels in the top 36 rows.
+They still differed at 12,116 of those pixels, with small differences in all four half-float components; color
+parity remains unproven. Without recovered vertex binds, the first three draws had no bound stream and did not
+issue. Without recovered state, the 640×360 shadow target had no eligible image to compare.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

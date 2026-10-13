@@ -9,6 +9,7 @@
 #include "gpu/shader/shader.h"
 #include "hle/services/nvdrv.h"
 #include "runtime/platform/log.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1890,9 +1891,19 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
 void vk_nvn_shadow_compare(void) {
     static int compared;
     if (compared || !shadow_draw_stamp) return;
+    const char* size_filter = getenv("SNX_NVN_SHADOW_COMPARE_SIZE");
+    const char* format_filter = getenv("SNX_NVN_SHADOW_COMPARE_FORMAT");
+    unsigned filter_width = 0, filter_height = 0;
+    unsigned long filter_format = format_filter ? strtoul(format_filter, NULL, 0) : 0;
+    if (size_filter && (sscanf(size_filter, "%ux%u", &filter_width, &filter_height) != 2 ||
+                        !filter_width || !filter_height))
+        return;
     NvnImage* shadow = NULL;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++)
-        if (images[i].shadow_draw_stamp && (!shadow || images[i].shadow_draw_stamp > shadow->shadow_draw_stamp))
+        if (images[i].shadow_draw_stamp &&
+            (!size_filter || (images[i].width == filter_width && images[i].height == filter_height)) &&
+            (!format_filter || images[i].format == filter_format) &&
+            (!shadow || images[i].shadow_draw_stamp > shadow->shadow_draw_stamp))
             shadow = &images[i];
     if (!shadow || !shadow->transfer_src || shadow->levels != 1 || shadow->layers != 1 ||
         !shadow->width || !shadow->height)

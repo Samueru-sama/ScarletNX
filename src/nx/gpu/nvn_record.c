@@ -92,6 +92,13 @@ typedef struct {
 typedef struct {
     u64 key;
     u64 command_cursor, command_low, command_high;
+    u32 cb_size, cb_high, cb_low;
+    u8 cb_known;
+    struct {
+        u32 start_high, start_low, end_high, end_low;
+        u8 known;
+    } gap_vertex[NVN_DRAW_VERTEX_SLOTS];
+    u16 gap_vertex_dirty;
     NvnOp* ops;
     u16 count, capacity;
     u8 truncated, opaque, implicit_counted;
@@ -103,7 +110,8 @@ typedef struct {
 static NvnList active[ACTIVE_SLOTS], lists[LIST_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_found, submitted_missing, submitted_opaque;
-static u64 inlined_draws, inlined_gaps, inlined_unparsed;
+static u64 inlined_draws, inlined_uniform_binds, inlined_uniform_unknown, inlined_vertex_binds,
+    inlined_vertex_unknown, inlined_gaps, inlined_unparsed;
 static int inlined_draw_replay;
 static u64 calls, call_refs, call_ref_missing, call_ref_opaque, truncated_refs;
 static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, invalid_arrays, allocation_failures;
@@ -746,10 +754,13 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 state->program[stage] = (NvnStageProgram){.handle = op->args[0], .snapshot = program};
                 state->program_bound |= 1u << stage;
             }
-        } else if (!strcmp(op->name, "nvnCommandBufferBindVertexBuffer")) {
+        } else if (!strcmp(op->name, "nvnCommandBufferBindVertexBuffer") ||
+                   !strcmp(op->name, "nvnInlinedVertexBind")) {
             u32 index = (u32)op->args[0];
             if (index >= NVN_DRAW_VERTEX_SLOTS)
                 vertex_bind_invalid++;
+            else if (!strcmp(op->name, "nvnInlinedVertexBind") && !op->args[3])
+                state->vertex_bound &= (u16)~(1u << index);
             else {
                 state->vertex[index] = (NvnBufferRange){op->args[1], op->args[2]};
                 state->vertex_bound |= (u16)(1u << index);
@@ -806,10 +817,13 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 memcpy(state->blend_state[target], blend, sizeof state->blend_state[target]);
                 state->blend_state_known |= 1u << target;
             }
-        } else if (!strcmp(op->name, "nvnCommandBufferBindUniformBuffer")) {
+        } else if (!strcmp(op->name, "nvnCommandBufferBindUniformBuffer") ||
+                   !strcmp(op->name, "nvnInlinedUniformBind")) {
             u32 stage = (u32)op->args[0], index = (u32)op->args[1];
             if (stage >= NVN_DRAW_SHADER_STAGES || index >= NVN_DRAW_UNIFORM_SLOTS)
                 uniform_bind_invalid++;
+            else if (!strcmp(op->name, "nvnInlinedUniformBind") && !op->args[4])
+                state->uniform_bound[stage] &= (u16)~(1u << index);
             else {
                 state->uniform[stage][index] = (NvnBufferRange){op->args[2], op->args[3]};
                 state->uniform_bound[stage] |= (u16)(1u << index);
@@ -1198,11 +1212,11 @@ static int inlined_indexed_draw(u64 address, u64 size, u64 args[7]) {
     return 1;
 }
 
-static void append_inlined_draw(NvnList* list, const u64 args[7]) {
+static int append_inlined_op(NvnList* list, u8 kind, const char* name, const u64 args[7]) {
     if (list->count == MAX_OPS) {
         list->truncated = 1;
         dropped_ops++;
-        return;
+        return 0;
     }
     if (list->count == list->capacity) {
         u16 capacity = list->capacity ? list->capacity * 2 : 16;
@@ -1211,17 +1225,86 @@ static void append_inlined_draw(NvnList* list, const u64 args[7]) {
             allocation_failures++;
             list->truncated = 1;
             dropped_ops++;
-            return;
+            return 0;
         }
         list->ops = grown;
         list->capacity = capacity;
     }
     NvnOp* op = &list->ops[list->count++];
     memset(op, 0, sizeof *op);
-    op->kind = OP_DRAW;
-    op->name = "nvnCommandBufferDrawElements";
+    op->kind = kind;
+    op->name = name;
     memcpy(op->args, args, sizeof op->args);
-    inlined_draws++;
+    return 1;
+}
+
+static void append_inlined_draw(NvnList* list, const u64 args[7]) {
+    inlined_draws += append_inlined_op(list, OP_DRAW, "nvnCommandBufferDrawElements", args);
+}
+
+static void capture_gap_method(u32 subchannel, u32 method, u32 value, void* context) {
+    NvnList* list = context;
+    if (subchannel) return;
+    if (method >= 0x700 && method < 0x740) {
+        u32 stream = (method - 0x700) / 4;
+        switch ((method - 0x700) & 3) {
+            case 1: list->gap_vertex[stream].start_high = value; list->gap_vertex[stream].known |= 1; break;
+            case 2: list->gap_vertex[stream].start_low = value; list->gap_vertex[stream].known |= 2; break;
+            default: return;
+        }
+        list->gap_vertex_dirty |= (u16)(1u << stream);
+        return;
+    }
+    if (method >= 0x7c0 && method < 0x7e0) {
+        u32 stream = (method - 0x7c0) / 2;
+        if ((method - 0x7c0) & 1) {
+            list->gap_vertex[stream].end_low = value;
+            list->gap_vertex[stream].known |= 8;
+        } else {
+            list->gap_vertex[stream].end_high = value;
+            list->gap_vertex[stream].known |= 4;
+        }
+        list->gap_vertex_dirty |= (u16)(1u << stream);
+        return;
+    }
+    switch (method) {
+        case 0x8e0: list->cb_size = value; list->cb_known |= 1; return;
+        case 0x8e1: list->cb_high = value; list->cb_known |= 2; return;
+        case 0x8e2: list->cb_low = value; list->cb_known |= 4; return;
+        default: break;
+    }
+    if (method != 0x904 && method != 0x924) return;
+    u32 bank = (value >> 4) & 31;
+    if (bank < 3 || bank - 3 >= NVN_DRAW_UNIFORM_SLOTS) return;
+    u32 stage = method == 0x904 ? 0 : 1;
+    u64 args[7] = {stage, bank - 3, 0, 0, !!(value & 1)};
+    if (value & 1) {
+        if (list->cb_known != 7 || !list->cb_size || list->cb_size > 65536 || list->cb_high >= 256) {
+            inlined_uniform_unknown++;
+            return;
+        }
+        args[2] = ((u64)list->cb_high << 32) | list->cb_low;
+        args[3] = list->cb_size;
+    }
+    inlined_uniform_binds += append_inlined_op(list, OP_STATE, "nvnInlinedUniformBind", args);
+}
+
+static void flush_gap_vertex_binds(NvnList* list) {
+    u16 dirty = list->gap_vertex_dirty;
+    list->gap_vertex_dirty = 0;
+    for (u32 stream = 0; stream < NVN_DRAW_VERTEX_SLOTS; stream++) {
+        if (!(dirty & (1u << stream))) continue;
+        if (list->gap_vertex[stream].known != 15 || list->gap_vertex[stream].start_high >= 256 ||
+            list->gap_vertex[stream].end_high >= 256) {
+            inlined_vertex_unknown++;
+            continue;
+        }
+        u64 start = ((u64)list->gap_vertex[stream].start_high << 32) | list->gap_vertex[stream].start_low;
+        u64 end = ((u64)list->gap_vertex[stream].end_high << 32) | list->gap_vertex[stream].end_low;
+        u64 size = end >= start ? end - start + 1 : 0;
+        u64 args[7] = {stream, start, size, !!start && size <= (64u << 20)};
+        inlined_vertex_binds += append_inlined_op(list, OP_STATE, "nvnInlinedVertexBind", args);
+    }
 }
 
 /* Fingerprint the observed SDK's default constructor, which writes the entire view object. */
@@ -1654,6 +1737,13 @@ void nvn_record_before(const CPU* c, const char* name) {
         readable_range(c->x[0], 8)) {
         u64 cursor = gr64(c->x[0]);
         if (r->command_cursor >= r->command_low && cursor <= r->command_high && cursor > r->command_cursor) {
+            u64 gap_size = cursor - r->command_cursor;
+            const char* state_opt = getenv("SNX_NVN_INLINED_STATE");
+            if ((!state_opt || strcmp(state_opt, "0")) && gap_size <= 65536 && !(gap_size & 3) &&
+                readable_range(r->command_cursor, gap_size) &&
+                nvn_command_gap_methods((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
+                                        capture_gap_method, r))
+                flush_gap_vertex_binds(r);
             u64 args[7] = {0};
             inlined_gaps++;
             if (inlined_indexed_draw(r->command_cursor, cursor - r->command_cursor, args))
@@ -1986,8 +2076,10 @@ void nvn_record_report(void) {
     report_ops("submitted", submitted_ops);
     report_ops("referenced", referenced_ops);
     if (inlined_draw_replay)
-        LOG("nvn-record: inlined-gaps=%llu inlined-indexed-draws=%llu unparsed-gaps=%llu\n",
+        LOG("nvn-record: inlined-gaps=%llu indexed-draws=%llu uniform-binds=%llu unknown-uniforms=%llu vertex-binds=%llu unknown-vertices=%llu unparsed-gaps=%llu\n",
             (unsigned long long)inlined_gaps, (unsigned long long)inlined_draws,
+            (unsigned long long)inlined_uniform_binds, (unsigned long long)inlined_uniform_unknown,
+            (unsigned long long)inlined_vertex_binds, (unsigned long long)inlined_vertex_unknown,
             (unsigned long long)inlined_unparsed);
     LOG("nvn-record: refs=%llu missing_refs=%llu opaque_refs=%llu truncated_refs=%llu\n", (unsigned long long)call_refs,
         (unsigned long long)call_ref_missing, (unsigned long long)call_ref_opaque, (unsigned long long)truncated_refs);

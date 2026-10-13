@@ -2,6 +2,35 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_command_gap.h"
 
+int nvn_command_gap_methods(const u32* words, u32 length, NvnGapMethodVisitor visit, void* context) {
+    if (!words || !length || length > 16384) return 0;
+    /* Preflight the entire gap before emitting any state. A truncated tail must not commit earlier binds. */
+    for (u32 i = 0; i < length;) {
+        u32 header = words[i], mode = header >> 29, count = (header >> 16) & 0x1fff;
+        if (mode == 4) {
+            i++;
+            continue;
+        }
+        if ((mode != 1 && mode != 3 && mode != 5) || !count || count >= length - i) return 0;
+        i += count + 1;
+    }
+    if (!visit) return 1;
+    for (u32 i = 0; i < length;) {
+        u32 header = words[i++], mode = header >> 29, sub = (header >> 13) & 7;
+        u32 method = header & 0xfff, count = (header >> 16) & 0x1fff;
+        if (mode == 4) {
+            visit(sub, method, count, context);
+            continue;
+        }
+        for (u32 k = 0; k < count; k++) {
+            u32 actual_method = mode == 1 ? method + k : mode == 5 && k ? method + 1 : method;
+            visit(sub, actual_method, words[i + k], context);
+        }
+        i += count;
+    }
+    return 1;
+}
+
 int nvn_command_gap_indexed_draw(const u32* words, u32 length, NvnGapIndexedDraw* out) {
     if (!words || !out || length < 6 || length > 16384) return 0;
     for (u32 i = 0; i < length;) {
