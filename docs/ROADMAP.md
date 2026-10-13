@@ -31,3 +31,6 @@ narrow Catherine draw slice can now execute through opt-in host probes, while th
 Maxwell command decoding.
 The [NVN HLE investigation](NVN_HLE.md) records the resource path and the remaining image-coherence and
 whole-submission migration boundaries.
+Keep guest Maxwell command decoding as a supported GPU mode. Once direct NVN can execute a whole
+submission independently, expose a per-game choice between it and the emulated mode; the current
+opt-in probes run alongside Maxwell and are not yet that choice.

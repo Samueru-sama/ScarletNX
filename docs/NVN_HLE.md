@@ -1148,8 +1148,10 @@ clear uses zero instead of magenta. The first 1600×900 Odyssey comparison then 
 and 0/5,760,000 differing bytes. The probe deliberately leaves coverage unproven: a queue-submission zero snapshot
 alone does not exclude pending GPU writes or establish coherent initial contents for every later image.
 
-1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
-   recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
+1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
+   modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
+   list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
+   changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
    buffers, queues, and fences to host-owned records with checked guest addresses. Preserve aliasing and CPU/GPU
    coherence; a copied texture is not sufficient when the guest writes the same pool again.
