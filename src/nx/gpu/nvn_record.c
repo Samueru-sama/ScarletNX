@@ -6,6 +6,7 @@
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
 #include "gpu/nvn_dispatch.h"
+#include "gpu/nvn_memory_write.h"
 #include "gpu/nvn_sampler_descriptor.h"
 #include "gpu/nvn_program.h"
 #include "gpu/nvn_pool.h"
@@ -48,6 +49,10 @@ typedef struct {
     u32 count, capacity;
     NvnDispatchCommand commands[];
 } NvnDispatchBatch;
+typedef struct {
+    u32 count, capacity;
+    NvnMemoryWriteCommand commands[];
+} NvnMemoryWriteBatch;
 typedef struct {
     u8 kind;
     u8 refs_truncated;
@@ -101,6 +106,7 @@ typedef struct {
     u32 record_generation;
     u64 command_cursor, command_low, command_high;
     NvnGapMacroData3 cbuf_macro_data;
+    NvnGapReportState report_state;
     u8 cbuf_macro_data_known;
     u32 cb_size, cb_high, cb_low;
     u8 cb_known;
@@ -191,6 +197,7 @@ typedef struct {
     NvnCopyBatch* copies;
     NvnDrawBatch* draws;
     NvnDispatchBatch* dispatches;
+    NvnMemoryWriteBatch* memory_writes;
     NvnStorageSeed* storage_seeds;
     u64 storage_seed_bytes;
 } ReplayQueue;
@@ -416,6 +423,28 @@ static int stage_copy(ReplayQueue* queue, NvnCopyBufferTextureCommand command) {
     return 1;
 }
 
+static int stage_memory_write(ReplayQueue* queue, u64 address, u32 size) {
+    NvnMemoryWriteBatch* batch = queue->memory_writes;
+    if (!batch || batch->count == batch->capacity) {
+        u32 capacity = batch ? batch->capacity * 2 : 8;
+        if (capacity > 4096) capacity = 4096;
+        if (!batch || batch->capacity < capacity) {
+            NvnMemoryWriteBatch* grown = realloc(batch, sizeof *batch + (size_t)capacity * sizeof grown->commands[0]);
+            if (grown) {
+                if (!batch) grown->count = 0;
+                grown->capacity = capacity;
+                queue->memory_writes = batch = grown;
+            }
+        }
+    }
+    u64 prior = queue->last_unmodeled_write;
+    u64 sequence = queue->next_sequence++;
+    queue->last_unmodeled_write = sequence;
+    if (!batch || batch->count == batch->capacity) return 0;
+    batch->commands[batch->count++] = (NvnMemoryWriteCommand){sequence, prior, address, size};
+    return 1;
+}
+
 static void replay_dynamic_array(const NvnOp* op, u32 first, u32 count, u32* dst, u32 words, u16* known) {
     if (first > NVN_DRAW_VIEWPORT_SLOTS || count > NVN_DRAW_VIEWPORT_SLOTS - first) {
         *known = 0;
@@ -516,7 +545,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
            independent NVN-owned images while the shadow path tracks unknown image writes globally. */
         if (queue &&
             (op->kind == OP_CLEAR ||
-             (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) ||
+             (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
+              strcmp(op->name, "nvnInlinedReportWrite")) ||
              op->kind == OP_DISPATCH || op->kind == OP_OTHER)) {
             queue->last_unmodeled_write = queue->next_sequence++;
         }
@@ -525,6 +555,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             strcmp(op->name, "nvnCommandBufferClearDepthStencil") &&
             strcmp(op->name, "nvnCommandBufferCallCommands"))
             queue->observed_clear_only = 0;
+        if (!strcmp(op->name, "nvnInlinedReportWrite")) {
+            if (queue) stage_memory_write(queue, op->args[0], (u32)op->args[1]);
+            continue;
+        }
         if (!strcmp(op->name, "nvnCommandBufferSetCopyRowStride")) {
             state->copy_row_stride = (i64)op->args[0];
         } else if (!strcmp(op->name, "nvnCommandBufferSetCopyImageStride")) {
@@ -1995,6 +2029,16 @@ u64 nvn_record_before(const CPU* c, const char* name) {
             if (gap_size > 65536 || (gap_size & 3) || !readable_range(r->command_cursor, gap_size) ||
                 !nvn_command_gap_no_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
                 r->command_gaps_safe = 0;
+            if (gap_size <= 65536 && !(gap_size & 3) && readable_range(r->command_cursor, gap_size)) {
+                NvnGapReportWrite reports[32];
+                u32 report_count = 0;
+                if (nvn_command_gap_report_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
+                                                  &r->report_state, reports, 32, &report_count))
+                    for (u32 i = 0; i < report_count; i++) {
+                        u64 args[7] = {reports[i].address, reports[i].size, reports[i].query};
+                        append_inlined_op(r, OP_TRANSFER, "nvnInlinedReportWrite", args);
+                    }
+            }
             const char* state_opt = getenv("SNX_NVN_INLINED_STATE");
             if ((!state_opt || strcmp(state_opt, "0")) && gap_size <= 65536 && !(gap_size & 3) &&
                 readable_range(r->command_cursor, gap_size) &&
@@ -2116,6 +2160,7 @@ typedef struct {
     NvnCopyBatch* copies;
     NvnDrawBatch* draws;
     NvnDispatchBatch* dispatches;
+    NvnMemoryWriteBatch* memory_writes;
     NvnStorageSeed* storage_seeds;
 } NvnGpuBatch;
 
@@ -2130,16 +2175,23 @@ static void free_storage_seeds(NvnStorageSeed* seed) {
 static void execute_nvn_batch(void* arg) {
     NvnGpuBatch* batch = arg;
     if (g_renderer->nvn_batch_begin) g_renderer->nvn_batch_begin();
-    u32 clear = 0, copy = 0, draw = 0, dispatch = 0;
+    u32 clear = 0, copy = 0, draw = 0, dispatch = 0, memory_write = 0;
     u32 clear_count = batch->clears ? batch->clears->count : 0;
     u32 copy_count = batch->copies ? batch->copies->count : 0;
     u32 draw_count = batch->draws ? batch->draws->count : 0;
     u32 dispatch_count = batch->dispatches ? batch->dispatches->count : 0;
-    while (clear < clear_count || copy < copy_count || draw < draw_count || dispatch < dispatch_count) {
+    u32 write_count = batch->memory_writes ? batch->memory_writes->count : 0;
+    while (clear < clear_count || copy < copy_count || draw < draw_count || dispatch < dispatch_count ||
+           memory_write < write_count) {
         u64 clear_seq = clear < clear_count ? batch->clears->commands[clear].sequence : UINT64_MAX;
         u64 copy_seq = copy < copy_count ? batch->copies->commands[copy].sequence : UINT64_MAX;
         u64 draw_seq = draw < draw_count ? batch->draws->commands[draw].sequence : UINT64_MAX;
         u64 dispatch_seq = dispatch < dispatch_count ? batch->dispatches->commands[dispatch].sequence : UINT64_MAX;
+        u64 write_seq = memory_write < write_count ? batch->memory_writes->commands[memory_write].sequence : UINT64_MAX;
+        if (write_seq < clear_seq && write_seq < copy_seq && write_seq < draw_seq && write_seq < dispatch_seq) {
+            g_renderer->nvn_memory_write(&batch->memory_writes->commands[memory_write++]);
+            continue;
+        }
         if (clear_seq < copy_seq && clear_seq < draw_seq && clear_seq < dispatch_seq) {
             int result = g_renderer->nvn_clear(&batch->clears->commands[clear++]);
             if (result > 0) {
@@ -2214,6 +2266,7 @@ static void execute_nvn_batch(void* arg) {
     free(batch->copies);
     free(batch->draws);
     free(batch->dispatches);
+    free(batch->memory_writes);
     free_storage_seeds(batch->storage_seeds);
     free(batch);
 }
@@ -2259,6 +2312,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
         NvnCopyBatch* copy_batch = NULL;
         NvnDrawBatch* draw_batch = NULL;
         NvnDispatchBatch* dispatch_batch = NULL;
+        NvnMemoryWriteBatch* memory_write_batch = NULL;
         NvnStorageSeed* storage_seeds = NULL;
         pm_lock(&lock);
         ReplayQueue* queue = replay_queue_slot(command_buffer);
@@ -2319,19 +2373,22 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
                     free(queue->dispatches);
                 queue->dispatches = NULL;
             }
+            memory_write_batch = queue->memory_writes;
+            queue->memory_writes = NULL;
             storage_seeds = queue->storage_seeds;
             queue->storage_seeds = NULL;
             queue->storage_seed_bytes = 0;
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
-        if (clear_batch || copy_batch || draw_batch || dispatch_batch) {
+        if (clear_batch || copy_batch || draw_batch || dispatch_batch || memory_write_batch) {
             NvnGpuBatch* owned = malloc(sizeof *owned);
             if (owned) {
                 owned->clears = clear_batch;
                 owned->copies = copy_batch;
                 owned->draws = draw_batch;
                 owned->dispatches = dispatch_batch;
+                owned->memory_writes = memory_write_batch;
                 owned->storage_seeds = storage_seeds;
                 gpu_call(execute_nvn_batch, owned);
             } else {
@@ -2339,6 +2396,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
                 free(copy_batch);
                 free(draw_batch);
                 free(dispatch_batch);
+                free(memory_write_batch);
                 free_storage_seeds(storage_seeds);
                 __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
             }

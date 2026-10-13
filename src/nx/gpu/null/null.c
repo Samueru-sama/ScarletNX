@@ -37,6 +37,10 @@ static int null_nvn_dispatch(const NvnDispatchCommand* command) {
     (void)command;
     return 0;
 }
+static int null_nvn_memory_write(const NvnMemoryWriteCommand* command) {
+    (void)command;
+    return 0;
+}
 static void null_draw(GpuChannel* ch, int i, u32 t, u32 f, u32 c, u32 bv, u32 bi, u32 in) {
     (void)ch;
     (void)i;
@@ -103,6 +107,7 @@ const Renderer null_renderer = {
     .nvn_copy_buffer_texture = null_nvn_copy_buffer_texture,
     .nvn_draw_prepare = null_nvn_draw_prepare,
     .nvn_dispatch = null_nvn_dispatch,
+    .nvn_memory_write = null_nvn_memory_write,
     .draw = null_draw,
     .cb_bind = null_cb_bind,
     .blit = null_blit,

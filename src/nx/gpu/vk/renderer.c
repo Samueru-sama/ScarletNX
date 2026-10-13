@@ -107,6 +107,12 @@ static int vkr_nvn_dispatch(const NvnDispatchCommand* command) {
     vk_unlock();
     return result;
 }
+static int vkr_nvn_memory_write(const NvnMemoryWriteCommand* command) {
+    vk_lock();
+    int result = vk_nvn_memory_write(command);
+    vk_unlock();
+    return result;
+}
 static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 bv, u32 bi, u32 instances) {
     g_draws++;
     vk_lock();
@@ -451,6 +457,7 @@ const Renderer vk_renderer = {
     .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,
     .nvn_draw_prepare = vkr_nvn_draw_prepare,
     .nvn_dispatch = vkr_nvn_dispatch,
+    .nvn_memory_write = vkr_nvn_memory_write,
     .draw_texture = vkr_draw_texture,
     .draw = vkr_draw,
     .cb_bind = vkr_cb_bind,

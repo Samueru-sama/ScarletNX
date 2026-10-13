@@ -2711,6 +2711,61 @@ static int scope_storage_writes(const NvnDrawCommand* command, const VkSh* verte
     return 1;
 }
 
+/* A decoded guest-memory write can retire only the semantic resources it aliases. A missing physical
+   translation keeps the global marker intact, since a GPU address alone cannot prove non-aliasing. */
+static int reject_memory_write(const NvnMemoryWriteCommand* command) {
+    /* A preceding draw may have bridged sequence+1, which is also this write's sequence. The failed
+       write must revoke that bridge rather than inheriting its proof. */
+    if (command && modeled_unknown_marker == command->sequence)
+        modeled_unknown_marker = modeled_unknown_prior = 0;
+    return 0;
+}
+
+int vk_nvn_memory_write(const NvnMemoryWriteCommand* command) {
+    if (!command || !command->address || !command->size || command->size > (16u << 20) ||
+        command->address > UINT64_MAX - command->size)
+        return reject_memory_write(command);
+    const u8* host = gmem_ptr_untracked(command->address, command->size);
+    if (!host) return reject_memory_write(command);
+    u8 invalidate_image[NVN_IMAGE_SLOTS] = {0};
+    u8 invalidate_storage[NVN_SHADOW_STORAGE_SLOTS] = {0};
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        NvnImage* image = &images[i];
+        if (!image->image) continue;
+        int covered = 0;
+        for (u32 level = 0; level < 16; level++) covered |= !!(image->color_layers[level] | image->depth_layers[level]);
+        if (!covered) continue;
+        if (!image->storage_size || image->address > UINT64_MAX - image->storage_size)
+            return reject_memory_write(command);
+        const u8* image_host = gmem_ptr_untracked(image->address, image->storage_size);
+        if (!image_host) return reject_memory_write(command);
+        invalidate_image[i] = shadow_host_overlap(host, command->size, image_host, image->storage_size);
+    }
+    for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++) {
+        NvnShadowStorage* entry = &shadow_storage[i];
+        if (!entry->buffer) continue;
+        if (!entry->guest_host || !entry->size) return reject_memory_write(command);
+        invalidate_storage[i] = shadow_host_overlap(host, command->size, entry->guest_host, entry->size);
+    }
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        if (!invalidate_image[i]) continue;
+        NvnImage* image = &images[i];
+        memset(image->color_layers, 0, sizeof image->color_layers);
+        memset(image->depth_layers, 0, sizeof image->depth_layers);
+        image->guest_host = NULL;
+    }
+    for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++)
+        if (invalidate_storage[i]) shadow_storage[i].invalid = 1;
+    mark_modeled_unknown(command->sequence, command->prior_unmodeled_write);
+    static u64 scoped_writes;
+    scoped_writes++;
+    if (scoped_writes <= 8 || !(scoped_writes % 1000))
+        LOG("nvn-shadow-memory-write: scoped=%llu addr=%llx size=%u marker=%llu\n",
+            (unsigned long long)scoped_writes, (unsigned long long)command->address, command->size,
+            (unsigned long long)command->sequence);
+    return 1;
+}
+
 /* A guest draw can be ineligible for HLE while still having a fully known write set. Preserve
    unrelated shadow images across that draw, but discard every target it could have modified. */
 static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment) {
