@@ -25,7 +25,7 @@ has `scarletnx-erista`, `scarletnx-mariko`, and `scarletnx-aula` aliases.
 Install the build tools first. On Debian/Ubuntu:
 ```bash
 sudo apt update
-sudo apt install build-essential git cmake ninja-build clang nasm pkg-config \
+sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```

@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Synthetic NRO -> CLI -> C -> DSO -> AOT/interpreter execution. No game data.
-   With a fourth argument, the backend: llvm runs the same passes through --backend=llvm (no C, the module written by
-   the recompiler), where pass 3 has no compiler to fail. */
+/* Synthetic NRO -> CLI -> module -> AOT/interpreter execution. No game data.
+   A fourth argument names the backend (llvm by default, gcc). */
 #include "common.h"
 #include "cpu.h"
 #include "loader/module_abi.h"
@@ -114,11 +113,11 @@ int main(int argc, char** argv) {
     unsigned char image[0x200];
     const char* args[24];
     char *root, *input, *out, *self, *module, *text = NULL, *data_file;
-    char *cached, *source, *nested, *temp, *build, *old_flags;
+    char *cached, *source, *nested, *temp, *build;
     size_t cached_size;
     int rc, pass, k;
     if (argc != 4 && argc != 5) return 2;
-    backend = argc == 5 ? argv[4] : NULL;
+    backend = argc == 5 ? argv[4] : "llvm";
     root = snx_temp_dir(NULL);
     check(root != NULL, "temp fixture");
     if (!root) return 1;
@@ -134,8 +133,6 @@ int main(int argc, char** argv) {
 #else
     environment("TMPDIR", temp);
 #endif
-    old_flags = getenv("SNX_CFLAGS") ? snx_strdup(getenv("SNX_CFLAGS")) : NULL;
-    environment("SNX_CFLAGS", NULL);
     memset(image, 0, sizeof(image));
     put32(image, 0, 0x14000020); /* B +0x80 */
     memcpy(image + 0x10, "NRO0", 4);
@@ -165,13 +162,8 @@ int main(int argc, char** argv) {
         args[k++] = "Native Fixture";
         args[k++] = "--outdir";
         args[k++] = out;
-        if (backend) {
-            args[k++] = "--backend";
-            args[k++] = backend;
-        } else {
-            args[k++] = "--cc";
-            args[k++] = argv[3];
-        }
+        args[k++] = "--backend";
+        args[k++] = backend;
         args[k++] = "--runtime";
         args[k++] = self;
         args[k++] = "--jobs";
@@ -179,16 +171,14 @@ int main(int argc, char** argv) {
         args[k++] = "--chunk";
         args[k++] = "2";
         if (pass == 2) args[k++] = "--interp-only";
-        if (pass == 5) args[k++] = "--keep-c";
+        if (pass == 5) args[k++] = "--keep-ir";
         args[k] = NULL;
-        if (pass == 3) environment("SNX_CFLAGS", "-fsnx-invalid-test-option");
         rc = snx_run(args, root, NULL, &text);
-        if (rc && ((pass != 3 || backend) && pass != 4)) fprintf(stderr, "%s\n", text);
-        if ((pass == 3 && !backend) || pass == 4)
-            check(rc != 0, pass == 3 ? "compiler failure" : "link output replacement failure");
+        if (rc && pass != 4) fprintf(stderr, "%s\n", text);
+        if (pass == 4)
+            check(rc != 0, "link output replacement failure");
         else
             check(!rc, pass == 2 ? "interpreter CLI build" : "AOT CLI build");
-        environment("SNX_CFLAGS", NULL);
         data_file = snx_path_join(out, "Native Fixture.abi");
         check(snx_is_file(data_file) == !rc, "ABI checkpoint published only after a successful build");
         free(data_file);
@@ -199,7 +189,7 @@ int main(int argc, char** argv) {
         }
         check_empty(temp);
         if (pass == 5)
-            check_sources(build, backend ? ".ll" : ".c");
+            check_sources(build, !strcmp(backend, "llvm") ? ".ll" : ".c"); /* gcc: libgccjit's dump */
         else
             check(!snx_is_dir(build), "no persistent build directory by default");
         free(text);
@@ -219,8 +209,6 @@ int main(int argc, char** argv) {
         free(module);
     }
     check(!snx_remove_tree(build), "remove kept sources before no-build test");
-    environment("SNX_CFLAGS", old_flags);
-    free(old_flags);
     data_file = snx_path_join(out, "Native Fixture_data/exefs/main.nro");
     cached = (char*)snx_read_file(data_file, &cached_size);
     check(cached && cached_size == sizeof(image) && !memcmp(cached, image, sizeof(image)), "NRO staging");
@@ -247,9 +235,8 @@ int main(int argc, char** argv) {
     text = NULL;
     check(!snx_remove_tree(data_file), "remove conflict fixture");
     free(data_file);
-    check(!snx_remove_tree(build), "remove sources from failed no-build");
     check(!snx_run(args, root, NULL, &text), "legacy aliases and attached optimization level");
-    check_sources(build, ".c");
+    check(!snx_is_dir(build), "--no-build stages data only, no generated code");
     check_empty(temp);
     free(text);
     text = NULL;

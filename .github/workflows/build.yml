@@ -12,8 +12,10 @@ on:
 permissions:
   contents: read
 
-# Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development. The Windows job starts
-# from a bare runner and gets every tool from scripts/bootstrap.ps1, the way a Windows user does. The third-party
+# Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
+# recompiler's code generator (required, cmake/llvm.cmake). The Windows job starts from a bare runner and gets every
+# tool from scripts/bootstrap.ps1, the way a Windows user does; llvm-mingw has no LLVM libraries, so its recompiler
+# builds no game modules for now. The third-party
 # libraries come from CPM.cmake at configure time; their downloads are cached between runs (.cache/cpm), one cache per
 # job since each job fetches a different set. The artifacts are what `cmake --install` puts in place: the binaries
 # with the licenses that go with them.
@@ -24,8 +26,10 @@ jobs:
     timeout-minutes: 60
     container: archlinux:latest
     steps:
+      # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). libgccjit builds the
+      # optional --backend=gcc too, so its tests (gccjit_differential, native_recompiler_gcc) run here
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
+        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
@@ -94,9 +98,10 @@ jobs:
           217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f  /usr/local/bin/get-debloated-pkgs
           86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
           EOF
+      # llvm for the recompiler; quick-sharun bundles the libLLVM the runtime links, with its own dependencies
       - name: Install the build tools and the debloated Mesa
         run: |
-          pacman -Syu --noconfirm --needed cmake ninja make nasm clang sdl3 libx11 mesa vulkan-icd-loader
+          pacman -Syu --noconfirm --needed cmake ninja make nasm clang llvm sdl3 libx11 mesa vulkan-icd-loader
           get-debloated-pkgs --add-common --prefer-nano
       - name: Build and install into /usr
         run: |

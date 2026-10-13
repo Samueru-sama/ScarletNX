@@ -2,8 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* Speed of the generated code. Each kernel is AArch64 assembly (assembled with CLANG's aarch64 target), recompiled by
    the CLI with each backend, and run AOT with x19 iterations; the final registers of all backends must agree.
-     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--backend NAME]... [--kernel NAME]
-   Default backends: portable and llvm. Prints one line per kernel and backend: seconds and ns per iteration. */
+     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--backend NAME]... [--kernel NAME] [-O LEVEL]
+   Default backend: llvm (add gcc with --backend). Prints one line per kernel and backend: seconds and ns per
+   iteration. */
 #include "common.h"
 #include "cpu.h"
 #include "loader/module_abi.h"
@@ -137,7 +138,7 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
 
 int main(int argc, char** argv) {
     const char* backends[8];
-    const char* only = NULL;
+    const char *only = NULL, *opt = NULL;
     size_t nbackends = 0, k, b;
     u64 iterations = 2000000;
     char *root, *text = NULL;
@@ -150,13 +151,12 @@ int main(int argc, char** argv) {
             backends[nbackends++] = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "--kernel"))
             only = argv[++a];
+        else if (a + 1 < argc && !strcmp(argv[a], "-O"))
+            opt = argv[++a];
         else
             return snx_error("unknown argument %s", argv[a]);
     }
-    if (!nbackends) {
-        backends[nbackends++] = "portable";
-        backends[nbackends++] = "llvm";
-    }
+    if (!nbackends) backends[nbackends++] = "llvm";
     root = snx_temp_dir(NULL);
     for (k = 0; k < sizeof(kernels) / sizeof(kernels[0]); ++k) {
         char *source, *object, *assembly, *input;
@@ -218,11 +218,11 @@ int main(int argc, char** argv) {
             rargs[n++] = argv[1];
             rargs[n++] = "--backend";
             rargs[n++] = backends[b];
-            if (!strcmp(backends[b], "portable")) {
-                rargs[n++] = "--cc";
-                rargs[n++] = argv[3];
-            }
             rargs[n++] = "-q";
+            if (opt) {
+                rargs[n++] = "-O";
+                rargs[n++] = opt;
+            }
             rargs[n] = NULL;
             if (snx_run(rargs, root, NULL, &text) || run(module, image, sizeof(image), iterations, &result, &seconds)) {
                 fprintf(stderr, "%s: %s failed\n%s\n", kernels[k].name, backends[b], text ? text : "");

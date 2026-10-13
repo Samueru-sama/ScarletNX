@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The part of every game module the LLVM backend doesn't generate per game: the helpers the portable backend
-   compiles into module.c (cpu_helpers.c), the fallback interpreter, and the C library functions LLVM lowers memory
+/* The part of every game module the backends don't generate per game: the helpers (cpu_helpers.c), the fallback
+   interpreter, and the C library functions LLVM lowers memory
    intrinsics to. It is compiled once, when the recompiler is built, with the project's Clang and the flags
    toolchain.c gives generated C (-march=native: build == host == target), and linked into each
    module by link_elf.c / link_coff.c. The modules import nothing, so they need no dynamic symbol resolution */

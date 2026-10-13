@@ -4,9 +4,7 @@
 #include <string.h>
 
 int snx_backend_parse(const char* name, SnxBackend* backend) {
-    if (!strcmp(name, "portable"))
-        *backend = SNX_BACKEND_PORTABLE;
-    else if (!strcmp(name, "llvm"))
+    if (!strcmp(name, "llvm"))
         *backend = SNX_BACKEND_LLVM;
     else if (!strcmp(name, "gcc"))
         *backend = SNX_BACKEND_GCC;
@@ -17,8 +15,7 @@ int snx_backend_parse(const char* name, SnxBackend* backend) {
 
 const char* snx_backend_name(SnxBackend backend) {
     switch (backend) {
-        case SNX_BACKEND_LLVM: return "llvm";
         case SNX_BACKEND_GCC: return "gcc";
-        default: return "portable";
+        default: return "llvm";
     }
 }

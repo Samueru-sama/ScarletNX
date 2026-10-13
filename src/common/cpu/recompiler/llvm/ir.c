@@ -352,6 +352,8 @@ size_t ir_rt_note_hint(void) { return offsetof(RtAPI, note_hint); }
 size_t ir_rt_brk(void) { return offsetof(RtAPI, brk); }
 size_t ir_rt_sev(void) { return offsetof(RtAPI, sev); }
 size_t ir_rt_wfe(void) { return offsetof(RtAPI, wfe); }
+size_t ir_rt_poll(void) { return offsetof(RtAPI, poll); }
+size_t ir_off_poll(void) { return offsetof(CPU, poll); }
 
 LLVMValueRef ir_rt_call(SnxIr* ir, size_t offset, LLVMTypeRef ret, LLVMTypeRef* params, LLVMValueRef* args,
                         unsigned count) {
@@ -443,7 +445,7 @@ static LLVMValueRef intrinsic(SnxIr* ir, const char* name, LLVMTypeRef type, LLV
 
 /* ---- cpu.h's inline helpers ----
    Each mirrors its C body. They are internal and always inlined, as SNX_INLINE asks, so a constant argument
-   (a condition, a shift type, an access size) folds away as it does in the C the portable backend compiles. */
+   (a condition, a shift type, an access size) folds away as it does in the templates' C compiled with a constant word. */
 
 typedef struct {
     LLVMBasicBlockRef block;

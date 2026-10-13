@@ -4,14 +4,10 @@
 #define SNX_TOOLCHAIN_H
 #include "common.h"
 typedef struct {
-    const char* cc;
     const char* opt;
     unsigned jobs;
-    int target_win, native, quiet;
+    int target_win, quiet;
 } SnxCompileOptions;
-/* labels: what each source holds, for the progress lines (NULL for none) */
-int snx_compile_sources(char** sources, char** labels, size_t count, const char* output, const SnxPaths* paths,
-                        const SnxCompileOptions* options);
 char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet);
 int snx_prebuild_shaders(const SnxPaths* paths, const char* romfs, const char* outdir, int quiet);
 #endif

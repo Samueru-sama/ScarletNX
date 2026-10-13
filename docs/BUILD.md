@@ -6,12 +6,14 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
 
 ## Prerequisites
 
-- **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), CMake ≥3.25, Ninja,
-  POSIX shell, GNU make (`gmake` on FreeBSD), NASM on x86-64, Git and pkg-config.
+- **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
+  (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
+  NASM on x86-64, Git and pkg-config.
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
 - **Windows:** Win10/11 x64 + Git. Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
-  NASM and w64devkit in `deps/tools`.
+  NASM and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries: without an LLVM for MinGW
+  (`-DSNX_LLVM_CONFIG=`), `scarletnx -r` stages data but builds no game module.
 - **Display:** a Vulkan 1.3 driver. Headless builds omit SDL3 and use Vulkan offscreen.
 - **FFmpeg:** avoid spaces in checkout/cache paths.
 
@@ -24,7 +26,7 @@ FFmpeg also uses **GNU make** and, on x86-64, **NASM**. These tools are not down
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build clang nasm pkg-config \
+sudo apt install build-essential git cmake ninja-build clang llvm-dev nasm pkg-config \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -62,8 +64,8 @@ sudo dnf install clang cmake ninja-build nasm make git pkgconf-pkg-config llvm-d
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
 
-These are the Debian/Ubuntu packages above under Fedora's names. `llvm-devel` builds the recompiler's
-LLVM backend, the default one; on Debian/Ubuntu `clang` brings its LLVM headers in by itself. Fedora 44
+These are the Debian/Ubuntu packages above under Fedora's names. `llvm-devel` (`llvm-dev` on
+Debian/Ubuntu) is the recompiler's code generator, which the configure requires. Fedora 44
 provides SDL3 3.4; install `SDL3-devel` to use it instead of the source fallback:
 
 ```sh
@@ -82,7 +84,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang nasm pkgconf sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm pkgconf sdl3
 ```
 
 ### FreeBSD
@@ -90,7 +92,7 @@ sudo pacman -Syu --needed base-devel git cmake ninja clang nasm pkgconf sdl3
 FreeBSD provides Clang in the base system. Install the remaining tools and the SDL3 package:
 
 ```sh
-sudo pkg install git cmake ninja gmake nasm pkgconf sdl3
+sudo pkg install git cmake ninja gmake nasm pkgconf sdl3 llvm
 ```
 
 ### Configure and build
@@ -212,8 +214,7 @@ The test uses synthetic pixels, not a game. It checks offscreen submissions, fra
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
 `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
-Cross-builds omit host hactool. Use a native driver for `-x`; `-r --target win64`
-uses llvm-mingw and builds the cross runtime in `build/win64-recomp`.
+Cross-builds omit host hactool and the recompiler's code generator. Use a native driver for `-x` and `-r`.
 
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
@@ -223,10 +224,14 @@ build/tools/scarletnx -r -h
 ctest --test-dir build/tools --output-on-failure
 ```
 
-The recompiler generates game code with LLVM by default (`--backend=llvm`): it is built when `llvm-config` is found
-(`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one) and writes the module without a C compiler. `--backend=portable`
-prints C and compiles it with Clang, and is what `--cc`, a cross `--target`, `--no-build` or a build without LLVM
-use. Both batch whole functions into units of 90000 instructions (`--chunk`) and print a line per compiled unit.
+The recompiler generates game code with LLVM (`--backend=llvm`, the default and the recommended backend). LLVM's
+development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one), and
+the configure stops without them (a cross build such as `windows-cross` skips them, and a native Windows build without
+an LLVM for MinGW warns instead: their recompiler can't build modules). Modules are built for the machine that builds them, with its instruction set
+extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
+instructions (`--chunk`), with a progress line per compiled unit.
+`--backend=gcc` (libgccjit) is optional, built when libgccjit is found (`libgccjit` on Arch, `libgccjit-14-dev` on
+Debian, `libgccjit-devel` on Fedora; `-DSNX_GCCJIT_ROOT=` points at another GCC's prefix). It is meant for DEC Alpha EV67 hosts, which LLVM has no backend for; everywhere else use LLVM.
 
 Extraction builds missing hactool separately. Recompilation deploys the running full runtime;
 the tools-only build creates one in `build/native-recomp`, or accepts `--runtime FILE`.

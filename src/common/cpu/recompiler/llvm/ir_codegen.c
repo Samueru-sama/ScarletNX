@@ -74,7 +74,7 @@ static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) 
     LLVMValueRef args[2], site;
     args[0] = ir->c;
     args[1] = ir_i64(ir, target);
-    if (snx_codegen_function(codegen, target))
+    if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
     else
         site = call_dynamic(ir, args[1]);
@@ -93,12 +93,31 @@ static size_t index_of(const SnxFunction* function, SnxU64 address) {
     return lo;
 }
 
-/* branch(): goto L_target inside the function, a tail call outside it */
+/* if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ [c->pc=resume;] c->rt->poll(c); } (codegen.c): a loop
+   that makes no SVC can still be taken off its core, for a waiter of higher priority */
+static void poll(SnxIr* ir, const SnxU64* resume) {
+    LLVMBasicBlockRef yes = ir_block(ir, "poll"), no = ir_block(ir, "run");
+    LLVMValueRef flag = LLVMBuildLoad2(B, ir->t_i32, ir_cpu(ir, ir_off_poll()), ""), args[1];
+    LLVMTypeRef param = ir->t_ptr;
+    LLVMSetOrdering(flag, LLVMAtomicOrderingMonotonic);
+    LLVMSetAlignment(flag, 4);
+    ir_tag_cpu(ir, flag);
+    ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, flag, ir_i32(ir, 0), ""), yes, no));
+    LLVMPositionBuilderAtEnd(B, yes);
+    if (resume) ir_set_pc(ir, ir_i64(ir, *resume));
+    args[0] = ir->c;
+    ir_rt_call(ir, ir_rt_poll(), ir->t_void, &param, args, 1);
+    LLVMBuildBr(B, no);
+    LLVMPositionBuilderAtEnd(B, no);
+}
+
+/* branch(): goto L_target inside the function (polling first when it goes backward), a tail call outside it */
 static void branch(SnxIr* ir, const SnxCodegen* codegen, const SnxFunction* function, LLVMBasicBlockRef* labels,
-                   SnxU64 target) {
-    if (snx_function_contains(function, target))
+                   SnxU64 address, SnxU64 target) {
+    if (snx_function_contains(function, target)) {
+        if (target <= address) poll(ir, &target);
         LLVMBuildBr(B, labels[index_of(function, target)]);
-    else
+    } else
         call(ir, codegen, target, 1);
 }
 
@@ -202,14 +221,14 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         switch (c->kind) {
             case SNX_FLOW_PLAIN: plain(ir, word, address, c); break;
             case SNX_FLOW_B:
-                branch(ir, codegen, function, labels, snx_a64_target(word, address));
+                branch(ir, codegen, function, labels, address, snx_a64_target(word, address));
                 terminal = 1;
                 break;
             case SNX_FLOW_BC: {
                 LLVMBasicBlockRef taken = ir_block(ir, "taken"), fall = ir_block(ir, "fall");
                 LLVMBuildCondBr(B, snx_ir_flow_operand(ir, word, address, c), taken, fall);
                 LLVMPositionBuilderAtEnd(B, taken);
-                branch(ir, codegen, function, labels, snx_a64_target(word, address));
+                branch(ir, codegen, function, labels, address, snx_a64_target(word, address));
                 LLVMPositionBuilderAtEnd(B, fall);
                 break;
             }
@@ -260,10 +279,12 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     /* the C function falls off its end */
     if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) ret(ir);
     if (dispatch) {
-        /* D_: switch(c->pc){ case <leader>: goto L_<leader>; ... default: CALLDYN(c->pc); return; } */
+        /* D_: if(UNLIKELY(poll)) c->rt->poll(c); switch(c->pc){ case <leader>: goto L_<leader>; ...
+           default: CALLDYN(c->pc); return; } */
         LLVMBasicBlockRef other = ir_block(ir, "D_default");
         LLVMValueRef pc;
         LLVMPositionBuilderAtEnd(B, dispatch_block);
+        poll(ir, NULL);
         pc = ir_pc(ir);
         sw = LLVMBuildSwitch(B, pc, other, (unsigned)function->leader_count);
         for (i = 0; i < function->count; ++i)

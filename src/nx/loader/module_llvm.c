@@ -170,39 +170,6 @@ static void run(Queue* q, unsigned jobs) {
 
 /* ---- the module descriptor: module.c's emit_module, as IR ---- */
 
-typedef struct {
-    SnxU64 address;
-    size_t function;
-} Entry;
-
-static int compare_entry(const void* a, const void* b) {
-    const Entry *x = (const Entry*)a, *y = (const Entry*)b;
-    if (x->address != y->address) return x->address < y->address ? -1 : 1;
-    return x->function < y->function ? -1 : x->function > y->function;
-}
-
-/* every leader of every function, by address, the first function's when two share one (module.c make_entries) */
-static Entry* make_entries(const SnxCodegen* codegen, size_t* count) {
-    Entry* entries;
-    size_t n = 0, i, j, unique = 0;
-    for (i = 0; i < codegen->function_count; ++i) n += codegen->functions[i].leader_count;
-    entries = (Entry*)snx_alloc((n ? n : 1) * sizeof(*entries));
-    n = 0;
-    for (i = 0; i < codegen->function_count; ++i)
-        for (j = 0; j < codegen->functions[i].count; ++j)
-            if (codegen->functions[i].leaders[j]) {
-                entries[n].address = snx_function_address(&codegen->functions[i], j);
-                entries[n++].function = i;
-            }
-    if (n) qsort(entries, n, sizeof(*entries), compare_entry);
-    for (i = 0; i < n; ++i) {
-        if (unique && entries[i].address == entries[unique - 1].address) continue;
-        entries[unique++] = entries[i];
-    }
-    *count = unique;
-    return entries;
-}
-
 static LLVMValueRef global(SnxIr* ir, LLVMTypeRef type, const char* name, LLVMValueRef value, int constant) {
     LLVMValueRef g = LLVMAddGlobal(ir->mod, type, name);
     LLVMSetLinkage(g, LLVMInternalLinkage);
@@ -265,14 +232,14 @@ static LLVMTypeRef mod_info_type(SnxIr* ir, char* error, size_t error_size) {
 
 static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOptions* options, const SnxProgram* loaded,
                        size_t* entry_count, char* error, size_t error_size) {
-    Entry* entries;
+    SnxModuleEntry* entries;
     size_t count, arraysize, i, j, nfns = codegen->function_count ? codegen->function_count : 1;
     LLVMValueRef *values, fns, ent_off, ent_fn, ent_addr, ent_ptr, mods, mod, interp, entry, fn, loop_i, phi_values[2];
     LLVMTypeRef info, t_fns, t_u32s, t_addrs, t_ptrs, t_mods;
     LLVMBasicBlockRef start, head, body, done, phi_blocks[2];
     SnxU64 lo = ~(SnxU64)0, hi = 0;
     const SnxNpdm* npdm = &loaded->npdm;
-    entries = make_entries(codegen, &count);
+    entries = snx_module_entries(codegen, &count);
     arraysize = count ? count : 1;
     for (i = 0; i < count; ++i)
         if (entries[i].address < SNX_CODE_BASE || entries[i].address - SNX_CODE_BASE > 0xFFFFFFFFUL) {
@@ -416,6 +383,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     if (!options->interp_only &&
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
         return -1;
+    codegen.hook_direct_calls = options->hook_direct_calls;
     /* chunks of whole functions, as module.c splits the C */
     limit = options->chunk_instrs ? options->chunk_instrs : SNX_CHUNK_INSTRUCTIONS;
     q.units = (Unit*)snx_alloc((codegen.function_count + 1) * sizeof(*q.units));

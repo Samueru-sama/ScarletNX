@@ -37,7 +37,6 @@ def make_nro():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runtime', required=True, type=Path)
-    parser.add_argument('--cc', default='clang')
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--timeout', type=float, default=30)
     parser.add_argument('--artifact-dir', type=Path, default=Path('build/nx-smoke-failures'))
@@ -48,7 +47,6 @@ def main():
         fixture, output = scratch / 'homebrew with spaces.nro', scratch / 'output with spaces'
         fixture.write_bytes(make_nro())
         env = os.environ.copy()
-        env.pop('SNX_CFLAGS', None)
         env.pop('SNX_GAME', None)
         try:
             compile_command = [
@@ -60,8 +58,6 @@ def main():
                 'NX Smoke',
                 '--runtime',
                 str(runtime),
-                '--cc',
-                args.cc,
                 '--jobs',
                 '2',
                 '--outdir',

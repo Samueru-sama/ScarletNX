@@ -13,7 +13,7 @@ if(Python3_Interpreter_FOUND)
     if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND SNX_BACKEND STREQUAL "headless" AND SNX_TEST_VULKAN)
         add_test(NAME nx_runtime_homebrew
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/nx_runtime_smoke.py"
-                --runtime $<TARGET_FILE:scarletnx> --cc "${CMAKE_C_COMPILER}" --repo "${PROJECT_SOURCE_DIR}"
+                --runtime $<TARGET_FILE:scarletnx> --repo "${PROJECT_SOURCE_DIR}"
                 --artifact-dir "${PROJECT_BINARY_DIR}/nx-smoke-failures")
         set_tests_properties(nx_runtime_homebrew PROPERTIES TIMEOUT 90)
     endif()

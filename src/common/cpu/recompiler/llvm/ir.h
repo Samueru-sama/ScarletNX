@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The LLVM backend: A64 to LLVM IR through the LLVM-C API, mirroring what the portable backend prints.
-   Each emitter builds the IR of the C the portable backend writes for the same instruction (a64_templates.inc,
-   snx_a64_fast_simd, codegen.c), with the instruction word and pc constant as they are there. cpu.h's inline helpers
+/* The LLVM backend: A64 to LLVM IR through the LLVM-C API, mirroring the instructions' C.
+   Each emitter builds the IR of the C a64.c writes for the same instruction (a64_templates.inc, snx_a64_fast_simd,
+   codegen.c's snx_codegen_emit, as the interpreter and the static steps have it), with the instruction word and pc
+   constant. cpu.h's inline helpers
    become internal always-inline IR functions (ir.c); its out-of-line helpers are called in the runtime library
    (rtlib.c), which every module links. */
 #ifndef SNX_RECOMPILER_LLVM_IR_H
@@ -89,7 +90,7 @@ typedef struct SnxIr {
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
 int snx_ir_init(char* error, size_t error_size);
-/* opt is the portable backend's -O letter: 0,1,2,3,s,z */
+/* opt is the -O letter: 0,1,2,3,s,z */
 SnxIr* snx_ir_new(const char* name, char opt, char* error, size_t error_size);
 /* the same for another target triple (NULL: the host), for tests of the linkers; CPU and features stay generic */
 SnxIr* snx_ir_new_target(const char* name, char opt, const char* triple, char* error, size_t error_size);
@@ -210,6 +211,8 @@ size_t ir_rt_note_hint(void);
 size_t ir_rt_brk(void);
 size_t ir_rt_sev(void);
 size_t ir_rt_wfe(void);
+size_t ir_rt_poll(void);
+size_t ir_off_poll(void);                         /* CPU.poll */
 void ir_undef(SnxIr* ir, SnxU64 pc, SnxU32 word); /* c->rt->undef(c,pc,w) */
 void ir_fence(SnxIr* ir);                         /* SNX_FENCE() */
 void ir_yield(SnxIr* ir);                         /* YIELD() */

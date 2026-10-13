@@ -96,13 +96,12 @@ Remaining examples: POSIX.
 - **Keys:** flags → checkout → `~/.switch` (`%USERPROFILE%\.switch` on Windows). Common NSP tickets supplement title keys.
 - **Extraction:** defaults to `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing `exefs`;
   builds missing hactool. [Temp cleanup/key filtering](../src/nx/runtime/driver/extract.c).
-- **Recompile:** AOT → module compile/link → NVN prebuild → final runtime deployment. Cached objects;
-  NVN prebuild failures defer compilation to runtime. `--native` = `-march=native`;
-  `--cc CLANG` / `-O 0..3` also accepted.
-- **Codegen:** `--no-build` emits C/data/INI; `--interp-only` omits AOT functions.
-  `--chunk N` sets instructions per TU. Generated C, objects and linker response files use a private system
-  temporary directory (`TMPDIR` on Unix), removed on success or failure. Objects are not cached between runs.
-  `--keep-c` or `--no-build` saves C sources in `<outdir>/<NAME>_build/`.
+- **Recompile:** AOT → module (LLVM, or `--backend=gcc` for libgccjit on DEC Alpha EV67 hosts) → NVN prebuild →
+  final runtime deployment, for this machine's CPU. NVN prebuild failures defer compilation to runtime.
+  `-O 0..3,s,z` sets the optimization level.
+- **Codegen:** `--no-build` stages data/INI only; `--interp-only` omits AOT functions.
+  `--chunk N` sets instructions per code unit. Nothing is cached between runs.
+  `--keep-ir` saves the generated code (LLVM IR, libgccjit dumps) in `<outdir>/<NAME>_build/`.
 - **Data updates:** ExeFS refreshes; `Game_data/romfs` is reused.
   Replace cached RomFS after asset changes; preserve `Game_data/save/`.
 
@@ -111,7 +110,7 @@ Remaining examples: POSIX.
 | `work/Game/{exefs,romfs}` | Extracted input |
 | `games/Game[.exe]`, `Game_code.so/.dll` | Runtime + AOT module |
 | `games/Game_data/`, `Game.ini` | Data/saves + settings |
-| `games/Game_build/` | C sources only with `--keep-c` or `--no-build` |
+| `games/Game_build/` | Generated code, only with `--keep-ir` |
 | `games/shader_cache/spirv/` | SPIR-V cache |
 
 ## GDB (UNIX only)

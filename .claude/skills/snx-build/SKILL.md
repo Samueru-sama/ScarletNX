@@ -96,8 +96,8 @@ keyed on the compiler and flags, so changing either compiles everything again).
 scripts/recomp.py work/Catherine Catherine                  # runtime and game module, both with Clang
 ```
 
-`scarletnx -r` uses the LLVM backend unless it is given `--backend=portable`, `--cc`, a cross `--target` or
-`--no-build`. Its objects aren't cached: each recompile builds every unit again. A change to `a64_templates.inc`
+`scarletnx -r` uses the LLVM backend (`--backend=gcc`, libgccjit, is for DEC Alpha EV67 hosts). Its objects aren't
+cached: each recompile builds every unit again. A change to `a64_templates.inc`
 needs the matching change in `src/common/cpu/recompiler/llvm/ir_*.c` (`snx-test-llvm-differential` finds the
 difference).
 

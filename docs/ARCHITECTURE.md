@@ -40,20 +40,29 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
 - `src/common/cpu/aarch64/a64.c` + `a64_templates.inc`: shared instruction semantics for AOT and interpreter.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
-  `src/nx/loader/codegen_view.c` adapts NX images; `module.c` owns NX chunks (whole functions batched up to
-  `SNX_CHUNK_INSTRUCTIONS`, 90000, per unit, for both backends), dispatch tables, `SnxModule`.
-- `toolchain.c`: parallel Clang jobs, ABI/source-keyed object cache, linking, shader prebuild.
-- Code generators (`--backend`, `src/common/cpu/recompiler/backend.h`): `portable` prints C through
-  `codegen.c`/`module.c` and compiles it with `toolchain.c`; it is chosen when `--cc`, a cross `--target` or
-  `--no-build` is given, or when the recompiler has no LLVM. `llvm` (the default; `src/common/cpu/recompiler/llvm/`,
-  built when `llvm-config` is found) builds LLVM IR with the LLVM-C API: `ir_a64.c`, `ir_simd.c` and `ir_fp.c` emit each
+  `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
+  table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000.
+- `toolchain.c`: the runtime build for deployment, shader prebuild.
+- Code generators (`--backend`, `src/common/cpu/recompiler/backend.h`): `llvm` (the default and the recommended
+  one; `src/common/cpu/recompiler/llvm/`, LLVM a required dependency) builds LLVM IR with the LLVM-C API: `ir_a64.c`, `ir_simd.c` and `ir_fp.c` emit each
   `a64_templates.inc` case as the IR of the C it holds, `ir_codegen.c` the functions of `codegen.c`, and
   `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
   `link_coff.c`) with `rtlib.c`, the helpers and interpreter compiled when the recompiler is built, into a module
   with no imports, for the host it runs on. `tests/llvm_differential.c` runs both backends' step functions on random
   states (every pattern, failing if any instruction falls back to the interpreter's `snx_step`), `tests/llvm_module.c`
   a whole program built by both, `tests/llvm_bench.c` times both on assembly kernels. `gcc` (libgccjit,
-  `module_gccjit.c`) is reserved.
+  optional, built when libgccjit is found: `cmake/gccjit.cmake`, `SNX_GCCJIT_ROOT`) is for DEC Alpha EV67 hosts,
+  which LLVM doesn't generate code for; everywhere else `llvm` is the backend to use. Ported on x86-64 for now:
+  `src/common/cpu/recompiler/gccjit/jit.c` emits `ir_codegen.c`'s control flow, and `jit_a64.c`, `jit_fp.c` and
+  `jit_simd.c` each instruction as the LLVM emitters do (cpu.h's helpers written out for the word's constant
+  fields, SIMD a lane at a time, no host intrinsics: GCC picks the instructions with `-march=native`). Guest
+  accesses are relaxed atomics (libgccjit 14 drops volatile on dereferences); `src/nx/loader/module_gccjit.c`
+  compiles each chunk to an object and lets GCC's driver link the module with the chunks and the runtime library.
+  `llvm_differential --gccjit` (also failing on any `snx_step` fallback) and `llvm_module` check it against the
+  other backends. On `llvm_bench` it matches LLVM on integer, FP and calls; SIMD is several times slower (scalar
+  lanes, GCC's SLP vectorizer off: it packs scalar code's CPU fields into vectors).
+- Both backends poll `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
+  does, so a loop without SVCs gives its core to a waiting thread of higher priority.
 - The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
   registers) and guest accesses are volatile (each happens, as on the hardware); logical immediates and SIMD
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result

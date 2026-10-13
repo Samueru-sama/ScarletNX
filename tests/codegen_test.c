@@ -5,7 +5,6 @@
 #include "a64.h"
 #include "codegen.h"
 #include "codegen_view.h"
-#include "module.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -80,7 +79,7 @@ static void setup_program(SnxProgram* program, SnxModuleImage* module, unsigned 
     program->npdm.core = 2;
 }
 
-static void analysis_and_module_test(const char* directory) {
+static void analysis_test(void) {
     static const SnxU32 words[] = {0xAA1E03F3UL, 0x91000400UL, 0x9400000AUL, 0xF1002C1FUL, 0x540000A1UL,
                                    0x91000800UL, 0xAA1303FEUL, 0xD65F03C0UL, 0xD503201FUL, 0x91019000UL,
                                    0x17FFFFFCUL, 0xD4200000UL, 0x91002800UL, 0xD65F03C0UL};
@@ -90,12 +89,8 @@ static void analysis_and_module_test(const char* directory) {
     SnxCodegen codegen;
     SnxFde ranges[2];
     SnxU64 interior, symbol;
-    SnxCodegenOptions options;
-    SnxSources sources;
     const SnxFunction* function;
-    unsigned char *text, *again;
-    size_t i, size, again_size;
-    char* saved;
+    size_t i;
     for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
     setup_program(&program, &module, image, sizeof(image));
     ranges[0].start = 0;
@@ -124,63 +119,6 @@ static void analysis_and_module_test(const char* directory) {
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && has_leader(function, interior), "execution hint adds interior dispatch entry");
     snx_codegen_free(&codegen);
-
-    memset(&options, 0, sizeof(options));
-    options.outdir = directory;
-    options.title = "Quoted \"title\" \\ UTF-8 \303\251";
-    options.chunk_instrs = 4;
-    options.quiet = 1;
-    options.hints = &interior;
-    options.hint_count = 1;
-    options.abi = 3;
-    check(!snx_generate_module(&program, &options, &sources), "emit chunked module");
-    if (sources.count) {
-        int direct = 0;
-        check(sources.count == 3, "instruction budget splits at function boundaries");
-        for (i = 1; i < sources.count; ++i) {
-            text = snx_read_file(sources.paths[i], &size);
-            if (text && strstr((char*)text, "F_8000030(c,134217776);")) direct = 1;
-            free(text);
-        }
-        check(direct, "default direct BL target stays a static C call");
-        text = snx_read_file(sources.paths[0], &size);
-        check(text && strstr((char*)text, "MOD.abi=3;") && strstr((char*)text, "MOD.nentries=7;"),
-              "module ABI/entry metadata");
-        check(text && strstr((char*)text, "MOD.title_id=0x123456789ABCDEF0ULL"), "64-bit NPDM title ID");
-        check(text && strstr((char*)text, "\\\"title\\\"") && strstr((char*)text, "\\303\\251"),
-              "C string escaping preserves title bytes");
-        saved = snx_strdup(sources.paths[0]);
-        snx_sources_free(&sources);
-        check(!snx_generate_module(&program, &options, &sources), "regenerate unchanged module");
-        again = snx_read_file(saved, &again_size);
-        check(text && again && size == again_size && !memcmp(text, again, size), "deterministic source cache content");
-        free(text);
-        free(again);
-        free(saved);
-    }
-    snx_sources_free(&sources);
-    options.hook_direct_calls = 1;
-    check(!snx_generate_module(&program, &options, &sources), "emit direct-call hook module");
-    {
-        int routed = 0;
-        for (i = 1; i < sources.count; ++i) {
-            text = snx_read_file(sources.paths[i], &size);
-            if (text && strstr((char*)text, "CALLDYN(134217776);")) routed = 1;
-            free(text);
-        }
-        check(routed, "direct BL target uses dispatch in hook mode");
-    }
-    snx_sources_free(&sources);
-    options.hook_direct_calls = 0;
-    options.interp_only = 1;
-    check(!snx_generate_module(&program, &options, &sources), "emit interpreter-only module");
-    if (sources.count) {
-        check(sources.count == 1, "interpreter-only has no AOT chunks");
-        text = snx_read_file(sources.paths[0], &size);
-        check(text && strstr((char*)text, "MOD.nentries=0;"), "interpreter-only empty entry table");
-        free(text);
-    }
-    snx_sources_free(&sources);
 }
 
 static void large_range_test(void) {
@@ -479,7 +417,7 @@ int main(int argc, char** argv) {
     check(directory != NULL, "create codegen test directory");
     if (!directory) return 1;
     decoder_test();
-    analysis_and_module_test(directory);
+    analysis_test();
     large_range_test();
     semantics_test(argv[1], argv[2], directory);
     poll_test(argv[1], argv[2], directory);

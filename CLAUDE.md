@@ -58,13 +58,15 @@ file holds the rules sessions get wrong and points to the skills that carry the 
 | Name addresses / disassemble game code | `tools/symbols.py work/Catherine ADDR...` / `tools/disasm.py work/Catherine FUNC` |
 | Format / check | `scripts/format.sh` / `scripts/format.sh --check` |
 
-Clang is the only compiler: the configure stops on any other, and the recompiler builds game code with Clang too. The
+Clang is the only compiler: the configure stops on any other; the recompiler builds game code with LLVM (required) or
+libgccjit (optional, for DEC Alpha EV67). The
 third-party libraries are CPM packages pinned in `cmake/dependencies.cmake`, downloaded once into `.cache/cpm`, and
 built in the same tree as the runtime.
 
 The runtime finds its game module by its own file name, so each game has a copy of the runtime named after it, made
-by the build's deploy step. The LLVM backend's emitters (`src/common/cpu/recompiler/llvm/ir_*.c`) mirror `a64_templates.inc` case by case: a template change needs the same change there, checked with `snx-test-llvm-differential clang .`. Game code (`_code.so`) only needs recompiling when `src/common/cpu/recompiler/codegen.c`, `a64.c`,
-`loader.c`, `module.c`, the module's compile flags in `toolchain.c` or anything in `src/common/cpu/aarch64/` changes (the
+by the build's deploy step. The backends' emitters (`src/common/cpu/recompiler/llvm/ir_*.c`, `gccjit/jit_*.c`) mirror `a64_templates.inc` case by case: a template change needs the same change in both, checked with `snx-test-llvm-differential clang . [--gccjit]`. Game code (`_code.so`) only needs recompiling when `src/common/cpu/recompiler/codegen.c`, `a64.c`,
+`loader.c`, the backends (`src/common/cpu/recompiler/llvm/`, `gccjit/`, `src/nx/loader/module_*.c`) or anything in
+`src/common/cpu/aarch64/` changes (the
 ABI between generated code and runtime). A change there that keeps `SNX_ABI` (`cpu.h`) loads and runs the old code
 silently. Bumping `SNX_ABI` makes the runtime refuse every module built before it, so every game needs recompiling.
 
@@ -72,7 +74,7 @@ silently. Bumping `SNX_ABI` makes the runtime refuse every module built before i
 
 | Area | Files |
 | --- | --- |
-| C90 host driver (`src/nx/runtime/driver/`) | `driver.c` (dispatch), `extract.c` (XCI/NSP), `recompile.c` (AOT workflow/data), `loader.c` (NSO/NRO, metadata), `codegen.c` + `a64.c` + `a64_templates.inc` (ARM64 to C), `module.c` (module TUs), `toolchain.c` (Clang/cache/runtime), `common.c` (host APIs); `--backend=llvm`: `src/common/cpu/recompiler/llvm/` (IR emitters, ELF/COFF linkers, `rtlib.c`) + `src/nx/loader/module_llvm.c` |
+| C90 host driver (`src/nx/runtime/driver/`) | `driver.c` (dispatch), `extract.c` (XCI/NSP), `recompile.c` (AOT workflow/data), `loader.c` (NSO/NRO, metadata), `codegen.c` (functions, and their C for the interpreter and gnuabi) + `a64.c` + `a64_templates.inc` (the instructions' C), `toolchain.c` (runtime deploy build, shader prebuild), `common.c` (host APIs); `--backend=llvm` (default): `src/common/cpu/recompiler/llvm/` (IR emitters, ELF/COFF linkers, `rtlib.c`) + `src/nx/loader/module_llvm.c`; `--backend=gcc` (optional, DEC Alpha EV67): `src/common/cpu/recompiler/gccjit/` + `src/nx/loader/module_gccjit.c` |
 | Generated-code ABI | `src/common/cpu/aarch64/`: `cpu.h` (with `SNX_ABI`), `cpu_helpers.c` (compiled into each game module, with the topic files it includes from `helpers/`: `fp.c`, `integer.c`, `simd.c`, `crypto.c`, `simd_mem.c`) |
 | Startup | `src/nx/runtime/`: `main.c` (startup, loading the game module), `options.c` (the .ini), `clock.c` (guest time), `rtapi.c` (what the game module calls), `crash.c`, `present.c` (vi's CPU-side present), `loader.c`, `entry.c` |
 | Kernel and memory | `src/nx/hle/kernel/`: `kernel.c` (handles, waits, events), `thread.c` (threads, the per-core lock), `sync.c` (mutexes, condition variables, address arbitration, WaitSynchronization), `svc.c` (the SVC dispatch), `svc_mem.c` (memory SVCs, GetInfo), `debug.c` (backtraces, dumps), `mem.c`, `ipc.c` (helpers `in32`, `out32`, `buf_in`, `buf_out`, `out_obj`...) |
