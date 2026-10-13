@@ -1343,7 +1343,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             else
                 draw_without_texture++;
             static int initial_target_trace;
-            if (!initial_target_trace && getenv("SNX_NVN_SHADOW_INPUT_TRACE") &&
+            const char* zero_probe = getenv("SNX_NVN_SHADOW_ZERO_PROBE");
+            if (!initial_target_trace && (getenv("SNX_NVN_SHADOW_INPUT_TRACE") ||
+                                          (zero_probe && !strcmp(zero_probe, "1"))) &&
                 (draw.color_target_mask & 1)) {
                 const NvnTextureTarget* target = &draw.color_target[0];
                 const u8* host = target->storage_size && target->storage_size <= (16u << 20)
@@ -1351,9 +1353,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (host) {
                     u64 nonzero = 0;
                     for (u32 byte = 0; byte < target->storage_size; byte++) nonzero += !!host[byte];
-                    LOG("nvn-shadow-target-input: addr=%llx size=%u nonzero=%llu\n",
+                    LOG("nvn-shadow-target-input: addr=%llx size=%u nonzero=%llu draw=%u indexed=%d sequence=%llu\n",
                         (unsigned long long)target->gpu_address, target->storage_size,
-                        (unsigned long long)nonzero);
+                        (unsigned long long)nonzero, draw.count, draw.indexed,
+                        (unsigned long long)(queue ? queue->next_sequence : 0));
+                    if (zero_probe && !strcmp(zero_probe, "1") && !nonzero)
+                        draw.color_initial_zero = 1;
                     initial_target_trace = 1;
                 }
             }

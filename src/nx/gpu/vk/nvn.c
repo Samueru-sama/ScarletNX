@@ -2459,11 +2459,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                   (!prior_covered || force_capture) &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||
                    color_target->format == 0x29 || color_target->format == 0x3f);
+    int zero_probe = capture && command->color_initial_zero &&
+                     (color_target->format == 0x25 || color_target->format == 0x38);
     int capture_full = 0;
     if (capture) {
         shadow_capture_target = color->address;
         memcpy(shadow_capture_scissor, sc_data, sizeof shadow_capture_scissor);
-        LOG("nvn-shadow-capture-draw: count=%u indexed=%d type=%u index=%llx primitive=%u vs=%llx fs=%llx attrs=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
+        LOG("nvn-shadow-capture-draw: sequence=%llu zero=%u count=%u indexed=%d type=%u index=%llx primitive=%u vs=%llx fs=%llx attrs=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
+            (unsigned long long)command->sequence, command->color_initial_zero,
             command->count, command->indexed, command->index_type,
             (unsigned long long)command->index_address, command->primitive,
             (unsigned long long)vertex->hash, (unsigned long long)fragment->hash, key->nattr,
@@ -2482,7 +2485,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                 matrix_nonzero, diagonal[0], diagonal[1], diagonal[2], diagonal[3]);
         }
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachments[0].clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
+        color_attachments[0].clearValue.color = zero_probe
+            ? (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}}
+            : (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
         if (depth) {
             depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
@@ -2604,13 +2609,16 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             u64 changed = 0;
             const u8 magenta_rgba16f[8] = {0, 0x3c, 0, 0, 0, 0x3c, 0, 0x3c};
             const u32 magenta_packed = color_target->format == 0x3f ? 0x780003c0u : 0xffff00ffu;
-            const void* sentinel = color_format.bpp == 8 ? (const void*)magenta_rgba16f : &magenta_packed;
+            const u64 zero = 0;
+            const void* sentinel = zero_probe ? (const void*)&zero
+                                   : color_format.bpp == 8 ? (const void*)magenta_rgba16f : &magenta_packed;
             for (u64 i = 0; i < bytes; i += color_format.bpp)
                 changed += memcmp(pixels + i, sentinel, color_format.bpp) != 0;
-            capture_full = changed == bytes / color_format.bpp;
+            capture_full = !zero_probe && changed == bytes / color_format.bpp;
             u64 center = ((u64)(color_target->height / 2) * color_target->width + color_target->width / 2) *
                          color_format.bpp;
-            LOG("nvn-shadow-readback: changed-pixels=%llu total=%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
+            LOG("nvn-shadow-readback: zero-probe=%d changed-pixels=%llu total=%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
+                zero_probe,
                 (unsigned long long)changed, (unsigned long long)(bytes / color_format.bpp), pixels[0], pixels[1], pixels[2],
                 pixels[3], pixels[bytes - 4], pixels[bytes - 3], pixels[bytes - 2], pixels[bytes - 1],
                 pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3]);

@@ -106,6 +106,7 @@ typedef struct {
     u8 image_target_valid[NVN_DRAW_SHADER_STAGES];
     NvnTextureTarget color_target[8], depth_target;
     u8 color_target_mask, depth_target_bound, target_complete;
+    u8 color_initial_zero; /* opt-in pre-submit zero-backing probe for the first color target */
     u32 channel_mask;
     u8 channel_mask_known;
     u32 color_state;

@@ -1084,6 +1084,10 @@ image state. Compute dispatch uniforms do not yet consume these replayed update 
 An opt-in queue-submission trace found all 6,553,600 bytes of that Odyssey target's guest backing zero before the
 first draw. This makes an initial zero image a plausible source for Maxwell's black area outside the viewport, but
 the direct path still needs to carry and validate that initialization before treating the whole image as covered.
+With `SNX_NVN_SHADOW_ZERO_PROBE=1`, the recorder tags only the first zero-backed color target and the diagnostic
+clear uses zero instead of magenta. The first 1600×900 Odyssey comparison then found 0/1,440,000 differing pixels
+and 0/5,760,000 differing bytes. The probe deliberately leaves coverage unproven: a queue-submission zero snapshot
+alone does not exclude pending GPU writes or establish coherent initial contents for every later image.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
