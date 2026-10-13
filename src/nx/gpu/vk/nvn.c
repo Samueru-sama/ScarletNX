@@ -2207,6 +2207,34 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
     return 0;
 }
 
+static int shadow_capture_matches_compare_filter(const NvnTextureTarget* target) {
+    static int configured, valid;
+    static unsigned width, height;
+    static unsigned long format_value;
+    static unsigned long long address_value;
+    static int has_size, has_format, has_address;
+    if (!configured) {
+        const char* size = getenv("SNX_NVN_SHADOW_COMPARE_SIZE");
+        const char* format = getenv("SNX_NVN_SHADOW_COMPARE_FORMAT");
+        const char* address = getenv("SNX_NVN_SHADOW_COMPARE_ADDRESS");
+        valid = 1;
+        has_size = !!size;
+        has_format = !!format;
+        has_address = !!address;
+        if (size && (sscanf(size, "%ux%u", &width, &height) != 2 || !width || !height)) valid = 0;
+        if (format) format_value = strtoul(format, NULL, 0);
+        if (address) {
+            char* end = NULL;
+            address_value = strtoull(address, &end, 0);
+            if (!address_value || !end || *end) valid = 0;
+        }
+        configured = 1;
+    }
+    return valid && (!has_size || (target->width == width && target->height == height)) &&
+           (!has_format || target->storage_format == format_value) &&
+           (!has_address || target->gpu_address == address_value);
+}
+
 /* First executable NVN slice: an isolated draw with application constant buffers and sampled textures.
    It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
 static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
@@ -2764,6 +2792,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     for (u32 i = 0; i < captured_target_count; i++)
         if (captured_targets[i] == color_target->gpu_address) new_target = 0;
     int capture = compare_enabled && (capture_chain ? new_target : sample_first) &&
+                  shadow_capture_matches_compare_filter(color_target) &&
                   !color_mip && command->color_target_mask == 1 && color_written &&
                   (!prior_covered || force_capture) &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||

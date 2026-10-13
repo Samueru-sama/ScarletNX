@@ -1375,6 +1375,17 @@ existing coverage gap rather than a regression from ordered origin capture. A
 the earlier 640×360 observations above describe a different boot sequence and do
 not establish current parity for that pass.
 
+The first-draw sentinel capture now follows explicit comparison size, format, and
+address filters. This prevents a small unrelated target from consuming the only
+capture when probing a later image. With an `80x45`/`0x25` filter, TotK's first
+six-index draw changed every component of all 3,600 pixels, so the selected target
+became covered, but its image still differed at all 3,600 pixels. Disabling culling
+for that target in a temporary diagnostic did not change the result. The 80×45 pass
+first samples a 320×180 semantic render target; a filtered comparison of that source
+also differed at all 57,600 pixels despite full coverage. The sampled 80×45 mismatch
+therefore cannot be explained by missing draw coverage alone. The diagnostic culling
+override and target-specific logging were removed.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
