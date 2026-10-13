@@ -48,6 +48,50 @@ int nvn_command_gap_no_writes(const u32* words, u32 length) {
     return nvn_command_gap_methods(words, length, check_no_write, &valid) && valid;
 }
 
+typedef struct {
+    NvnGapReportState state;
+    NvnGapReportWrite* writes;
+    u32 count, capacity;
+    u8 invalid;
+} ReportScan;
+
+static void scan_report_write(u32 subchannel, u32 method, u32 value, void* context) {
+    ReportScan* scan = context;
+    if (method == 0x4) { scan->state.puller_high = value; scan->state.puller_known |= 1; }
+    else if (method == 0x5) { scan->state.puller_low = value; scan->state.puller_known |= 2; }
+    else if (!subchannel && method == 0x6c0) { scan->state.query_high = value; scan->state.query_known |= 1; }
+    else if (!subchannel && method == 0x6c1) { scan->state.query_low = value; scan->state.query_known |= 2; }
+    else {
+        int puller = method == 0x7 && (value & 0x1f) == 2;
+        int query = !subchannel && method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2);
+        if (!puller && !query) return;
+        u8 known = puller ? scan->state.puller_known : scan->state.query_known;
+        if (known != 3 || scan->count == scan->capacity) { scan->invalid = 1; return; }
+        u32 high = puller ? scan->state.puller_high : scan->state.query_high;
+        u32 low = puller ? scan->state.puller_low : scan->state.query_low;
+        u32 size = puller ? ((value & (1u << 24)) ? 4 : 16)
+                          : ((value & 3) == 0 ? ((value & ((1u << 4) | (1u << 28))) ? 4 : 16)
+                                               : ((value & (1u << 28)) ? 4 : 16));
+        if (scan->writes)
+            scan->writes[scan->count] = (NvnGapReportWrite){((u64)(high & 0xff) << 32) | low, size, !!query};
+        scan->count++;
+    }
+}
+
+int nvn_command_gap_report_writes(const u32* words, u32 count, NvnGapReportState* state,
+                                  NvnGapReportWrite* writes, u32 capacity, u32* write_count) {
+    if (!state || !write_count || (capacity && !writes)) return 0;
+    ReportScan scan = {.state = *state, .capacity = capacity};
+    if (!nvn_command_gap_methods(words, count, scan_report_write, &scan) || scan.invalid) return 0;
+    scan.state = *state;
+    scan.writes = writes;
+    scan.count = 0;
+    if (!nvn_command_gap_methods(words, count, scan_report_write, &scan) || scan.invalid) return 0;
+    *state = scan.state;
+    *write_count = scan.count;
+    return 1;
+}
+
 int nvn_command_gap_indexed_draw(const u32* words, u32 length, NvnGapIndexedDraw* out) {
     if (!words || !out || length < 6 || length > 16384) return 0;
     for (u32 i = 0; i < length;) {

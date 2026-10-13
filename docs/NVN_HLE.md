@@ -1044,6 +1044,10 @@ range cannot be proved. A query write to an unrelated address should not invalid
 In a merged-main TotK probe, repeated puller releases wrote near GPU address `0x5031ca5e0`; their host backing was
 about 9 MB from the sampled image at `0x5113e0000`. This proves those observed releases did not overlap that image
 in that run, but does not classify the list's constant-data uploads, macros, or future memory mappings.
+The cursor-gap parser can now extract puller semaphore and Maxwell query write ranges in packet order, carrying
+address-register state across gaps and rejecting incomplete addresses or overflowing output. These ranges still need
+to be queued with the semantic command stream and checked against each live shadow image's physical backing before
+the opaque-list marker can be narrowed.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
