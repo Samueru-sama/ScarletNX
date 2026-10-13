@@ -2199,6 +2199,9 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
             (resource_status & NVN_DRAW_ATTACHMENT_READY))
             draw_pipeline = prepare_draw_pipeline(command, vertex_shader, fragment_shader, &draw_key);
         resource_status |= draw_pipeline ? NVN_DRAW_PIPELINE_READY : NVN_DRAW_PIPELINE_FAILED;
+        /* A known draw still writes its targets when its direct pipeline cannot be built. Invalidate
+           those shadow attachments before returning from any of the surface checks below. */
+        if (!draw_pipeline) scope_unmodeled_draw(command, vertex_shader, fragment_shader);
     }
     for (u32 i = 0; i < 8; i++) {
         if (!(command->color_target_mask & (1u << i))) continue;
