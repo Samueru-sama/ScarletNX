@@ -533,6 +533,13 @@ ready textured draws with a zero-valued bound handle, none used exclusively bind
 GPFIFO renderer derives non-bindless handles from a texture constant-buffer selector and shader offsets, so the
 captured `BindTexture(0)` calls alone cannot establish the images those shaders read. The HLE path must obtain that
 resource mapping before replacing their emulated draws.
+An instrumented Scarlet boot showed why reading the NVN uniform bindings is insufficient: the emulated fragment
+renderer selected texture CBUF index 2 at guest address `0x564637800` and read nonzero handles such as `0x1040011f`,
+while the first four captured NVN fragment uniform slots were at `0x5157b5300`, `0x5157b4000`, `0x51576b100`, and
+`0x5157ac000`. Reading slot 2 at the same shader offsets yielded unrelated values. These samples are from the two
+asynchronous paths, so they do not prove exact draw correspondence, but they disprove the proposed direct mapping
+between NVN uniform slot number and Maxwell texture-CBUF index in this trace. The SDK's internal texture-handle
+CBUF must be reconstructed from its state or captured from the generated command stream with submission ordering.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
