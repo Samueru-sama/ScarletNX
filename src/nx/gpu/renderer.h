@@ -23,6 +23,8 @@ typedef struct Renderer {
     void (*clear)(GpuChannel* ch, u32 v);
     /* Opt-in semantic NVN probes. Guest GPFIFO rendering remains authoritative. */
     void (*nvn_batch_begin)(void);
+    void (*nvn_probe_initial_color)(u64 address, u32 size, u64 sequence, u64 prior_unmodeled_write,
+                                    int prior_writes_scoped);
     int (*nvn_clear)(const NvnClearCommand* command);
     int (*nvn_copy_buffer_texture)(const NvnCopyBufferTextureCommand* command);
     /* NVN_DRAW_* result bits from gpu/nvn_draw.h. */

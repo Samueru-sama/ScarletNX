@@ -500,11 +500,21 @@ int vk_rt_drawn_fresh(Surf* s) {
 }
 int vk_rt_fresh_in(u64 lo, u64 hi) {
     if (lo >= hi) return 1;
+    const u8* host = gmem_ptr_untracked(lo, hi - lo);
     for (int k = 0; k < SURFH; k++)
         for (Surf* s = g_surfh[k]; s; s = s->next) {
-            if (!s->is_rt || s->gva >= hi) continue;
+            if (!s->is_rt) continue;
             u64 size = rt_bytes(s);
-            if (size > UINT64_MAX - s->gva || s->gva + size <= lo) continue;
+            if (size > UINT64_MAX - s->gva) continue;
+            int overlaps = s->gva < hi && s->gva + size > lo;
+            if (!overlaps && host) {
+                const u8* other = gmem_ptr_untracked(s->gva, size);
+                if (other) {
+                    uintptr_t first = (uintptr_t)host, second = (uintptr_t)other;
+                    overlaps = first <= second ? second - first < hi - lo : first - second < size;
+                }
+            }
+            if (!overlaps) continue;
             if (vk_rt_drawn_fresh(s)) return 1;
         }
     return 0;

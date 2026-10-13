@@ -2132,12 +2132,66 @@ int nvn_record_wants(const char* name) {
     return kind(name) != OP_OTHER;
 }
 
+typedef struct {
+    u64 address, sequence, prior_unmodeled_write;
+    u32 size;
+    u8 prior_writes_scoped;
+} NvnPreSubmitColorProbe;
+
+static int probe_ranges_overlap(u64 address, u32 size, u64 other, u32 other_size) {
+    const u8* host = gmem_ptr_untracked(address, size);
+    const u8* other_host = gmem_ptr_untracked(other, other_size);
+    if (!host || !other_host) return 1;
+    uintptr_t first = (uintptr_t)host, second = (uintptr_t)other_host;
+    return first <= second ? second - first < size : first - second < other_size;
+}
+
+/* A zero backing can seed the first image only when every earlier write has a bounded,
+   disjoint destination. Missing semantic commands and unsafe command-memory gaps leave
+   holes in the sequence mask, so they cannot accidentally certify initialization. */
+static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawCommand* draw) {
+    if (!draw->sequence || draw->sequence >= 64) return 0;
+    const NvnTextureTarget* target = &draw->color_target[0];
+    u64 accounted = 0;
+    if (queue->clears)
+        for (u32 i = 0; i < queue->clears->count; i++) {
+            const NvnClearCommand* clear = &queue->clears->commands[i];
+            if (clear->sequence >= draw->sequence) continue;
+            if (!clear->target.gpu_address || !clear->target.storage_size ||
+                probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                     clear->target.gpu_address, clear->target.storage_size)) return 0;
+            accounted |= 1ull << clear->sequence;
+            if (clear->unknown_marker < clear->sequence)
+                accounted |= 1ull << clear->unknown_marker;
+        }
+    if (queue->memory_writes)
+        for (u32 i = 0; i < queue->memory_writes->count; i++) {
+            const NvnMemoryWriteCommand* write = &queue->memory_writes->commands[i];
+            if (write->sequence >= draw->sequence) continue;
+            if (!write->address || !write->size ||
+                probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                     write->address, write->size)) return 0;
+            accounted |= 1ull << write->sequence;
+        }
+    return accounted == ((1ull << draw->sequence) - 1);
+}
+
+static void execute_pre_submit_color_probe(void* arg) {
+    NvnPreSubmitColorProbe* probe = arg;
+    if (g_renderer->nvn_probe_initial_color)
+        g_renderer->nvn_probe_initial_color(probe->address, probe->size, probe->sequence,
+                                             probe->prior_unmodeled_write,
+                                             probe->prior_writes_scoped);
+    free(probe);
+}
+
 u64 nvn_record_before(const CPU* c, const char* name) {
     u64 token = 0;
     if (!strcmp(name, "nvnCommandBufferEndRecording") || !strcmp(name, "nvnQueueFlush") ||
         !strcmp(name, "nvnQueuePresentTexture"))
         return 0;
     if (!strcmp(name, "nvnQueueSubmitCommands")) {
+        NvnPreSubmitColorProbe* color_probe = NULL;
         u32 count = (u32)c->x[1];
         u64 ptr = c->x[2];
         if (count > 4096 || (count && !readable_range(ptr, (u64)count * 8))) {
@@ -2190,8 +2244,26 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         if (queue) {
             queue->key = c->x[0];
             queue->state = state;
+            static int initial_color_probe_sent;
+            const char* zero_probe = getenv("SNX_NVN_SHADOW_ZERO_PROBE");
+            if (!initial_color_probe_sent && zero_probe && !strcmp(zero_probe, "1") && queue->draws)
+                for (u32 i = 0; i < queue->draws->count; i++) {
+                    const NvnDrawCommand* draw = &queue->draws->commands[i];
+                    const NvnTextureTarget* target = &draw->color_target[0];
+                    if (!draw->color_initial_zero || !(draw->color_target_mask & 1) || !target->storage_size ||
+                        target->storage_size > (16u << 20) ||
+                        target->gpu_address > UINT64_MAX - target->storage_size) continue;
+                    color_probe = malloc(sizeof *color_probe);
+                    if (!color_probe) break;
+                    *color_probe = (NvnPreSubmitColorProbe){target->gpu_address, draw->sequence,
+                                                            draw->last_unmodeled_write, target->storage_size,
+                                                            probe_prior_writes_scoped(queue, draw)};
+                    initial_color_probe_sent = 1;
+                    break;
+                }
         }
         pm_unlock(&lock);
+        if (color_probe) gpu_call(execute_pre_submit_color_probe, color_probe);
         return 0;
     }
     pm_lock(&lock);

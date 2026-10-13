@@ -1191,15 +1191,19 @@ direct shadow draws without a fatal crash; pixel and presented-frame parity rema
 An opt-in queue-submission trace found all 6,553,600 bytes of that Odyssey target's guest backing zero before the
 first draw. This makes an initial zero image a plausible source for Maxwell's black area outside the viewport, but
 the direct path still needs to carry and validate that initialization before treating the whole image as covered.
-With `SNX_NVN_SHADOW_ZERO_PROBE=1`, the recorder tags only the first zero-backed color target and the diagnostic
-clear uses zero instead of magenta. The first 1600×900 Odyssey comparison then found 0/1,440,000 differing pixels
-and 0/5,760,000 differing bytes. The probe deliberately leaves coverage unproven: a queue-submission zero snapshot
-alone does not exclude pending GPU writes or establish coherent initial contents for every later image.
+With `SNX_NVN_SHADOW_ZERO_PROBE=1`, the recorder checks the first zero-backed color target again on the ordered GPU
+thread before the SDK submission. It certifies the initial image only when the backing is still zero, no fresh Maxwell
+render target overlaps it, and every earlier replay write has a bounded destination disjoint from that target. These
+overlap checks include mapped backing aliases. Missing or unscoped commands leave sequence gaps and prevent
+certification. The direct draw then clears its new image to zero
+before rendering and records full coverage. Odyssey's first 1600×900 target reported `covered=1` with 0/1,440,000
+differing pixels and 0/5,760,000 differing bytes. This remains opt-in while later images and command streams are
+validated; a zero snapshot alone is never sufficient for coverage.
 An ABI-7 Odyssey rebuild with guest-only texture fallback and partial-image guards issued at least
 7,500 direct shadow draws in a 50-second headless run without a fatal error. Its ordinary first-target
 comparison still differed in 518,400 of 1,440,000 pixels, all outside the 1280×720 draw scissor;
-the inside-scissor comparison was byte-exact. The ABI-7 zero-backed diagnostic matched the entire
-target byte-for-byte and still reported coverage unproven for the same reason.
+the inside-scissor comparison was byte-exact. The ABI-7 zero-backed diagnostic matched the entire target
+byte-for-byte. The ordered and scoped probe described above subsequently certified coverage for that target.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

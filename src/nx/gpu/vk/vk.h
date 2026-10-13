@@ -40,6 +40,7 @@
 int vk_nvn_clear(const NvnClearCommand* command);
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command);
 void vk_nvn_batch_begin(void);
+void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence);
 int vk_nvn_draw_prepare(const NvnDrawCommand* command);
 int vk_nvn_dispatch(const NvnDispatchCommand* command);
 int vk_nvn_memory_write(const NvnMemoryWriteCommand* command);

@@ -80,6 +80,18 @@ static u64 shadow_draw_stamp;
 static u64 shadow_capture_target;
 static u32 shadow_capture_scissor[4];
 static u64 modeled_unknown_marker, modeled_unknown_prior;
+static struct {
+    u64 address, sequence;
+    u32 size;
+    int valid;
+} initial_color_seed;
+
+void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence) {
+    initial_color_seed.address = address;
+    initial_color_seed.size = size;
+    initial_color_seed.sequence = sequence;
+    initial_color_seed.valid = 1;
+}
 
 static int cross_batch_enabled(void) {
     static int enabled = -1;
@@ -2569,6 +2581,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int color_written = (fragment->si.sph[18] & 15) && key->blend[0].mask;
     int prior_covered = (color->color_layers[color_mip] & (1ull << color_layer)) &&
                         color->subresource_sequence[color_mip][color_layer] > effective_unknown;
+    int zero_seed = initial_color_seed.valid &&
+                    command->color_initial_zero &&
+                    initial_color_seed.address == color_target->gpu_address &&
+                    initial_color_seed.size == color_target->storage_size &&
+                    initial_color_seed.sequence == command->sequence &&
+                    color_written && !color->image_was_written && !prior_covered &&
+                    !color_mip && !color_layer && command->color_target_mask == 1 &&
+                    (color_target->format == 0x25 || color_target->format == 0x38);
     static int sample_first = 1;
     static int force_capture = -1;
     static int compare_enabled = -1;
@@ -2584,8 +2604,16 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                   (!prior_covered || force_capture) &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||
                    color_target->format == 0x29 || color_target->format == 0x3f);
-    int zero_probe = capture && command->color_initial_zero &&
+    int zero_probe = capture && zero_seed && command->color_initial_zero &&
                      (color_target->format == 0x25 || color_target->format == 0x38);
+    if (zero_seed) {
+        color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachments[0].clearValue.color = (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}};
+        initial_color_seed.valid = 0;
+        LOG("nvn-shadow-initial-color: target=%llx sequence=%llu size=%u\n",
+            (unsigned long long)color_target->gpu_address,
+            (unsigned long long)command->sequence, color_target->storage_size);
+    }
     int capture_full = 0;
     if (capture) {
         shadow_capture_target = color->address;
@@ -2761,7 +2789,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         storage_images[k]->image_was_written = 1;
         storage_images[k]->last_batch = batch_serial;
     }
-    /* The magenta first-draw probe certifies full coverage only when no pixel retains that initial color.
+    /* Full coverage comes from a scoped zero seed or from a first-draw sentinel overwritten at every pixel.
        Other draws preserve provenance only after modeled full-subresource initialization. */
     int preserved = prior_covered;
     int any_color_written = 0;
@@ -2777,7 +2805,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         attachment->image_was_written = 1;
         int covered = (attachment->color_layers[mip] & (1ull << layer)) &&
                       attachment->subresource_sequence[mip][layer] > effective_unknown;
-        if (i == 0) covered = capture ? capture_full : prior_covered;
+        if (i == 0) covered = zero_seed || (capture ? capture_full : prior_covered);
         if (covered) {
             attachment->color_layers[mip] |= 1ull << layer;
             attachment->subresource_sequence[mip][layer] = command->sequence;
