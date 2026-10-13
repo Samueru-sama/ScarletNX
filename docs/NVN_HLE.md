@@ -929,6 +929,18 @@ value at each guest draw is required before these unknown-write markers can safe
 1,200 direct shadow draws in an 18-second headless run. The first selected shadow/emulated target comparison differed
 in all 921,600 pixels; the probe has not established complete-pass or presented-frame parity. Direct draws do not yet
 receive bank-0 shader data.
+A temporary trace at the actual Maxwell draw boundary found the same fragment SSBO descriptor, address
+`0x623130000` and size 58,848 bytes, for the first 80 six-index draws to TotK color target `0x5187f0000`.
+GPU write generations advanced throughout that sample. The current write-generation guard is page-granular, so it
+can reject a descriptor whose twelve bytes did not change. The trace does not prove the value for every submitted
+NVN draw, and a direct path cannot depend on the emulated draw boundary as its source of state. The next step is to
+decode the command-list writes and pair their per-draw buffer state with the NVN semantic draw stream.
+A separate temporary scan decoded 9,526 single-allocation NVN command-memory spans of at most 64 KiB during a
+15-second TotK run; 1,359 candidate spans did not meet those bounds. The decoded spans contained 51,392 Maxwell
+constant-buffer data methods, but no method wrote the twelve descriptor bytes at `0x500390550–0x50039055b`.
+Sample writes addressed `0x502950000`. The descriptor source therefore remains unlocated: CPU updates, larger or
+multi-allocation command lists, and queue work outside those spans still need to be traced. The direct path must
+recover that state independently of the emulated GPU draw.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
