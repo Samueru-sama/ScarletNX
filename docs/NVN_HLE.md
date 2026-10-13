@@ -965,8 +965,9 @@ do not overlap; physical aliasing and later consumers still need checking. The w
 storage with ordered reads and writes so the direct path does not modify guest memory while GPFIFO is authoritative.
 The direct path now allocates shadow-owned Vulkan storage for writable SSBOs and orders subsequent shader accesses
 with buffer barriers. Bindings with identical physical backing share that storage; a range wholly inside an existing
-shadow buffer uses its physical byte offset when it meets Vulkan's storage-offset alignment. A TotK capture showed
-one later binding beginning 448 bytes inside a 58,848-byte cached range; this device's required alignment is 16 bytes.
+shadow buffer maps its physical word offset through the graphics shader's SSBO page map, so it does not depend on
+the device's descriptor-offset alignment. A TotK capture showed one later binding beginning 448 bytes inside a
+58,848-byte cached range.
 Other partial overlaps remain ineligible. CPU write tracking is armed at creation, and cross-batch guest writes
 invalidate the shadow buffer rather than silently merging emulated results into HLE state. The contained-alias path
 builds and the unit suite passes, but the subsequent TotK runs did not reach the same comparison frame, so visible

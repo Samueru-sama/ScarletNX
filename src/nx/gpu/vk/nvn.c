@@ -1465,8 +1465,8 @@ static int shadow_host_overlap(const u8* a, u64 a_size, const u8* b, u64 b_size)
     return first < second + b_size && second < first + a_size;
 }
 
-/* Shadow SSBOs never write the guest's backing. Contained physical aliases share one buffer
-   when Vulkan can represent their starting offset exactly. */
+/* Shadow SSBOs never write the guest's backing. Contained physical aliases share one buffer;
+   the shader's word map translates their offsets without requiring a Vulkan descriptor offset. */
 static int shadow_storage_get(u64 address, u32 size, int writable, NvnShadowStorage** out,
                               u64* out_offset) {
     *out = NULL;
@@ -1487,9 +1487,8 @@ static int shadow_storage_get(u64 address, u32 size, int writable, NvnShadowStor
         if (!entry->buffer || !shadow_host_overlap(host, size, entry->guest_host, entry->size)) continue;
         uintptr_t start = (uintptr_t)host, base = (uintptr_t)entry->guest_host;
         u64 offset = start >= base ? start - base : UINT64_MAX;
-        u64 alignment = g_vk.props.limits.minStorageBufferOffsetAlignment;
         if (entry->invalid || offset > entry->size || size > entry->size - offset ||
-            (alignment && offset % alignment)) {
+            (offset & 3)) {
             LOG_LIMIT(12, "nvn-shadow-storage-reject: alias-or-invalid addr=%llx size=%u cached=%llx/%llu invalid=%d\n",
                       (unsigned long long)address, size, (unsigned long long)entry->address,
                       (unsigned long long)entry->size, entry->invalid);
@@ -1553,6 +1552,50 @@ static int shadow_storage_get(u64 address, u32 size, int writable, NvnShadowStor
                                .access = VK_ACCESS_2_HOST_WRITE_BIT};
     shadow_storage_bytes += size;
     *out = slot;
+    return 1;
+}
+
+/* Graphics SSBO shaders index through this map. An uncached read-only binding keeps the
+   identity mapping; a shadow binding maps its logical words into the shared physical buffer. */
+static int shadow_storage_maps(VkDrawStorage* storage, NvnShadowStorage* buffers[2][16],
+                               const u64 offsets[2][16]) {
+    for (u32 stage = 0; stage < 2; stage++) {
+        if (!storage->n[stage]) continue;
+        u64 words = 48;
+        for (int i = 0; i < storage->n[stage]; i++) {
+            if (!buffers[stage][i]) continue;
+            u64 offset = offsets[stage][i];
+            u64 size = storage->b[stage][i].size;
+            if ((offset & 3) || (size & 3) || offset > buffers[stage][i]->size ||
+                size > buffers[stage][i]->size - offset ||
+                buffers[stage][i]->size > g_vk.props.limits.maxStorageBufferRange)
+                return 0;
+            words += ((offset & 4095) + size + 4095) >> 12;
+        }
+        if (words > UINT32_MAX / 4) return 0;
+        u32* map = (u32*)vk_stage(words * 4, vk_stage_align(), &storage->map_buf[stage], &storage->map_off[stage]);
+        if (!map) return 0;
+        storage->map_size[stage] = words * 4;
+        for (u32 i = 0; i < 16; i++) {
+            map[i] = ~0u;
+            map[16 + i] = 0;
+            map[32 + i] = 0;
+        }
+        u32 at = 48;
+        for (int i = 0; i < storage->n[stage]; i++) {
+            if (!buffers[stage][i]) continue;
+            u64 offset = offsets[stage][i];
+            u64 size = storage->b[stage][i].size;
+            u32 pages = (u32)(((offset & 4095) + size + 4095) >> 12);
+            map[i] = at;
+            map[16 + i] = (u32)((offset & 4095) >> 2);
+            map[32 + i] = (u32)(size >> 2);
+            for (u32 page = 0; page < pages; page++) map[at++] = (u32)(offset >> 12) + page;
+            if (offset)
+                LOG_LIMIT(8, "nvn-shadow-storage-map: stage=%u binding=%d offset=%llu size=%llu pages=%u\n",
+                          stage, i, (unsigned long long)offset, (unsigned long long)size, pages);
+        }
+    }
     return 1;
 }
 
@@ -1701,7 +1744,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             storage.b[stage][i].size = (u32)aligned_size;
         }
     }
-    if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) return 0;
+    if (!shadow_storage_maps(&storage, shadow_buffers, shadow_buffer_offsets)) return 0;
     NvnImage* storage_images[NVN_DRAW_IMAGE_SLOTS] = {0};
     VkDescriptorImageInfo storage_infos[NVN_DRAW_IMAGE_SLOTS] = {0};
     for (int k = 0; k < fragment->si.nimg; k++) {
@@ -1798,9 +1841,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             VkDrawGbuf* binding = &storage.b[stage][i];
             if (shadow_buffers[stage][i]) {
                 buffer = shadow_buffers[stage][i]->buffer;
-                offset = shadow_buffer_offsets[stage][i];
+                offset = 0;
             } else if (!vk_buf_get_strict(binding->addr, binding->size, &buffer, &offset)) return 0;
-            storage_buffers[stage][i] = (VkDescriptorBufferInfo){buffer, offset, binding->size};
+            storage_buffers[stage][i] = (VkDescriptorBufferInfo){
+                buffer, offset, shadow_buffers[stage][i] ? shadow_buffers[stage][i]->size : binding->size};
             writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                       .dstSet = sets[stage],
                                                       .dstBinding = SNX_VKB_SSBO + i,
