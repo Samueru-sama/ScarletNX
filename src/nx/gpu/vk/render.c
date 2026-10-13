@@ -5,9 +5,8 @@
    at 0x54E, address at 0x3F8, size at 0x48A, format and tiling at 0x3FA). A dynamic rendering pass stays open while
    draws and clears keep the same set, and ends before anything that copies or transitions images.
 
-   A draw reads the 3D engine's registers for its state. The viewport maps the guest's
-   transform as is (y down, like the hardware), so no shader flips y; facing follows from that (see the raster
-   state below). */
+   A draw reads the 3D engine's registers for its state. Signed viewport scales and coordinate swizzles map the
+   guest's position. Window-origin bit 4 controls triangle facing independently of that mapping. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -804,6 +803,44 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
 /* ------------------------------------------------------------ draws */
 u64 g_vk_drawn, g_vk_skipped;
 
+/* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
+   height implements the same mapping without changing texture coordinates or guest render-target contents.
+   Reference: NVIDIA open-gpu-doc/classes/3d/clb197.h. */
+VkViewport vk_render_viewport(const u32* r) {
+    float vt[6];
+    memcpy(vt, &r[0x280], sizeof vt);
+    float sx = vt[0], sy = vt[1], tx = vt[3], ty = vt[4], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
+    VkViewport vp;
+    int small = 2 * ax < 1 || 2 * ay < 1;
+    if (small != !(r[0x64B] & 1))
+        LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, r[0x64B]);
+    if (small) {
+        u32 vx = r[0x300], vy = r[0x301];
+        vp = (VkViewport){vk_scf(vx & 0xFFFF), vk_scf(vy & 0xFFFF), vk_scf(vx >> 16), vk_scf(vy >> 16), 0, 1};
+    } else
+        vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
+    if (((r[0x286] >> 4) & 7) == 3) {
+        vp.y += vp.height;
+        vp.height = -vp.height;
+    }
+    float zn, zf;
+    memcpy(&zn, &r[0x302], 4);
+    memcpy(&zf, &r[0x303], 4);
+    if (vt[2] != 0.0f || vt[5] != 0.0f) {
+        zn = vt[5] - ((r[0x35F] & 1) ? 0.0f : vt[2]);
+        zf = vt[5] + vt[2];
+    }
+    vp.minDepth = zn < 0 ? 0 : zn > 1 ? 1 : zn;
+    vp.maxDepth = zf < 0 ? 0 : zf > 1 ? 1 : zf;
+    return vp;
+}
+VkFrontFace vk_render_front_face(const u32* r) {
+    int cw = r[0x647] == 0x900;
+    /* NVB197_SET_WINDOW_ORIGIN_FLIP_Y changes triangle facing, not viewport or display row order. */
+    if (r[0x4EB] & 0x10) cw = !cw;
+    return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+}
+
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances) {
     u32* r = ch->r3d;
@@ -1164,37 +1201,7 @@ retry:
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_playout, 0, fs ? 2 : 1, sets, 0, NULL);
     if (k.nbind) vkCmdBindVertexBuffers2(cb, 0, k.nbind, vbuf, voff, NULL, vstride);
 
-    /* viewport: the guest's transform as is, with a negative height when it flips y */
-    float vt[6];
-    memcpy(vt, &r[0x280], 24);
-    float sx = vt[0], sy = vt[1], tx = vt[3], ty = vt[4], ax = sx < 0 ? -sx : sx, ay = sy < 0 ? -sy : sy;
-    VkViewport vp;
-    int yflip = sy < 0, small = 2 * ax < 1 || 2 * ay < 1;
-    {
-        /* the transform is taken as off when its scale is that small. 0x64B is the register that turns it off
-           (Ryujinx), and 0x4EB (YControl) can negate y and flip facing. Neither is read yet: the first draw where
-           they would matter is logged */
-        if (small != !(r[0x64B] & 1))
-            LOG_LIMIT(1, "vulkan: viewport scale %g x %g with transform enable %x\n", sx, sy, r[0x64B]);
-        if (r[0x4EB]) LOG_LIMIT(1, "vulkan: YControl %x\n", r[0x4EB]);
-    }
-    if (small) {
-        u32 vx = r[0x300], vy = r[0x301];
-        vp = (VkViewport){vk_scf(vx & 0xFFFF), vk_scf(vy & 0xFFFF), vk_scf(vx >> 16), vk_scf(vy >> 16), 0, 1};
-        yflip = 0;
-    } else
-        vp = (VkViewport){vk_scf(tx - ax), vk_scf(ty - sy), vk_scf(2 * ax), vk_scf(2 * sy), 0, 1};
-    {
-        float zn, zf;
-        memcpy(&zn, &r[0x302], 4);
-        memcpy(&zf, &r[0x303], 4);
-        if (vt[2] != 0.0f || vt[5] != 0.0f) { /* depth through the viewport transform, as the hardware does */
-            zn = vt[5] - ((r[0x35F] & 1) ? 0.0f : vt[2]);
-            zf = vt[5] + vt[2];
-        }
-        vp.minDepth = zn < 0 ? 0 : zn > 1 ? 1 : zn;
-        vp.maxDepth = zf < 0 ? 0 : zf > 1 ? 1 : zf;
-    }
+    VkViewport vp = vk_render_viewport(r);
     if (!(vp.width > 0) || !(vp.height != 0)) return; /* no area: nothing is drawn (and Vulkan takes none) */
     vkCmdSetViewportWithCount(cb, 1, &vp);
     VkRect2D sc = {{0, 0}, g_rp.ext};
@@ -1207,15 +1214,12 @@ retry:
         sc = x1 > x0 && y1 > y0 ? (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}} : (VkRect2D){{0, 0}, {0, 0}};
     }
     vkCmdSetScissorWithCount(cb, 1, &sc);
-    /* raster state. Vulkan decides facing in framebuffer space with y down, where GL's lower-left origin reverses
-       the winding, so the guest's front face holds as is when y is flipped and swaps when it isn't */
+    /* Triangle facing has its own window-origin control, independent of viewport scale and swizzle. */
     vkCmdSetCullMode(cb, !r[0x646]           ? VK_CULL_MODE_NONE
                          : r[0x648] == 0x404 ? VK_CULL_MODE_FRONT_BIT
                          : r[0x648] == 0x408 ? VK_CULL_MODE_FRONT_AND_BACK
                                              : VK_CULL_MODE_BACK_BIT);
-    int cw = r[0x647] == 0x900;
-    if (!yflip) cw = !cw;
-    vkCmdSetFrontFace(cb, cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    vkCmdSetFrontFace(cb, vk_render_front_face(r));
     vkCmdSetPrimitiveTopology(cb, topo);
     vkCmdSetPrimitiveRestartEnable(cb, restart && indexed == 1);
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);

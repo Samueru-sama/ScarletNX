@@ -19,6 +19,27 @@ static u32* g_last;
 static int g_lw, g_lh;
 static PMutex g_hl;
 #endif
+PAudio* plat_audio_open(u32 rate, u32 channels) {
+    (void)rate;
+    (void)channels;
+    return NULL;
+}
+void plat_audio_close(PAudio* a) { (void)a; }
+int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
+    (void)a;
+    (void)samples;
+    (void)bytes;
+    return 0;
+}
+void plat_audio_start(PAudio* a, int started) {
+    (void)a;
+    (void)started;
+}
+void plat_audio_clear(PAudio* a) { (void)a; }
+void plat_audio_volume(PAudio* a, float volume) {
+    (void)a;
+    (void)volume;
+}
 void backend_ini(const char* k, const char* v) { unattended_ini(k, v); }
 void video_init(const char* t) {
     (void)t;

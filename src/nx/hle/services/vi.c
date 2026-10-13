@@ -26,9 +26,10 @@ typedef struct {
     u64 size;
     u8 raw[0x16C];
     u32 rawsize;
-    int queued;  /* held: dequeued by the game, or queued and not shown yet */
-    u32 gen;     /* counts dequeues, so a late present doesn't free the slot again after a forced release */
-    i32 crop[4]; /* the part of the buffer shown (left, top, right, bottom); all 0 for the whole buffer */
+    int queued;    /* held: dequeued by the game, or queued and not shown yet */
+    u32 gen;       /* counts dequeues, so a late present doesn't free the slot again after a forced release */
+    i32 crop[4];   /* the part of the buffer shown (left, top, right, bottom); all 0 for the whole buffer */
+    u32 transform; /* the queued frame's Android buffer transform, retained with its crop */
 } Slot;
 static struct {
     Slot slots[64]; /* lock */
@@ -128,7 +129,8 @@ static void present_queued(void* p) {
                        "binder: QUEUE_BUFFER slot %d: fence syncpoint %u did not reach %u in 1 s, presenting anyway\n",
                        q->slot, q->id[i], q->val[i]);
     Slot* s = &q->s;
-    if (s->used) vi_show_buffer(s->nvmap_id, s->offset, s->w, s->h, s->pitch, s->layout, s->bhl, s->afmt, s->crop);
+    if (s->used)
+        vi_show_buffer(s->nvmap_id, s->offset, s->w, s->h, s->pitch, s->layout, s->bhl, s->afmt, s->crop, s->transform);
     slot_release(q->slot, s->gen);
     free(q);
 }
@@ -277,8 +279,7 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                     memcpy(&q->val[i], qi + 0x38 + i * 8, 4);
                 }
             }
-            /* the buffer's crop, which the renderer shows of it (Tears of the Kingdom renders 1280x720 into the
-               corner of a 1920x1080 buffer in handheld mode), and its transform, which it ignores */
+            /* Crop and transform belong to this queued frame, not to the slot's next dequeue. */
             i32 cr[4] = {0, 0, 0, 0};
             u32 tr = 0;
             if (len >= 0x28) {
@@ -289,6 +290,7 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             if (slot >= 0 && slot < 64) {
                 q->s = vi.slots[slot];
                 memcpy(q->s.crop, cr, 16);
+                q->s.transform = tr;
             }
             int changed = len >= 0x28 && (vi.crop_transform != tr || memcmp(vi.crop, cr, 16));
             if (changed) {
@@ -296,9 +298,7 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                 memcpy(vi.crop, cr, 16);
             }
             pm_unlock(&vi.lock);
-            if (changed)
-                LOG("vi: crop (%d,%d)-(%d,%d), transform %x%s\n", cr[0], cr[1], cr[2], cr[3], tr,
-                    tr ? " (not applied)" : "");
+            if (changed) LOG("vi: crop (%d,%d)-(%d,%d), transform %x\n", cr[0], cr[1], cr[2], cr[3], tr);
             /* the compositor shows the frame once the GPU has drawn it (its acquire waits on the frame's fence), and
                QueueBuffer returns at once: shown here, it held the game's queue lock while the GPU thread caught up,
                so its CPU and GPU work never overlapped. A fence no submission promised is waited for here instead */

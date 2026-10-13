@@ -71,8 +71,8 @@ void vi_convert_cpu(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt
         }
     }
 }
-void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt,
-                    const i32 crop[4]) {
+void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
+                    u32 transform) {
     u64 a = nvmap_addr_by_id(nvmap_id);
     if (!a) { /* the game queues it every frame: said a few times */
         WARN_LIMIT(5, "vi: buffer without memory (nvmap %u)\n", nvmap_id);
@@ -80,7 +80,7 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
     }
     a += offset;
     if (g_renderer_up) {
-        g_renderer->present_buffer(a, w, h, pitch, layout, bhl, fmt, crop);
+        g_renderer->present_buffer(a, w, h, pitch, layout, bhl, fmt, crop, transform);
     } else {
         pm_lock(&g_flock);
         if (g_fw != (int)w || g_fh != (int)h) {
@@ -90,6 +90,23 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
             g_fh = (int)h;
         }
         vi_convert_cpu(a, w, h, pitch, layout, bhl, fmt, g_frame);
+        /* Android FlipH/FlipV apply to the display image, never to guest framebuffer memory. */
+        if (transform & 1)
+            for (u32 y = 0; y < h; y++)
+                for (u32 x = 0; x < w / 2; x++) {
+                    size_t a0 = (size_t)y * w + x, a1 = (size_t)y * w + w - 1 - x;
+                    u32 p = g_frame[a0];
+                    g_frame[a0] = g_frame[a1];
+                    g_frame[a1] = p;
+                }
+        if (transform & 2)
+            for (u32 y = 0; y < h / 2; y++)
+                for (u32 x = 0; x < w; x++) {
+                    size_t a0 = (size_t)y * w + x, a1 = (size_t)(h - 1 - y) * w + x;
+                    u32 p = g_frame[a0];
+                    g_frame[a0] = g_frame[a1];
+                    g_frame[a1] = p;
+                }
         video_present_rgba(g_frame, (int)w, (int)h, (int)w);
         pm_unlock(&g_flock);
     }

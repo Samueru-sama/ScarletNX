@@ -43,7 +43,9 @@ typedef struct Renderer {
     void (*stream_incr)(u32 id);   /* a syncpoint increment in the stream, after everything before it is done */
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
-    void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4]);
+    /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */
+    void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
+                           u32 transform);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */
     /* writes what should outlive the process (the pipeline cache): every 5 s from the frontend loop, and before an exit
        that skips the normal shutdown. Any thread, while the others still run. NULL when the renderer keeps nothing */

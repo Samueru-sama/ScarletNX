@@ -2,17 +2,15 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* audio services (audren, audout, hwopus): answered in the real formats, with no sound produced. hwopus decodes the
-   game's Opus packets with FFmpeg */
+/* audio services: audout sends guest PCM to the host, audren currently only answers renderer updates, and hwopus
+   decodes the game's Opus packets with FFmpeg */
 #include "hle/services/services_int.h"
 #ifndef SNX_NO_H264
 #include "gpu/video/host1x.h"
 #include <libavcodec/avcodec.h>
 #include <math.h>
 #endif
-/* audio: pretend, no output */
-
-/* IAudioOut: nothing is played, but appended buffers come back at 48 kHz speed like on the console.
+/* IAudioOut: appended PCM is copied to the host output and buffers come back at 48 kHz speed like on the console.
    Players time video against the released buffers (CRI movies): never releasing them stalls the video.
    Buffers are laid out on a play clock that runs only while the audout is started: a buffer is released once the
    clock passes its end, and then waits in rel[] for GetReleasedAudioOutBuffers */
@@ -27,7 +25,8 @@ typedef struct AudOut {
     int started;
     u32 channels;
     float volume;
-    KEvent* ev; /* RegisterBufferEvent */
+    PAudio* output; /* paused until Start. The release clock keeps running even without a host audio device. */
+    KEvent* ev;     /* RegisterBufferEvent */
     PMutex lk;
 } AudOut;
 
@@ -210,8 +209,26 @@ static void audout_destroy(SvcObj* o) {
             break;
         }
     pm_unlock(&audio.outs_lk);
+    plat_audio_close(q->output);
     kobj_unref(&q->ev->o);
 }
+
+/* AudioOutBuffer (libnx audout.h): next, sample pointer, capacity, data size, offset, all u64. IPC only maps the
+   descriptor, so validate the separate sample range before the backend copies it. */
+static int audout_pcm_range(u64 addr, u64 bytes) {
+    if (!addr || addr >= AS_SIZE || bytes > AS_SIZE - addr) return 0;
+    u64 end = addr + bytes;
+    while (addr < end) {
+        MemBlock b;
+        mem_query(addr, &b);
+        if (!(b.perm & PERM_R) || b.addr > addr || b.size <= addr - b.addr) return 0;
+        u64 n = b.size - (addr - b.addr);
+        if (n >= end - addr) return 1;
+        addr += n;
+    }
+    return 1;
+}
+
 static int audout_obj(SvcObj* o, IpcCtx* c) {
     AudOut* q = (AudOut*)o->data;
     switch (c->cmd) {
@@ -225,6 +242,7 @@ static int audout_obj(SvcObj* o, IpcCtx* c) {
         case 1: /* Start: the play clock runs from now */
             pm_lock(&q->lk);
             if (!q->started) {
+                plat_audio_start(q->output, 1);
                 q->anchor = plat_ns();
                 q->started = 1;
             }
@@ -237,14 +255,20 @@ static int audout_obj(SvcObj* o, IpcCtx* c) {
                 audout_release(q, now);
                 q->base = audout_clock(q, now);
                 q->started = 0;
+                plat_audio_start(q->output, 0);
             }
             pm_unlock(&q->lk);
             return 0;
         }
         case 3:
         case 7: {
-            u64 tag = in64(c, 0), a, sz, bytes = 0; /* AppendAudioOutBuffer(Auto): AudioOutBuffer.data_size at +0x18 */
-            if (buf_in(c, 0, &a, &sz) && a && sz >= 0x20) memcpy(&bytes, GP(a + 0x18), 8);
+            u64 tag = in64(c, 0), a, sz, bytes = 0, samples = 0, capacity = 0, offset = 0;
+            if (buf_in(c, 0, &a, &sz) && a && sz >= 0x20) {
+                samples = gr64(a + 8);
+                capacity = gr64(a + 0x10);
+                bytes = gr64(a + 0x18);
+                if (sz >= 0x28) offset = gr64(a + 0x20);
+            }
             if (bytes > 0xFFFFFFFFull) bytes = 0xFFFFFFFFull; /* keeps frames * 1e9 in 64 bits */
             u64 now = plat_ns();
             pm_lock(&q->lk);
@@ -254,6 +278,14 @@ static int audout_obj(SvcObj* o, IpcCtx* c) {
                 /* the SDK's AppendAudioOutBuffer returns false for BufferRingFull (0x1099) */
                 pm_unlock(&q->lk);
                 return RC(153, 8);
+            }
+            u64 pcm_bytes = frames * 2ull * q->channels;
+            if (pcm_bytes && q->output) {
+                if (offset <= capacity && pcm_bytes <= capacity - offset && samples <= AS_SIZE &&
+                    offset <= AS_SIZE - samples && audout_pcm_range(samples + offset, pcm_bytes))
+                    plat_audio_queue(q->output, GP(samples + offset), (u32)pcm_bytes);
+                else
+                    WARN_LIMIT(4, "audout: PCM buffer is outside its readable guest allocation\n");
             }
             u64 t = audout_clock(q, now), st = q->last_end > t ? q->last_end : t;
             u32 k = (q->head + q->n) & 63;
@@ -323,6 +355,7 @@ static int audout_obj(SvcObj* o, IpcCtx* c) {
         case 11: { /* FlushAudioOutBuffers: what is queued comes back now, unplayed */
             pm_lock(&q->lk);
             audout_release(q, plat_ns());
+            plat_audio_clear(q->output);
             while (q->n) {
                 q->rel[(q->rhead + q->rn) & 63] = q->tag[q->head];
                 q->rn++;
@@ -340,6 +373,7 @@ static int audout_obj(SvcObj* o, IpcCtx* c) {
             u32 v = in32(c, 0);
             pm_lock(&q->lk);
             memcpy(&q->volume, &v, 4);
+            plat_audio_volume(q->output, q->volume);
             pm_unlock(&q->lk);
             return 0;
         }
@@ -366,6 +400,7 @@ static int audout_disp(SvcObj* o, IpcCtx* c) {
         pm_init(&q->lk);
         q->channels = 2; /* what the reply below tells the game it gets */
         q->volume = 1.0f;
+        q->output = plat_audio_open(48000, q->channels);
         q->ev = kevent_new("audio out buffers");
         kobj_ref(&q->ev->o);
         r->destroy = audout_destroy;

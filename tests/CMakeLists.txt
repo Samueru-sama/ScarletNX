@@ -107,6 +107,11 @@ add_executable(snx-test-nvn-command-gap nvn_command_gap.c "${PROJECT_SOURCE_DIR}
 snx_test_target(snx-test-nvn-command-gap 23)
 add_test(NAME nvn_command_gap COMMAND snx-test-nvn-command-gap)
 
+add_executable(snx-test-audio-out audio_out.c)
+snx_test_target(snx-test-audio-out 11)
+target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
+add_test(NAME audio_out COMMAND snx-test-audio-out)
+
 add_executable(snx-test-fs-fixture filesystem_fixture.c)
 snx_test_target(snx-test-fs-fixture 90)
 target_link_libraries(snx-test-fs-fixture PRIVATE snx_test_common)
@@ -135,7 +140,7 @@ endif()
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set_tests_properties(a64_fp_witnesses startup_windowed startup_headless driver_workflow extraction_native loader_native runtime_nro native_recompiler native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode
+    set_tests_properties(a64_fp_witnesses startup_windowed startup_headless driver_workflow extraction_native loader_native runtime_nro native_recompiler native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out
         PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
 endif()
 

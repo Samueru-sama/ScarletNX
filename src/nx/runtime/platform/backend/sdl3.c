@@ -32,6 +32,89 @@ static int g_fullscreen_ini; /* the .ini's fullscreen, applied once the window i
 static void set_fullscreen(int on);
 static int g_shot_req;
 static SDL_Gamepad* g_pads[4];
+static int g_audio_ready;
+
+struct PAudio {
+    SDL_AudioStream* stream;
+    int logged_data, logged_nonzero;
+};
+
+PAudio* plat_audio_open(u32 rate, u32 channels) {
+    if (g_opt_headless || !g_audio_ready) return NULL;
+    SDL_AudioSpec spec = {SDL_AUDIO_S16LE, (int)channels, (int)rate};
+    /* Keep the logical device tied to the system default on every SDL audio backend. */
+    SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (!stream) {
+        WARN("audio: SDL could not open the default output: %s\n", SDL_GetError());
+        return NULL;
+    }
+    PAudio* a = calloc(1, sizeof *a);
+    if (!a) {
+        SDL_DestroyAudioStream(stream);
+        return NULL;
+    }
+    a->stream = stream;
+    const char* name = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(stream));
+    LOG("audio: SDL %s output opened on %s (%u Hz, %u channels, signed 16-bit PCM)\n", SDL_GetCurrentAudioDriver(),
+        name ? name : "the system default", rate, channels);
+    return a;
+}
+
+void plat_audio_close(PAudio* a) {
+    if (!a) return;
+    SDL_DestroyAudioStream(a->stream); /* OpenAudioDeviceStream also closes its device here. */
+    free(a);
+}
+
+int plat_audio_queue(PAudio* a, const void* samples, u32 bytes) {
+    if (!a || !bytes) return 0;
+    /* SDL's length is signed. Split only at whole stereo frames, without truncating a large guest buffer. */
+    const u8* p = samples;
+    u32 left = bytes;
+    while (left) {
+        u32 n = left > 0x7FFFFFFCu ? 0x7FFFFFFCu : left;
+        if (!SDL_PutAudioStreamData(a->stream, p, (int)n)) {
+            WARN_LIMIT(4, "audio: SDL could not queue PCM: %s\n", SDL_GetError());
+            return 0;
+        }
+        p += n;
+        left -= n;
+    }
+    if (!a->logged_data) {
+        a->logged_data = 1;
+        LOG("audio: queued %u bytes of guest PCM\n", bytes);
+    }
+    if (!a->logged_nonzero) {
+        u32 peak = 0;
+        u32 inspect = bytes < 65536 ? bytes : 65536;
+        for (u32 i = 0; i + 1 < inspect; i += 2) {
+            i16 sample;
+            memcpy(&sample, (const u8*)samples + i, sizeof sample);
+            u32 magnitude = sample < 0 ? (u32) - (i32)sample : (u32)sample;
+            if (magnitude > peak) peak = magnitude;
+        }
+        if (peak) {
+            a->logged_nonzero = 1;
+            LOG("audio: queued nonzero guest PCM (s16 peak %u)\n", peak);
+        }
+    }
+    return 1;
+}
+
+void plat_audio_start(PAudio* a, int started) {
+    if (!a) return;
+    bool ok = started ? SDL_ResumeAudioStreamDevice(a->stream) : SDL_PauseAudioStreamDevice(a->stream);
+    if (!ok) WARN_LIMIT(4, "audio: SDL could not %s output: %s\n", started ? "start" : "pause", SDL_GetError());
+}
+
+void plat_audio_clear(PAudio* a) {
+    if (a && !SDL_ClearAudioStream(a->stream)) WARN_LIMIT(4, "audio: SDL could not clear PCM: %s\n", SDL_GetError());
+}
+
+void plat_audio_volume(PAudio* a, float volume) {
+    if (a && !SDL_SetAudioStreamGain(a->stream, volume))
+        WARN_LIMIT(4, "audio: SDL could not set output volume: %s\n", SDL_GetError());
+}
 
 void backend_ini(const char* k, const char* v) {
     if (!strcmp(k, "fullscreen"))
@@ -58,6 +141,9 @@ void video_init(const char* title) {
         return;
     }
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
+    /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
+    g_audio_ready = SDL_InitSubSystem(SDL_INIT_AUDIO);
+    if (!g_audio_ready) WARN("audio: SDL could not start its audio: %s\n", SDL_GetError());
     LOG("video: SDL %d.%d.%d on %s\n", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
     unattended_start();

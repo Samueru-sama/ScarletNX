@@ -24,6 +24,7 @@ static VkSemaphore g_acquired[VK_FRAMES];
 static Surf* g_cpu_img;
 static Surf* g_last;
 static u32 g_last_x, g_last_y, g_last_w, g_last_h;
+static u32 g_last_transform;
 static void vkr_before_write(u64 gva, u64 size) {
     vk_buf_before_write(gva, size);
     vk_compute_before_write(gva, size);
@@ -204,7 +205,8 @@ static int is_srgb(VkFormat f) {
 
 /* the game queued a buffer for display: show it, letterboxed to the window. A frame that can't be shown (minimized,
    no image to draw to) is still submitted, with the per-present bookkeeping, so frames don't pile up */
-static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4]) {
+static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
+                               u32 transform) {
     static int sc_srgb; /* what the swapchain was asked for (the surface may not have it) */
     vk_lock();
     vk_buf_writable_abort(); /* a draw abandoned during setup has no shader writes to land */
@@ -236,6 +238,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     u32 fw = x1 - x0, fh = y1 - y0;
     if (src) { /* in its pixels: targets are scaled */
         g_last = src;
+        g_last_transform = transform;
         g_last_x = (u32)((u64)src->sw * x0 / src->w);
         g_last_y = (u32)((u64)src->sh * y0 / src->h);
         g_last_w = (u32)((u64)src->sw * x1 / src->w) - g_last_x;
@@ -286,6 +289,17 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
                                                {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
                                 .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
+            /* Android FlipH/FlipV reverse the cropped source endpoints. Render targets stay in guest order. */
+            if (transform & 1) {
+                i32 x = blit.srcOffsets[0].x;
+                blit.srcOffsets[0].x = blit.srcOffsets[1].x;
+                blit.srcOffsets[1].x = x;
+            }
+            if (transform & 2) {
+                i32 y = blit.srcOffsets[0].y;
+                blit.srcOffsets[0].y = blit.srcOffsets[1].y;
+                blit.srcOffsets[1].y = y;
+            }
             vkCmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &blit, VK_FILTER_LINEAR);
             vk_barrier(cb, sc, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -327,7 +341,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
 }
 
 /* a part of a surface, blitted to RGBA8 and read back: its hash, and a .ppm at path if given */
-static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, const char* path) {
+static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const char* path) {
     u64 hash = 1469598103934665603ull;
     /* blit to an RGBA8 image, whatever the target's format, then read that back. sRGB to sRGB, so the bytes stay
        encoded as the display shows them */
@@ -360,6 +374,17 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, const char* path) {
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
+    /* Screenshots show the same transform as the window, including offscreen/headless presents. */
+    if (transform & 1) {
+        i32 t = blit.srcOffsets[0].x;
+        blit.srcOffsets[0].x = blit.srcOffsets[1].x;
+        blit.srcOffsets[1].x = t;
+    }
+    if (transform & 2) {
+        i32 t = blit.srcOffsets[0].y;
+        blit.srcOffsets[0].y = blit.srcOffsets[1].y;
+        blit.srcOffsets[1].y = t;
+    }
     vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &blit, VK_FILTER_NEAREST);
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -399,7 +424,8 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, const char* path) {
 /* the last presented frame as PPM (path.ppm), and a hash of its pixels */
 static u64 vkr_screenshot(const char* path) {
     vk_lock();
-    u64 hash = g_last ? surf_save(g_last, g_last_x, g_last_y, g_last_w, g_last_h, path) : 1469598103934665603ull;
+    u64 hash = g_last ? surf_save(g_last, g_last_x, g_last_y, g_last_w, g_last_h, g_last_transform, path)
+                      : 1469598103934665603ull;
     vk_unlock();
     return hash;
 }

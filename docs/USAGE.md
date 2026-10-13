@@ -154,6 +154,9 @@ Restart for `docked`, `language`, `fullscreen`, `resolution`, `memory_gb`, `heap
 | `language=1` | English (US); other IDs in INI |
 | `log=2` | Verbose, adds runtime overhead |
 
+`audout` PCM playback uses SDL3's system-default output on Windows, Linux and supported Unix systems.
+Choose the output in your operating system's sound settings. `audren` mixing remains pending.
+
 SDL gamepads use Switch positions; pads + keyboard share one guest controller.
 
 | Keyboard | Switch |

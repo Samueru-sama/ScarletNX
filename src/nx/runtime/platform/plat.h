@@ -50,6 +50,15 @@ void plat_exit_now(int code) __attribute__((noreturn));
 void plat_sleep_ns(i64 ns);
 /* Host text entry for the standard software keyboard: 0 accepted, 1 cancelled, -1 unavailable. */
 int plat_text_input(char* out, size_t cap, const char* initial);
+/* An interleaved signed 16-bit PCM output, initially paused. NULL means no host audio device (headless too).
+   queue copies the samples before returning, so the guest may reuse a released buffer. */
+typedef struct PAudio PAudio;
+PAudio* plat_audio_open(u32 rate, u32 channels);
+void plat_audio_close(PAudio* a);
+int plat_audio_queue(PAudio* a, const void* samples, u32 bytes);
+void plat_audio_start(PAudio* a, int started);
+void plat_audio_clear(PAudio* a);
+void plat_audio_volume(PAudio* a, float volume);
 void plat_yield(void);
 u64 plat_ns(void); /* monotonic */
 i64 plat_unix_time(void);

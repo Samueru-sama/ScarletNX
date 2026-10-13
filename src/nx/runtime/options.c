@@ -27,7 +27,8 @@ static const char* const INI_ALIAS[][2] = {{"modo_tv", "docked"},  {"idioma", "l
 /* options that went with the OpenGL renderer (renderer choice, its dynamic resolution, LSFG, the F7 recorder) and
    older ones: dropped on load, so the rewritten .ini loses them. game_dynamic_resolution worked through GPU timings
    the OpenGL renderer's thread measured */
-static const char* const INI_REMOVED[] = {"vsync",
+static const char* const INI_REMOVED[] = {"audio_device", /* Playback now always follows the system default. */
+                                          "vsync",
                                           "renderer",
                                           "dynamic_resolution",
                                           "dynamic_resolution_min",

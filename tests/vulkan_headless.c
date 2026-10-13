@@ -20,6 +20,35 @@
         }                                                                                                              \
     } while (0)
 
+static int check_viewport_orientation(void) {
+    u32 r[0xE00] = {0};
+    float transform[6] = {32, 17, 0.5f, 40, 37, 0.5f};
+    memcpy(&r[0x280], transform, sizeof transform);
+    r[0x64B] = 1;
+    r[0x286] = 0x6420; /* identity x/y/z/w swizzle */
+    r[0x647] = 0x900;  /* guest clockwise */
+    VkViewport vp = vk_render_viewport(r);
+    CHECK(vp.x == 8 && vp.width == 64 && vp.y == 20 && vp.height == 34);
+    CHECK(vp.minDepth == 0 && vp.maxDepth == 1);
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    /* NegativeY reverses the endpoints about translate_y, keeping the same viewport rectangle. */
+    r[0x286] = 0x6430;
+    vp = vk_render_viewport(r);
+    CHECK(vp.y == 54 && vp.height == -34 && vp.y + vp.height == 20);
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    /* Negative scale and negative coordinate swizzle cancel. Neither changes the face-control register. */
+    transform[1] = -17;
+    memcpy(&r[0x280], transform, sizeof transform);
+    vp = vk_render_viewport(r);
+    CHECK(vp.y == 20 && vp.height == 34);
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    r[0x4EB] = 0x10;
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    r[0x647] = 0x901;
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = 4096;
@@ -34,6 +63,7 @@ int main(int argc, char** argv) {
     CHECK(g_mem);
     video_init("Headless Vulkan fixture");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
+    CHECK(!check_viewport_orientation());
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */
     vkCreateSwapchainKHR = NULL;
@@ -42,17 +72,22 @@ int main(int argc, char** argv) {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR = NULL;
     CHECK(!vk_swapchain_create(0));
     u32* pixels = (u32*)(g_mem + address);
-    for (u32 frame = 0; frame < 6; ++frame) {
+    for (u32 frame = 0; frame < 8; ++frame) {
         for (u32 y = 0; y < h; ++y)
             for (u32 x = 0; x < w; ++x) pixels[y * w + x] = 0xff000000u | x | (y << 8) | (frame << 16);
         const i32* region = frame & 1 ? crop : full;
         u32 x0 = frame & 1 ? 4 : 0, y0 = frame & 1 ? 2 : 0;
         u32 width = frame & 1 ? 16 : w, height = frame & 1 ? 8 : h;
+        u32 transform = frame >> 1; /* none, horizontal, vertical, both; each with a full image and a crop */
         u64 expected = 1469598103934665603ull;
         for (u32 y = 0; y < height; ++y)
-            for (u32 x = 0; x < width; ++x) expected = (expected ^ pixels[(y + y0) * w + x + x0]) * 1099511628211ull;
+            for (u32 x = 0; x < width; ++x) {
+                u32 sx = x0 + ((transform & 1) ? width - 1 - x : x);
+                u32 sy = y0 + ((transform & 2) ? height - 1 - y : y);
+                expected = (expected ^ pixels[sy * w + sx]) * 1099511628211ull;
+            }
         u64 before = vk_frame_number();
-        g_renderer->present_buffer(address, w, h, w * 4, 0, 0, 1, region);
+        g_renderer->present_buffer(address, w, h, w * 4, 0, 0, 1, region, transform);
         CHECK(vk_frame_number() == before + 1);
         CHECK(!g_vk.surface && !g_vk.swapchain);
         CHECK(g_renderer->screenshot(shot) == expected);
@@ -64,13 +99,15 @@ int main(int argc, char** argv) {
         for (u32 y = 0; y < height; ++y)
             for (u32 x = 0; x < width; ++x) {
                 unsigned char* p = data + n + (y * width + x) * 3;
-                CHECK(p[0] == x + x0 && p[1] == y + y0 && p[2] == frame);
+                CHECK(p[0] == x0 + ((transform & 1) ? width - 1 - x : x));
+                CHECK(p[1] == y0 + ((transform & 2) ? height - 1 - y : y));
+                CHECK(p[2] == frame);
             }
         free(data);
     }
     /* Even a present without an image submits and retires the current frame slot. */
     u64 before = vk_frame_number();
-    g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 1, full);
+    g_renderer->present_buffer(0, 0, 0, 0, 0, 0, 1, full, 0);
     CHECK(vk_frame_number() == before + 1);
     vk_finish();
     free(g_mem);
@@ -79,6 +116,6 @@ int main(int argc, char** argv) {
     free(root);
     free(shot);
     free(ppm);
-    puts("PASS headless Vulkan: 6 uploads, submits, cropped readbacks and PPMs, no WSI");
+    puts("PASS headless Vulkan: viewport orientation, 8 cropped/transformed readbacks and PPMs, no WSI");
     return 0;
 }
