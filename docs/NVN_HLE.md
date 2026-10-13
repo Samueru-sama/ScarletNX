@@ -1060,6 +1060,10 @@ report writes without a fatal error. A prior extended probe hit `VK_ERROR_DEVICE
 that failure has not been reproduced consistently and remains a stability concern.
 After adding explicit constant-buffer uploads, a 75-second TotK shadow-draw probe scoped at least 56,000 memory writes,
 including 41,000 constant-buffer upload ranges, and issued more than 11,200 direct draws without a fatal error.
+The upload parser now rejects offsets that would wrap its 32-bit address register, so a later word cannot be
+misclassified as a write near the start of the constant buffer. After rebuilding Catherine against the merged-main
+ABI, a 35-second headless probe issued at least 23,300 direct shadow draws with semantic texture sampling and no
+fatal error. This confirms continued execution coverage, not presented-frame parity.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
