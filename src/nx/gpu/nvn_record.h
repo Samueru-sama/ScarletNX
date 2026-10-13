@@ -6,7 +6,8 @@
 
 int nvn_record_wants(const char* name);
 u64 nvn_record_before(const CPU* c, const char* name);
-void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 record_token);
+void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 arg1, u64 record_token);
+void nvn_record_observe_depth_mode(u64 device, u32 mode);
 void nvn_record_report(void);
 void nvn_record_enable_descriptor_replay(void);
 void nvn_record_enable_shader_transport(void);

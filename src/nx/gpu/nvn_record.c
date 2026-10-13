@@ -63,6 +63,7 @@ typedef struct {
     void* payload;    /* owned snapshot for pointer arguments used by semantic replay */
     u32 storage_cbuf_word;
     u8 storage_cbuf_word_known;
+    u8 depth_mode, depth_mode_known;
 } NvnOp;
 typedef struct {
     NvnTextureViewSelection selection;
@@ -126,6 +127,10 @@ typedef struct {
 /* Odyssey records more than 16,384 operations in one list. Keep the bound within u16 capacity. */
 #define MAX_OPS      32768
 static NvnList active[ACTIVE_SLOTS], lists[LIST_SLOTS];
+typedef struct { u64 key, device; } NvnCommandBufferDevice;
+typedef struct { u64 key; u8 mode, known; } NvnDeviceDepthMode;
+static NvnCommandBufferDevice command_buffer_devices[ACTIVE_SLOTS];
+static NvnDeviceDepthMode device_depth_modes[64];
 static PMutex lock = PMUTEX_INIT;
 static u32 next_record_generation = 1;
 static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_found, submitted_missing, submitted_opaque;
@@ -297,6 +302,48 @@ static u64 draw_zero_count, draw_zero_instances;
 static u64 draw_targets_complete, draw_targets_incomplete, draw_targets_none;
 
 static u32 slot(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
+
+static NvnCommandBufferDevice* command_buffer_device_slot(u64 key, int create) {
+    if (!key || key == UINT64_MAX) return NULL;
+    u32 home = slot(key, ACTIVE_SLOTS - 1);
+    NvnCommandBufferDevice* tombstone = NULL;
+    for (u32 step = 0; step < ACTIVE_SLOTS; step++) {
+        NvnCommandBufferDevice* entry = &command_buffer_devices[(home + step) & (ACTIVE_SLOTS - 1)];
+        if (entry->key == key) return entry;
+        if (entry->key == UINT64_MAX && !tombstone) tombstone = entry;
+        if (!entry->key) return create ? (tombstone ? tombstone : entry) : NULL;
+    }
+    return create ? tombstone : NULL;
+}
+
+static NvnDeviceDepthMode* device_depth_mode_slot(u64 key, int create) {
+    if (!key || key == UINT64_MAX) return NULL;
+    u32 home = slot(key, 63);
+    NvnDeviceDepthMode* tombstone = NULL;
+    for (u32 step = 0; step < 64; step++) {
+        NvnDeviceDepthMode* entry = &device_depth_modes[(home + step) & 63];
+        if (entry->key == key) return entry;
+        if (entry->key == UINT64_MAX && !tombstone) tombstone = entry;
+        if (!entry->key) return create ? (tombstone ? tombstone : entry) : NULL;
+    }
+    return create ? tombstone : NULL;
+}
+
+static void snapshot_depth_mode(u64 command_buffer, NvnOp* op) {
+    NvnCommandBufferDevice* binding = command_buffer_device_slot(command_buffer, 0);
+    NvnDeviceDepthMode* device = binding ? device_depth_mode_slot(binding->device, 0) : NULL;
+    if (device && device->known) {
+        op->depth_mode = device->mode;
+        op->depth_mode_known = 1;
+    }
+}
+
+void nvn_record_observe_depth_mode(u64 address, u32 mode) {
+    pm_lock(&lock);
+    NvnDeviceDepthMode* device = device_depth_mode_slot(address, 1);
+    if (device) *device = (NvnDeviceDepthMode){.key = address, .mode = (u8)mode, .known = mode <= 1};
+    pm_unlock(&lock);
+}
 
 static NvnList* active_slot(u64 key, int create) {
     if (!key || key == UINT64_MAX) return NULL;
@@ -1175,6 +1222,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             draw.polygon_state_known = state->polygon_state_known;
             draw.depth_stencil_state_known = state->depth_stencil_state_known;
             memcpy(draw.depth_stencil_state, state->depth_stencil_state, sizeof draw.depth_stencil_state);
+            draw.depth_mode = op->depth_mode;
+            draw.depth_mode_known = op->depth_mode_known;
             draw.multisample_state_known = state->multisample_state_known;
             memcpy(draw.multisample_state, state->multisample_state, sizeof draw.multisample_state);
             draw.viewport_known = state->viewport_known;
@@ -1691,6 +1740,7 @@ static int append_inlined_op(NvnList* list, u8 kind, const char* name, const u64
     op->kind = kind;
     op->name = name;
     memcpy(op->args, args, sizeof op->args);
+    if (kind == OP_DRAW) snapshot_depth_mode(list->key, op);
     return 1;
 }
 
@@ -2127,6 +2177,10 @@ static int kind(const char* name) {
 }
 
 int nvn_record_wants(const char* name) {
+    if (!strcmp(name, "nvnDeviceInitialize") || !strcmp(name, "nvnDeviceFinalize") ||
+        !strcmp(name, "nvnDeviceGetDepthMode") ||
+        !strcmp(name, "nvnDeviceSetDepthMode") || !strcmp(name, "nvnCommandBufferInitialize") ||
+        !strcmp(name, "nvnCommandBufferFinalize")) return 1;
     if (!strcmp(name, "nvnQueueSubmitCommands") || !strcmp(name, "nvnCommandBufferBeginRecording") ||
         !strcmp(name, "nvnCommandBufferEndRecording") || !strcmp(name, "nvnQueueFlush") ||
         !strcmp(name, "nvnQueuePresentTexture"))
@@ -2192,6 +2246,10 @@ static void execute_pre_submit_color_probe(void* arg) {
 
 u64 nvn_record_before(const CPU* c, const char* name) {
     u64 token = 0;
+    if (!strcmp(name, "nvnDeviceInitialize") || !strcmp(name, "nvnDeviceFinalize") ||
+        !strcmp(name, "nvnDeviceGetDepthMode") ||
+        !strcmp(name, "nvnDeviceSetDepthMode") || !strcmp(name, "nvnCommandBufferInitialize") ||
+        !strcmp(name, "nvnCommandBufferFinalize")) return 0;
     if (!strcmp(name, "nvnCommandBufferEndRecording") || !strcmp(name, "nvnQueueFlush") ||
         !strcmp(name, "nvnQueuePresentTexture"))
         return 0;
@@ -2394,6 +2452,7 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                     op->kind = op_kind;
                     op->name = name;
                     memcpy(op->args, &c->x[1], sizeof op->args);
+                    if (op_kind == OP_DRAW) snapshot_depth_mode(c->x[0], op);
                     snapshot_semantic(op, c);
                     if (op_kind == OP_CALL) {
                         u32 count = (u32)c->x[1];
@@ -2545,7 +2604,32 @@ static void execute_nvn_batch(void* arg) {
     free(batch);
 }
 
-void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 record_token) {
+void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 arg1, u64 record_token) {
+    if (!strcmp(name, "nvnDeviceInitialize") || !strcmp(name, "nvnDeviceFinalize") ||
+        !strcmp(name, "nvnDeviceGetDepthMode") ||
+        !strcmp(name, "nvnDeviceSetDepthMode") || !strcmp(name, "nvnCommandBufferInitialize") ||
+        !strcmp(name, "nvnCommandBufferFinalize")) {
+        pm_lock(&lock);
+        if (!strcmp(name, "nvnDeviceInitialize") && c->x[0]) {
+            NvnDeviceDepthMode* device = device_depth_mode_slot(command_buffer, 1);
+            if (device) *device = (NvnDeviceDepthMode){.key = command_buffer};
+        } else if (!strcmp(name, "nvnDeviceFinalize")) {
+            NvnDeviceDepthMode* device = device_depth_mode_slot(command_buffer, 0);
+            if (device) *device = (NvnDeviceDepthMode){.key = UINT64_MAX};
+        } else if (!strcmp(name, "nvnDeviceSetDepthMode")) {
+            NvnDeviceDepthMode* device = device_depth_mode_slot(command_buffer, 1);
+            if (device) *device = (NvnDeviceDepthMode){.key = command_buffer,
+                                                        .mode = (u8)arg1, .known = arg1 <= 1};
+        } else if (!strcmp(name, "nvnCommandBufferInitialize") && c->x[0]) {
+            NvnCommandBufferDevice* binding = command_buffer_device_slot(command_buffer, 1);
+            if (binding) *binding = (NvnCommandBufferDevice){.key = command_buffer, .device = arg1};
+        } else if (!strcmp(name, "nvnCommandBufferFinalize")) {
+            NvnCommandBufferDevice* binding = command_buffer_device_slot(command_buffer, 0);
+            if (binding) *binding = (NvnCommandBufferDevice){.key = UINT64_MAX};
+        }
+        pm_unlock(&lock);
+        return;
+    }
     if (inlined_draw_replay && !strncmp(name, "nvnCommandBuffer", 16) &&
         strcmp(name, "nvnCommandBufferEndRecording") && readable_range(command_buffer, 8)) {
         pm_lock(&lock);

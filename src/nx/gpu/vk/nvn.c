@@ -1326,6 +1326,39 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
         VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
                                      stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, stage ? 0 : attr_int,
                                      stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0, 0, 0, 0);
+        u32 texture_int = 0, texture_sint = 0;
+        if (stage && shader && shader->mod && !shader->failed && !shader->si.unsupported) {
+            int textures_known = shader->si.ntex <= SH_MAXTEX;
+            for (int k = 0; textures_known && k < shader->si.ntex; k++) {
+                const ShTex* texture = &shader->si.tex[k];
+                u32 word = texture->cbuf_off;
+                if (texture->bindless || texture->bl2 || word < 8 || ((word - 8) & 1) ||
+                    (word - 8) / 2 >= NVN_DRAW_TEXTURE_SLOTS) {
+                    textures_known = 0;
+                    break;
+                }
+                u32 slot = (word - 8) / 2;
+                const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[stage][slot];
+                if (!(command->texture_bound[stage] & (1u << slot)) ||
+                    !(command->texture_descriptor_valid[stage] & (1u << slot)) || !descriptor->tic_valid) {
+                    textures_known = 0;
+                    break;
+                }
+                VkFmt format = vk_tic_format(descriptor->tic[0], 0);
+                if (!format.vk) {
+                    textures_known = 0;
+                    break;
+                }
+                if (format.is_int && !texture->shadow) {
+                    texture_int |= 1u << k;
+                    if (format.sint) texture_sint |= 1u << k;
+                }
+            }
+            if (!textures_known) shader = NULL;
+            else if (texture_int || texture_sint)
+                shader = vk_shader_get(fragment, 0, ST_FS, texture_int, texture_sint,
+                                       rt_int, rt_sint, 0, 0, 0);
+        }
         if (stage && shader && shader->mod && !shader->failed && !shader->si.unsupported && shader->si.nimg) {
             u32 image_int = 0, image_sint = 0;
             int images_known = 1;
@@ -1359,7 +1392,8 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
                 }
             }
             if (images_known && (image_int || image_sint))
-                shader = vk_shader_get(fragment, 0, ST_FS, 0, 0, rt_int, rt_sint, 0, image_int, image_sint);
+                shader = vk_shader_get(fragment, 0, ST_FS, texture_int, texture_sint,
+                                       rt_int, rt_sint, 0, image_int, image_sint);
             else if (!images_known)
                 shader = NULL;
         }
@@ -2172,6 +2206,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         const char* opt = getenv("SNX_NVN_SHADOW_DRAW");
         enabled = opt && !strcmp(opt, "1");
     }
+    if (!command->depth_mode_known) return 0;
     int indexed_triangles = command->primitive == 4 && command->indexed &&
                             (command->index_type == 1 || command->index_type == 2 ||
                              (command->index_type == 0 && g_vk.has_index_uint8));
@@ -2500,7 +2535,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             if (semantic_shape)
                 for (int k = 0; k < fragment->si.nimg; k++)
                     if (sampled_address == storage_images[k]->address) return 0;
-            if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0) {
+            if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture)) {
                 if (color_feedback && sampled_width == command->color_target[color_feedback_index].width &&
                     sampled_height == command->color_target[color_feedback_index].height &&
                     sampled_layers == 1 && sampled_levels == 1 &&
@@ -2827,7 +2862,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
     vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
     vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
-    float push[8] = {0, 1, 0, 0, 0, 0, 0, 0};
+    float push[8] = {0, command->depth_mode ? 0.0f : 1.0f, 0, 0, 0, 0, 0, 0};
     vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, push);
     if (indexed_triangles) {
         vkCmdBindIndexBuffer(cb, index_buffer, index_offset,

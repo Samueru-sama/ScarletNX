@@ -1265,13 +1265,22 @@ image, or the first layer of an array image. On Scarlet's first compared frame, 
 targets for draws 32 (`0x5459b4000`) and 48 (`0x54425a000`) match byte for byte. Draw 50's
 single-layer color inputs tested so far also match, as do the first layers of its D24S8 and D32F
 depth inputs and R8 UINT array input. Its output remains black across the active 1280×720 region,
-where Maxwell produces color. Draw 128 samples a black, alpha-one image and uses blend factors that
-preserve the existing target, so it does not explain the mismatch. Remaining candidates include
-the arrays' other layers, guest-loaded textures, uniform state, and shader execution.
+where Maxwell has color. Draw 128 samples a black, alpha-one image and uses blend factors that
+preserve the existing target, so it does not explain the mismatch.
 The Maxwell fragment constant-buffer bindings for draw 50 round the NVN ranges up to 256 bytes
 (for example, 3,680 to 3,840 bytes). The direct path now snapshots those trailing bytes and
 bounds its Vulkan descriptors to the rounded range, matching the native bindings for the tested
-draw. This does not resolve the output mismatch: the same 921,600 pixels still differ.
+draw. This did not resolve the output mismatch by itself.
+
+The native image's color was already present before draw 50: its clear had produced the packed
+`0xc8421659` value seen in the comparison. The native draw's depth test preserved that clear, while
+the direct draw overwrote the active region because it always used the `[-1, 1]` clip-depth mapping.
+NVN depth mode belongs to the device. Command recording now snapshots the mode for each draw from
+the device's setter or getter, and direct vertex push constants use the corresponding mapping.
+The first Scarlet 1920×1080 R11G11B10F comparison is byte exact (`0/2,073,600` differing pixels)
+with this change. This establishes parity for that target on the sampled frame; later targets and
+draws still need independent comparison. The fragment shader also selects integer texture variants
+from the recorded TIC formats, enabling the R8 UINT input used by draw 50.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
