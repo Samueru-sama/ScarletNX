@@ -637,7 +637,10 @@ blocker, but the repeated eight-second probe issued zero bank-1 shadow draws bec
 failed. A focused probe found the first fragment texture samples render target `0x5acba2c00`, which has no complete
 NVN-owned source at that point; accepting its Maxwell surface would invalidate the direct-path comparison. The
 current semantic replay staged no draw, clear, or buffer-to-texture copy targeting that address in the sampled boot,
-so its producer may be an unmodeled operation or an address alias and needs to be traced at submission.
+so its producer may be an unmodeled operation or an address alias and needs to be traced at submission. A Maxwell
+surface probe confirmed this is live render output: its write generation advanced from 2 to 9 over the first eight
+presented frames while its last guest-memory generation remained 1. Importing those pixels would reintroduce a
+dependency on GPU emulation.
 Maxwell then uses two blend configurations on the target, including an indexed pass with a different source-alpha
 factor. Its sampled inputs still need ordered provenance checks, and diagnostic magenta initialization limits what
 the black-frame comparison can establish.
