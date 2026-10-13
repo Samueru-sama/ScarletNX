@@ -604,15 +604,17 @@ shaders' Vulkan draw into NVN-owned color/depth images in command-list order. Th
 target to magenta and reads it back: with the draw disabled for a diagnostic run, all 921,600 pixels stayed magenta;
 with the draw enabled, all became black. An eight-second run issued more than 300 shadow draws and completed normally.
 The SDK's GPFIFO still supplies the displayed frame; this path does not replace command submission, synchronize its
-image writes with guest memory, or establish visual parity. It deliberately accepts only verified bank-3-only,
-one-attribute, single-color triangle-strip or narrow indexed triangle-list state until more generated buffers and
-dynamic state are modeled.
+image writes with guest memory, or establish visual parity. It deliberately accepts only verified application-bank,
+single-color triangle-strip or narrow indexed triangle-list state until more generated buffers and dynamic state
+are modeled.
 The shadow descriptor setup now binds captured application uniform slots to shader banks 3–17 and resolves every
 sampled texture used by either vertex or fragment shaders. It decodes each shader's generated handle slot, binds
 the captured TIC/TSC, and uses the existing texture view and sampler rules. It accepts guest-memory-backed textures
 and independently complete NVN-owned images; sampling a Maxwell render target would make the shadow result depend
 on the emulated GPU. The supported draw shape and dynamic state remain narrow, and generated banks 0–2, storage
-buffers, and images remain unsupported.
+buffers, and images remain unsupported. The executable path now binds every pipeline-key vertex attribute to its
+captured stream, rather than requiring only attribute 0 on stream 0; it rejects unbound constant-attribute fallbacks.
+Indexed triangle draws can use either 16- or 32-bit indices and preserve the captured base vertex and instance.
 The texture binder can now select a prior NVN-owned RGBA8 image when the captured TIC has an identity swizzle,
 the image's required subresources were fully initialized by modeled operations after the last unknown write, and
 the draw does not sample its own attachment. The first magenta diagnostic draw can also establish full coverage

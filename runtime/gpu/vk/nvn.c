@@ -1075,8 +1075,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         const char* opt = getenv("SNX_NVN_SHADOW_DRAW");
         enabled = opt && !strcmp(opt, "1");
     }
-    int indexed_triangles = command->primitive == 4 && command->indexed && command->index_type == 1 &&
-                            !command->first && !command->base_vertex && command->depth_target_bound;
+    int indexed_triangles = command->primitive == 4 && command->indexed &&
+                            (command->index_type == 1 || command->index_type == 2) &&
+                            command->depth_target_bound;
     int strip = command->primitive == 5 && !command->indexed;
     u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
     if (!enabled || !pipeline || !vertex || !fragment ||
@@ -1097,9 +1098,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
           command->depth_target.storage_target != 1 || command->depth_target.view.base_level ||
           command->depth_target.view.first_layer || command->color_target[0].width != command->depth_target.width ||
           command->color_target[0].height != command->depth_target.height)) ||
-        key->nbind != 1 || key->nattr != 1 ||
-        key->attr[0].loc != 0 || key->attr[0].binding != 0 || !command->vertex_attrib[0].enabled ||
-        command->vertex_attrib[0].stream != 0 || !(command->vertex_bound & 1))
+        key->nbind != key->nattr || key->nbind > 32)
         return 0;
     /* The recorder marks every draw as unmodeled because the GPFIFO remains authoritative. Once this
        isolated host draw succeeds, its synthetic marker can be bypassed for the next draw only if no other
@@ -1119,14 +1118,28 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         sc_data[2] > color_target->width - sc_data[0] ||
         sc_data[3] > color_target->height - sc_data[1])
         return 0;
-    VkBuffer vertex_buffer;
-    u64 vertex_offset;
-    if (!vk_buf_get_strict(command->vertex[0].address, command->vertex[0].size, &vertex_buffer, &vertex_offset))
-        return 0;
+    u64 setup_frame = vk_frame_number();
+    VkBuffer vertex_buffers[32] = {0};
+    VkDeviceSize vertex_offsets[32] = {0}, vertex_strides[32] = {0};
+    for (u32 i = 0; i < key->nattr; i++) {
+        u32 location = key->attr[i].loc, binding = key->attr[i].binding;
+        if (location >= command->vertex_attrib_count || binding >= key->nbind || vertex_buffers[binding]) return 0;
+        const NvnVertexAttrib* attrib = &command->vertex_attrib[location];
+        u32 stream = attrib->stream;
+        if (!attrib->enabled || stream >= command->vertex_stream_count ||
+            !(command->vertex_bound & (1u << stream)) ||
+            !vk_buf_get_strict(command->vertex[stream].address, command->vertex[stream].size,
+                               &vertex_buffers[binding], &vertex_offsets[binding]))
+            return 0;
+        vertex_strides[binding] = command->vertex_stream[stream].stride;
+    }
+    for (u32 i = 0; i < key->nbind; i++)
+        if (!vertex_buffers[i]) return 0;
     VkBuffer index_buffer = VK_NULL_HANDLE;
     u64 index_offset = 0;
     if (indexed_triangles &&
-        !vk_buf_get_strict(command->index_address, (u64)command->count * 2, &index_buffer, &index_offset))
+        !vk_buf_get_strict(command->index_address, (u64)command->count << command->index_type,
+                           &index_buffer, &index_offset))
         return 0;
     VkDescriptorSet sets[2];
     VkDescriptorBufferInfo uniforms[2][NVN_DRAW_UNIFORM_SLOTS] = {0};
@@ -1134,7 +1147,6 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     VkWriteDescriptorSet writes[2 * (NVN_DRAW_UNIFORM_SLOTS + SH_MAXTEX)] = {0};
     u32 nwrites = 0;
     int semantic_sampled = 0;
-    u64 setup_frame = vk_frame_number();
     const VkSh* shaders[2] = {vertex, fragment};
     for (u32 stage = 0; stage < 2; stage++) {
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
@@ -1281,8 +1293,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdBeginRendering(cb, &rendering);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_playout, 0, 2, sets, 0, NULL);
-    VkDeviceSize vertex_stride = command->vertex_stream[0].stride;
-    vkCmdBindVertexBuffers2(cb, 0, 1, &vertex_buffer, &vertex_offset, NULL, &vertex_stride);
+    if (key->nbind)
+        vkCmdBindVertexBuffers2(cb, 0, key->nbind, vertex_buffers, vertex_offsets, NULL, vertex_strides);
     VkViewport viewport = {vp_data[0], vp_data[1], vp_data[2], vp_data[3], 0.0f, 1.0f};
     if (command->depth_range_known & 1)
         memcpy(&viewport.minDepth, command->depth_range[0], sizeof(float) * 2);
@@ -1315,8 +1327,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     float push[8] = {0, 1, 0, 0, 0, 0, 0, 0};
     vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, push);
     if (indexed_triangles) {
-        vkCmdBindIndexBuffer(cb, index_buffer, index_offset, VK_INDEX_TYPE_UINT16);
-        vkCmdDrawIndexed(cb, command->count, command->instance_count, 0, 0, command->base_instance);
+        vkCmdBindIndexBuffer(cb, index_buffer, index_offset,
+                             command->index_type == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cb, command->count, command->instance_count, 0, command->base_vertex,
+                         command->base_instance);
     } else {
         vkCmdDraw(cb, command->count, command->instance_count, command->first, command->base_instance);
     }
