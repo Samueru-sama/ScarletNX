@@ -44,6 +44,8 @@ SnxU64 snx_free_space(const char* path);
 SnxU64 snx_file_size(const char* path);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* seconds on a monotonic clock, for durations */
+double snx_seconds(void);
 void snx_tool_console(void);
 char* snx_find_tool(const char* name);
 /* argv is NULL terminated. No shell. Captured output is heap-owned by caller.

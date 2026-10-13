@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c
-    cpu/aarch64/a64.c cpu/recompiler/codegen.c cpu/execution/execution.c)
+    cpu/aarch64/a64.c cpu/recompiler/codegen.c cpu/recompiler/backend.c cpu/execution/execution.c)
 target_include_directories(scarletnx-common PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/utilities"
     "${CMAKE_CURRENT_SOURCE_DIR}/cpu/aarch64" "${CMAKE_CURRENT_SOURCE_DIR}/cpu/recompiler")

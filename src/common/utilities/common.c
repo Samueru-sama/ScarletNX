@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -653,6 +654,18 @@ char* snx_temp_dir(const char* parent) {
         return NULL;
     }
     return path;
+#endif
+}
+double snx_seconds(void) {
+#ifdef _WIN32
+    LARGE_INTEGER frequency, now;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 #endif
 }
 unsigned snx_cpu_count(void) {

@@ -40,8 +40,19 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
 - `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
 - `src/common/cpu/aarch64/a64.c` + `a64_templates.inc`: shared instruction semantics for AOT and interpreter.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
-  `src/nx/loader/codegen_view.c` adapts NX images; `module.c` owns NX chunks, dispatch tables, `SnxModule`.
+  `src/nx/loader/codegen_view.c` adapts NX images; `module.c` owns NX chunks (whole functions batched up to
+  `SNX_CHUNK_INSTRUCTIONS`, 90000, per unit, for both backends), dispatch tables, `SnxModule`.
 - `toolchain.c`: parallel Clang jobs, ABI/source-keyed object cache, linking, shader prebuild.
+- Code generators (`--backend`, `src/common/cpu/recompiler/backend.h`): `portable` prints C through
+  `codegen.c`/`module.c` and compiles it with `toolchain.c`; it is chosen when `--cc`, a cross `--target` or
+  `--no-build` is given, or when the recompiler has no LLVM. `llvm` (the default; `src/common/cpu/recompiler/llvm/`,
+  built when `llvm-config` is found) builds LLVM IR with the LLVM-C API: `ir_a64.c`, `ir_simd.c` and `ir_fp.c` emit each
+  `a64_templates.inc` case as the IR of the C it holds, `ir_codegen.c` the functions of `codegen.c`, and
+  `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
+  `link_coff.c`) with `rtlib.c`, the helpers and interpreter compiled when the recompiler is built, into a module
+  with no imports, for the host it runs on. `tests/llvm_differential.c` runs both backends' step functions on random
+  states (every pattern, failing if any instruction falls back to the interpreter's `snx_step`), `tests/llvm_module.c`
+  a whole program built by both. `gcc` (libgccjit, `module_gccjit.c`) is reserved.
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
   NX extraction retains its isolated key environment.
 

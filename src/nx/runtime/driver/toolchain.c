@@ -6,6 +6,7 @@
    This fork's changes are under GPL-3.0-or-later (LICENSE). */
 #define _POSIX_C_SOURCE 200809L
 #include "toolchain.h"
+#include "module.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +20,7 @@
 typedef struct {
     const char** flags;
     size_t flag_count, count, next, done;
-    char **sources, **objects;
+    char **sources, **objects, **labels;
     int failed, quiet;
 #ifdef _WIN32
     CRITICAL_SECTION lock;
@@ -49,9 +50,11 @@ static void diagnostic(const char* stage, const char* output) {
 static void compile_worker(CompileQueue* q) {
     for (;;) {
         size_t i, k;
-        char *output = NULL, *tmp;
+        char *output = NULL, *tmp, name[256];
+        const char *args_base, *p;
         const char** args;
-        int rc = 0;
+        int rc = 0, cached;
+        double start = snx_seconds();
         lock_queue(q);
         if (q->failed || q->next == q->count) {
             unlock_queue(q);
@@ -59,7 +62,8 @@ static void compile_worker(CompileQueue* q) {
         }
         i = q->next++;
         unlock_queue(q);
-        if (!snx_is_file(q->objects[i])) {
+        cached = snx_is_file(q->objects[i]);
+        if (!cached) {
             tmp = snx_format("%s.tmp", q->objects[i]);
             args = (const char**)snx_alloc((q->flag_count + 5) * sizeof(*args));
             for (k = 0; k < q->flag_count; ++k) args[k] = q->flags[k];
@@ -80,8 +84,13 @@ static void compile_worker(CompileQueue* q) {
             diagnostic("Compilation", output);
             q->failed = 1;
         }
-        if (!q->quiet && (q->done % 10 == 0 || q->done == q->count))
-            printf("  compiled %lu/%lu\n", (unsigned long)q->done, (unsigned long)q->count);
+        if (!q->quiet && !rc) {
+            /* every unit: a line every few seconds or minutes, whichever the machine manages */
+            for (args_base = p = q->sources[i]; *p; ++p)
+                if (*p == '/' || *p == '\\') args_base = p + 1;
+            sprintf(name, "%.200s", args_base);
+            snx_report_unit(q->done, q->count, name, q->labels ? q->labels[i] : NULL, cached, snx_seconds() - start);
+        }
         unlock_queue(q);
         free(output);
     }
@@ -239,7 +248,7 @@ static void prune_objects(const CompileQueue* q) {
     snx_free_strings(names, count);
     free(dir);
 }
-int snx_compile_sources(char** sources, size_t count, const char* output, const SnxPaths* paths,
+int snx_compile_sources(char** sources, char** labels, size_t count, const char* output, const SnxPaths* paths,
                         const SnxCompileOptions* o) {
     char *cc, *abi, *nxabi, *shared, *header, *opt, *version = NULL, *dir, *rsp, *rsp_arg, *tmp, **extra;
     const char **flags, *args[9];
@@ -328,6 +337,7 @@ int snx_compile_sources(char** sources, size_t count, const char* output, const 
     q.flags = flags;
     q.flag_count = nf;
     q.sources = sources;
+    q.labels = labels;
     q.count = count;
     q.quiet = o->quiet;
     q.objects = (char**)snx_alloc(count * sizeof(*q.objects));

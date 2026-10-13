@@ -8,6 +8,8 @@
 #include "recompile.h"
 #include "loader.h"
 #include "module.h"
+#include "module_llvm.h"
+#include "backend.h"
 #include "toolchain.h"
 #include <ctype.h>
 #include <errno.h>
@@ -20,16 +22,20 @@ static void usage(void) {
          "  INPUT                  Game/ExeFS directory or .nro\n"
          "  -o, --name, --out NAME  Output name (default: NPDM or input name)\n"
          "  --outdir DIR           Output directory (default: checkout/games)\n"
-         "  --cc CLANG             Compiler executable\n"
+         "  --cc CLANG             Compiler executable (portable backend)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2)\n"
          "  --jobs N               Parallel compiles (default: CPU count)");
-    puts("  --chunk N              Instructions per C chunk (default: 30000)\n"
+    puts("  --backend NAME         Code generator: llvm (LLVM-C, writes the module itself, for this host;\n"
+         "                         the default), portable (C, compiled with Clang; the default with --cc,\n"
+         "                         a cross --target, --no-build, or a recompiler built without LLVM),\n"
+         "                         gcc (libgccjit, not implemented)");
+    puts("  --chunk N              Instructions per code unit, whole functions batched (default: 90000)\n"
          "  --target auto|linux|win64\n"
          "  --native               Compile for this host CPU\n"
          "  --no-build             Generate C/data/INI only\n"
          "  --interp-only          Generate fallback interpreter only\n"
          "  --runtime FILE         Deploy this runtime instead of building one\n"
-         "  --keep-c               Save generated C in <outdir>/<NAME>_build\n"
+         "  --keep-c               Save generated C (llvm: LLVM IR) in <outdir>/<NAME>_build\n"
          "  -q, --quiet            Suppress progress");
     puts("  --hook-direct-calls    Route direct guest calls through dispatch for runtime instrumentation");
     puts("Hints: <outdir>/<NAME>.hints (hex PCs, one per line).\n"
@@ -217,6 +223,9 @@ done:
 }
 int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     const char *input = NULL, *name = NULL, *outdir = NULL, *runtime = NULL, *target = "auto", *arg, *value;
+    SnxBackend backend = SNX_BACKEND_PORTABLE;
+    int backend_given = 0;
+    SnxLlvmBuild llvm;
     SnxCompileOptions compile;
     SnxCodegenOptions gen;
     SnxProgram program;
@@ -231,9 +240,10 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     memset(&gen, 0, sizeof(gen));
     memset(&program, 0, sizeof(program));
     memset(&sources, 0, sizeof(sources));
+    memset(&llvm, 0, sizeof(llvm));
     compile.opt = "2";
     compile.jobs = snx_cpu_count();
-    gen.chunk_instrs = 30000;
+    gen.chunk_instrs = SNX_CHUNK_INSTRUCTIONS;
 #ifdef _WIN32
     host_win = 1;
 #endif
@@ -282,7 +292,7 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
             }
             if (strcmp(arg, "-o") && strcmp(arg, "--name") && strcmp(arg, "--out") && strcmp(arg, "--outname") &&
                 strcmp(arg, "--outdir") && strcmp(arg, "--runtime") && strcmp(arg, "--target") && strcmp(arg, "--cc") &&
-                strcmp(arg, "-O") && strcmp(arg, "--jobs") && strcmp(arg, "--chunk"))
+                strcmp(arg, "-O") && strcmp(arg, "--jobs") && strcmp(arg, "--chunk") && strcmp(arg, "--backend"))
                 return snx_error("unknown recompiler option: %s", arg);
             if (!value) {
                 if (++i == argc) return snx_error("%s requires a value", arg);
@@ -299,7 +309,10 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
                 target = value;
             else if (!strcmp(arg, "--cc"))
                 compile.cc = value;
-            else if (!strcmp(arg, "-O")) {
+            else if (!strcmp(arg, "--backend")) {
+                if (snx_backend_parse(value, &backend)) return snx_error("--backend expects portable, llvm or gcc");
+                backend_given = 1;
+            } else if (!strcmp(arg, "-O")) {
                 if (strlen(value) != 1 || !strchr("0123sz", value[0])) return snx_error("-O expects 0,1,2,3,s,z");
                 compile.opt = value;
             } else if (!strcmp(arg, "--jobs")) {
@@ -326,8 +339,23 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         compile.target_win = 0;
     else if (strcmp(target, "auto"))
         return snx_error("--target expects auto, linux or win64");
-    if (!no_build && host_win && !compile.target_win && (!runtime || !compile.cc))
+#ifdef SNX_WITH_LLVM
+    /* LLVM by default. Options that only mean something for C keep their meaning without --backend: --cc names
+       the C compiler, a cross --target needs one, --no-build stops at the generated C */
+    if (!backend_given && !compile.cc && compile.target_win == host_win && !no_build) backend = SNX_BACKEND_LLVM;
+#endif
+    if (backend == SNX_BACKEND_PORTABLE && !no_build && host_win && !compile.target_win && (!runtime || !compile.cc))
         return snx_error("Linux cross-compilation on Windows requires --cc and --runtime");
+    if (backend != SNX_BACKEND_PORTABLE) {
+        /* The LLVM backend writes the module for the host it runs on, without a C compiler */
+        if (compile.target_win != host_win)
+            return snx_error("--backend=%s builds for this host only", snx_backend_name(backend));
+        if (compile.cc) return snx_error("--cc applies to --backend=portable");
+#ifndef SNX_WITH_LLVM
+        if (backend == SNX_BACKEND_LLVM) return snx_error("this recompiler was built without LLVM (SNX_LLVM)");
+#endif
+        if (backend == SNX_BACKEND_GCC) return snx_build_module_gccjit(&program, &gen, &llvm) ? 1 : 0;
+    }
     gen.abi = snx_read_abi(paths);
     if (!gen.abi) return snx_error("cannot read src/common/cpu/aarch64/cpu.h; set --repo to the checkout");
     if (snx_load_program(input, &program, error, sizeof(error))) return snx_error("%s", error);
@@ -374,8 +402,10 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     gen.title = title;
     gen.hints = read_hints(base, &gen.hint_count);
     if (!compile.quiet) printf("Recompiling %s (%lu modules)\n", title, (unsigned long)program.module_count);
-    if (snx_generate_module(&program, &gen, &sources)) goto done;
-    if ((keep_c || no_build) && save_sources(&sources, base)) goto done;
+    if (backend == SNX_BACKEND_PORTABLE) {
+        if (snx_generate_module(&program, &gen, &sources)) goto done;
+        if ((keep_c || no_build) && save_sources(&sources, base)) goto done;
+    }
     if (copy_data(&program, data, compile.quiet)) {
         snx_error("cannot stage game data in %s", data);
         goto done;
@@ -394,7 +424,23 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         goto done;
     }
     code = snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
-    if (snx_compile_sources(sources.paths, sources.count, code, paths, &compile)) goto done;
+    if (backend == SNX_BACKEND_PORTABLE) {
+        if (snx_compile_sources(sources.paths, sources.labels, sources.count, code, paths, &compile)) goto done;
+    } else {
+#ifdef SNX_WITH_LLVM
+        char* kept = keep_c ? snx_format("%s_build", base) : NULL;
+        llvm.output = code;
+        llvm.opt = compile.opt[0];
+        llvm.jobs = compile.jobs;
+        llvm.quiet = compile.quiet;
+        llvm.keep_ir = kept;
+        i = kept && (snx_is_link(kept) || snx_mkdirs(kept));
+        if (i) snx_error("cannot save LLVM IR in %s", kept);
+        if (!i) i = snx_build_module_llvm(&program, &gen, &llvm);
+        free(kept);
+        if (i) goto done;
+#endif
+    }
     if (runtime) run = snx_absolute(runtime);
 #ifdef SNX_WITH_RUNTIME
     else if (host_win == compile.target_win)

@@ -189,6 +189,11 @@ build/tools/scarletnx -r -h
 ctest --test-dir build/tools --output-on-failure
 ```
 
+The recompiler generates game code with LLVM by default (`--backend=llvm`): it is built when `llvm-config` is found
+(`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one) and writes the module without a C compiler. `--backend=portable`
+prints C and compiles it with Clang, and is what `--cc`, a cross `--target`, `--no-build` or a build without LLVM
+use. Both batch whole functions into units of 90000 instructions (`--chunk`) and print a line per compiled unit.
+
 Extraction builds missing hactool separately. Recompilation deploys the running full runtime;
 the tools-only build creates one in `build/native-recomp`, or accepts `--runtime FILE`.
 `--repo DIR` and `--build-dir DIR` before the command override compiled-in checkout/tool paths.

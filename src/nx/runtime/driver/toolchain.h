@@ -9,7 +9,8 @@ typedef struct {
     unsigned jobs;
     int target_win, native, quiet;
 } SnxCompileOptions;
-int snx_compile_sources(char** sources, size_t count, const char* output, const SnxPaths* paths,
+/* labels: what each source holds, for the progress lines (NULL for none) */
+int snx_compile_sources(char** sources, char** labels, size_t count, const char* output, const SnxPaths* paths,
                         const SnxCompileOptions* options);
 char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet);
 int snx_prebuild_shaders(const SnxPaths* paths, const char* romfs, const char* outdir, int quiet);

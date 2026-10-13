@@ -176,7 +176,7 @@ done:
 static int takes_value(const char* arg) {
     static const char* const names[] = {"--update", "--name",    "--out",    "--keys",    "--title-keys",
                                         "-o",       "--outname", "--outdir", "--runtime", "--target",
-                                        "--cc",     "-O",        "--jobs",   "--chunk"};
+                                        "--cc",     "-O",        "--jobs",   "--chunk",   "--backend"};
     size_t i;
     for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
         if (!strcmp(arg, names[i])) return 1;

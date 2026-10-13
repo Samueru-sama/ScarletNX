@@ -42,6 +42,9 @@ typedef struct {
 } SnxA64Pattern;
 
 const SnxA64Case* snx_a64_decode(SnxU32 word);
+/* The pattern a decoded case belongs to and its index in the pattern's case table, for backends that emit each
+   specialization themselves instead of printing the case's C (NULL for the shared undefined case) */
+const SnxA64Pattern* snx_a64_case_pattern(const SnxA64Case* instruction, size_t* index);
 const SnxA64Pattern* snx_a64_patterns(size_t* count);
 SnxU64 snx_a64_target(SnxU32 word, SnxU64 pc);
 void snx_a64_literal(FILE* out, SnxU64 value);

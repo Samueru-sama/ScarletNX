@@ -72,6 +72,41 @@ static void emit_chunk(FILE* out, SnxCodegen* codegen, size_t first, size_t last
     free(references);
 }
 
+static void hex(char* out, SnxU64 value) {
+    if (value >> 32)
+        sprintf(out, "0x%lX%08lX", (unsigned long)(value >> 32), (unsigned long)(value & 0xFFFFFFFFUL));
+    else
+        sprintf(out, "0x%lX", (unsigned long)value);
+}
+
+char* snx_chunk_label(const SnxCodegen* codegen, size_t first, size_t last) {
+    char lo[24], hi[24];
+    size_t i, instructions = 0;
+    SnxU64 end = 0, address;
+    const SnxFunction* f;
+    if (first >= last) return snx_strdup("no functions");
+    for (i = first; i < last; ++i) {
+        f = &codegen->functions[i];
+        instructions += f->count;
+        address = f->count ? snx_function_address(f, f->count - 1) + 4 : f->start;
+        if (address > end) end = address;
+    }
+    hex(lo, codegen->functions[first].start);
+    hex(hi, end);
+    return snx_format("%s-%s, %lu function%s, %lu instructions", lo, hi, (unsigned long)(last - first),
+                      last - first == 1 ? "" : "s", (unsigned long)instructions);
+}
+
+void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds) {
+    if (cached)
+        printf("  compiled block %lu/%lu: %s, %s (cached)\n", (unsigned long)done, (unsigned long)count, name,
+               label ? label : "");
+    else
+        printf("  compiled block %lu/%lu: %s, %s (%.1f s)\n", (unsigned long)done, (unsigned long)count, name,
+               label ? label : "", seconds);
+    fflush(stdout);
+}
+
 static int compare_entry(const void* a, const void* b) {
     const Entry *x, *y;
     x = (const Entry*)a;
@@ -218,14 +253,16 @@ int snx_generate_module(SnxProgram* loaded, const SnxCodegenOptions* options, Sn
     }
     temporary = snx_path_join(temporary_dir, "source.c");
     sources->paths = (char**)snx_alloc((codegen.function_count + 1) * sizeof(*sources->paths));
+    sources->labels = (char**)snx_alloc((codegen.function_count + 1) * sizeof(*sources->labels));
     sources->paths[0] = snx_path_join(options->outdir, "module.c");
+    sources->labels[0] = NULL;
     sources->count = 1;
     result = -1;
     total = 0;
     chunk = 0;
     entry_count = 0;
     first = 0;
-    limit = options->chunk_instrs ? options->chunk_instrs : 30000;
+    limit = options->chunk_instrs ? options->chunk_instrs : SNX_CHUNK_INSTRUCTIONS;
     while (first < codegen.function_count) {
         last = first;
         count = 0;
@@ -233,6 +270,7 @@ int snx_generate_module(SnxProgram* loaded, const SnxCodegenOptions* options, Sn
         filename = snx_format("code_%03lu.c", (unsigned long)chunk++);
         destination = snx_path_join(options->outdir, filename);
         free(filename);
+        sources->labels[sources->count] = snx_chunk_label(&codegen, first, last);
         sources->paths[sources->count++] = destination;
         out = snx_fopen(temporary, "wb");
         if (!out) {
@@ -255,6 +293,8 @@ int snx_generate_module(SnxProgram* loaded, const SnxCodegenOptions* options, Sn
         goto done;
     }
     if (finish_source(out, temporary, sources->paths[0], &total)) goto done;
+    sources->labels[0] =
+        snx_format("module descriptor, interpreter and helpers, %lu entries", (unsigned long)entry_count);
     if (!options->quiet)
         printf("C code: %lu files, %.1f MB, %lu entries\n", (unsigned long)sources->count, (double)total / 1000000.0,
                (unsigned long)entry_count);
@@ -270,5 +310,6 @@ done:
 
 void snx_sources_free(SnxSources* sources) {
     snx_free_strings(sources->paths, sources->count);
+    if (sources->labels) snx_free_strings(sources->labels, sources->count);
     memset(sources, 0, sizeof(*sources));
 }

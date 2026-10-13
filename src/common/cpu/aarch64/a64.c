@@ -86,6 +86,17 @@ const SnxA64Case* snx_a64_decode(SnxU32 word) {
     return &undefined_case;
 }
 
+const SnxA64Pattern* snx_a64_case_pattern(const SnxA64Case* instruction, size_t* index) {
+    size_t i;
+    for (i = 0; i < sizeof(patterns) / sizeof(patterns[0]); ++i)
+        if (instruction >= patterns[i].cases && instruction < patterns[i].cases + patterns[i].case_count) {
+            *index = (size_t)(instruction - patterns[i].cases);
+            return &patterns[i];
+        }
+    *index = 0;
+    return NULL;
+}
+
 SnxU64 snx_a64_target(SnxU32 word, SnxU64 pc) {
     unsigned width, shift;
     SnxU64 offset;

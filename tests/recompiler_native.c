@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Synthetic NRO -> CLI -> C -> DSO -> AOT/interpreter execution. No game data. */
+/* Synthetic NRO -> CLI -> C -> DSO -> AOT/interpreter execution. No game data.
+   With a fourth argument, the backend: llvm runs the same passes through --backend=llvm (no C, the module written by
+   the recompiler), where pass 3 has no compiler to fail. */
 #include "common.h"
 #include "cpu.h"
 #include "loader/module_abi.h"
@@ -33,13 +35,15 @@ static void check_empty(const char* dir) {
     check(!snx_list_dir(dir, &names, &count) && !count, "temporary build directory cleaned up");
     snx_free_strings(names, count);
 }
-static void check_sources(const char* dir) {
+static const char* backend;
+static void check_sources(const char* dir, const char* suffix) {
     char** names = NULL;
     size_t count = 0, i, len;
     check(!snx_list_dir(dir, &names, &count) && count, "generated C retained on request");
     for (i = 0; i < count; ++i) {
         len = strlen(names[i]);
-        check(len > 2 && !strcmp(names[i] + len - 2, ".c"), "only C sources retained");
+        check(len > strlen(suffix) && !strcmp(names[i] + len - strlen(suffix), suffix),
+              "only generated sources retained");
     }
     snx_free_strings(names, count);
 }
@@ -113,7 +117,8 @@ int main(int argc, char** argv) {
     char *cached, *source, *nested, *temp, *build, *old_flags;
     size_t cached_size;
     int rc, pass, k;
-    if (argc != 4) return 2;
+    if (argc != 4 && argc != 5) return 2;
+    backend = argc == 5 ? argv[4] : NULL;
     root = snx_temp_dir(NULL);
     check(root != NULL, "temp fixture");
     if (!root) return 1;
@@ -160,8 +165,13 @@ int main(int argc, char** argv) {
         args[k++] = "Native Fixture";
         args[k++] = "--outdir";
         args[k++] = out;
-        args[k++] = "--cc";
-        args[k++] = argv[3];
+        if (backend) {
+            args[k++] = "--backend";
+            args[k++] = backend;
+        } else {
+            args[k++] = "--cc";
+            args[k++] = argv[3];
+        }
         args[k++] = "--runtime";
         args[k++] = self;
         args[k++] = "--jobs";
@@ -173,8 +183,8 @@ int main(int argc, char** argv) {
         args[k] = NULL;
         if (pass == 3) environment("SNX_CFLAGS", "-fsnx-invalid-test-option");
         rc = snx_run(args, root, NULL, &text);
-        if (rc && pass != 3 && pass != 4) fprintf(stderr, "%s\n", text);
-        if (pass == 3 || pass == 4)
+        if (rc && ((pass != 3 || backend) && pass != 4)) fprintf(stderr, "%s\n", text);
+        if ((pass == 3 && !backend) || pass == 4)
             check(rc != 0, pass == 3 ? "compiler failure" : "link output replacement failure");
         else
             check(!rc, pass == 2 ? "interpreter CLI build" : "AOT CLI build");
@@ -189,7 +199,7 @@ int main(int argc, char** argv) {
         }
         check_empty(temp);
         if (pass == 5)
-            check_sources(build);
+            check_sources(build, backend ? ".ll" : ".c");
         else
             check(!snx_is_dir(build), "no persistent build directory by default");
         free(text);
@@ -239,7 +249,7 @@ int main(int argc, char** argv) {
     free(data_file);
     check(!snx_remove_tree(build), "remove sources from failed no-build");
     check(!snx_run(args, root, NULL, &text), "legacy aliases and attached optimization level");
-    check_sources(build);
+    check_sources(build, ".c");
     check_empty(temp);
     free(text);
     text = NULL;
