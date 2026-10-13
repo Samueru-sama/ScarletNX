@@ -453,6 +453,44 @@ static int extract(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
+/* ---- GFNI: GF2P8AFFINEQB as a per-byte bit matrix ----
+   (wunkolo, "gf2p8affineqb: int8 shifting", 2020.) Byte 7-i of the 64-bit matrix builds result bit i, its bit j
+   selecting source bit j: the identity is 0x0102040810204080. Shifting the identity right by 8n bytes is a logical
+   shift left by n, left by 8n a logical shift right; an arithmetic shift right also ORs n bytes of 0x80 back in,
+   replicating bit 7. x86 has no 8-bit shifts, so each of these replaces a shift-and-mask sequence. */
+#define GF_IDENTITY ((SnxU64)0x01020408UL << 32 | 0x10204080UL)
+static SnxU64 gf_shl(unsigned n) { return n >= 8 ? 0 : GF_IDENTITY >> (8 * n); }
+static SnxU64 gf_lshr(unsigned n) { return n >= 8 ? 0 : GF_IDENTITY << (8 * n); }
+static SnxU64 gf_ashr(unsigned n) {
+    SnxU64 sign = (SnxU64)0x80808080UL << 32 | 0x80808080UL;
+    if (n > 7) n = 7;
+    return n ? (GF_IDENTITY << (8 * n)) | (~(~(SnxU64)0 << (8 * n)) & sign) : GF_IDENTITY;
+}
+/* result bit 0 = source bit k, the rest 0 */
+static SnxU64 gf_bit(unsigned k) { return ((SnxU64)1 << k) << 56; }
+
+/* the host's GF2P8AFFINEQB applies, from CPUID (snx_ir_host): an x86-64 target with GFNI */
+static int host_gfni(SnxIr* ir) { return ir->features->x86 && ir->features->gfni; }
+
+/* GF2P8AFFINEQB x, matrix, 0 on 16 bytes */
+static V gf_affine(SnxIr* ir, V x, SnxU64 matrix) {
+    V bytes[16], args[3];
+    unsigned i;
+    for (i = 0; i < 16; ++i) bytes[i] = ir_i8(ir, (unsigned)(matrix >> (8 * (i & 7))));
+    args[0] = x;
+    args[1] = LLVMConstVector(bytes, 16);
+    args[2] = ir_i8(ir, 0);
+    return ir_intrinsic(ir, "llvm.x86.vgf2p8affineqb.128", NULL, args, 3);
+}
+
+/* the low n lanes of a <16 x i8> */
+static V low_lanes(SnxIr* ir, V x, unsigned n) {
+    unsigned indices[16], i;
+    if (n == 16) return x;
+    for (i = 0; i < n; ++i) indices[i] = i;
+    return shuffle(ir, x, x, indices, n);
+}
+
 /* CNT, NOT, RBIT (byte lanes): llvm.ctpop and llvm.bitreverse become VPOPCNTB and GF2P8AFFINEQB on x86 hosts with
    AVX512_BITALG and GFNI, a shuffle-table sequence otherwise, CNT and RBIT on AArch64 */
 static int byte_misc(SnxIr* ir, SnxU32 w) {
@@ -467,6 +505,9 @@ static int byte_misc(SnxIr* ir, SnxU32 w) {
         r = ir_intrinsic(ir, "llvm.ctpop", t, &a, 1);
     else if (!size)
         r = LLVMBuildNot(B, a, "");
+    else if (host_gfni(ir)) /* wunkolo, "gf2p8affineqb: Bit reversal": the matrix 0x8040201008040201 */
+        r = low_lanes(ir, gf_affine(ir, v128_type_load(ir, vreg(ir, rn)), ((SnxU64)0x80402010UL << 32) | 0x08040201UL),
+                      n);
     else
         r = ir_intrinsic(ir, "llvm.bitreverse", t, &a, 1);
     write_lanes(ir, rd, r, q);
@@ -580,6 +621,78 @@ static int pmull_1q(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
+/* ---- vpternlog: any function of three bit vectors in one instruction (AVX512F+VL, from CPUID) ----
+   (wunkolo, "vpternlog: Signed Saturation", 2025.) The 8-bit table is the function itself applied to the constants
+   A=0xF0, B=0xCC, C=0xAA: each bit position of those is one combination of the three inputs */
+enum { TERN_A = 0xF0, TERN_B = 0xCC, TERN_C = 0xAA };
+static int host_ternlog(SnxIr* ir) { return ir->features->x86 && ir->features->avx512vl; }
+/* VPTERNLOG{D,Q} on 128 bits: lanes of 32 or 64 bits (only the masking granularity differs) */
+static V ternlog(SnxIr* ir, V a, V b, V c, unsigned table, unsigned bits) {
+    V args[4];
+    LLVMTypeRef t = LLVMVectorType(bits == 64 ? ir->t_i64 : ir->t_i32, bits == 64 ? 2 : 4);
+    args[0] = LLVMBuildBitCast(B, a, t, "");
+    args[1] = LLVMBuildBitCast(B, b, t, "");
+    args[2] = LLVMBuildBitCast(B, c, t, "");
+    args[3] = ir_i32(ir, table & 0xFF);
+    return ir_intrinsic(ir, bits == 64 ? "llvm.x86.avx512.pternlog.q.128" : "llvm.x86.avx512.pternlog.d.128", NULL,
+                        args, 4);
+}
+
+/* FPSR.QC (bit 27) |= any lane of an i1 vector */
+static void set_qc(SnxIr* ir, V lanes) {
+    V any = ir_intrinsic(ir, "llvm.vector.reduce.or", LLVMTypeOf(lanes), &lanes, 1);
+    size_t off = ir_off_fpcr() + 4;
+    V fpsr = ir_cpu_load(ir, ir->t_i32, off);
+    ir_cpu_store(ir, LLVMBuildOr(B, fpsr, LLVMBuildShl(B, ir_bool32(ir, any), ir_i32(ir, 27), ""), ""), off);
+}
+
+/* SQADD, UQADD, SQSUB, UQSUB (vector): saturating, QC when a lane saturates (sqadd_ and friends). For 32/64-bit
+   signed lanes on AVX-512 hosts, wunkolo's vpternlog test: a lane overflowed when the inputs' sign bits agree and the
+   sum's differs (add, 0x42) or the inputs' differ and the difference's differs from the first (sub, 0x18); the
+   saturated value is the result's sign spread and its top bit flipped */
+static V saturating(SnxIr* ir, unsigned u, unsigned sub, unsigned eb, unsigned n, V a, V b) {
+    static const char* const names[4] = {"llvm.sadd.sat", "llvm.uadd.sat", "llvm.ssub.sat", "llvm.usub.sat"};
+    LLVMTypeRef t = LLVMTypeOf(a);
+    V wrap = sub ? LLVMBuildSub(B, a, b, "") : LLVMBuildAdd(B, a, b, ""), args[2], r;
+    if (!u && eb >= 32 && n * eb == 128 && host_ternlog(ir)) {
+        unsigned table = sub ? (TERN_A ^ TERN_B) & (TERN_A ^ TERN_C) : ~(TERN_A ^ TERN_B) & (TERN_A ^ TERN_C);
+        V check = LLVMBuildBitCast(B, ternlog(ir, a, b, wrap, table, eb), t, "");
+        V overflow = LLVMBuildICmp(B, LLVMIntSLT, check, LLVMConstNull(t), "");
+        V spread = LLVMBuildAShr(B, wrap, broadcast(ir, LLVMConstInt(LLVMGetElementType(t), eb - 1, 0), n), "");
+        V value = LLVMBuildXor(B, spread,
+                               broadcast(ir, LLVMConstInt(LLVMGetElementType(t), (SnxU64)1 << (eb - 1), 0), n), "");
+        set_qc(ir, overflow);
+        return LLVMBuildSelect(B, overflow, value, wrap, "");
+    }
+    args[0] = a;
+    args[1] = b;
+    r = ir_intrinsic(ir, names[sub * 2 + u], t, args, 2); /* PADDS/PADDUS/PSUBS/PSUBUS for 8/16-bit lanes on x86 */
+    set_qc(ir, LLVMBuildICmp(B, LLVMIntNE, r, wrap, ""));
+    return r;
+}
+
+/* SHADD, UHADD, SRHADD, URHADD: (a + b [+ 1]) >> 1 without overflow. Unsigned 8/16-bit rounding is PAVGB/PAVGW on
+   x86; signed goes through it too, biased by the lanes' sign bit (wunkolo, "pavgb: most-significant-bit constant"):
+   (a ^ 0x80) and (b ^ 0x80) are a + 128 and b + 128, so their average is the signed one plus 128 */
+static V halving(SnxIr* ir, unsigned u, unsigned rounding, unsigned size, unsigned n, V a, V b) {
+    LLVMTypeRef t = LLVMTypeOf(a), wide = LLVMVectorType(lane_type(ir, size + 1), n);
+    V bias = NULL, x, y, r;
+    if (!u && size < 2) {
+        bias = broadcast(ir, LLVMConstInt(lane_type(ir, size), (SnxU64)1 << ((8u << size) - 1), 0), n);
+        a = LLVMBuildXor(B, a, bias, "");
+        b = LLVMBuildXor(B, b, bias, "");
+        u = 1;
+    }
+    x = u ? LLVMBuildZExt(B, a, wide, "") : LLVMBuildSExt(B, a, wide, "");
+    y = u ? LLVMBuildZExt(B, b, wide, "") : LLVMBuildSExt(B, b, wide, "");
+    r = LLVMBuildAdd(B, x, y, "");
+    if (rounding) r = LLVMBuildAdd(B, r, broadcast(ir, LLVMConstInt(lane_type(ir, size + 1), 1, 0), n), "");
+    r = u ? LLVMBuildLShr(B, r, broadcast(ir, LLVMConstInt(lane_type(ir, size + 1), 1, 0), n), "")
+          : LLVMBuildAShr(B, r, broadcast(ir, LLVMConstInt(lane_type(ir, size + 1), 1, 0), n), "");
+    r = LLVMBuildTrunc(B, r, t, "");
+    return bias ? LLVMBuildXor(B, r, bias, "") : r;
+}
+
 /* <n x iN> all-ones or zero per lane, as the compares write them */
 static V mask_of(SnxIr* ir, V condition, LLVMTypeRef lanes) { return LLVMBuildSExt(B, condition, lanes, ""); }
 
@@ -590,34 +703,30 @@ static int three_same(SnxIr* ir, SnxU32 w) {
              rn = (w >> 5) & 31, rd = w & 31, eb = 8u << size, n, i;
     LLVMTypeRef t;
     V a, b, z, r;
-    if (op == 3) { /* BSL, BIT, BIF (fast_simd has the others) */
-        unsigned k;
+    if (op == 3) { /* BSL, BIT, BIF (fast_simd has the others): one VPTERNLOGQ on AVX-512 hosts */
+        LLVMTypeRef t = LLVMVectorType(ir->t_i64, 2);
+        V x, y, d, r;
         if (!u || !size) return 0;
-        for (k = 0; k < 2; ++k) {
-            V x = ir_vd(ir, rn, k), y = ir_vd(ir, rm, k), d = ir_vd(ir, rd, k), o;
-            if (size == 1)
-                o = LLVMBuildOr(B, LLVMBuildAnd(B, d, x, ""), LLVMBuildAnd(B, LLVMBuildNot(B, d, ""), y, ""), "");
-            else if (size == 2)
-                o = LLVMBuildOr(B, LLVMBuildAnd(B, d, LLVMBuildNot(B, y, ""), ""), LLVMBuildAnd(B, x, y, ""), "");
-            else
-                o = LLVMBuildOr(B, LLVMBuildAnd(B, d, y, ""), LLVMBuildAnd(B, x, LLVMBuildNot(B, y, ""), ""), "");
-            if (!k) {
-                /* both halves are read before Vd is written: keep the high half's inputs */
-                V x1 = ir_vd(ir, rn, 1), y1 = ir_vd(ir, rm, 1), d1 = ir_vd(ir, rd, 1), o1;
-                if (size == 1)
-                    o1 = LLVMBuildOr(B, LLVMBuildAnd(B, d1, x1, ""), LLVMBuildAnd(B, LLVMBuildNot(B, d1, ""), y1, ""),
-                                     "");
-                else if (size == 2)
-                    o1 = LLVMBuildOr(B, LLVMBuildAnd(B, d1, LLVMBuildNot(B, y1, ""), ""), LLVMBuildAnd(B, x1, y1, ""),
-                                     "");
-                else
-                    o1 = LLVMBuildOr(B, LLVMBuildAnd(B, d1, y1, ""), LLVMBuildAnd(B, x1, LLVMBuildNot(B, y1, ""), ""),
-                                     "");
-                ir_set_vd(ir, rd, 0, o);
-                ir_set_vd(ir, rd, 1, q ? o1 : ir_i64(ir, 0));
-                return 1;
-            }
-        }
+        x = ir_load(ir, t, vreg(ir, rn));
+        y = ir_load(ir, t, vreg(ir, rm));
+        d = ir_load(ir, t, vreg(ir, rd));
+        LLVMSetAlignment(x, 8); /* V128 is 8-aligned in the CPU structure */
+        LLVMSetAlignment(y, 8);
+        LLVMSetAlignment(d, 8);
+        if (host_ternlog(ir)) {
+            unsigned table = size == 1   ? (TERN_C & TERN_A) | (~TERN_C & TERN_B)  /* BSL: (d & n) | (~d & m) */
+                             : size == 2 ? (TERN_C & ~TERN_B) | (TERN_A & TERN_B)  /* BIT: (d & ~m) | (n & m) */
+                                         : (TERN_C & TERN_B) | (TERN_A & ~TERN_B); /* BIF: (d & m) | (n & ~m) */
+            r = LLVMBuildBitCast(B, ternlog(ir, x, y, d, table, 64), t, "");
+        } else if (size == 1)
+            r = LLVMBuildOr(B, LLVMBuildAnd(B, d, x, ""), LLVMBuildAnd(B, LLVMBuildNot(B, d, ""), y, ""), "");
+        else if (size == 2)
+            r = LLVMBuildOr(B, LLVMBuildAnd(B, d, LLVMBuildNot(B, y, ""), ""), LLVMBuildAnd(B, x, y, ""), "");
+        else
+            r = LLVMBuildOr(B, LLVMBuildAnd(B, d, y, ""), LLVMBuildAnd(B, x, LLVMBuildNot(B, y, ""), ""), "");
+        if (!q) r = LLVMBuildInsertElement(B, r, ir_i64(ir, 0), ir_i32(ir, 1), "");
+        LLVMSetAlignment(LLVMBuildStore(B, r, vreg(ir, rd)), 8);
+        return 1;
     }
     if (op >= 0x18 || (size == 3 && !q)) return 0;
     n = (q ? 128u : 64u) / eb;
@@ -625,6 +734,13 @@ static int three_same(SnxIr* ir, SnxU32 w) {
     a = get_lanes(ir, vreg(ir, rn), size, n);
     b = get_lanes(ir, vreg(ir, rm), size, n);
     switch (op) {
+        case 0x00:
+        case 0x02:
+            if (eb == 64) return 0;
+            r = halving(ir, u, op == 0x02, size, n, a, b);
+            break;
+        case 0x01:
+        case 0x05: r = saturating(ir, u, op == 0x05, eb, n, a, b); break;
         case 0x06: r = mask_of(ir, LLVMBuildICmp(B, u ? LLVMIntUGT : LLVMIntSGT, a, b, ""), t); break;
         case 0x07: r = mask_of(ir, LLVMBuildICmp(B, u ? LLVMIntUGE : LLVMIntSGE, a, b, ""), t); break;
         case 0x11:
@@ -685,7 +801,45 @@ static int three_same(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
-/* shift by immediate (vector): simd_shimm's SSHR/USHR, SSRA/USRA, SHL, SLI, SRI, SSHLL/USHLL, SHRN */
+/* byte-lane shifts by immediate through GF2P8AFFINEQB: simd_shimm's semantics for eb 8 */
+static int shift_bytes_gfni(SnxIr* ir, unsigned q, unsigned u, unsigned op, unsigned shr, unsigned shl, unsigned rn,
+                            unsigned rd) {
+    unsigned n = q ? 16 : 8;
+    V a = v128_type_load(ir, vreg(ir, rn)), r, z;
+    switch (op) {
+        case 0x00:
+        case 0x02:
+        case 0x04:
+        case 0x06: /* [SU][R]SHR, [SU][R]SRA */
+            r = gf_affine(ir, a, u ? gf_lshr(shr) : gf_ashr(shr));
+            if (op & 4) /* + the last bit shifted out (signed or not, it is source bit shr-1) */
+                r = LLVMBuildAdd(B, r, gf_affine(ir, a, gf_bit(shr - 1)), "");
+            if (op & 2) r = LLVMBuildAdd(B, v128_type_load(ir, vreg(ir, rd)), r, "");
+            break;
+        case 0x08: /* SRI */
+            if (!u) return 0;
+            z = v128_type_load(ir, vreg(ir, rd));
+            if (shr >= 8)
+                r = z;
+            else
+                r = LLVMBuildOr(B, LLVMBuildAnd(B, z, broadcast(ir, ir_i8(ir, ~(0xFFu >> shr)), 16), ""),
+                                gf_affine(ir, a, gf_lshr(shr)), "");
+            break;
+        case 0x0A:
+            r = gf_affine(ir, a, gf_shl(shl));
+            if (u) { /* SLI */
+                z = v128_type_load(ir, vreg(ir, rd));
+                r = LLVMBuildOr(B, LLVMBuildAnd(B, z, broadcast(ir, ir_i8(ir, ~(0xFFu << shl)), 16), ""), r, "");
+            }
+            break;
+        default: return 0;
+    }
+    write_lanes(ir, rd, low_lanes(ir, r, n), q);
+    return 1;
+}
+
+/* shift by immediate (vector): simd_shimm's SSHR/USHR, SSRA/USRA, SRSHR/URSHR, SRSRA/URSRA, SHL, SLI, SRI,
+   SSHLL/USHLL, SHRN */
 static int shift_immediate(SnxIr* ir, SnxU32 w) {
     unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, immh = (w >> 19) & 15, immb = (w >> 16) & 7, op = (w >> 11) & 31,
              rn = (w >> 5) & 31, rd = w & 31, size = 3, eb, imm, shr, shl, n;
@@ -723,18 +877,25 @@ static int shift_immediate(SnxIr* ir, SnxU32 w) {
         return 1;
     }
     if (size == 3 && !q) return 0;
+    if (!size && host_gfni(ir)) return shift_bytes_gfni(ir, q, u, op, shr, shl, rn, rd);
     n = (q ? 128u : 64u) / eb;
     t = LLVMVectorType(lane_type(ir, size), n);
     a = get_lanes(ir, vreg(ir, rn), size, n);
 #define SPLAT(v) broadcast(ir, LLVMConstInt(lane_type(ir, size), (v), 0), n)
     switch (op) {
         case 0x00:
-        case 0x02: /* [SU]SHR, [SU]SRA: a shift by the element size gives 0 (unsigned) or the sign */
+        case 0x02:
+        case 0x04:
+        case 0x06: /* [SU][R]SHR, [SU][R]SRA: a shift by the element size gives 0 (unsigned) or the sign */
             if (u)
                 r = shr >= eb ? LLVMConstNull(t) : LLVMBuildLShr(B, a, SPLAT(shr), "");
             else
                 r = LLVMBuildAShr(B, a, SPLAT(shr >= eb ? eb - 1 : shr), "");
-            if (op == 0x02) r = LLVMBuildAdd(B, get_lanes(ir, vreg(ir, rd), size, n), r, "");
+            if (op & 4) { /* rounding: + bit shr-1 of the source (for shr = eb, 0 signed, the top bit unsigned) */
+                V bit = LLVMBuildAnd(B, LLVMBuildLShr(B, a, SPLAT(shr - 1), ""), SPLAT(1), "");
+                r = shr >= eb && !u ? LLVMConstNull(t) : LLVMBuildAdd(B, r, bit, "");
+            }
+            if (op & 2) r = LLVMBuildAdd(B, get_lanes(ir, vreg(ir, rd), size, n), r, "");
             break;
         case 0x08: /* SRI */
             if (!u) return 0;

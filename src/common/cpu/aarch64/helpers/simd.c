@@ -479,9 +479,64 @@ static u64 sqxtn_(CPU* c, u64 x, int eb, int kind) { /* 0 SQXTN 1 UQXTN 2 SQXTUN
 }
 
 /* two-reg misc, vector + scalar */
+#if defined(__x86_64__) && defined(__GFNI__)
+/* GFNI: GF2P8AFFINEQB applies an 8x8 bit matrix to every byte (wunkolo, "gf2p8affineqb:
+   int8 shifting"). Byte 7-i of the matrix builds result bit i, its bit j selecting source bit j; the identity is
+   0x0102040810204080. Shifted right by 8n it is a logical shift left by n, shifted left a logical shift right, and
+   with n bytes of 0x80 ORed in an arithmetic one. 0x8040201008040201 reverses the bits */
+#define GF_IDENTITY 0x0102040810204080ull
+static u64 gf_shl(int n) { return n >= 8 ? 0 : GF_IDENTITY >> (8 * n); }
+static u64 gf_lshr(int n) { return n >= 8 ? 0 : GF_IDENTITY << (8 * n); }
+static u64 gf_ashr(int n) {
+    if (n > 7) n = 7;
+    return n ? (GF_IDENTITY << (8 * n)) | (~(~0ull << (8 * n)) & 0x8080808080808080ull) : GF_IDENTITY;
+}
+static __m128i gf_affine(__m128i x, u64 m) { return _mm_gf2p8affine_epi64_epi8(x, _mm_set1_epi64x((long long)m), 0); }
+/* simd_shimm for 8-bit lanes: [SU][R]SHR, [SU][R]SRA, SHL, SLI, SRI */
+static int shimm_bytes_gfni(CPU* c, int Q, int U, int op, int shr, int shl, int rn, int rd) {
+    __m128i a = _mm_loadu_si128((const __m128i*)VR(rn)), z = _mm_loadu_si128((const __m128i*)VR(rd)), r;
+    switch (op) {
+        case 0x00:
+        case 0x02:
+        case 0x04:
+        case 0x06:
+            r = gf_affine(a, U ? gf_lshr(shr) : gf_ashr(shr));
+            if (op & 4) r = _mm_add_epi8(r, gf_affine(a, (1ull << (shr - 1)) << 56)); /* + bit shr-1 */
+            if (op & 2) r = _mm_add_epi8(z, r);
+            break;
+        case 0x08:
+            if (!U) return 0;
+            r = shr >= 8
+                    ? z
+                    : _mm_or_si128(_mm_and_si128(z, _mm_set1_epi8((char)~(0xFFu >> shr))), gf_affine(a, gf_lshr(shr)));
+            break;
+        case 0x0A:
+            r = gf_affine(a, gf_shl(shl));
+            if (U) r = _mm_or_si128(_mm_and_si128(z, _mm_set1_epi8((char)~(0xFFu << shl))), r);
+            break;
+        default: return 0;
+    }
+    if (!Q) r = _mm_move_epi64(r);
+    _mm_storeu_si128((__m128i*)VR(rd), r);
+    return 1;
+}
+/* RBIT (vector) */
+static void rbit_gfni(CPU* c, int Q, int rn, int rd) {
+    __m128i r = gf_affine(_mm_loadu_si128((const __m128i*)VR(rn)), 0x8040201008040201ull);
+    if (!Q) r = _mm_move_epi64(r);
+    _mm_storeu_si128((__m128i*)VR(rd), r);
+}
+#endif
+
 static int simd_2misc(CPU* c, u32 w, int scalar) {
     int Q = (w >> 30) & 1, U = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31,
         rd = w & 31;
+#if defined(__x86_64__) && defined(__GFNI__)
+    if (!scalar && U && op == 5 && size == 1) {
+        rbit_gfni(c, Q, rn, rd);
+        return 1;
+    }
+#endif
     V128 a = *VR(rn), d = *VR(rd), r;
     memset(&r, 0, 16);
     if (scalar) Q = 0;
@@ -918,6 +973,9 @@ static int simd_shimm(CPU* c, u32 w, int scalar) {
     int eb = 8 << size;
     int imm = (immh << 3) | immb;
     int shr = 2 * eb - imm, shl = imm - eb;
+#if defined(__x86_64__) && defined(__GFNI__)
+    if (!scalar && size == 0 && shimm_bytes_gfni(c, Q, U, op, shr, shl, rn, rd)) return 1;
+#endif
     V128 a = *VR(rn), d = *VR(rd), r;
     memset(&r, 0, 16);
     int n = scalar ? 1 : (Q ? 128 : 64) / eb;

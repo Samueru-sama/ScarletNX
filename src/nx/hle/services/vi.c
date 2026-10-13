@@ -330,6 +330,9 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
         case 2:
         case 13:
         case 12: pw_u32(out, 0); return 0;
+        /* GET_BUFFER_HISTORY: the status alone, no frames, as Eden answers by default (the console's reply is
+           unmeasured). Ender Magnolia asks once a frame, so it is no warning */
+        case 17: pw_u32(out, 0); return 0;
     }
     WARN("binder: code %u not implemented\n", code);
     pw_u32(out, 0);

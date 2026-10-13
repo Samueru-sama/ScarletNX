@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # The LLVM backend and the runtime library it links into every module (rtlib.c): helpers and interpreter, compiled
-# here with this Clang and the flags toolchain.c gives generated C (no -march=native: it ships in the recompiler)
+# here with this Clang and the flags toolchain.c gives generated C, -march=native included
 set(snx_cpu "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
 add_executable(snx-rtlib-gen rtlib_gen.c)
 target_link_libraries(snx-rtlib-gen PRIVATE scarletnx-common)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc"
     COMMAND snx-rtlib-gen interp "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc"
     DEPENDS snx-rtlib-gen VERBATIM)
-set(snx_rtlib_flags -O2 -fvisibility=hidden -fno-strict-aliasing -fwrapv -w -mcx16 -fno-semantic-interposition
+# -march=native: the recompiler builds modules for the machine it runs on, which built it (build == host == target)
+set(snx_rtlib_flags -O2 -march=native -fvisibility=hidden -fno-strict-aliasing -fwrapv -w -mcx16 -fno-semantic-interposition
     -foptimize-sibling-calls -fno-stack-protector)
 if(WIN32)
     list(APPEND snx_rtlib_flags -mno-stack-arg-probe)

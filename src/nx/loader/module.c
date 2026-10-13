@@ -197,7 +197,6 @@ static int emit_module(FILE* out, SnxCodegen* codegen, const SnxCodegenOptions* 
         if (end > hi) hi = end;
     }
     fputs("\n};\nstatic SnxModule MOD;\nSNX_EXPORT const SnxModule* snx_module(void){\n", out);
-    fputs(" snx_cpu_detect();\n", out); /* the host's extensions, once, for the helpers */
     fprintf(out, " u32 i; for(i=0;i<%lu;i++){ ENT_ADDR[i]=0x%lXULL+ENT_OFF[i]; ENT_PTR[i]=FNS[ENT_FN[i]]; }\n",
             (unsigned long)count, (unsigned long)SNX_CODE_BASE);
     fprintf(out, " snx_interp_entry=snx_interp; MOD.abi=%u; MOD.nmods=%lu; MOD.mods=MODS; MOD.nentries=%lu;\n",

@@ -565,8 +565,18 @@ static V crc_table(SnxIr* ir, unsigned castagnoli) {
     return table;
 }
 
+/* the low 64 bits of the carry-less product of two 64-bit values: PCLMULQDQ */
+static V clmul_low(SnxIr* ir, V a, V b) {
+    LLVMTypeRef t = LLVMVectorType(ir->t_i64, 2);
+    V args[3];
+    args[0] = LLVMBuildInsertElement(B, LLVMConstNull(t), a, i32c(ir, 0), "");
+    args[1] = LLVMBuildInsertElement(B, LLVMConstNull(t), b, i32c(ir, 0), "");
+    args[2] = ir_i8(ir, 0);
+    return LLVMBuildExtractElement(B, ir_intrinsic(ir, "llvm.x86.pclmulqdq", NULL, args, 3), i32c(ir, 0), "");
+}
+
 /* CRC32[BHWX] and CRC32C*: snx_crc32(acc, value, bytes, castagnoli). CRC32C is the SSE4.2 CRC32 instruction on x86
-   (CPUID crc32); otherwise a table lookup per byte */
+   (CPUID crc32); CRC32 (and CRC32C without that) a Barrett reduction with PCLMULQDQ; otherwise a table lookup per byte */
 static V crc32(SnxIr* ir, V acc, V value, unsigned bytes, unsigned castagnoli) {
     V table, x;
     unsigned i;
@@ -582,6 +592,26 @@ static V crc32(SnxIr* ir, V acc, V value, unsigned bytes, unsigned castagnoli) {
         args[0] = acc;
         args[1] = ir_cast(ir, value, LLVMIntTypeInContext(ir->ctx, 8 * bytes), 0);
         return ir_intrinsic(ir, names[bytes - 1], NULL, args, 2);
+    }
+    if (ir->features->x86 && ir->features->pclmul) {
+        /* Barrett reduction with PCLMULQDQ (wunkolo, "pclmulqdq Tricks"): an n-bit update is the CRC of
+           (acc ^ value) placed at the top of 32 bits, x, then crc = (clmul(clmul(x, mu) mod 2^32, P) >> 32) ^ acc >> n,
+           with P the reflected 33-bit polynomial and mu = floor(x^64 / P) reflected */
+        SnxU64 poly = castagnoli ? 0x105EC76F1ULL : 0x1DB710641ULL, mu = castagnoli ? 0xDEA713F1ULL : 0x1F7011641ULL;
+        V chunks[2];
+        unsigned k, nchunks = bytes == 8 ? 2 : 1, n = bytes == 8 ? 32 : 8 * bytes;
+        x = ir_u64(ir, value);
+        chunks[0] = ir_u32(ir, x);
+        chunks[1] = ir_u32(ir, LLVMBuildLShr(B, x, i64c(ir, 32), ""));
+        for (k = 0; k < nchunks; ++k) {
+            V v = LLVMBuildXor(B, acc, chunks[k], ""), t;
+            if (n < 32) v = LLVMBuildShl(B, LLVMBuildAnd(B, v, i32c(ir, (1u << n) - 1), ""), i32c(ir, 32 - n), "");
+            t = clmul_low(ir, ir_u64(ir, v), i64c(ir, mu));
+            t = clmul_low(ir, LLVMBuildAnd(B, t, i64c(ir, 0xFFFFFFFFULL), ""), i64c(ir, poly));
+            t = ir_u32(ir, LLVMBuildLShr(B, t, i64c(ir, 32), ""));
+            acc = n < 32 ? LLVMBuildXor(B, t, LLVMBuildLShr(B, acc, i32c(ir, n), ""), "") : t;
+        }
+        return acc;
     }
     table = crc_table(ir, castagnoli);
     x = ir_u64(ir, value);

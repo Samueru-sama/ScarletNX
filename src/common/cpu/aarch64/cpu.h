@@ -294,15 +294,10 @@ SNX_INLINE u64 bfm_(u64 dst, u64 src, u32 immr, u32 imms, u32 ds) {
 }
 u64 snx_decode_bitmask(u32 N, u32 imms, u32 immr, u32 ds); /* cpu_helpers.c */
 
-/* ---- host instruction set extensions (cpu_helpers.c) ----
-   Read with CPUID once, when the module is loaded (snx_module calls snx_cpu_detect first), and never again: the
-   helpers test the bits directly. The bits are per architecture; without detection (another architecture, or a
-   test that never calls it) they stay 0 and every helper takes its portable C path. */
-#if defined(__x86_64__)
-enum { SNX_CPU_SSE42 = 1u << 0, SNX_CPU_PCLMUL = 1u << 1, SNX_CPU_AES = 1u << 2, SNX_CPU_GFNI = 1u << 3 };
-#endif
-extern u32 snx_cpu_features;
-void snx_cpu_detect(void);
+/* ---- host instruction set extensions ----
+   The module runs on the machine that built it (build == host == target): the helpers choose their paths from the
+   compiler's feature macros (-march=native: __AES__, __PCLMUL__, __SSE4_2__, __GFNI__, ...), under __x86_64__, with
+   no detection at run time. Without the macros (another architecture, a generic build) they take the portable C. */
 
 /* ---- CRC32 ---- */
 u32 snx_crc32(u32 acc, u64 val, int bytes, int castagnoli);

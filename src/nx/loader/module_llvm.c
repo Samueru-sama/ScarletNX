@@ -345,8 +345,6 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     body = LLVMAppendBasicBlockInContext(ir->ctx, fn, "body");
     done = LLVMAppendBasicBlockInContext(ir->ctx, fn, "done");
     LLVMPositionBuilderAtEnd(ir->b, start);
-    /* snx_cpu_detect(): the host's extensions, read once for the runtime library's helpers */
-    ir_call(ir, ir_extern(ir, "snx_cpu_detect", ir->t_void, NULL, 0), NULL, 0);
     LLVMBuildBr(ir->b, head);
     /* for(i=0;i<count;i++){ ENT_ADDR[i]=BASE+ENT_OFF[i]; ENT_PTR[i]=FNS[ENT_FN[i]]; } */
     LLVMPositionBuilderAtEnd(ir->b, head);

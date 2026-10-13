@@ -604,6 +604,23 @@ static LLVMValueRef swap_pairs(SnxIr* ir, LLVMValueRef x, unsigned shift, SnxU64
    best sequence (GF2P8AFFINEQB and BSWAP on x86 with GFNI, RBIT on AArch64) */
 static void build_rbit64(SnxIr* ir, LLVMValueRef function) {
     LLVMValueRef x = P(0);
+    if (ir->features->x86 && ir->features->gfni) {
+        /* wunkolo, "gf2p8affineqb: Bit reversal": the matrix 0x8040201008040201 reverses each byte's bits, BSWAP the
+           bytes. Explicit, whatever the LLVM version lowers llvm.bitreverse to */
+        LLVMTypeRef v2 = LLVMVectorType(ir->t_i64, 2), v16 = LLVMVectorType(ir->t_i8, 16);
+        LLVMValueRef bytes[16], args[3], v;
+        unsigned i;
+        static const unsigned char matrix[8] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
+        for (i = 0; i < 16; ++i) bytes[i] = ir_i8(ir, matrix[i & 7]);
+        v = LLVMBuildInsertElement(B, LLVMGetUndef(v2), x, ir_i32(ir, 0), "");
+        args[0] = LLVMBuildBitCast(B, v, v16, "");
+        args[1] = LLVMConstVector(bytes, 16);
+        args[2] = ir_i8(ir, 0);
+        v = LLVMBuildBitCast(B, ir_intrinsic(ir, "llvm.x86.vgf2p8affineqb.128", NULL, args, 3), v2, "");
+        x = LLVMBuildExtractElement(B, v, ir_i32(ir, 0), "");
+        LLVMBuildRet(B, intrinsic(ir, "llvm.bswap", ir->t_i64, &x, 1));
+        return;
+    }
     LLVMBuildRet(B, intrinsic(ir, "llvm.bitreverse", ir->t_i64, &x, 1));
 }
 /* rbit32(x): (u32)(rbit64(x) >> 32) */

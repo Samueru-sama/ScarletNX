@@ -103,8 +103,7 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
                 fputc('}', file);
             }
     if (!n) fputs("{0,0}", file);
-    fprintf(file,
-            "};\nSNX_EXPORT const ExecutionEntry* snx_entries(size_t*n){snx_cpu_detect();*n=%zu;return entries;}\n", n);
+    fprintf(file, "};\nSNX_EXPORT const ExecutionEntry* snx_entries(size_t*n){*n=%zu;return entries;}\n", n);
     fputs("SNX_EXPORT void snx_execute(CPU*c,u64 pc){snx_lookup(c,pc)(c,pc);}\n", file);
     if (ferror(file)) {
         fclose(file);

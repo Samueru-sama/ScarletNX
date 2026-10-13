@@ -26,12 +26,13 @@ Install the build tools first. On Debian/Ubuntu:
 ```bash
 sudo apt update
 sudo apt install build-essential git cmake ninja-build clang nasm pkg-config \
-  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
 If your distribution provides `libsdl3-dev`, install it too. Otherwise CMake builds a pinned SDL3
-using the X11 development packages above. SDL2 is not a substitute for SDL3. You also need a Vulkan 1.3
-driver to run games. See [Build prerequisites](./docs/BUILD.md#prerequisites) for Wayland, other systems,
-and the SDL3 troubleshooting steps.
+using the X11 and audio development packages above. SDL2 is not a substitute for SDL3. You also
+need a Vulkan 1.3 driver to run games. See [Build prerequisites](./docs/BUILD.md#prerequisites) for
+Wayland, other systems, and the SDL3 troubleshooting steps.
 
 Then build:
 ```bash

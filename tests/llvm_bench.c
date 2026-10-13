@@ -41,6 +41,12 @@ static const Kernel kernels[] = {
                " aesd v2.16b, v1.16b\n aesimc v2.16b, v2.16b\n pmull v3.1q, v0.1d, v1.1d\n pmull2 v4.1q, v0.2d, v1.2d\n"
                " fmov x6, d3\n crc32x w5, w5, x6\n crc32cx w7, w7, x6\n crc32b w5, w5, w6\n crc32ch w7, w7, w6\n"
                " eor v1.16b, v1.16b, v4.16b\n eor v2.16b, v2.16b, v3.16b\n subs x19, x19, #1\n b.ne loop\n ret\n"},
+    {"tricks", "main:\n movi v1.4s, #7\n movi v2.2d, #0xff\n movi v3.16b, #200\n dup v4.16b, w3\nloop:\n"
+               " sqadd v5.4s, v5.4s, v1.4s\n sqsub v6.2d, v6.2d, v2.2d\n uqadd v7.16b, v7.16b, v3.16b\n"
+               " srhadd v8.16b, v8.16b, v4.16b\n urhadd v9.8h, v9.8h, v3.8h\n bsl v10.16b, v4.16b, v3.16b\n"
+               " bif v11.16b, v5.16b, v4.16b\n rbit v12.16b, v8.16b\n ushr v13.16b, v7.16b, #3\n"
+               " sshr v14.16b, v8.16b, #2\n rbit x9, x19\n crc32x w5, w5, x9\n crc32w w6, w6, w19\n"
+               " ursra v15.16b, v12.16b, #5\n eor v4.16b, v4.16b, v13.16b\n subs x19, x19, #1\n b.ne loop\n ret\n"},
     {"calls", "main:\n mov x21, x30\n adr x20, f2\n mov x1, #0\nloop:\n bl f1\n blr x20\n subs x19, x19, #1\n"
               " b.ne loop\n mov x30, x21\n ret\n bl f2\nf1:\n add x1, x1, #1\n eor x2, x2, x1, ror #7\n ret\n"
               "f2:\n add x2, x2, x1, lsl #2\n ret\n"},

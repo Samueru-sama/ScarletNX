@@ -267,7 +267,7 @@ static size_t directed(const char* match, size_t want, Word* out) {
     size_t got = 0, i;
     if (match && strncmp("SIMD", match, strlen(match) < 4 ? strlen(match) : 4)) return 0;
     for (i = 0; i < want; ++i) {
-        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[17];
+        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[20];
         unsigned k;
         words[0] = 0x2F00E400UL | (r & 31) | ((r >> 9) & 1) << 30;
         words[1] = 0x0EA01C00UL | ((r >> 10) & 1) << 30 | n << 16 | n << 5 | (r & 31);
@@ -293,7 +293,12 @@ static size_t directed(const char* match, size_t want, Word* out) {
         words[15] = (r & 0x607FFBFFUL & ~0x0000F800UL) | 0x0F000400UL |
                     (SnxU32) "\x00\x02\x08\x0A\x14\x10"[next_random() % 6] << 11 | (1u << (19 + (r >> 30) % 4));
         words[16] = (r & 0x60C003FFUL) | 0x0EA0F800UL;
-        for (k = 0; k < 17; ++k) {
+        /* saturating and halving adds, BSL/BIT/BIF: three-same ops 0x00-0x05 and 3 with U */
+        words[17] =
+            (r & 0x40DF07FFUL) | 0x0E200400UL | (SnxU32)(next_random() % 6) << 11 | (SnxU32)(next_random() % 2) << 29;
+        words[18] = (r & 0x40DF03FFUL) | 0x2E201C00UL | (1u + (SnxU32)(next_random() % 3)) << 22;
+        words[19] = (r & 0x40DF03FFUL) | 0x2E605800UL; /* RBIT */
+        for (k = 0; k < 20; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
             if (c->kind != SNX_FLOW_PLAIN) continue;
             out[got].word = words[k];
@@ -324,6 +329,9 @@ int main(int argc, char** argv) {
     StepFn *steps_p, *steps_l;
     RtAPI rt;
     int quiet = 0, a;
+    TableFn table_h;
+    StepFn* steps_h;
+    char* c_native;
     unsigned long fallbacks;
     if (argc < 3) {
         fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N]\n",
@@ -362,7 +370,7 @@ int main(int argc, char** argv) {
             count += generate(p, k, want, words + count);
         }
     }
-    words = (Word*)snx_realloc(words, (count + 17 * per_simd) * sizeof(*words));
+    words = (Word*)snx_realloc(words, (count + 20 * per_simd) * sizeof(*words));
     count += directed(match, per_simd, words + count);
     if (!count) return snx_error("no words to test");
     dir = snx_temp_dir(NULL);
@@ -385,12 +393,13 @@ int main(int argc, char** argv) {
     fclose(f);
     abi = snx_path_join(repo, "src/common/cpu/aarch64");
     common = snx_path_join(repo, "src/common");
+    c_native = snx_path_join(dir, "native.so");
     k = 0;
     args[k++] = clang;
     args[k++] = "-O2";
     args[k++] = "-shared";
     args[k++] = "-w";
-    args[k++] = "-march=native";
+    args[k++] = "-march=x86-64"; /* the reference: the helpers' plain C (no feature macros) */
     args[k++] = "-fno-strict-aliasing";
     args[k++] = "-fwrapv";
     args[k++] = "-mcx16";
@@ -407,6 +416,12 @@ int main(int argc, char** argv) {
     args[k] = NULL;
     if (!quiet) printf("%lu words; compiling the portable steps\n", (unsigned long)count);
     if (snx_run(args, NULL, NULL, &text)) return snx_error("portable compile failed:\n%s", text ? text : "");
+    free(text);
+    /* again with -march=native: the helpers' paths for the host's extensions (AES-NI, PCLMULQDQ, CRC32, GFNI) */
+    args[4] = "-march=native";
+    args[k - 1] = c_native;
+    text = NULL;
+    if (snx_run(args, NULL, NULL, &text)) return snx_error("native portable compile failed:\n%s", text ? text : "");
     free(text);
     /* the LLVM backend: snx_ir_static_step for each word, linked with the runtime library */
     if (!quiet) printf("compiling the LLVM steps\n");
@@ -427,9 +442,6 @@ int main(int argc, char** argv) {
         LLVMSetInitializer(table, LLVMConstArray(ir->t_ptr, fns, (unsigned)count));
         getter = LLVMAddFunction(ir->mod, "snx_test_steps", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
         LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, getter, "entry"));
-        /* the LLVM side detects the host's extensions as snx_module does; the portable side doesn't, so its helpers
-           are the plain C reference for the CPUID-gated ones */
-        ir_call(ir, ir_extern(ir, "snx_cpu_detect", ir->t_void, NULL, 0), NULL, 0);
         LLVMBuildRet(ir->b, table);
         free(fns);
     }
@@ -447,6 +459,8 @@ int main(int argc, char** argv) {
     free(linked.data);
     free(object);
     if (!load(c_lib, &table_p) || !table_p) return snx_error("cannot load the portable steps");
+    if (!load(c_native, &table_h) || !table_h) return snx_error("cannot load the native portable steps");
+    steps_h = table_h();
     if (!load(l_lib, &table_l) || !table_l) return snx_error("cannot load the LLVM steps");
     steps_p = table_p();
     steps_l = table_l();
@@ -470,10 +484,10 @@ int main(int argc, char** argv) {
     for (i = 0; i < count; ++i) {
         size_t s;
         for (s = 0; s < states; ++s) {
-            CPU start, p, l;
-            Log log_p, log_l;
-            u64 rp, rl;
-            int memory_differs;
+            CPU start, p, l, h;
+            Log log_p, log_l, log_h;
+            u64 rp, rl, rh;
+            int memory_differs, helper_memory;
             memset(&start, 0, sizeof(start));
             random_state(&start, memory_start, &words[i]);
             start.rt = &rt;
@@ -489,6 +503,23 @@ int main(int argc, char** argv) {
             current = &log_l;
             rl = steps_l[i](&l);
             memory_differs = memcmp(memory_p, memory_l, MEMORY_SIZE) != 0;
+            {
+                h = start;
+                memcpy(memory_l, memory_start, MEMORY_SIZE);
+                h.mem = memory_l;
+                memset(&log_h, 0, sizeof(log_h));
+                current = &log_h;
+                rh = steps_h[i](&h);
+                helper_memory = memcmp(memory_p, memory_l, MEMORY_SIZE) != 0; /* memory_l is reused: compared above */
+                if (rp != rh || !same_cpu(&p, &h) || helper_memory || !same_events(&log_p, &log_h)) {
+                    size_t index = (size_t)(words[i].pattern - patterns);
+                    fprintf(stderr, "the helpers built with -march=native differ from the plain C ones:\n");
+                    if (pattern_failures[index]++ < 3)
+                        report(&words[i], &start, &p, &h, rp, rh, &log_p, &log_h, helper_memory);
+                    ++failures;
+                    break;
+                }
+            }
             ++compared;
             if (rp != rl || !same_cpu(&p, &l) || memory_differs || !same_events(&log_p, &log_l)) {
                 size_t index = (size_t)(words[i].pattern - patterns);
