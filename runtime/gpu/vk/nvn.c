@@ -4,6 +4,7 @@
    guest-memory coherence are implemented. */
 #include "gpu/vk/vk.h"
 #include "gpu/gpu.h"
+#include "gpu/nvn_pool.h"
 #include "gpu/shader/shader.h"
 #include "hle/nvdrv.h"
 #include "platform/log.h"
@@ -905,13 +906,26 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
         for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && ready; stage++)
             for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
                 if (!(command->texture_bound[stage] & (1u << i))) continue;
-                VkImageView view =
-                    image_view_from_semantic(&command->texture_descriptor[stage][i], command->last_unmodeled_write);
+                const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[stage][i];
+                NvnTextureSnapshot current = {0};
+                NvnPoolSnapshot backing = {0};
+                /* The callback runs later than the guest bind. A recycled object or pool address must not turn an
+                   older draw's copied TIC into a read of the replacement allocation. */
+                if (!nvn_texture_snapshot(descriptor->texture, &current) ||
+                    current.generation != descriptor->texture_generation || current.pool != descriptor->memory_pool ||
+                    current.pool_generation != descriptor->memory_pool_generation ||
+                    (current.pool &&
+                     (!nvn_pool_snapshot(current.pool, &backing) || backing.generation != current.pool_generation))) {
+                    failure = NVN_DRAW_TEXTURE_IMAGE_STALE;
+                    ready = 0;
+                    break;
+                }
+                VkImageView view = image_view_from_semantic(descriptor, command->last_unmodeled_write);
                 if (view) {
                     from_clear = 1;
                     continue;
                 }
-                Surf* surf = vk_tex_from_tic(command->texture_descriptor[stage][i].tic);
+                Surf* surf = vk_tex_from_tic(descriptor->tic);
                 if (!surf || (surf->f.depth && surf->f.stencil && !surf->is_rt)) {
                     failure = !surf ? NVN_DRAW_TEXTURE_IMAGE_MISSING : NVN_DRAW_TEXTURE_IMAGE_DEPTH;
                     if (failure == NVN_DRAW_TEXTURE_IMAGE_DEPTH) {

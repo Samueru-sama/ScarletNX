@@ -197,7 +197,7 @@ static u64 draw_pipeline_ready, draw_pipeline_failed;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
 static u64 draw_texture_header_ready, draw_texture_header_missing, draw_texture_header_unsupported;
 static u64 draw_texture_image_ready, draw_texture_image_failed, draw_texture_image_semantic;
-static u64 draw_texture_image_depth, draw_texture_image_missing;
+static u64 draw_texture_image_depth, draw_texture_image_missing, draw_texture_image_stale;
 static u64 copy_snapshots, copy_snapshot_failures, copy_staged, copy_stage_full, copy_flushed, copy_issued,
     copy_unsupported;
 static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bind_invalid;
@@ -1529,6 +1529,7 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_TEXTURE_IMAGE_DEPTH) __atomic_fetch_add(&draw_texture_image_depth, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_TEXTURE_IMAGE_MISSING)
             __atomic_fetch_add(&draw_texture_image_missing, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_IMAGE_STALE) __atomic_fetch_add(&draw_texture_image_stale, 1, __ATOMIC_RELAXED);
     }
     free(batch->clears);
     free(batch->copies);
@@ -1794,11 +1795,13 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_texture_header_missing, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_header_unsupported, __ATOMIC_RELAXED));
         if (texture_load)
-            LOG("nvn-draw-texture-image: ready=%llu failed=%llu depth-memory=%llu missing=%llu semantic-source=%llu\n",
+            LOG("nvn-draw-texture-image: ready=%llu failed=%llu depth-memory=%llu missing=%llu stale=%llu "
+                "semantic-source=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_texture_image_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_image_failed, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_image_depth, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_image_missing, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_texture_image_stale, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_texture_image_semantic, __ATOMIC_RELAXED));
         LOG("nvn-uniform-snapshot: ranges=%llu failed=%llu invalid-binds=%llu\n",
             (unsigned long long)uniform_range_snapshots, (unsigned long long)uniform_range_snapshot_failures,
