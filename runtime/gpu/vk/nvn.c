@@ -506,6 +506,8 @@ static int nvn_integer_format(u32 format) {
 static VkFormat nvn_vertex_format(u32 format) {
     switch (format) {
         case 0x0d: return VK_FORMAT_R8G8_UNORM;
+        case 0x11: return VK_FORMAT_R16G16_SFLOAT;
+        case 0x12: return VK_FORMAT_R16G16_UNORM;
         case 0x16: return VK_FORMAT_R32G32_SFLOAT;
         case 0x22: return VK_FORMAT_R32G32B32_SFLOAT;
         case 0x25: return VK_FORMAT_R8G8B8A8_UNORM;

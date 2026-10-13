@@ -540,6 +540,17 @@ while the first four captured NVN fragment uniform slots were at `0x5157b5300`, 
 asynchronous paths, so they do not prove exact draw correspondence, but they disprove the proposed direct mapping
 between NVN uniform slot number and Maxwell texture-CBUF index in this trace. The SDK's internal texture-handle
 CBUF must be reconstructed from its state or captured from the generated command stream with submission ordering.
+With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
+attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
+shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
+the draws executable: descriptor-set population, shader-visible constant and storage buffers, vertex bindings,
+ordered image state, and submission are not yet implemented by the NVN path.
+The TotK pipeline probe exposed two missing vertex-input format mappings: NVN `0x11` (RG16F) and `0x12` (RG16
+UNORM). With both mapped to their Vulkan equivalents, a twenty-two-second boot reported 2,688/2,688 vertex-format
+preflights ready, compared with 2,220/2,380 before the additions. Pipeline creation in the later run succeeded for
+1,983 draws and failed for 705, chiefly where a shader input had no captured vertex stream or depth testing was
+enabled without a captured depth target. These counts vary with boot timing and are not a before/after rendering
+comparison; the GPFIFO renderer still produces the displayed frames.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
