@@ -1366,6 +1366,15 @@ first 1600×900 target (`0/1,440,000` differing pixels). These
 are sampled target comparisons, not whole-game parity; lists whose command memory
 cannot be bounded or whose origin changes inside a matching entry remain unresolved.
 
+A fresh ABI-7 TotK boot with direct draws and dispatches issued more than 500 shadow
+draws in 55 seconds, but its first default comparison is an uncovered 80×45 target:
+all 3,600 pixels differ. A control run with the pre-origin-capture executable produced
+the same 3,600-pixel mismatch on the corresponding relocated target, so this is an
+existing coverage gap rather than a regression from ordered origin capture. A
+`640x360`/`0x29`-filtered comparison in this boot found no eligible shadow target;
+the earlier 640×360 observations above describe a different boot sequence and do
+not establish current parity for that pass.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
