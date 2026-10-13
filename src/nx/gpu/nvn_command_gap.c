@@ -106,6 +106,7 @@ static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* conte
     }
     if (method >= 0x8e4 && method <= 0x8f3) {
         if (scan->state.cbuf_known != 7) { scan->invalid = 1; return; }
+        if (scan->state.cbuf_offset > UINT32_MAX - 4) { scan->invalid = 1; return; }
         u64 base = ((u64)scan->state.cbuf_high << 32) | scan->state.cbuf_low;
         if (base > UINT64_MAX - scan->state.cbuf_offset) { scan->invalid = 1; return; }
         u64 address = base + scan->state.cbuf_offset;

@@ -111,6 +111,10 @@ int main(void) {
     const u32 one_data_word[] = {0x600108e4, 1};
     assert(!nvn_command_gap_memory_writes(one_data_word, 2, &wrapped_address, writes, 2, &write_count));
     assert(wrapped_address.cbuf_offset == 1);
+    NvnGapMemoryState wrapped_offset = {.cbuf_high = 0, .cbuf_low = 0,
+                                        .cbuf_offset = UINT32_MAX - 3, .cbuf_known = 7};
+    assert(!nvn_command_gap_memory_writes(one_data_word, 2, &wrapped_offset, writes, 2, &write_count));
+    assert(wrapped_offset.cbuf_offset == UINT32_MAX - 3);
     assert(!nvn_command_gap_no_writes(other_subchannel, 2));
     assert(!nvn_command_gap_no_writes(binding_packets, 7));
 
