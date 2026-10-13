@@ -200,7 +200,7 @@ static void cs_land(void) {
     vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
     g_inflight = 0;
     for (int i = 0; i < g_nout; i++)
-        vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
+        vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size, 1);
     /* only now: until the results are in memory, readers on other threads wait for this landing in
        vk_compute_mem_need */
     g_cs_any = 0;
@@ -395,6 +395,16 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         ss[i] = (ss[i] + 3) & ~3u;
         need += ss[i] + 256;
     }
+    const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
+    if (dispatch_trace && !strcmp(dispatch_trace, "1"))
+        LOG("nvn-qmd-dispatch: code=%llx groups=%ux%ux%u local=%ux%ux%u buffers=%d writes=%x textures=%d cbuf=%x desc0=%x desc1=%x g0=%llx/%u g1=%llx/%u cb1=%llx/%u cb2=%llx/%u cb3=%llx/%u cb4=%llx/%u\n",
+            (unsigned long long)pa, gx, gy, gz, lx, ly, lz, ng, p->si.gbuf_wmask,
+            p->si.ntex, p->si.cbuf_mask, ng > 0 ? p->si.gbuf_cbuf_off[0] : 0,
+            ng > 1 ? p->si.gbuf_cbuf_off[1] : 0,
+            (unsigned long long)(ng > 0 ? sa[0] : 0), ng > 0 ? ss[0] : 0,
+            (unsigned long long)(ng > 1 ? sa[1] : 0), ng > 1 ? ss[1] : 0,
+            (unsigned long long)cba[1], g_cbn[1], (unsigned long long)cba[2], g_cbn[2],
+            (unsigned long long)cba[3], g_cbn[3], (unsigned long long)cba[4], g_cbn[4]);
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + 256;
     need += 2048;
@@ -587,7 +597,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
         g_landing = 1;
         for (int i = 0; i < g_nout; i++)
-            vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
+            vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size, 1);
         g_nout = 0;
         g_out_lo = ~0ull;
         g_out_hi = 0;

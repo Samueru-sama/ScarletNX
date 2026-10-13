@@ -875,6 +875,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             }
         } else if (!strcmp(op->name, "nvnCommandBufferBindStorageBuffer")) {
             u32 stage = (u32)op->args[0], index = (u32)op->args[1];
+            const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
+            if (stage == 5 && dispatch_trace && !strcmp(dispatch_trace, "1"))
+                LOG("nvn-compute-storage-bind: seq=%llu slot=%u addr=%llx size=%llu macro=%d word=%x\n",
+                    (unsigned long long)(queue ? queue->next_sequence : 0), index,
+                    (unsigned long long)op->args[2], (unsigned long long)op->args[3],
+                    op->storage_cbuf_word_known, op->storage_cbuf_word);
             if (stage >= NVN_DRAW_SHADER_STAGES || index >= NVN_DRAW_STORAGE_SLOTS) {
                 storage_bind_invalid++;
             } else {
@@ -888,6 +894,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             }
         } else if (!strcmp(op->name, "nvnCommandBufferBindStorageBuffers")) {
             u32 stage = (u32)op->args[0], first = (u32)op->args[1], count = (u32)op->args[2];
+            const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
+            if (stage == 5 && dispatch_trace && !strcmp(dispatch_trace, "1"))
+                LOG("nvn-compute-storage-binds: seq=%llu first=%u count=%u\n",
+                    (unsigned long long)(queue ? queue->next_sequence : 0), first, count);
             if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_STORAGE_SLOTS ||
                 count > NVN_DRAW_STORAGE_SLOTS - first) {
                 storage_bind_invalid++;
@@ -1226,6 +1236,26 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         } else if (op->kind == OP_DRAW) {
             draw_other++;
             if (queue) queue->last_unmodeled_write = queue->next_sequence++;
+        } else if (op->kind == OP_DISPATCH) {
+            const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
+            if (trace && !strcmp(trace, "1")) {
+                const NvnStageProgram* program = &state->program[5];
+                LOG("nvn-dispatch-replay: seq=%llu name=%s args=%llx,%llx,%llx,%llx,%llx program=%llx code=%llx refs=%d uniforms=%04x storage=%04x u0=%llx/%llu u1=%llx/%llu u2=%llx/%llu u3=%llx/%llu\n",
+                    (unsigned long long)(queue ? queue->last_unmodeled_write : 0), op->name,
+                    (unsigned long long)op->args[0], (unsigned long long)op->args[1],
+                    (unsigned long long)op->args[2], (unsigned long long)op->args[3],
+                    (unsigned long long)op->args[4], (unsigned long long)program->handle,
+                    (unsigned long long)program->snapshot.refs[0].code_candidate,
+                    program->snapshot.refs_known, state->uniform_bound[5], state->storage_known[5],
+                    (unsigned long long)state->uniform[5][0].address,
+                    (unsigned long long)state->uniform[5][0].size,
+                    (unsigned long long)state->uniform[5][1].address,
+                    (unsigned long long)state->uniform[5][1].size,
+                    (unsigned long long)state->uniform[5][2].address,
+                    (unsigned long long)state->uniform[5][2].size,
+                    (unsigned long long)state->uniform[5][3].address,
+                    (unsigned long long)state->uniform[5][3].size);
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferCallCommands")) {
             if (op->refs_truncated) {
                 replay_truncated_refs++;

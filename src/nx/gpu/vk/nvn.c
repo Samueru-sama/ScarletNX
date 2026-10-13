@@ -1466,6 +1466,34 @@ static int shadow_host_overlap(const u8* a, u64 a_size, const u8* b, u64 b_size)
     return first < second + b_size && second < first + a_size;
 }
 
+void vk_nvn_shadow_note_guest_write(u64 address, u32 size, u32 changed_bytes, int compute) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* trace = getenv("SNX_NVN_SHADOW_TRACE_GUEST_WRITES");
+        enabled = trace && !strcmp(trace, "1");
+    }
+    if (!enabled || !size) return;
+    const u8* contiguous = gmem_ptr_untracked(address, size);
+    for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++) {
+        const NvnShadowStorage* entry = &shadow_storage[i];
+        if (!entry->buffer) continue;
+        int overlap = contiguous && shadow_host_overlap(contiguous, size, entry->guest_host, entry->size);
+        if (!contiguous)
+            for (u64 offset = 0; offset < size && !overlap;) {
+                u32 chunk = 4096 - ((address + offset) & 4095);
+                if (chunk > size - offset) chunk = (u32)(size - offset);
+                const u8* host = gmem_ptr_untracked(address + offset, chunk);
+                overlap = host && shadow_host_overlap(host, chunk, entry->guest_host, entry->size);
+                offset += chunk;
+            }
+        if (overlap)
+            LOG_LIMIT(32, "nvn-shadow-guest-write: source=%s addr=%llx size=%u changed=%u cached=%llx/%llu batch=%llu\n",
+                      compute ? "compute" : "graphics", (unsigned long long)address, size, changed_bytes,
+                      (unsigned long long)entry->address, (unsigned long long)entry->size,
+                      (unsigned long long)batch_serial);
+    }
+}
+
 /* Diagnostic coherence proof for mixed HLE/GPFIFO execution. A guest write may be the
    emulated copy of the same draw; keep HLE state only if the complete results agree. */
 static int shadow_storage_matches_guest(NvnShadowStorage* entry) {

@@ -988,6 +988,18 @@ shader `39c33661040df4bc` on that second buffer. All six captured shaders transl
 The first vertex shader stores zeros, while the fragment shaders include `atomicMax`, `atomicAdd`, and ordinary
 stores. The remaining difference needs command-order and shader-input investigation; ignoring guest write markers
 would hide it rather than establish parity.
+
+A writeback-origin probe resolved the largest missing dependency. In one TotK batch, emulated compute dispatches
+wrote 722 bytes to the 58,848-byte SSBO and 6,916 bytes to the 48,544-byte SSBO before graphics writes landed.
+Further compute writes to the latter followed the graphics work. The direct NVN batch replays clears, copies, and
+draws, but does not yet replay `nvnCommandBufferDispatchCompute`, so its private SSBOs cannot reproduce this chain.
+The semantic dispatch recorder sees the same `32×18×1` and `1×1×1` workgroups that Maxwell's QMD executes. For
+captured dispatches, the QMD shader address is the NVN program's code candidate plus `0x100`, and its CBUF0 SSBO
+descriptor is at byte offset `0x310`. Several of these writers have no sampled textures. NVN compute uniform slot
+zero matches Maxwell CBUF bank 3, slot one matches bank 4, as with graphics. Compute storage-buffer calls retain
+their semantic addresses and sizes, but the graphics-specific macro proof marks stage 5 storage as unknown. Direct
+compute replay needs to construct and verify its CBUF0 descriptors, bind the captured program and uniforms, issue
+dispatches in list order against shadow storage, and synchronize those writes with later draws.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.

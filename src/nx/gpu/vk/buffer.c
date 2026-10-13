@@ -114,7 +114,7 @@ void vk_buf_frame_done(u64 frame) {
                 fatal("Could not invalidate a graphics storage buffer after its frame completed");
             invalidated = o->mem;
         }
-        vk_write_changed(o->addr, o->ptr, o->org, o->size);
+        vk_write_changed(o->addr, o->ptr, o->org, o->size, 0);
         if (copy_stats_on()) {
             g_wb_outputs++;
             g_wb_bytes += o->size;
