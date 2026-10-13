@@ -885,12 +885,17 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 storage_bind_invalid++;
             } else {
                 u16 bit = (u16)(1u << index);
-                if (op->storage_cbuf_word_known && op->args[2] && op->args[3]) {
+                /* Compute bindings are semantic NVN ranges. Graphics bindings additionally need the
+                   observed MME CBUF word before a draw can use them. */
+                if ((stage == 5 || op->storage_cbuf_word_known) && op->args[2] && op->args[3]) {
                     state->storage_known[stage] &= (u16)~bit;
                     state->storage[stage][index] = (NvnStorageBinding){
                         .range = {op->args[2], op->args[3]}, .cbuf_word = op->storage_cbuf_word};
                     state->storage_known[stage] |= bit;
-                } else state->storage_known[stage] = 0;
+                } else if (stage == 5)
+                    state->storage_known[stage] &= (u16)~bit;
+                else
+                    state->storage_known[stage] = 0;
             }
         } else if (!strcmp(op->name, "nvnCommandBufferBindStorageBuffers")) {
             u32 stage = (u32)op->args[0], first = (u32)op->args[1], count = (u32)op->args[2];
@@ -899,11 +904,21 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 LOG("nvn-compute-storage-binds: seq=%llu first=%u count=%u\n",
                     (unsigned long long)(queue ? queue->next_sequence : 0), first, count);
             if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_STORAGE_SLOTS ||
-                count > NVN_DRAW_STORAGE_SLOTS - first) {
+                count > NVN_DRAW_STORAGE_SLOTS - first || (count && !op->payload)) {
                 storage_bind_invalid++;
                 if (stage < NVN_DRAW_SHADER_STAGES) state->storage_known[stage] = 0;
+            } else if (stage == 5) {
+                const NvnBufferRange* ranges = op->payload;
+                for (u32 j = 0; j < count; j++) {
+                    u16 bit = (u16)(1u << (first + j));
+                    state->storage[stage][first + j].range = ranges[j];
+                    if (ranges[j].address && ranges[j].size)
+                        state->storage_known[stage] |= bit;
+                    else
+                        state->storage_known[stage] &= (u16)~bit;
+                }
             } else {
-                /* The array call's macro offsets have not been paired with its semantic ranges. */
+                /* Graphics array macro offsets have not been paired with their semantic ranges. */
                 state->storage_known[stage] = 0;
             }
         } else if (!strcmp(op->name, "nvnCommandBufferDrawArrays") ||
@@ -1683,10 +1698,13 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
             vertex_attrib_snapshots++;
         else
             vertex_stream_snapshots++;
-    } else if (!strcmp(op->name, "nvnCommandBufferBindUniformBuffers")) {
+    } else if (!strcmp(op->name, "nvnCommandBufferBindUniformBuffers") ||
+               !strcmp(op->name, "nvnCommandBufferBindStorageBuffers")) {
+        int storage = !strcmp(op->name, "nvnCommandBufferBindStorageBuffers");
         u32 stage = (u32)op->args[0], first = (u32)op->args[1], count = (u32)op->args[2];
-        if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_UNIFORM_SLOTS ||
-            count > NVN_DRAW_UNIFORM_SLOTS - first ||
+        u32 limit = storage ? NVN_DRAW_STORAGE_SLOTS : NVN_DRAW_UNIFORM_SLOTS;
+        if (stage >= NVN_DRAW_SHADER_STAGES || first >= limit ||
+            count > limit - first ||
             (count && !readable_range(op->args[3], (u64)count * sizeof(NvnBufferRange)))) {
             uniform_range_snapshot_failures++;
             return;
