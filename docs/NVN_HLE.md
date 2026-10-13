@@ -1245,7 +1245,10 @@ ineligible later in the direct draw path and invalidates it again. Its seventh f
 image at `0x543850000`. Maxwell has a fresh render target there, so the direct path cannot safely fall back
 to guest memory. NVN recorded a clear of an R8 UINT (`0x03`) target with two layers at that address, but the
 shadow image format table does not yet map R8 UINT, and the clear selects only one layer. Mapping the format
-alone would not certify both sampled layers; integer clear conversion and per-layer provenance need checking.
+alone would not certify both sampled layers. Scarlet passes float `1.0` bits (`0x3f800000`) to this clear;
+the native Maxwell path receives those bits unchanged in its UINT clear registers. Numerically converting
+the value to integer `1` in the direct path would diverge. Integer clear interpretation and per-layer
+provenance need checking before certifying this image.
 The sequence-50 draw and the 1920×1080 comparison therefore remain uncovered. This is a chained
 producer-coverage gap, not a channel-mask issue with the compared draw.
 
