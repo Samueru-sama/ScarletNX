@@ -1915,6 +1915,66 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     return 1;
 }
 
+/* A failed direct draw may still have a bounded storage write set. CBUF 0 is initialized by
+   GPFIFO before NVN submits its first recorded list, so read the front end's binding rather
+   than the renderer's mutable global state. Require contiguous guest backing for every covered
+   image and writable buffer: a missing translation must leave the global unknown marker intact. */
+static int scope_storage_writes(const VkSh* vertex, const VkSh* fragment) {
+    typedef struct { u32 size; const u8* host; } StorageWrite;
+    StorageWrite writes[32];
+    u8 invalidate[NVN_IMAGE_SLOTS] = {0};
+    u32 count = 0;
+    const VkSh* shaders[2] = {vertex, fragment};
+    for (u32 s = 0; s < 2; s++) {
+        const ShaderInfo* si = &shaders[s]->si;
+        if (!si->gbuf_wmask) continue;
+        if (si->ngbuf < 0 || si->ngbuf > 16 || (si->gbuf_wmask >> si->ngbuf)) return 0;
+        u64 cb0 = 0;
+        u32 cb0_size = 0;
+        if (!gpu_unique_cb0_binding(s ? 4 : 0, &cb0, &cb0_size)) return 0;
+        for (u32 i = 0; i < (u32)si->ngbuf; i++) {
+            if (!(si->gbuf_wmask & (1u << i))) continue;
+            u32 off = si->gbuf_cbuf_off[i];
+            if (off > cb0_size || cb0_size - off < 12 || cb0 > UINT64_MAX - off ||
+                !shader_bank_range_mapped(cb0 + off, 12)) return 0;
+            u32 descriptor[3];
+            gmem_read(cb0 + off, descriptor, sizeof descriptor);
+            u64 address = ((u64)descriptor[1] << 32) | descriptor[0];
+            u32 size = descriptor[2] ? descriptor[2] : 16;
+            if (size > (16u << 20)) size = 16u << 20;
+            size = (size + 3) & ~3u;
+            if (!address || address > UINT64_MAX - size) return 0;
+            const u8* host = gmem_ptr_untracked(address, size);
+            if (!host) return 0;
+            writes[count++] = (StorageWrite){size, host};
+        }
+    }
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        const NvnImage* image = &images[i];
+        if (!image->image) continue;
+        int covered = 0;
+        for (u32 m = 0; m < 16; m++) covered |= !!(image->color_layers[m] | image->depth_layers[m]);
+        if (!covered) continue;
+        if (!image->storage_size || image->address > UINT64_MAX - image->storage_size) return 0;
+        const u8* image_host = gmem_ptr_untracked(image->address, image->storage_size);
+        if (!image_host) return 0;
+        u64 a = (u64)(uintptr_t)image_host;
+        for (u32 j = 0; j < count; j++) {
+            u64 b = (u64)(uintptr_t)writes[j].host;
+            if (a > UINT64_MAX - image->storage_size || b > UINT64_MAX - writes[j].size) return 0;
+            if (a < b + writes[j].size && b < a + image->storage_size) invalidate[i] = 1;
+        }
+    }
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        NvnImage* image = &images[i];
+        if (!invalidate[i]) continue;
+        memset(image->color_layers, 0, sizeof image->color_layers);
+        memset(image->depth_layers, 0, sizeof image->depth_layers);
+        image->guest_host = NULL;
+    }
+    return 1;
+}
+
 /* A guest draw can be ineligible for HLE while still having a fully known write set. Preserve
    unrelated shadow images across that draw, but discard every target it could have modified. */
 static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment) {
@@ -1922,21 +1982,24 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
     /* Read-only SSBOs cannot add writes beyond the captured attachments. */
     if (!shadow || strcmp(shadow, "1") || !vertex || !fragment || !command->target_complete ||
         (!command->color_target_mask && !command->depth_target_bound) ||
-        vertex->si.nimg || fragment->si.nimg ||
-        vertex->si.gbuf_wmask || fragment->si.gbuf_wmask)
+        vertex->si.nimg || fragment->si.nimg)
         return;
     for (u32 i = 0; i < 8; i++)
         if ((command->color_target_mask & (1u << i)) && !shadow_range_known(&command->color_target[i])) return;
     if (command->depth_target_bound && !shadow_range_known(&command->depth_target)) return;
+    int storage_writes = !!(vertex->si.gbuf_wmask || fragment->si.gbuf_wmask);
+    if (storage_writes && !scope_storage_writes(vertex, fragment)) return;
     for (u32 i = 0; i < 8; i++)
         if (command->color_target_mask & (1u << i)) shadow_invalidate_backing(&command->color_target[i]);
     if (command->depth_target_bound) shadow_invalidate_backing(&command->depth_target);
     mark_modeled_unknown(command->sequence + 1, command->last_unmodeled_write);
-    static u64 scoped_draws;
+    static u64 scoped_draws, scoped_storage_draws;
     scoped_draws++;
+    scoped_storage_draws += storage_writes;
     if (scoped_draws == 1 || !(scoped_draws % 100))
-        LOG("nvn-shadow-scoped-draw: count=%llu target=%llx colors=%x depth=%d\n",
-            (unsigned long long)scoped_draws, (unsigned long long)command->color_target[0].gpu_address,
+        LOG("nvn-shadow-scoped-draw: count=%llu storage=%llu target=%llx colors=%x depth=%d\n",
+            (unsigned long long)scoped_draws, (unsigned long long)scoped_storage_draws,
+            (unsigned long long)command->color_target[0].gpu_address,
             command->color_target_mask, command->depth_target_bound);
 }
 

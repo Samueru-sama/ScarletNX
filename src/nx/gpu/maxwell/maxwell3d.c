@@ -96,6 +96,10 @@ void r3d_const_flush(GpuChannel* ch) {
     ch->cb_n = 0;
 }
 void r3d_cb_bind(GpuChannel* ch, int stage, u32 v) {
+    if (stage >= 0 && stage < 5 && ((v >> 4) & 31) == 0) {
+        ch->cb0_addr[stage] = (v & 1) ? ((u64)ch->r3d[0x8E1] << 32) | ch->r3d[0x8E2] : 0;
+        ch->cb0_size[stage] = (v & 1) ? ch->r3d[0x8E0] : 0;
+    }
     if (g_renderer_up) g_renderer->cb_bind(ch, stage, v);
 }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,

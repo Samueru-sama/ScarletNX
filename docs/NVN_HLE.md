@@ -918,6 +918,14 @@ fragment SSBO descriptor at bank-0 offset `0x550` named `0x623130000` for 58,848
 virtual address from the blocked depth target. A diagnostic that borrowed this emulated binding still did not restore
 the third pass; other unknown writes remain. The direct path must recover the initialization binding and any needed
 physical-alias proof without depending on emulated render state.
+The GPU command front end now retains the SDK's bank-0 address and size per graphics stage and channel, even when
+the emulated renderer is inactive. The opt-in shadow probe accepts a writable SSBO draw only when all active
+channels that bound the stage agree on that binding, its descriptor is mapped within the buffer, and both the write
+range and every covered shadow image have contiguous guest backing. It invalidates physically overlapping images
+before narrowing the draw's unknown-write marker to its known attachments. TotK scoped 594 such draws in a 20-second
+headless run while still issuing 1,400 direct shadow draws. The first selected shadow/emulated target comparison
+differed in all 921,600 pixels; the probe has not established complete-pass or presented-frame parity. The internal
+bank-0 binding still bounds fallback writes only; direct draws do not yet receive bank-0 shader data.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
