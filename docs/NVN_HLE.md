@@ -1090,9 +1090,17 @@ could no longer be verified. This does not establish compute output parity.
 With compute GLSL dumping enabled, a later TotK probe isolated its first 58,848-byte storage dispatch.
 The direct and QMD paths started from the same buffer hash and produced the same first output hash; the
 shader's constant-buffer hashes also matched. The guest backing differed from that output by 836 bytes
-when compared later, and the next QMD storage input no longer matched the prior output. The renderer's
-writeback preserves intervening guest writes, so this remains an ordering and coherence investigation,
-not evidence that the first shader translated incorrectly.
+when compared later, and the next QMD storage input no longer matched the prior output. A writeback
+trace showed that all 2,034 shader-changed bytes from the first QMD dispatch landed, with none suppressed
+by a competing guest write. The later guest comparison therefore measured a different point in the
+command stream, not a failure of that first shader translation.
+An output snapshot taken at each QMD landing now lets the opt-in TotK trace compare a direct dispatch against
+its matching QMD dispatch, before later guest-memory writes obscure the result. The first 58,848-byte pair
+matched byte for byte (0 differences); its later guest-backing comparison still differed by 836 bytes.
+The second matching dispatch differed by 242 bytes, starting at offset 29. Between those dispatches, the
+direct path logged several fragment-shader draws that write the same storage buffer. The next step is to
+compare that buffer at the second dispatch's input and isolate the first differing draw or intervening write;
+the output mismatch alone does not identify which stage is wrong.
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
 work area. Removing the oversized floor allowed a 100-second headless NVN probe to issue at least 55,000

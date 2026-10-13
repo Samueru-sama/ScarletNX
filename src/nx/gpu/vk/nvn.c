@@ -1500,7 +1500,7 @@ void vk_nvn_shadow_note_guest_write(u64 address, u32 size, u32 changed_bytes, in
 
 /* Diagnostic coherence proof for mixed HLE/GPFIFO execution. A guest write may be the
    emulated copy of the same draw; keep HLE state only if the complete results agree. */
-static int shadow_storage_matches_guest(NvnShadowStorage* entry) {
+static int shadow_storage_matches_guest(NvnShadowStorage* entry, u64 dispatch_code) {
     /* QMD output can still live in the compute arena while the guest backing remains old.
        Materialize overlapping results before using that backing as the comparison oracle. */
     vk_compute_mem_need(entry->address, entry->size);
@@ -1538,6 +1538,7 @@ static int shadow_storage_matches_guest(NvnShadowStorage* entry) {
     vkCmdPipelineBarrier2(cb, &dependency);
     vk_finish();
     vk_readback_ready();
+    if (dispatch_code) vk_compute_shadow_compare(entry->address, (u32)entry->size, dispatch_code, pixels);
     entry->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     entry->access = VK_ACCESS_2_TRANSFER_READ_BIT;
     u64 different = 0, first = entry->size;
@@ -1605,7 +1606,7 @@ static int shadow_storage_get(u64 address, u32 size, int writable, const NvnStor
             const char* verify_guest = getenv("SNX_NVN_SHADOW_VERIFY_GUEST_WRITES");
             if ((gpu_dirty || cpu_dirty) &&
                 (!verify_guest || strcmp(verify_guest, "1") || cpu_dirty < 0 ||
-                 !shadow_storage_matches_guest(entry))) {
+                 !shadow_storage_matches_guest(entry, 0))) {
                 LOG_LIMIT(12, "nvn-shadow-storage-reject: guest-write addr=%llx size=%u gpu=%d cpu=%d batch=%llu\n",
                           (unsigned long long)address, size, gpu_dirty, cpu_dirty,
                           (unsigned long long)batch_serial);
@@ -1940,7 +1941,7 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
             if (buffers[i] && buffers[i]->size == 58848) {
                 LOG("nvn-shadow-storage-probe: code=%llx probe=%u\n",
                     (unsigned long long)command->program.snapshot.refs[0].code_candidate, probes++);
-                shadow_storage_matches_guest(buffers[i]);
+                shadow_storage_matches_guest(buffers[i], command->program.snapshot.refs[0].code_candidate);
             }
     }
     mark_modeled_unknown(command->sequence, command->prior_unmodeled_write);

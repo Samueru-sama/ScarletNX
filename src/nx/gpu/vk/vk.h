@@ -45,6 +45,7 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command);
 int vk_nvn_memory_write(const NvnMemoryWriteCommand* command);
 int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipeline,
                             const ShaderInfo** info);
+void vk_compute_shadow_compare(u64 address, u32 size, u64 code, const u8* bytes);
 const u8* vk_nvn_compute_cbuf(u32 bank, u32* size);
 
 typedef struct {
