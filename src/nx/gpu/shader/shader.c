@@ -817,6 +817,13 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
     for (int i = 0; i < si->ngbuf; i++)
         sb_f(D, "layout(std430, %s) %sbuffer S%d_G%d { uint d[]; } g%d;\n", bind_at(stage, SNX_VKB_SSBO + i),
              ((si->gbuf_wmask >> i) & 1) ? "" : "readonly ", stage, i, i);
+    if (si->ngbuf + si->nbimg > 16) { /* the global buffers and buffer images share SNX_VKB_SSBO's 16 bindings */
+        si->unsupported++;
+        if (!si->first_unsupported[0]) snprintf(si->first_unsupported, 64, "buffer images past 16 storage buffers");
+    }
+    for (int k = 0; k < si->nbimg && si->ngbuf + k < 16; k++) /* buffer images take the bindings after them */
+        sb_f(D, "layout(std430, %s) %sbuffer S%d_B%d { uint d[]; } bimg%d;\n",
+             bind_at(stage, SNX_VKB_SSBO + si->ngbuf + k), si->bimg[k].written ? "" : "readonly ", stage, k, k);
     if (stage == ST_CS)
         sb_f(D, "layout(local_size_x=%u, local_size_y=%u, local_size_z=%u) in;\n",
              si->cs_local[0] ? si->cs_local[0] : 1, si->cs_local[1] ? si->cs_local[1] : 1,
@@ -884,7 +891,8 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
             /* format class: 0 f32, 1 f16, 2 unorm8, 3 unorm16 */
             sb_put(
                 D,
-                T("layout(std140, %s) uniform SNX_FMT { int snx_ic[8]; int snx_tc[32]; int snx_ib[8]; int snx_tb[32]; };\n",
+                T("layout(std140, %s) uniform SNX_FMT { int snx_ic[8]; int snx_tc[32]; int snx_ib[8]; int snx_tb[32]; "
+                  "int snx_bb[8]; int snx_bc[8]; };\n",
                   bind_at(stage, SNX_VKB_FMT)));
             sb_put(
                 D,

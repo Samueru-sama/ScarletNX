@@ -72,6 +72,25 @@ static int cs_cb_read(u32 idx, u32 off, u32* out) {
     return 0;
 }
 
+/* the SNX_FMT class of a buffer image's format, as the shader's snx_r2v and snx_v2r convert it: 1 16-bit floats, 2 8-bit
+   unorm, 3 16-bit unorm, 0 anything else, whose bits the registers hold as they are (32-bit floats, integers) */
+static int fmt_class(VkFormat f) {
+    switch (f) {
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+        case VK_FORMAT_R16G16_SFLOAT:
+        case VK_FORMAT_R16_SFLOAT: return 1;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+        case VK_FORMAT_R8G8_UNORM:
+        case VK_FORMAT_R8_UNORM: return 2;
+        case VK_FORMAT_R16G16B16A16_UNORM:
+        case VK_FORMAT_R16G16_UNORM:
+        case VK_FORMAT_R16_UNORM: return 3;
+        default: return 0;
+    }
+}
 static void cs_init(void) {
     if (g_cpool) return;
     VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -319,8 +338,10 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm) {
     if (!VK_OK(vkCreateComputePipelines(g_vk.dev, vk_pipeline_cache(), 1, &ci, NULL, &p->p))) p->failed = 1;
     vkDestroyShaderModule(g_vk.dev, m, NULL);
     if (!p->failed)
-        LOG_LIMIT(12, "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images\n",
-                  (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg);
+        LOG_LIMIT(12,
+                  "vulkan: compute %016llx ready: block %ux%ux%u, %d global buffers, %d textures, %d images, %d buffer "
+                  "images\n",
+                  (unsigned long long)key, lx, ly, lz, p->si.ngbuf, p->si.ntex, p->si.nimg, p->si.nbimg);
     return p;
 }
 
@@ -396,9 +417,32 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         ss[i] = (ss[i] + 3) & ~3u;
         need += ss[i] + 256;
     }
+    /* buffer images: each one's texture header names a range of guest memory, read and written like a global buffer
+       in the bindings after them (the translator refused more than 16 in all) */
+    u32 wmask = p->si.gbuf_wmask;
+    int nb = p->si.nbimg < 16 - ng ? p->si.nbimg : 16 - ng;
+    i32 bfmt[16] = {0}; /* the SNX_FMT words of each: snx_bb (texel bytes), then snx_bc (format class) */
+    for (int k = 0; k < nb; k++) {
+        u32 h = 0, tic[8];
+        cs_cb_read(p->si.bimg[k].bindless ? (p->si.bimg[k].bl_cbuf & 7) : (rc[0x982] & 7), p->si.bimg[k].cbuf_off * 4,
+                   &h);
+        gmem_read((((u64)rc[0x55D] << 32) | rc[0x55E]) + (h & 0xFFFFF) * 32ull, tic, 32);
+        if ((tic[2] >> 21) & 7)
+            LOG_LIMIT(1, "vulkan: a buffer image's texture header isn't a buffer's (read as one)\n");
+        VkFmt f = vk_tic_format(tic[0], 0);
+        u64 bytes = ((((u64)(tic[3] & 0xFFFF) << 16) | (tic[4] & 0xFFFF)) + 1) * (f.bpp ? f.bpp : 4);
+        int i = ng + k;
+        sa[i] = ((u64)(tic[2] & 0xFFFF) << 32) | tic[1];
+        ss[i] = bytes > (16u << 20) ? 16u << 20 : ((u32)bytes + 3) & ~3u;
+        need += ss[i] + 256;
+        if (p->si.bimg[k].written) wmask |= 1u << i;
+        bfmt[k] = f.bpp ? f.bpp : 4;
+        bfmt[8 + k] = fmt_class(f.vk);
+    }
+    ng += nb;
     for (int i = 0; i < 8; i++)
         if (p->si.cbuf_mask & (1u << i)) need += g_cbn[i] + 256;
-    need += 2048;
+    need += 2048 + (nb ? 1536 : 0);
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
        pending results overlap land those first, before anything is put in the arena */
     int gfx = p->si.ntex > 0, overlap = 0;
@@ -410,7 +454,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         for (int k = 0; k < g_nout && !overlap; k++) {
             CsOut* o = &g_out[k];
             if (sa[i] >= o->addr + o->size || o->addr >= sa[i] + ss[i]) continue;
-            if (!((p->si.gbuf_wmask >> i) & 1) && g_recording && sa[i] >= o->addr && sa[i] + ss[i] <= o->addr + o->size)
+            if (!((wmask >> i) & 1) && g_recording && sa[i] >= o->addr && sa[i] + ss[i] <= o->addr + o->size)
                 chain[i] = (i64)(o->off + (sa[i] - o->addr));
             else
                 overlap = 1;
@@ -480,14 +524,19 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         nw++;
     }
     VkCommandBuffer cb;
+    /* SNX_FMT, std140, 16 bytes a word: snx_ic[8] snx_tc[32] snx_ib[8] snx_tb[32] snx_bb[8] snx_bc[8] */
+    int fmt_used = nb > 0;
+    i32 fmt[384] = {0};
+    for (int k = 0; k < nb; k++) {
+        fmt[(80 + k) * 4] = bfmt[k];
+        fmt[(88 + k) * 4] = bfmt[8 + k];
+    }
     if (gfx) {
         /* textures from the compute engine's headers; texture handles from its texture constant buffer bank. Compute
            shaders declare every texture as float (they aren't keyed on integer textures), and depth textures aren't
            sampled here */
         u64 tic_base = ((u64)rc[0x55D] << 32) | rc[0x55E], tsc_base = ((u64)rc[0x557] << 32) | rc[0x558];
         u32 tcb = rc[0x982] & 7;
-        int fmt_used = 0;
-        i32 fmt[320] = {0}; /* SNX_FMT, std140: snx_ic[8] snx_tc[32] snx_ib[8] snx_tb[32], 16 bytes each */
         for (int i = 0; i < p->si.ntex && i < SH_MAXTEX; i++) {
             ShTex* st = &p->si.tex[i];
             u32 h = 0, h2 = 0;
@@ -525,22 +574,22 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             fmt[(48 + i) * 4] = t && t->f.bpp ? t->f.bpp : 4;
             fmt_used = 1;
         }
-        if (fmt_used) {
-            u64 o = arena_alloc(sizeof fmt);
-            memcpy(g_ar_ptr + o, fmt, sizeof fmt);
-            bi[nw] = (VkDescriptorBufferInfo){g_ar, o, sizeof fmt};
-            w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                           .dstSet = set,
-                                           .dstBinding = SNX_VKB_FMT,
-                                           .descriptorCount = 1,
-                                           .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                           .pBufferInfo = &bi[nw]};
-            nw++;
-        }
+    }
+    if (fmt_used) {
+        u64 o = arena_alloc(sizeof fmt);
+        memcpy(g_ar_ptr + o, fmt, sizeof fmt);
+        bi[nw] = (VkDescriptorBufferInfo){g_ar, o, sizeof fmt};
+        w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                       .dstSet = set,
+                                       .dstBinding = SNX_VKB_FMT,
+                                       .descriptorCount = 1,
+                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       .pBufferInfo = &bi[nw]};
+        nw++;
     }
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
     for (int i = 0; i < ng; i++)
-        if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
+        if (((wmask >> i) & 1) && sa[i]) {
             memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
             g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
             if (sa[i] < g_out_lo) g_out_lo = sa[i];

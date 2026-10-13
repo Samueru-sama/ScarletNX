@@ -43,6 +43,11 @@ typedef struct {
         u8 type, bindless, bl_cbuf, pad;
     } img[8];
     int nimg;                                                   /* SUST targets (compute) */
+    struct {
+        u32 cbuf_off; /* the handle's word offset, in the texture bank or, bindless, in bl_cbuf */
+        u8 bindless, bl_cbuf, written, pad;
+    } bimg[8];
+    int nbimg; /* 1D buffer images (compute): storage buffers bound after the ngbuf global ones, as bimg<k> */
     u32 tex_int_mask, tex_sint_mask, rt_int_mask, rt_sint_mask; /* FS key: integer textures / outputs */
 } ShaderInfo;
 /* the shader flushes FP32 denormals everywhere: every FADD, FMUL and FFMA it has asks for it, as the console's

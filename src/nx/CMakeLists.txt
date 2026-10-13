@@ -150,6 +150,17 @@ if(BUILD_TESTING AND SNX_VULKAN)
     add_test(NAME shader_gbuf COMMAND snx-test-shader-gbuf)
 endif()
 
+# The shader translator and glslang offline: surface operations on 1D buffer images in compute shaders
+if(BUILD_TESTING AND SNX_VULKAN)
+    add_executable(snx-test-shader-buffer-image "${PROJECT_SOURCE_DIR}/tests/shader_buffer_image.c")
+    target_link_libraries(snx-test-shader-buffer-image PRIVATE snx_shader snx_spirv)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-buffer-image PRIVATE Threads::Threads m)
+    endif()
+    set_target_properties(snx-test-shader-buffer-image PROPERTIES LINKER_LANGUAGE CXX)
+    add_test(NAME shader_buffer_image COMMAND snx-test-shader-buffer-image)
+endif()
+
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.
 if(BUILD_TESTING AND SNX_TEST_VULKAN AND SNX_VULKAN)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c")

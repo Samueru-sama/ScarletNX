@@ -291,6 +291,93 @@ static const char* su_coords(Ctx* c, u32 ty, u32 ra, const char* x, int sampled)
     }
 }
 
+/* a compute shader's 1D buffer image (surface dimension 1): its index among the shader's buffer images, -1 past 8.
+   The runtime binds its texture header's memory range as a storage buffer after the global ones (shader.c declares
+   bimg<k>), so surface operations on it read and write that guest memory as words */
+static int buffer_image(Ctx* c, u32 off, int bl, u32 bank, int write) {
+    ShaderInfo* si = c->si;
+    int k = 0;
+    for (; k < si->nbimg; k++)
+        if (si->bimg[k].cbuf_off == off && si->bimg[k].bindless == bl && (!bl || si->bimg[k].bl_cbuf == bank)) break;
+    if (k == si->nbimg) {
+        if (k >= 8) return -1;
+        si->bimg[k].cbuf_off = off;
+        si->bimg[k].bindless = (u8)bl;
+        si->bimg[k].bl_cbuf = (u8)bank;
+        si->nbimg++;
+        if (bl && bank < 18) {
+            si->cbuf_mask |= 1u << bank;
+            if (off * 4 + 16 > si->cbuf_max[bank]) si->cbuf_max[bank] = ((off * 4) | 15) + 1;
+        }
+    }
+    if (write) si->bimg[k].written = 1;
+    return k;
+}
+/* SULD/SUST on buffer image k at element x. .D moves raw elements of the size field's 1 to 16 bytes, x counting
+   elements (bytes with .BA), as Eden types it (R8 to R32G32B32A32 UINT). .P converts one texel of the header's format,
+   snx_bb[k] bytes of class snx_bc[k], to and from the registers in mask's components, like an image. Stores below 4
+   bytes go through atomics on their bits, so invocations writing neighbouring bytes of a word don't undo each other */
+static void buffer_image_access(Ctx* c, int k, int store, int isd, int ba, u32 sz, u32 nw, u32 mask, const char* x,
+                                u32 rd) {
+    static const int esize[8] = {1, 1, 2, 2, 4, 8, 16, 16};
+    if (isd && sz >= 4) {
+        emitl(c, "{ int o_ = (%s) >> 2;", ba ? T("int(%s)", x) : T("int(%s) * %d", x, esize[sz]));
+        c->indent++;
+        for (u32 q = 0; q < nw; q++)
+            if (store)
+                emitl(c, "bimg%d.d[o_ + %u] = %s;", k, q, R(c, rd == 255 ? 255 : rd + q));
+            else if (rd != 255)
+                setr(c, rd + q, T("bimg%d.d[o_ + %u]", k, q));
+    } else if (isd) {
+        emitl(c, "{ int o_ = %s; uint s_ = uint(o_ & 3) * 8u;", ba ? T("int(%s)", x) : T("int(%s) * %d", x, esize[sz]));
+        c->indent++;
+        if (store) {
+            emitl(c, "uint m_ = %s << s_;", sz < 2 ? "0xFFu" : "0xFFFFu");
+            emitl(c, "atomicAnd(bimg%d.d[o_ >> 2], ~m_); atomicOr(bimg%d.d[o_ >> 2], (%s << s_) & m_);", k, k,
+                  R(c, rd));
+        } else {
+            const char* v = T("(bimg%d.d[o_ >> 2] >> s_)", k);
+            setr(c, rd,
+                 sz == 0   ? T("%s & 0xFFu", v)
+                 : sz == 1 ? T("uint(int(%s << 24u) >> 24)", v)
+                 : sz == 2 ? T("%s & 0xFFFFu", v)
+                           : T("uint(int(%s << 16u) >> 16)", v));
+        }
+    } else {
+        c->uses_img_raw = 1;
+        emitl(c, "{ int b_ = snx_bb[%d], o_ = int(%s) * b_, w_ = o_ >> 2;", k, x);
+        c->indent++;
+        emitl(c, "uint z_ = b_ < 2 ? 0u : b_ < 4 ? 2u : 4u, n_ = uint(max(b_ / 4, 1));");
+        if (!store) {
+            emitl(c,
+                  "uvec4 r_ = uvec4(bimg%d.d[w_], b_ > 4 ? bimg%d.d[w_ + 1] : 0u, b_ > 8 ? bimg%d.d[w_ + 2] : 0u, "
+                  "b_ > 8 ? bimg%d.d[w_ + 3] : 0u);",
+                  k, k, k, k);
+            emitl(c, "if (b_ < 4) r_.x >>= uint(o_ & 3) * 8u;");
+            emitl(c, "vec4 t_ = snx_r2v(r_, n_, z_, snx_bc[%d]);", k);
+            write_masked(c, rd, mask, "t_");
+        } else {
+            const char* cc[4] = {"0.0", "0.0", "0.0", "1.0"};
+            u32 r = rd;
+            for (int q = 0; q < 4; q++)
+                if (mask & (1u << q)) {
+                    cc[q] = r == 255 ? "0.0" : T("uintBitsToFloat(%s)", R(c, r));
+                    if (r != 255) r++;
+                }
+            emitl(c, "uvec4 r_ = snx_v2r(vec4(%s, %s, %s, %s), z_, snx_bc[%d]);", cc[0], cc[1], cc[2], cc[3], k);
+            emitl(c, "if (b_ >= 4) {");
+            emitl(c, "  bimg%d.d[w_] = r_.x; if (b_ > 4) bimg%d.d[w_ + 1] = r_.y;", k, k);
+            emitl(c, "  if (b_ > 8) { bimg%d.d[w_ + 2] = r_.z; bimg%d.d[w_ + 3] = r_.w; }", k, k);
+            emitl(c, "} else {");
+            emitl(c, "  uint s_ = uint(o_ & 3) * 8u, m_ = (b_ < 2 ? 0xFFu : 0xFFFFu) << s_;");
+            emitl(c, "  atomicAnd(bimg%d.d[w_], ~m_); atomicOr(bimg%d.d[w_], (r_.x << s_) & m_);", k, k);
+            emitl(c, "}");
+        }
+    }
+    c->indent--;
+    emitl(c, "}");
+}
+
 /* TEXS/TLDS/TLD4S write two reg pairs */
 static void write_texs(Ctx* c, u64 w, const char* v, int fp16) {
     u32 da = B(w, 0, 8), db = B(w, 28, 8), sw = B(w, 50, 3);
@@ -1918,13 +2005,50 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
             emitl(c, "}"); /* bit59: fp32 */
             break;
         }
+        case O_SUATOM: {
+            /* on a 1D buffer image only, 32-bit (Eden's U32, S32 and SD32 all read the element as R32_UINT, signed
+               only for S32's MIN and MAX), no clamp: Op 29-32 ADD MIN MAX INC DEC AND OR XOR EXCH, Dim 33-35, Size
+               51-53, bindless bit 54 with the handle in 39-46, else the handle's offset in 36-48 */
+            u32 op = B(w, 29, 4), ty = B(w, 33, 3), size = B(w, 51, 3), rb = B(w, 20, 8);
+            int bl = (int)B(w, 54, 1), sgn = size == 1;
+            u32 off = B(w, 36, 13), bank = 0, bo;
+            int k = -1;
+            if (c->stage == ST_CS && ty == 1 && op <= 8 && (size <= 1 || size == 6) && !B(w, 49, 2) &&
+                (!bl || (track_handle(c, idx, B(w, 39, 8), &bank, &bo) && !c->bl2)))
+                k = buffer_image(c, bl ? bo / 4 : off, bl, bank, 1);
+            if (k < 0) {
+                unsupported(c, "SUATOM", w);
+                setr(c, d, "0u");
+                break;
+            }
+            const char* e = T("bimg%d.d[int(%s)]", k, R(c, a));
+            const char* v = R(c, rb);
+            static const char* const plain[9] = {"atomicAdd", "atomicMin", "atomicMax",     NULL, NULL, "atomicAnd",
+                                                 "atomicOr",  "atomicXor", "atomicExchange"};
+            if (plain[op] && !(sgn && (op == 1 || op == 2))) {
+                setr(c, d, T("%s(%s, %s)", plain[op], e, v));
+                break;
+            }
+            /* signed MIN and MAX, INC and DEC: a compare-and-swap loop */
+            const char* next = op == 1   ? T("uint(min(int(o_), int(v_)))")
+                               : op == 2 ? T("uint(max(int(o_), int(v_)))")
+                               : op == 3 ? T("o_ >= v_ ? 0u : o_ + 1u")
+                                         : T("o_ == 0u || o_ > v_ ? v_ : o_ - 1u");
+            emitl(c, "{ uint v_ = %s, p_ = %s, o_;", v, e);
+            c->indent++;
+            emitl(c, "do { o_ = p_; p_ = atomicCompSwap(%s, o_, %s); } while (p_ != o_);", e, next);
+            setr(c, d, "o_");
+            c->indent--;
+            emitl(c, "}");
+            break;
+        }
         case O_SULD:
         case O_SUST: {
             /* compute images. SUST -> imageStore, SULD -> texelFetch on the same texture.
        .P = formatted (mask 20..23), .D = raw bytes (size 20..22) converted using the format class
        uniforms snx_ic / snx_tc the runtime sets at dispatch */
             u32 isd = B(w, 52, 1), bound = B(w, 51, 1), ty = B(w, 33, 3), ra = a, rdd = d;
-            if (c->stage != ST_CS || ty == 1 || ty > 5) {
+            if (c->stage != ST_CS || ty > 5) {
                 unsupported(c, id == O_SUST ? "SUST" : "SULD", w);
                 if (id == O_SULD && rdd != 255) { setr(c, rdd, "0u"); }
                 break;
@@ -1950,6 +2074,16 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
             int ba = isd && B(w, 23, 1); /* x is in bytes, divide by texel size */
             /* Size 20-22 (Ryujinx InstSuldD/SustD, SuSize): 5 B64 two words, 6 B128 and 7 UB128 four */
             u32 sz = B(w, 20, 3), nw = isd ? (sz == 5 ? 2 : sz >= 6 ? 4 : 1) : 0;
+            if (ty == 1) { /* a 1D buffer image: guest memory, through a storage buffer */
+                int k = bl && c->bl2 ? -1 : buffer_image(c, off, bl, bank, id == O_SUST);
+                if (k < 0) {
+                    unsupported(c, id == O_SUST ? "SUST (buffer image)" : "SULD (buffer image)", w);
+                    if (id == O_SULD) setr(c, rdd, "0u");
+                    break;
+                }
+                buffer_image_access(c, k, id == O_SUST, isd, ba, sz, nw, B(w, 20, 4), R(c, ra), rdd);
+                break;
+            }
             const char* crd = su_coords(c, ty, ra, T("int(%s)", R(c, ra)), 0);
             if (id == O_SUST) {
                 ShaderInfo* si = c->si;
