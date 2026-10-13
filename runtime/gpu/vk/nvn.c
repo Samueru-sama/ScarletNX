@@ -15,6 +15,7 @@
 #define NVN_IMAGE_BUDGET (256ull << 20)
 typedef struct {
     VkImageView view;
+    VkFormat format;
     u16 mip, layer;
 } NvnAttachmentView;
 typedef struct {
@@ -24,7 +25,8 @@ typedef struct {
     u64 bytes;
     u64 last_batch;
     VkImage image;
-    VkImageView sampled_view, base_view;
+    VkImageView sampled_view, base_view, sampled_view_alt, base_view_alt;
+    VkFormat alt_format;
     NvnAttachmentView attachments[16];
     VmaAllocation allocation;
     VkImageLayout layout;
@@ -57,6 +59,8 @@ static NvnImage* evict_old_image(void) {
     for (u32 i = 0; i < 16; i++)
         if (oldest->attachments[i].view)
             vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->attachments[i].view, VK_NULL_HANDLE);
+    if (oldest->sampled_view_alt || oldest->base_view_alt)
+        vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->sampled_view_alt, oldest->base_view_alt);
     vk_defer_image(oldest->image, oldest->allocation, oldest->sampled_view, oldest->base_view);
     image_bytes -= oldest->bytes;
     memset(oldest, 0, sizeof *oldest);
@@ -76,6 +80,7 @@ static VkFmt nvn_format(u32 format) {
         case 0x25: return vk_rt_format(0xd5);                                     /* RGBA8 */
         case 0x29: return (VkFmt){.vk = VK_FORMAT_R16G16B16A16_SFLOAT, .bpp = 8}; /* RGBA16F */
         case 0x38: return (VkFmt){.vk = VK_FORMAT_R8G8B8A8_SRGB, .bpp = 4};       /* RGBA8 SRGB */
+        case 0x3d: return vk_rt_format(0xd1);                                     /* RGB10A2 */
         case 0x3f: return vk_rt_format(0xe0);                                     /* R11G11B10F */
         case 0x32: return vk_zt_format(0x13);                                     /* D16 */
         case 0x34: return vk_zt_format(0x0a);                                     /* D32F */
@@ -93,12 +98,21 @@ static VkFmt nvn_format(u32 format) {
 }
 
 static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkImageAspectFlags aspect, int* full) {
-    /* Reinterpreting one backing allocation through another format needs a mutable-format image and compatible
-       views. Until that path exists, do not create two unrelated shadow images for the same guest texture. */
-    if (target->format != target->storage_format) {
+    /* Only the RGBA8 UNORM/sRGB pair has a verified compatible view path. Other reinterpretations need their own
+       format-class and feature checks before sharing one backing image. */
+    int rgba8_pair = (target->storage_format == 0x25 && target->format == 0x38) ||
+                     (target->storage_format == 0x38 && target->format == 0x25);
+    if (target->format != target->storage_format && !rgba8_pair) {
         LOG_LIMIT(4, "nvn-image-view-format: backing=%x view=%x\n", target->storage_format, target->format);
         return NULL;
     }
+    VkFmt backing_format = nvn_format(target->storage_format);
+    if (!backing_format.vk) return NULL;
+    if (rgba8_pair &&
+        (backing_format.vk != (target->storage_format == 0x25 ? VK_FORMAT_R8G8B8A8_UNORM
+                                                            : VK_FORMAT_R8G8B8A8_SRGB) ||
+         format != (target->format == 0x25 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R8G8B8A8_SRGB)))
+        return NULL;
     NvnImage* empty = NULL;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
@@ -110,10 +124,10 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
             image->texture_generation == target->texture_generation &&
             image->pool_generation == target->pool_generation && image->width == target->width &&
             image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
-            image->target == target->storage_target && image->format == target->format)
+            image->target == target->storage_target && image->format == target->storage_format)
             return image;
     }
-    VkFmt guest_format = nvn_format(target->format);
+    VkFmt guest_format = backing_format;
     const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
     if (!guest_format.bpp || !target->levels || !target->depth || target->depth > limits->maxImageArrayLayers ||
         target->width > limits->maxImageDimension2D || target->height > limits->maxImageDimension2D)
@@ -151,22 +165,33 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         *full = 1;
         return NULL;
     }
-    VkFormatProperties properties;
-    vkGetPhysicalDeviceFormatProperties(g_vk.phys, format, &properties);
+    VkFormatProperties properties, view_properties;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, backing_format.vk, &properties);
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, format, &view_properties);
     if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) return NULL;
-    int sampled = !!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    int sampled = !!((properties.optimalTilingFeatures & view_properties.optimalTilingFeatures) &
+                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
     VkFormatFeatureFlags attachment_feature = aspect & VK_IMAGE_ASPECT_DEPTH_BIT
                                                   ? VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT
                                                   : VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-    int attachment = !!(properties.optimalTilingFeatures & attachment_feature);
+    int attachment = !!((properties.optimalTilingFeatures & view_properties.optimalTilingFeatures) &
+                       attachment_feature);
     VkImageUsageFlags attachment_usage =
         attachment ? (aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                                          : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
                    : 0;
+    int mutable_rgba8 = backing_format.vk == VK_FORMAT_R8G8B8A8_UNORM ||
+                        backing_format.vk == VK_FORMAT_R8G8B8A8_SRGB;
+    VkFormat pair_formats[2] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+    VkImageFormatListCreateInfo format_list = {.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+                                               .viewFormatCount = 2,
+                                               .pViewFormats = pair_formats};
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .pNext = mutable_rgba8 ? &format_list : NULL,
                               .imageType = VK_IMAGE_TYPE_2D,
-                              .flags = target->storage_target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                              .format = format,
+                              .flags = (target->storage_target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
+                                       (mutable_rgba8 ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0),
+                              .format = backing_format.vk,
                               .extent = {target->width, target->height, 1},
                               .mipLevels = target->levels,
                               .arrayLayers = target->depth,
@@ -190,7 +215,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->levels = target->levels;
     empty->layers = target->depth;
     empty->target = target->storage_target;
-    empty->format = target->format;
+    empty->format = target->storage_format;
     empty->bytes = bytes;
     image_bytes += bytes;
     empty->layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -203,7 +228,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                                       .viewType = target->storage_target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
                                                   : target->storage_target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                                                                                 : VK_IMAGE_VIEW_TYPE_2D,
-                                      .format = format,
+                                      .format = backing_format.vk,
                                       .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT
                                                                ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                : VK_IMAGE_ASPECT_COLOR_BIT,
@@ -212,6 +237,19 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         if (empty->sampled && target->levels > 1) {
             view.subresourceRange.levelCount = 1;
             vkCreateImageView(g_vk.dev, &view, NULL, &empty->base_view);
+        }
+        if (empty->sampled && mutable_rgba8) {
+            empty->alt_format = backing_format.vk == VK_FORMAT_R8G8B8A8_UNORM
+                                    ? VK_FORMAT_R8G8B8A8_SRGB
+                                    : VK_FORMAT_R8G8B8A8_UNORM;
+            view.format = empty->alt_format;
+            view.subresourceRange.levelCount = target->levels;
+            if (vkCreateImageView(g_vk.dev, &view, NULL, &empty->sampled_view_alt) != VK_SUCCESS)
+                empty->alt_format = VK_FORMAT_UNDEFINED;
+            if (empty->sampled_view_alt && target->levels > 1) {
+                view.subresourceRange.levelCount = 1;
+                vkCreateImageView(g_vk.dev, &view, NULL, &empty->base_view_alt);
+            }
         }
     }
     return empty;
@@ -236,7 +274,8 @@ static int prepare_attachment(const NvnTextureTarget* target, int depth) {
     NvnImage* image = image_for(target, format.vk, vk_aspect(&format), &full);
     if (!image || !image->attachment) return 0;
     for (u32 i = 0; i < 16; i++)
-        if (image->attachments[i].view && image->attachments[i].mip == mip && image->attachments[i].layer == layer) {
+        if (image->attachments[i].view && image->attachments[i].format == format.vk &&
+            image->attachments[i].mip == mip && image->attachments[i].layer == layer) {
             image->last_batch = batch_serial;
             return 1;
         }
@@ -251,6 +290,7 @@ static int prepare_attachment(const NvnTextureTarget* target, int depth) {
         if (vkCreateImageView(g_vk.dev, &view, NULL, &slot->view) != VK_SUCCESS) return 0;
         slot->mip = mip;
         slot->layer = layer;
+        slot->format = format.vk;
         image->last_batch = batch_serial;
         return 1;
     }
@@ -259,6 +299,8 @@ static int prepare_attachment(const NvnTextureTarget* target, int depth) {
 
 int vk_nvn_clear(const NvnClearCommand* command) {
     const NvnTextureTarget* target = &command->target;
+    /* vkCmdClearColorImage interprets the image's backing format, not an alternate sRGB attachment view. */
+    if (target->format != target->storage_format) return 0;
     u32 mip = target->view.base_level;
     u32 layer = target->view.first_layer;
     if ((target->storage_target != 1 && target->storage_target != 4 && target->storage_target != 8) ||
@@ -433,11 +475,15 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
         if (!image->image || !image->sampled || image_type != view_type || image->layers != layers ||
             image->texture != descriptor->texture || image->texture_generation != descriptor->texture_generation ||
             image->pool != descriptor->memory_pool || image->pool_generation != descriptor->memory_pool_generation ||
-            image->address != address || image->width != width || image->height != height ||
-            (levels != image->levels && (levels != 1 || !image->base_view)))
+            image->address != address || image->width != width || image->height != height)
             continue;
         VkFmt source = nvn_format(image->format);
-        if (source.vk != format) continue;
+        int alt = source.vk != format;
+        if (alt && image->alt_format != format) continue;
+        VkImageView sampled_view = levels == 1 && image->levels > 1
+                                       ? (alt ? image->base_view_alt : image->base_view)
+                                       : (alt ? image->sampled_view_alt : image->sampled_view);
+        if (!sampled_view || (levels != image->levels && levels != 1)) continue;
         int complete = 1;
         for (u32 level = 0; level < levels; level++)
             for (u32 layer = 0; layer < layers; layer++) {
@@ -453,7 +499,7 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
         image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         image->stage = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
         image->access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-        return levels == 1 && image->levels > 1 ? image->base_view : image->sampled_view;
+        return sampled_view;
     }
     return VK_NULL_HANDLE;
 }
@@ -690,15 +736,23 @@ static int nvn_dual_source_factor(u32 factor) {
 /* This key checks that the observed shader, vertex, blend, polygon, and attachment interface
    can form a Vulkan pipeline. Dynamic raster and depth state is set by a future host draw. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
+    int default_single_sample = !command->multisample_state_known &&
+                                (command->color_target_mask || command->depth_target_bound);
+    for (u32 i = 0; i < 8 && default_single_sample; i++)
+        if ((command->color_target_mask & (1u << i)) && command->color_target[i].samples > 1)
+            default_single_sample = 0;
+    if (command->depth_target_bound && command->depth_target.samples > 1) default_single_sample = 0;
     if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known ||
-        !command->polygon_state_known || !command->depth_stencil_state_known || !command->multisample_state_known) {
+        !command->polygon_state_known || !command->depth_stencil_state_known ||
+        (!command->multisample_state_known && !default_single_sample)) {
         LOG_LIMIT(8,
                   "nvn-pipeline: missing base state shader=%d/%d channel=%d color=%d polygon=%d depth=%d samples=%d\n",
                   !!vertex, !!fragment_shader, command->channel_mask_known, command->color_state_known,
                   command->polygon_state_known, command->depth_stencil_state_known, command->multisample_state_known);
         return 0;
     }
-    u32 multisample = command->multisample_state[0];
+    /* The SDK's zero-initialized state is single-sample. Infer it only for captured single-sample attachments. */
+    u32 multisample = command->multisample_state_known ? command->multisample_state[0] : 0;
     u32 samples = (multisample >> 8) & 31, raster_samples = (multisample >> 15) & 31;
     /* The current attachment and pipeline path is single-sample only. Zero is the SDK default for one sample. */
     if (samples > 1 || raster_samples > 1 || (multisample & 0x1a) || ((multisample >> 13) & 3) ||

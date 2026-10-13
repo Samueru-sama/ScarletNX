@@ -635,6 +635,28 @@ The [NVN format enum](https://code.botw.link/uking/uking/lib/NintendoSDK/include
 numeric values. An Odyssey long scene before the last mapping had 125,651 vertex-format-ready draws and 15,148
 failures; the next run with RGBA8 SNORM mapped reported 138,407/138,407 ready. These checks still do not validate
 actual host vertex-buffer bindings or output pixels.
+Odyssey's render-target calls also use copies of initialized texture objects. Their old-layout fields can be
+matched exactly against a recorded initialization by pool generation, offset, flags, target, dimensions, mip count,
+format, and sample count. The observer caches only unambiguous matches and captures the resolved target at
+`SetRenderTargets`, while the object is still available; replay checks that the backing pool generation remains
+live. In one long scene this recovered 1,982 color and 3,187 depth clears and 75,539 complete draw-target snapshots,
+where the earlier replay had zero resolved clears and only 2,060 complete targets. It does not solve guest-memory
+coherence or make mixed draw submissions executable.
+Odyssey's dominant captured color target is NVN RGB10A2 (`0x3d`). Mapping it to the renderer's matching
+`VK_FORMAT_A2B10G10R10_UNORM_PACK32` removed 37,916 of 37,920 target-format rejections in comparable long scenes;
+four remained where the emulated surface had a different format. The remaining target preflight also found 13 size
+and 160 view-layer mismatches. These counts identify work needed before a direct draw can replace the emulated one.
+When Odyssey omits an observed multisample-state call, the pipeline probe now uses the SDK's zero-initialized
+single-sample state only if a captured color or depth attachment exists and every captured attachment has at most
+one sample. In a 45-second scene this changed pipeline readiness from 0/3,677 to 4,868/5,613; every pipeline
+failure in the latter scene coincided with an attachment failure.
+Those attachment failures were sRGB views (`0x38`) of RGBA8 (`0x25`) storage. The shadow cache now creates one
+[mutable-format Vulkan image](https://docs.vulkan.org/spec/latest/chapters/resources.html) for this compatible pair,
+with an explicit two-format list and format-aware sampled and attachment views. Other format reinterpretations stay
+rejected. A repeat Odyssey scene prepared all 5,469 observed attachments and pipelines. Catherine and TotK retained
+zero attachment or pipeline failures in their boot probes; Scarlet still had unrelated target-shape and pipeline
+failures. Clearing through an alternate sRGB view remains rejected because `vkCmdClearColorImage` operates on the
+image's backing format; a correct view-based clear needs a rendering operation.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
