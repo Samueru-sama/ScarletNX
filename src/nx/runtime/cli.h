@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+#ifndef SNX_CLI_H
+#define SNX_CLI_H
+#include <string.h>
+
+enum {
+    SNX_EXTRACT = 1,
+    SNX_RECOMP = 2,
+    SNX_HEADLESS = 4,
+    SNX_GDB = 8,
+    SNX_STOP = 16,
+    SNX_FULLSCREEN = 32,
+    SNX_WINDOWED = 64
+};
+/* Shared by the driver and standalone game runtime. Windows accepts individual
+   short options, but deliberately not POSIX-style clusters. */
+static int snx_cli_flag(const char* arg, unsigned* flags) {
+    unsigned bits = 0;
+    const char* p;
+    if (!strcmp(arg, "--extract"))
+        bits = SNX_EXTRACT;
+    else if (!strcmp(arg, "--recomp"))
+        bits = SNX_RECOMP;
+    else if (!strcmp(arg, "--headless"))
+        bits = SNX_HEADLESS;
+    else if (!strncmp(arg, "--headless=", 11))
+        return -1;
+    else if (!strcmp(arg, "--fullscreen") || !strcmp(arg, "--fullscreen=1") || !strcmp(arg, "--fullscreen=0")) {
+        *flags &= ~(SNX_FULLSCREEN | SNX_WINDOWED);
+        bits = !strcmp(arg, "--fullscreen=0") ? SNX_WINDOWED : SNX_FULLSCREEN;
+    } else if (!strncmp(arg, "--fullscreen=", 13))
+        return -1;
+    else if (arg[0] == '-' && arg[1] && arg[1] != '-') {
+#ifdef _WIN32
+        if (arg[2]) return 0;
+#endif
+        for (p = arg + 1; *p; ++p) {
+            switch (*p) {
+                case 'x': bits |= SNX_EXTRACT; break;
+                case 'r': bits |= SNX_RECOMP; break;
+                case 'H': bits |= SNX_HEADLESS; break;
+#ifndef _WIN32
+                case 'S': bits |= SNX_GDB; break;
+                case 's': bits |= SNX_GDB | SNX_STOP; break;
+#endif
+                default: return 0;
+            }
+        }
+    } else
+        return 0;
+    *flags |= bits;
+    return 1;
+}
+#endif

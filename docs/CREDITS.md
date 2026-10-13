@@ -15,6 +15,10 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
 | SDL3 | zlib |
+| GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |
+
+The GUI font's original notice and pinned source are preserved in
+[`src/gui/FONT-NOTICE.txt`](../src/gui/FONT-NOTICE.txt).
 
 Installed license texts: `share/licenses/scarletnx/`. AppImage system-library licenses
 and package manifest: `share/licenses/`. Component license files contain the full terms.

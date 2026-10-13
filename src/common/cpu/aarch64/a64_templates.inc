@@ -3678,22 +3678,22 @@ static const SnxA64Case cases_FP2[] = {
     /* ftype=0, fop2=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,c->v[f_rn].f[0]*c->v[f_rm].f[0]);",
+      "SETSB(f_rd,snx_fp_binary(c,c->v[f_rn].s[0],c->v[f_rm].s[0],32,SNX_FP_MUL));",
       "" },
     /* ftype=0, fop2=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,c->v[f_rn].f[0]/c->v[f_rm].f[0]);",
+      "SETSB(f_rd,snx_fp_binary(c,c->v[f_rn].s[0],c->v[f_rm].s[0],32,SNX_FP_DIV));",
       "" },
     /* ftype=0, fop2=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,c->v[f_rn].f[0]+c->v[f_rm].f[0]);",
+      "SETSB(f_rd,snx_fp_binary(c,c->v[f_rn].s[0],c->v[f_rm].s[0],32,SNX_FP_ADD));",
       "" },
     /* ftype=0, fop2=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,c->v[f_rn].f[0]-c->v[f_rm].f[0]);",
+      "SETSB(f_rd,snx_fp_binary(c,c->v[f_rn].s[0],c->v[f_rm].s[0],32,SNX_FP_SUB));",
       "" },
     /* ftype=0, fop2=4 */
     { SNX_FLOW_PLAIN,
@@ -3718,7 +3718,7 @@ static const SnxA64Case cases_FP2[] = {
     /* ftype=0, fop2=8 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,fnmul32(c->v[f_rn].f[0],c->v[f_rm].f[0]));",
+      "SETSB(f_rd,snx_fp_binary(c,c->v[f_rn].s[0],c->v[f_rm].s[0],32,SNX_FP_MUL)^0x80000000u);",
       "" },
     /* ftype=0, fop2=9 */
     { SNX_FLOW_UNDEF,
@@ -3758,22 +3758,22 @@ static const SnxA64Case cases_FP2[] = {
     /* ftype=1, fop2=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,c->v[f_rn].df[0]*c->v[f_rm].df[0]);",
+      "SETDB(f_rd,snx_fp_binary(c,c->v[f_rn].d[0],c->v[f_rm].d[0],64,SNX_FP_MUL));",
       "" },
     /* ftype=1, fop2=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,c->v[f_rn].df[0]/c->v[f_rm].df[0]);",
+      "SETDB(f_rd,snx_fp_binary(c,c->v[f_rn].d[0],c->v[f_rm].d[0],64,SNX_FP_DIV));",
       "" },
     /* ftype=1, fop2=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,c->v[f_rn].df[0]+c->v[f_rm].df[0]);",
+      "SETDB(f_rd,snx_fp_binary(c,c->v[f_rn].d[0],c->v[f_rm].d[0],64,SNX_FP_ADD));",
       "" },
     /* ftype=1, fop2=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,c->v[f_rn].df[0]-c->v[f_rm].df[0]);",
+      "SETDB(f_rd,snx_fp_binary(c,c->v[f_rn].d[0],c->v[f_rm].d[0],64,SNX_FP_SUB));",
       "" },
     /* ftype=1, fop2=4 */
     { SNX_FLOW_PLAIN,
@@ -3798,7 +3798,7 @@ static const SnxA64Case cases_FP2[] = {
     /* ftype=1, fop2=8 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,fnmul64(c->v[f_rn].df[0],c->v[f_rm].df[0]));",
+      "SETDB(f_rd,snx_fp_binary(c,c->v[f_rn].d[0],c->v[f_rm].d[0],64,SNX_FP_MUL)^0x8000000000000000ull);",
       "" },
     /* ftype=1, fop2=9 */
     { SNX_FLOW_UNDEF,
@@ -4017,7 +4017,7 @@ static const SnxA64Case cases_FP1[] = {
     /* ftype=0, fop1=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,fp_sqrt32(c->v[f_rn].f[0]));",
+      "SETSB(f_rd,snx_fp_unary(c,c->v[f_rn].s[0],32,SNX_FP_SQRT));",
       "" },
     /* ftype=0, fop1=4 */
     { SNX_FLOW_UNDEF,
@@ -4027,7 +4027,7 @@ static const SnxA64Case cases_FP1[] = {
     /* ftype=0, fop1=5 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,(f64)c->v[f_rn].f[0]);",
+      "SETDB(f_rd,snx_fp_convert(c,c->v[f_rn].s[0],32,64,FPRM));",
       "" },
     /* ftype=0, fop1=6 */
     { SNX_FLOW_UNDEF,
@@ -4037,7 +4037,7 @@ static const SnxA64Case cases_FP1[] = {
     /* ftype=0, fop1=7 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETH(f_rd,f32_to_f16(c->v[f_rn].f[0]));",
+      "SETH(f_rd,snx_fp_convert(c,c->v[f_rn].s[0],32,16,FPRM));",
       "" },
     /* ftype=0, fop1=8 */
     { SNX_FLOW_PLAIN,
@@ -4337,12 +4337,12 @@ static const SnxA64Case cases_FP1[] = {
     /* ftype=1, fop1=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,fp_sqrt64(c->v[f_rn].df[0]));",
+      "SETDB(f_rd,snx_fp_unary(c,c->v[f_rn].d[0],64,SNX_FP_SQRT));",
       "" },
     /* ftype=1, fop1=4 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,(f32)c->v[f_rn].df[0]);",
+      "SETSB(f_rd,snx_fp_convert(c,c->v[f_rn].d[0],64,32,FPRM));",
       "" },
     /* ftype=1, fop1=5 */
     { SNX_FLOW_UNDEF,
@@ -4357,7 +4357,7 @@ static const SnxA64Case cases_FP1[] = {
     /* ftype=1, fop1=7 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETH(f_rd,f64_to_f16(c->v[f_rn].df[0]));",
+      "SETH(f_rd,snx_fp_convert(c,c->v[f_rn].d[0],64,16,FPRM));",
       "" },
     /* ftype=1, fop1=8 */
     { SNX_FLOW_PLAIN,
@@ -4982,12 +4982,12 @@ static const SnxA64Case cases_FP1[] = {
     /* ftype=3, fop1=4 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,f16_to_f32(c->v[f_rn].h[0]));",
+      "SETSB(f_rd,snx_fp_convert(c,c->v[f_rn].h[0],16,32,FPRM));",
       "" },
     /* ftype=3, fop1=5 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,(f64)f16_to_f32(c->v[f_rn].h[0]));",
+      "SETDB(f_rd,snx_fp_convert(c,c->v[f_rn].h[0],16,64,FPRM));",
       "" },
     /* ftype=3, fop1=6 */
     { SNX_FLOW_UNDEF,
@@ -5442,42 +5442,42 @@ static const SnxA64Case cases_FP3[] = {
     /* ftype=0, o1=0, o0=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,FMLA32(c->v[f_ra].f[0],c->v[f_rn].f[0],c->v[f_rm].f[0]));",
+      "SETSB(f_rd,snx_fp_fma(c,c->v[f_ra].s[0],c->v[f_rn].s[0],c->v[f_rm].s[0],32));",
       "" },
     /* ftype=0, o1=0, o0=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,FMLA32(c->v[f_ra].f[0],-c->v[f_rn].f[0],c->v[f_rm].f[0]));",
+      "SETSB(f_rd,snx_fp_fma(c,c->v[f_ra].s[0],c->v[f_rn].s[0]^0x80000000u,c->v[f_rm].s[0],32));",
       "" },
     /* ftype=0, o1=1, o0=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,FMLA32(-c->v[f_ra].f[0],-c->v[f_rn].f[0],c->v[f_rm].f[0]));",
+      "SETSB(f_rd,snx_fp_fma(c,c->v[f_ra].s[0]^0x80000000u,c->v[f_rn].s[0]^0x80000000u,c->v[f_rm].s[0],32));",
       "" },
     /* ftype=0, o1=1, o0=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,FMLA32(-c->v[f_ra].f[0],c->v[f_rn].f[0],c->v[f_rm].f[0]));",
+      "SETSB(f_rd,snx_fp_fma(c,c->v[f_ra].s[0]^0x80000000u,c->v[f_rn].s[0],c->v[f_rm].s[0],32));",
       "" },
     /* ftype=1, o1=0, o0=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,FMLA64(c->v[f_ra].df[0],c->v[f_rn].df[0],c->v[f_rm].df[0]));",
+      "SETDB(f_rd,snx_fp_fma(c,c->v[f_ra].d[0],c->v[f_rn].d[0],c->v[f_rm].d[0],64));",
       "" },
     /* ftype=1, o1=0, o0=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,FMLA64(c->v[f_ra].df[0],-c->v[f_rn].df[0],c->v[f_rm].df[0]));",
+      "SETDB(f_rd,snx_fp_fma(c,c->v[f_ra].d[0],c->v[f_rn].d[0]^0x8000000000000000ull,c->v[f_rm].d[0],64));",
       "" },
     /* ftype=1, o1=1, o0=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,FMLA64(-c->v[f_ra].df[0],-c->v[f_rn].df[0],c->v[f_rm].df[0]));",
+      "SETDB(f_rd,snx_fp_fma(c,c->v[f_ra].d[0]^0x8000000000000000ull,c->v[f_rn].d[0]^0x8000000000000000ull,c->v[f_rm].d[0],64));",
       "" },
     /* ftype=1, o1=1, o0=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_ra=(w>>10)&31; const u32 f_rd=(w>>0)&31; const u32 f_rm=(w>>16)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,FMLA64(-c->v[f_ra].df[0],c->v[f_rn].df[0],c->v[f_rm].df[0]));",
+      "SETDB(f_rd,snx_fp_fma(c,c->v[f_ra].d[0]^0x8000000000000000ull,c->v[f_rn].d[0],c->v[f_rm].d[0],64));",
       "" },
     /* ftype=2, o1=0, o0=0 */
     { SNX_FLOW_UNDEF,
@@ -5526,32 +5526,32 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=0, rmode=0, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].f[0],0))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,0,0,0));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].f[0],0))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,1,0,0));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,(f32)(i32)(u32)RX(f_rn));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),32,32,0,0));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,(f32)(u32)RX(f_rn));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),32,32,1,0));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=4 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].f[0],4))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,0,0,4));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=5 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].f[0],4))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,1,0,4));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=6 */
     { SNX_FLOW_PLAIN,
@@ -5566,12 +5566,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=0, rmode=1, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].f[0],1))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,0,0,1));",
       "" },
     /* sf=0, ftype=0, rmode=1, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].f[0],1))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,1,0,1));",
       "" },
     /* sf=0, ftype=0, rmode=1, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -5606,12 +5606,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=0, rmode=2, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].f[0],2))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,0,0,2));",
       "" },
     /* sf=0, ftype=0, rmode=2, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].f[0],2))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,1,0,2));",
       "" },
     /* sf=0, ftype=0, rmode=2, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -5646,12 +5646,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=0, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvtzs32(c->v[f_rn].f[0]))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,0,0,3));",
       "" },
     /* sf=0, ftype=0, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvtzu32(c->v[f_rn].f[0]))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,1,0,3));",
       "" },
     /* sf=0, ftype=0, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -5686,32 +5686,32 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=1, rmode=0, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].df[0],0))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,0,0,0));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].df[0],0))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,1,0,0));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,(f64)(i32)(u32)RX(f_rn));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),32,64,0,0));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,(f64)(u32)RX(f_rn));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),32,64,1,0));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=4 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].df[0],4))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,0,0,4));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=5 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].df[0],4))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,1,0,4));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=6 */
     { SNX_FLOW_UNDEF,
@@ -5726,12 +5726,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=1, rmode=1, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].df[0],1))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,0,0,1));",
       "" },
     /* sf=0, ftype=1, rmode=1, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].df[0],1))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,1,0,1));",
       "" },
     /* sf=0, ftype=1, rmode=1, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -5766,12 +5766,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=1, rmode=2, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_s32(c->v[f_rn].df[0],2))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,0,0,2));",
       "" },
     /* sf=0, ftype=1, rmode=2, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvt_u32(c->v[f_rn].df[0],2))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,1,0,2));",
       "" },
     /* sf=0, ftype=1, rmode=2, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -5806,12 +5806,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=0, ftype=1, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvtzs32(c->v[f_rn].df[0]))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,0,0,3));",
       "" },
     /* sf=0, ftype=1, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u32)((u32)fcvtzu32(c->v[f_rn].df[0]))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,1,0,3));",
       "" },
     /* sf=0, ftype=1, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6166,32 +6166,32 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=0, rmode=0, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].f[0],0)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,0,0,0));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].f[0],0)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,1,0,0));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,(f32)(i64)RX(f_rn));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),64,32,0,0));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETS(f_rd,(f32)RX(f_rn));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),64,32,1,0));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=4 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].f[0],4)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,0,0,4));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=5 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].f[0],4)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,1,0,4));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=6 */
     { SNX_FLOW_UNDEF,
@@ -6206,12 +6206,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=0, rmode=1, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].f[0],1)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,0,0,1));",
       "" },
     /* sf=1, ftype=0, rmode=1, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].f[0],1)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,1,0,1));",
       "" },
     /* sf=1, ftype=0, rmode=1, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6246,12 +6246,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=0, rmode=2, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].f[0],2)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,0,0,2));",
       "" },
     /* sf=1, ftype=0, rmode=2, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].f[0],2)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,1,0,2));",
       "" },
     /* sf=1, ftype=0, rmode=2, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6286,12 +6286,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=0, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvtzs64(c->v[f_rn].f[0])));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,0,0,3));",
       "" },
     /* sf=1, ftype=0, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvtzu64(c->v[f_rn].f[0])));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,1,0,3));",
       "" },
     /* sf=1, ftype=0, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6326,32 +6326,32 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=1, rmode=0, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].df[0],0)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,0,0,0));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].df[0],0)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,1,0,0));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,(f64)(i64)RX(f_rn));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),64,64,0,0));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETD(f_rd,(f64)RX(f_rn));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),64,64,1,0));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=4 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].df[0],4)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,0,0,4));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=5 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].df[0],4)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,1,0,4));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=6 */
     { SNX_FLOW_PLAIN,
@@ -6366,12 +6366,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=1, rmode=1, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].df[0],1)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,0,0,1));",
       "" },
     /* sf=1, ftype=1, rmode=1, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].df[0],1)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,1,0,1));",
       "" },
     /* sf=1, ftype=1, rmode=1, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6406,12 +6406,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=1, rmode=2, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_s64(c->v[f_rn].df[0],2)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,0,0,2));",
       "" },
     /* sf=1, ftype=1, rmode=2, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvt_u64(c->v[f_rn].df[0],2)));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,1,0,2));",
       "" },
     /* sf=1, ftype=1, rmode=2, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6446,12 +6446,12 @@ static const SnxA64Case cases_FCVT_INT[] = {
     /* sf=1, ftype=1, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvtzs64(c->v[f_rn].df[0])));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,0,0,3));",
       "" },
     /* sf=1, ftype=1, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; ",
-      "SETX(f_rd,(u64)((u64)fcvtzu64(c->v[f_rn].df[0])));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,1,0,3));",
       "" },
     /* sf=1, ftype=1, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6820,12 +6820,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=0, ftype=0, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETS(f_rd,(f32)(i32)(u32)RX(f_rn)/(f32)fp_pow2((64-f_scale)));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),32,32,0,64-f_scale));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETS(f_rd,(f32)(u32)RX(f_rn)/(f32)fp_pow2((64-f_scale)));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),32,32,1,64-f_scale));",
       "" },
     /* sf=0, ftype=0, rmode=0, fop=4 */
     { SNX_FLOW_UNDEF,
@@ -6930,12 +6930,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=0, ftype=0, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)((u32)(fcvtzs32((f64)c->v[f_rn].f[0]*fp_pow2((64-f_scale))))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,0,64-f_scale,3));",
       "" },
     /* sf=0, ftype=0, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)((u32)(fcvtzu32((f64)c->v[f_rn].f[0]*fp_pow2((64-f_scale))))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,32,1,64-f_scale,3));",
       "" },
     /* sf=0, ftype=0, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -6980,12 +6980,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=0, ftype=1, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETD(f_rd,(f64)(i32)(u32)RX(f_rn)/(f64)fp_pow2((64-f_scale)));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),32,64,0,64-f_scale));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETD(f_rd,(f64)(u32)RX(f_rn)/(f64)fp_pow2((64-f_scale)));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),32,64,1,64-f_scale));",
       "" },
     /* sf=0, ftype=1, rmode=0, fop=4 */
     { SNX_FLOW_UNDEF,
@@ -7090,12 +7090,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=0, ftype=1, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)((u32)(fcvtzs32((f64)c->v[f_rn].df[0]*fp_pow2((64-f_scale))))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,0,64-f_scale,3));",
       "" },
     /* sf=0, ftype=1, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)((u32)(fcvtzu32((f64)c->v[f_rn].df[0]*fp_pow2((64-f_scale))))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,32,1,64-f_scale,3));",
       "" },
     /* sf=0, ftype=1, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -7460,12 +7460,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=1, ftype=0, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETS(f_rd,(f32)(i64)RX(f_rn)/(f32)fp_pow2((64-f_scale)));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),64,32,0,64-f_scale));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETS(f_rd,(f32)RX(f_rn)/(f32)fp_pow2((64-f_scale)));",
+      "SETSB(f_rd,snx_fp_from_int(c,RX(f_rn),64,32,1,64-f_scale));",
       "" },
     /* sf=1, ftype=0, rmode=0, fop=4 */
     { SNX_FLOW_UNDEF,
@@ -7570,12 +7570,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=1, ftype=0, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)(fcvtzs64((f64)c->v[f_rn].f[0]*fp_pow2((64-f_scale)))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,0,64-f_scale,3));",
       "" },
     /* sf=1, ftype=0, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)(fcvtzu64((f64)c->v[f_rn].f[0]*fp_pow2((64-f_scale)))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].s[0],32,64,1,64-f_scale,3));",
       "" },
     /* sf=1, ftype=0, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -7620,12 +7620,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=1, ftype=1, rmode=0, fop=2 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETD(f_rd,(f64)(i64)RX(f_rn)/(f64)fp_pow2((64-f_scale)));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),64,64,0,64-f_scale));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=3 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETD(f_rd,(f64)RX(f_rn)/(f64)fp_pow2((64-f_scale)));",
+      "SETDB(f_rd,snx_fp_from_int(c,RX(f_rn),64,64,1,64-f_scale));",
       "" },
     /* sf=1, ftype=1, rmode=0, fop=4 */
     { SNX_FLOW_UNDEF,
@@ -7730,12 +7730,12 @@ static const SnxA64Case cases_FCVT_FIX[] = {
     /* sf=1, ftype=1, rmode=3, fop=0 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)(fcvtzs64((f64)c->v[f_rn].df[0]*fp_pow2((64-f_scale)))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,0,64-f_scale,3));",
       "" },
     /* sf=1, ftype=1, rmode=3, fop=1 */
     { SNX_FLOW_PLAIN,
       "const u32 f_rd=(w>>0)&31; const u32 f_rn=(w>>5)&31; const u32 f_scale=(w>>10)&63; ",
-      "SETX(f_rd,(u64)(fcvtzu64((f64)c->v[f_rn].df[0]*fp_pow2((64-f_scale)))));",
+      "SETX(f_rd,snx_fp_to_int(c,c->v[f_rn].d[0],64,64,1,64-f_scale,3));",
       "" },
     /* sf=1, ftype=1, rmode=3, fop=2 */
     { SNX_FLOW_UNDEF,
@@ -8214,7 +8214,7 @@ static const SnxA64Pattern patterns[] = {
       "(((w>>22)&3)<<0)", cases_FMOV_IMM, sizeof(cases_FMOV_IMM) / sizeof(cases_FMOV_IMM[0]) },
     { "FP3", 0xFF000000UL, 0x1F000000UL, 0, 3, { { 22, 2 }, { 21, 1 }, { 15, 1 } },
       "(((w>>15)&1)<<0)|(((w>>21)&1)<<1)|(((w>>22)&3)<<2)", cases_FP3, sizeof(cases_FP3) / sizeof(cases_FP3[0]) },
-    { "FCVT_INT", 0x7F20FC00UL, 0x1E200000UL, 0, 4, { { 31, 1 }, { 22, 2 }, { 19, 2 }, { 16, 3 } },
+    { "FCVT_INT", 0x7F20FC00UL, 0x1E200000UL, 10, 4, { { 31, 1 }, { 22, 2 }, { 19, 2 }, { 16, 3 } },
       "(((w>>16)&7)<<0)|(((w>>19)&3)<<3)|(((w>>22)&3)<<5)|(((w>>31)&1)<<7)", cases_FCVT_INT, sizeof(cases_FCVT_INT) / sizeof(cases_FCVT_INT[0]) },
     { "FCVT_FIX", 0x7F200000UL, 0x1E000000UL, 9, 4, { { 31, 1 }, { 22, 2 }, { 19, 2 }, { 16, 3 } },
       "(((w>>16)&7)<<0)|(((w>>19)&3)<<3)|(((w>>22)&3)<<5)|(((w>>31)&1)<<7)", cases_FCVT_FIX, sizeof(cases_FCVT_FIX) / sizeof(cases_FCVT_FIX[0]) },

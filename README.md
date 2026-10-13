@@ -48,10 +48,17 @@ Afterwards, put `prod.keys` (and `title.keys`, for NSPs) in `~/.switch`, or pass
 Run the same command again after an interruption. Completed extraction and recompilation are skipped,
 but the game always starts anew. To run the steps separately:
 ```bash
-./build/scarletnx --extract "Game.xci" --name Game  # -> work/Game/{exefs,romfs}
-./build/scarletnx --recompile work/Game Game        # -> games/Game
+./build/scarletnx -x "Game.xci" --name Game  # -> work/Game/{exefs,romfs}
+./build/scarletnx -r work/Game Game         # -> games/Game
+./build/scarletnx -rx "Game.xci"            # prepare without playing (UNIX)
+./build/scarletnx -Hs "Game.xci"            # headless, wait for GDB (UNIX)
 cd games && ./Game
 ```
+
+For a keyboard-driven SDL3 menu, run `./build/scarletnx-gui`. Select a driver with
+arrow keys and Enter, then choose drag-and-drop or the paginated `games/` browser.
+The GUI shows live driver/game
+output and combined CPU/RAM usage. See [Keyboard launcher](docs/GUI.md).
 
 For more detailed information please see: [Build + run](./docs/BUILD.md).
 

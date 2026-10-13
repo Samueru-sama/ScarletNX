@@ -9,6 +9,7 @@
 #include "runtime/clock.h"
 #include "runtime/loader.h"
 #include "runtime/options.h"
+#include "runtime/gdbstub.h"
 #include "runtime/rtapi.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_trace.h"
@@ -176,6 +177,8 @@ static int is_dump(const char* path) {
 int snx_main(int argc, char** argv) {
     int startup = snx_startup_options(argc, argv);
     if (startup) return startup;
+    /* Start the helper before creating any host threads. */
+    if (g_opt_gdb && snx_gdb_start(g_opt_gdb_stop)) return 2;
     /* In an AppImage argv[0] points into its mount (APPDIR). APPIMAGE is the file that was run, so a copy named after
        the game (games/Catherine or games/Catherine.AppImage) finds games/Catherine_code.so like the bare runtime does.
        Both variables are inherited, so they only count when this runtime is the one inside the mount */
@@ -186,7 +189,7 @@ int snx_main(int argc, char** argv) {
        with games/Catherine_data/), so one runtime or AppImage runs any game without a copy named after it */
     /* the dump can be named with --game or on its own */
     const char *game = NULL, *dump = NULL;
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc && strcmp(argv[i], "--"); i++)
         if (!strncmp(argv[i], "--game=", 7) && argv[i][7])
             game = argv[i] + 7;
         else if (argv[i][0] != '-' && is_dump(argv[i]))
@@ -197,7 +200,7 @@ int snx_main(int argc, char** argv) {
     split_path(game && !dump ? game : in_appimage ? appimage : argv[0]);
     if (dump)
         fatal("%s is a game dump. ScarletNX does not run dumps: it runs a game recompiled from one. Extract and "
-              "recompile it first with a clone of the repository (scarletnx --extract, then --recompile, as "
+              "recompile it first with a clone of the repository (scarletnx -x, then -r, as "
               "the README describes), then point --game at the result, for example --game=games/Game.",
               dump);
     /* loaded before the .ini is opened, which writes one: a mistyped --game leaves no stray settings file */
@@ -205,12 +208,12 @@ int snx_main(int argc, char** argv) {
     if (g_mod->abi != SNX_ABI) fatal("The recompiled code is from another ScarletNX version.");
     /* --key=value sets a setting for this run, over the .ini. The value is used where it is, so a long --script
        isn't cut */
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc && strcmp(argv[i], "--"); i++) {
         const char* e = strchr(argv[i], '=');
         if (!strcmp(argv[i], "-v"))
             ini_override("log", "2");
-        else if (!strncmp(argv[i], "--headless=", 11))
-            continue; /* startup-only, not a persisted or hot-reloaded INI option */
+        else if (!strcmp(argv[i], "--fullscreen"))
+            ini_override("fullscreen", "1");
         else if (!strncmp(argv[i], "--", 2) && e && e - argv[i] - 2 < 64) {
             char k[64];
             memcpy(k, argv[i] + 2, (size_t)(e - argv[i] - 2));

@@ -85,6 +85,10 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
         CHECK(!snx_remove_tree(argv[1]));
     return rc;
 }
+unsigned snx_read_abi(const SnxPaths* paths) {
+    (void)paths;
+    return 4;
+}
 int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     char *game, *partial;
     int rc;
@@ -116,13 +120,28 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
 #endif
     CHECK(!snx_copy_file(paths->executable, game));
     CHECK(!snx_make_executable(game));
+    {
+        char* stamp = snx_format("%s/%s.abi", argv[1], argv[4]);
+        char* code = snx_format("%s/%s_code.%s", argv[1], argv[4],
+#ifdef _WIN32
+                                "dll"
+#else
+                                "so"
+#endif
+        );
+        CHECK(!snx_write_file(stamp, "4\n", 2));
+        CHECK(!snx_write_file(code, "synthetic", 9));
+        free(stamp);
+        free(code);
+    }
     free(game);
     return 0;
 }
 static void run(const char* exe, const char* repo, const char* dump, const char* log, int expected, const char* events,
                 const char* diagnostic) {
-    const char* args[8];
-    const char* headless = getenv("SNX_WORKFLOW_HEADLESS");
+    const char* args[16];
+    const char *headless = getenv("SNX_WORKFLOW_HEADLESS"), *flags = getenv("SNX_WORKFLOW_FLAGS");
+    int n = 5;
     char* output = NULL;
     unsigned char* recorded;
     size_t size;
@@ -133,13 +152,18 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
     args[2] = repo;
     args[3] = "--build-dir";
     args[4] = repo;
-    args[5] = dump;
-    args[6] = headless && *headless ? headless : NULL;
-    args[7] = NULL;
-    if (args[6] && !strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) {
-        args[5] = headless;
-        args[6] = dump;
+    if (flags && *flags) args[n++] = flags;
+    if (headless && *headless && !strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) args[n++] = headless;
+    args[n++] = dump;
+    if (headless && *headless && strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) args[n++] = headless;
+    if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
+        args[n++] = "--";
+        args[n++] = "some arg";
+        args[n++] = "";
+        args[n++] = "-rx";
+        args[n++] = "--headless=0";
     }
+    args[n] = NULL;
     rc = snx_run(args, NULL, NULL, &output);
     if (rc != expected) fprintf(stderr, "expected %d, got %d: %s\n", expected, rc, output);
     CHECK(rc == expected);
@@ -177,7 +201,17 @@ int main(int argc, char** argv) {
     }
     if (getenv("SNX_WORKFLOW_CHILD")) {
         const char* flag = getenv("SNX_WORKFLOW_HEADLESS");
-        if (flag && *flag) CHECK(argc == 2 && !strcmp(argv[1], flag));
+        const char* fullscreen = getenv("SNX_WORKFLOW_FLAGS");
+        if (fullscreen && !strncmp(fullscreen, "--fullscreen", 12)) {
+            const char* expected = !strcmp(fullscreen, "--fullscreen=0") ? "--fullscreen=0" : "--fullscreen";
+            CHECK(argc == 2 && !strcmp(argv[1], expected));
+        }
+        if (flag && *flag) CHECK(argc == 2 && !strcmp(argv[1], "-H"));
+        if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
+            CHECK(argc == 6 && !strcmp(argv[1], "--"));
+            CHECK(!strcmp(argv[2], "some arg") && !strcmp(argv[3], ""));
+            CHECK(!strcmp(argv[4], "-rx") && !strcmp(argv[5], "--headless=0"));
+        }
         /* All game invocations must chdir, including repeat launches. */
         cwd = snx_absolute(".");
         expected_cwd = snx_absolute(getenv("SNX_WORKFLOW_GAMES"));
@@ -219,6 +253,53 @@ int main(int argc, char** argv) {
     set_env("SNX_WORKFLOW_FAIL", "");
     run(exe, repo, dump, log, 0, "G", NULL);
 
+    /* Missing/mismatched/malformed ABI stamps are never trusted. */
+    {
+        char* stamp = snx_path_join(repo, "games/Test game.abi");
+        CHECK(!snx_write_file(stamp, "3\n", 2));
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        CHECK(!snx_write_file(stamp, "broken", 6));
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        CHECK(!snx_write_file(stamp, "4", 1));
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        CHECK(!snx_write_file(stamp, "4garbage\n", 9));
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        CHECK(!snx_remove_tree(stamp));
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        free(stamp);
+    }
+    {
+        const char* flags[] = {"--fullscreen", "--fullscreen=0", "--fullscreen=1"};
+        size_t j;
+        for (j = 0; j < sizeof(flags) / sizeof(flags[0]); ++j) {
+            set_env("SNX_WORKFLOW_FLAGS", flags[j]);
+            run(exe, repo, dump, log, 0, "G", NULL);
+        }
+        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid");
+        run(exe, repo, dump, log, 1, "", "unknown option");
+        set_env("SNX_WORKFLOW_FLAGS", "");
+    }
+    set_env("SNX_WORKFLOW_ARGS", "1");
+    run(exe, repo, dump, log, 0, "G", NULL);
+    set_env("SNX_WORKFLOW_ARGS", "");
+    {
+        const char* flags[] = {
+            "-r",
+            "--recomp",
+#ifndef _WIN32
+            "-rx",
+            "-xr",
+#endif
+        };
+        size_t j;
+        for (j = 0; j < sizeof(flags) / sizeof(flags[0]); ++j) {
+            set_env("SNX_WORKFLOW_FLAGS", flags[j]);
+            reset(repo, dump);
+            run(exe, repo, dump, log, 0, "ER", NULL);
+            run(exe, repo, dump, log, 0, "R", NULL);
+        }
+        set_env("SNX_WORKFLOW_FLAGS", "");
+    }
     reset(repo, dump);
     set_env("SNX_WORKFLOW_FAIL", "E");
     run(exe, repo, dump, log, 7, "E", "Extraction failed");
@@ -260,9 +341,9 @@ int main(int argc, char** argv) {
     run(exe, repo, dump, log, 0, "RG", NULL);
     run(exe, repo, "/nonexistent/dump.xci", log, 1, "", "Input dump is missing");
     {
-        const char* flags[] = {"--headless", "--headless=1", "--headless=0"};
+        const char* flags[] = {"--headless", "-H"};
         unsigned j;
-        for (j = 0; j < 3; ++j) {
+        for (j = 0; j < 2; ++j) {
             set_env("SNX_WORKFLOW_HEADLESS", flags[j]);
             set_env("SNX_WORKFLOW_PREFIX", "0");
             run(exe, repo, dump, log, 0, "G", NULL);

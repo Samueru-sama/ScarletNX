@@ -3,7 +3,7 @@
 # NRO implementation notes
 
 ScarletNX already parsed NRO files and staged optional embedded RomFS data through
-`--recompile`. Direct positional NRO input now bypasses container extraction and goes
+`-r`. Direct positional NRO input now bypasses container extraction and goes
 straight to recompilation and launch. It always recompiles rather than trusting a
 same-stem executable left by another input. The existing mixed NSO/NRO data-cache
 check still applies. Use a different output name or remove conflicting cached data.

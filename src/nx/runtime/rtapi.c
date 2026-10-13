@@ -99,36 +99,10 @@ static void rt_brk(CPU* c, u64 pc, u32 imm) {
     fatal("The game executed BRK at %llx", (unsigned long long)pc);
 }
 static u64 rt_ticks(void) { return guest_ticks(); }
-/* what the host can't do the guest's way: said once each. The generated code is compiled for round-to-nearest, so a
-   directed rounding mode only reaches the operations the compiler didn't fold (src/nx/runtime/driver/toolchain.c) */
-static void fpcr_warn(u32 fpcr) {
-    if ((fpcr >> 22) & 3)
-        WARN_LIMIT(
-            1, "FPU: the game sets a directed rounding mode (FPCR %x), which the recompiled code only partly follows\n",
-            fpcr);
-#if !defined(__aarch64__)
-    if (fpcr & (1u << 25)) WARN_LIMIT(1, "FPU: the game sets default NaN mode (FPCR %x), which isn't emulated\n", fpcr);
-    if (fpcr & (1u << 26))
-        WARN_LIMIT(1, "FPU: the game sets alternative half precision (FPCR %x), which isn't emulated\n", fpcr);
-#endif
-}
 void snx_fpcr_apply(CPU* c) {
-    fpcr_warn(c->fpcr);
-#if defined(__aarch64__)
-    /* arm64 host: just load the guest FPCR (FZ, rounding, DN, AHP) */
-    u64 v = (u64)(c->fpcr & 0x07C00000u);
-    __asm__ __volatile__("msr fpcr, %0" ::"r"(v));
-#elif defined(__x86_64__) || defined(_M_X64)
-    u32 mx;
-    __asm__ __volatile__("stmxcsr %0" : "=m"(mx));
-    mx &= ~(0x8040u | 0x6000u);
-    if (c->fpcr & (1u << 24)) mx |= 0x8040; /* FZ -> FTZ+DAZ */
-    static const u32 rm[4] = {0, 0x4000, 0x2000, 0x6000};
-    mx |= rm[(c->fpcr >> 22) & 3];
-    __asm__ __volatile__("ldmxcsr %0" ::"m"(mx));
-#else
+    /* Guest FP is evaluated by stateful integer helpers. In particular, do not
+       change the host environment used by HLE or graphics when switching guests. */
     (void)c;
-#endif
 }
 static void rt_fpcr(CPU* c) { snx_fpcr_apply(c); }
 static void rt_sev(void) {}

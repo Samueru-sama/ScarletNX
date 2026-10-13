@@ -9,14 +9,14 @@ Run from checkout. POSIX examples: Windows uses `python`, `.exe`, PowerShell env
 
 ```sh
 cmake --build build
-./build/scarletnx --recompile work/Game Game --native --jobs 8
+./build/scarletnx -r work/Game Game --jobs 8
 ctest --test-dir build --output-on-failure
 scripts/format.sh --check
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
 clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src/common/cpu/aarch64 src/common/cpu/aarch64/cpu_helpers.c
 ```
 
-Runtime relink deploys to `games/` by default. Recompiler/`src/common/cpu/aarch64/` edits require `--recompile`.
+Runtime relink deploys to `games/` by default. Recompiler/`src/common/cpu/aarch64/` edits require `-r`.
 Avoid builds during timing runs. Formatting: clang-format 23 + `uv`/pinned Ruff; omit `--check` to write.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
@@ -53,7 +53,7 @@ build/snx-shaderc --nvn DIR --cache games/shader_cache/spirv --verbose
 ```
 
 `--validate`: needs `spirv-val`; `--out`: GLSL/SPIR-V for build comparisons.
-`--nvn`: prebuild shipped shaders (automatic in `--recompile`). PowerShell: `$env:SNX_SHADER_CORPUS='corpus'`.
+`--nvn`: prebuild shipped shaders (automatic in `-r`). PowerShell: `$env:SNX_SHADER_CORPUS='corpus'`.
 
 ## Upstream / provenance
 

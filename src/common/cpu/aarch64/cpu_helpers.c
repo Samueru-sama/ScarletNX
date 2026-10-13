@@ -2,11 +2,8 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* Helpers that get compiled into the game code module: FP with exact arm semantics (saturation, NaN
-   handling, min/max, recip estimates), the AdvSIMD ops we don't emit inline, crypto (AES/SHA/CRC/PMULL)
-   and sysregs. Builds with Clang. The libm functions it can call are fma, for f64 fused multiply-add when the target
-   has no FMA instruction (FMLA64 in cpu.h), and sqrt and sqrtf, which the square root builtins call to set errno
-   (here only for a NaN, since a negative input returns before them). */
+/* Helpers compiled into the game module: stateful integer-only ARM FP,
+   AdvSIMD operations, crypto and system registers. Builds with Clang. */
 #include "cpu.h"
 
 /* The helpers by topic, in the order they depend on each other (the module compiles this as one file) */
@@ -39,11 +36,11 @@ int snx_simd(CPU* c, u8* M, u32 w) {
         }
         if (!U) return 0;
         int sz = size & 1, hi = size >> 1;
-        f64 v;
+        u64 v;
         switch (op) {
             case 0x0D:
                 if (hi) return 0;
-                v = rdf(&a, sz, 0) + rdf(&a, sz, 1);
+                v = snx_fp_binary(c, eget(&a, sz ? 3 : 2, 0), eget(&a, sz ? 3 : 2, 1), sz ? 64 : 32, SNX_FP_ADD);
                 break;
             case 0x0C:
             case 0x0F:
@@ -53,7 +50,7 @@ int snx_simd(CPU* c, u8* M, u32 w) {
                 return 1;
             default: return 0;
         }
-        wrf(&r, sz, 0, v);
+        eset(&r, sz ? 3 : 2, 0, v);
         *VR(rd) = r;
         return 1;
     }

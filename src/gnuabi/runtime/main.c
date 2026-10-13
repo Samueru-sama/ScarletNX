@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 int main(int argc, char** argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
     const char* cc = NULL;
     int first = 1;
     while (first < argc && !strncmp(argv[first], "--", 2)) {

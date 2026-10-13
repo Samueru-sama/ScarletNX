@@ -28,8 +28,8 @@ typedef double f64;
 
 /* the version of the contract between a game module and the runtime (this header, cpu_helpers.c, RtAPI and the
    module descriptor). The recompiler stamps it into each module, the runtime refuses a module with another one */
-/* ABI 4: rounding, min/max and comparisons now observe FPCR/FPSR. */
-#define SNX_ABI 4
+/* Stateful FP arithmetic changes generated semantics: rebuild runtime and modules. */
+#define SNX_ABI 6
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
@@ -294,48 +294,26 @@ u64 snx_decode_bitmask(u32 N, u32 imms, u32 immr, u32 ds); /* cpu_helpers.c */
 u32 snx_crc32(u32 acc, u64 val, int bytes, int castagnoli);
 
 /* ---- fp (cpu_helpers.c) ----
-   rm, for fp_round and fcvt_*: 0 RNE, 1 +inf, 2 -inf, 3 zero, 4 RNA (ties away); FPRM is the guest's FPCR mode.
-   The helpers assume what games run with: no flush to zero, NaN propagation, IEEE half precision (the runtime warns
-   when a game sets FPCR otherwise). Arithmetic emitted inline (+ - * /) gives x86's NaNs: a NaN made from non-NaN
-   operands comes out negative where ARM's default NaN is positive, and with two NaN operands x86 returns the first
-   rather than the first signalling one. Checking every operation for that would cost more than it is worth */
-f32 fp_max32(f32, f32);
-f32 fp_min32(f32, f32);
-f64 fp_max64(f64, f64);
-f64 fp_min64(f64, f64);
-f32 fp_maxnm32(f32, f32);
-f32 fp_minnm32(f32, f32);
-f64 fp_maxnm64(f64, f64);
-f64 fp_minnm64(f64, f64);
-i64 fcvt_s64(f64 x, int rm);
-u64 fcvt_u64(f64 x, int rm);
-i32 fcvt_s32(f64 x, int rm);
-u32 fcvt_u32(f64 x, int rm);
+   Raw IEEE encodings, independent of host floating point and byte order.
+   rm: 0 ties-even, 1 +inf, 2 -inf, 3 zero, 4 ties-away, 5 odd.
+   All exceptions accumulate in the supplied CPU, never process-global state. */
+enum { SNX_FP_ADD, SNX_FP_SUB, SNX_FP_MUL, SNX_FP_DIV, SNX_FP_MULX, SNX_FP_ABD, SNX_FP_RECPS, SNX_FP_RSQRTS };
+enum { SNX_FP_SQRT, SNX_FP_RECPE, SNX_FP_RSQRTE, SNX_FP_RECPX };
+/* Arithmetic widths are 32/64; format conversion also supports width 16.
+   Integer widths are 32/64, 0 <= fbits <= integer width. Rounding modes are
+   0=nearest-even, 1=+inf, 2=-inf, 3=zero, 4=nearest-away, 5=odd (FCVTXN).
+   Operands are width-sized raw encodings; only c->fpcr/c->fpsr are accessed. */
+u64 snx_fp_binary(CPU* c, u64 a, u64 b, int width, int op);
+u64 snx_fp_fma(CPU* c, u64 add, u64 a, u64 b, int width);
+u64 snx_fp_unary(CPU* c, u64 bits, int width, int op);
+u64 snx_fp_convert(CPU* c, u64 bits, int src_width, int dst_width, int rm);
+u64 snx_fp_to_int(CPU* c, u64 bits, int fp_width, int int_width, int uns, int fbits, int rm);
+u64 snx_fp_from_int(CPU* c, u64 bits, int int_width, int fp_width, int uns, int fbits);
 u32 snx_fp_compare(CPU* c, u64 a, u64 b, int width, int signal);
 u64 snx_fp_minmax(CPU* c, u64 a, u64 b, int width, int minimum, int numeric);
 u64 snx_fp_round(CPU* c, u64 bits, int width, int rm, int exact);
-f64 fp_round(f64 x, int rm);
-f32 fp_round32(f32 x, int rm);
-u16 f32_to_f16(f32 x);
-f32 f16_to_f32(u16 h);
-u16 f64_to_f16(f64 x);
-f32 fp_recpe32(f32 x);
-f32 fp_rsqrte32(f32 x);
-f64 fp_recpe64(f64 x);
-f64 fp_rsqrte64(f64 x);
-f32 fp_recps32(f32 a, f32 b);
-f32 fp_rsqrts32(f32 a, f32 b);
-f64 fp_recps64(f64 a, f64 b);
-f64 fp_rsqrts64(f64 a, f64 b);
 u32 urecpe32(u32 x);
 u32 ursqrte32(u32 x);
-f32 fp_mulx32(f32 a, f32 b);
-f64 fp_mulx64(f64 a, f64 b);
-f32 fp_sqrt32(f32 x);
-f64 fp_sqrt64(f64 x);
-f32 fp_fma32(f32 a, f32 b, f32 c);
-f64 fp_fma64(f64 a, f64 b, f64 c);
-f32 fp_fmanan32(f32 d, f32 a, f32 b);
 
 /* ---- saturation ---- */
 SNX_INLINE i64 sat_s(i64 v, int bits) {
@@ -487,25 +465,8 @@ void snx_msr(CPU* c, u32 sysreg, u64 v);
         p__->d[0] = t__;                                                                                               \
     } while (0)
 #define SETHB(d, e) SETH(d, e)
-/* FNMUL: the product with its sign flipped, NaN included. The empty asm hides the product from the optimizer, which
-   would otherwise compute -(a*b) as (-a)*b or a*(-b), leaving a NaN from the other operand unflipped */
-#if defined(__x86_64__)
-#define SNX_FPREG "+x"
-#else
-#define SNX_FPREG "+w"
-#endif
-SNX_INLINE f32 fnmul32(f32 a, f32 b) {
-    f32 p = a * b;
-    __asm__("" : SNX_FPREG(p));
-    return -p;
-}
-SNX_INLINE f64 fnmul64(f64 a, f64 b) {
-    f64 p = a * b;
-    __asm__("" : SNX_FPREG(p));
-    return -p;
-}
-#define FPRM   ((int)((c->fpcr >> 22) & 3))
-#define CBAR() __asm__ __volatile__("" ::: "memory")
+#define FPRM        ((int)((c->fpcr >> 22) & 3))
+#define CBAR()      __asm__ __volatile__("" ::: "memory")
 /* YIELD sits in spin-wait loops: the compiler barrier makes the loop reload guest memory, which the compiler could
    otherwise hoist out of a loop that makes no call, and pause tells the CPU the loop spins (it frees the core's other
    hyperthread, and leaving the loop doesn't flush the pipeline) */
@@ -518,80 +479,6 @@ SNX_INLINE f64 fnmul64(f64 a, f64 b) {
 #else
 #define YIELD() CBAR()
 #endif
-/* fused multiply-add (also fp_fma32/fp_fma64, which must give the same results). The product of two floats is exact in
-   double, but the double sum is rounded twice (to double, then to f32), which goes wrong when the double sum lands on an
-   f32 halfway point without being exact. Only a double whose low 28 bits are zero can be one: then the sum is rounded to
-   odd instead (truncated, last bit set when inexact, with the add's error from TwoSum), which the narrowing rounds
-   correctly since double has at least 24 + 2 bits. Without -mfma this costs less than __builtin_fmaf, a libm call per
-   lane. f64 has no wider type: __builtin_fma is one instruction with -mfma and a libm call without it */
-SNX_INLINE f32 fmla32_(f32 d, f32 a, f32 b) {
-    f64 p = (f64)a * (f64)b, s = p + (f64)d;
-    u64 u;
-    memcpy(&u, &s, 8);
-    if (UNLIKELY(!(u & 0x0FFFFFFFu))) {
-        /* every NaN lands here too: ARM picks which one (the host's choice depends on the operand order Clang gives
-           the add and multiply) */
-        if (s != s) return fp_fmanan32(d, a, b);
-        f64 t = s - p, e = (p - (s - t)) + ((f64)d - t); /* s + e == p + d exactly */
-        u64 x = (u64)((e < 0) | (e > 0));                /* inexact (s infinite gives e NaN: left alone) */
-        u = (u - (x & (u64)((e < 0) ^ (s < 0)))) | x;    /* toward zero when s overshot, then the odd bit */
-        memcpy(&s, &u, 8);
-    }
-    return (f32)s;
-}
-#if defined(__FMA__)
-#define FMLA32(d, a, b) __builtin_fmaf((a), (b), (d))
-#define FMLA64(d, a, b) __builtin_fma((a), (b), (d))
-#else
-#define FMLA32(d, a, b) fmla32_((d), (a), (b))
-#define FMLA64(d, a, b) __builtin_fma((a), (b), (d))
-#endif
-SNX_INLINE void fcmp_(CPU* c, f64 a, f64 b) {
-    if (a < b) {
-        c->n = 1;
-        c->z = 0;
-        c->cf = 0;
-        c->vf = 0;
-    } else if (a == b) {
-        c->n = 0;
-        c->z = 1;
-        c->cf = 1;
-        c->vf = 0;
-    } else if (a > b) {
-        c->n = 0;
-        c->z = 0;
-        c->cf = 1;
-        c->vf = 0;
-    } else {
-        c->n = 0;
-        c->z = 0;
-        c->cf = 1;
-        c->vf = 1;
-    }
-}
-SNX_INLINE i32 fcvtzs32(f64 x) {
-    if (x != x) return 0;
-    if (x >= 2147483648.0) return 0x7FFFFFFF;
-    if (x <= -2147483649.0) return (i32)0x80000000u;
-    return (i32)x;
-}
-SNX_INLINE u32 fcvtzu32(f64 x) {
-    if (x != x || x <= -1.0) return 0;
-    if (x >= 4294967296.0) return 0xFFFFFFFFu;
-    return (u32)(i64)x;
-}
-SNX_INLINE i64 fcvtzs64(f64 x) {
-    if (x != x) return 0;
-    if (x >= 9223372036854775808.0) return 0x7FFFFFFFFFFFFFFFll;
-    if (x < -9223372036854775808.0) return (i64)0x8000000000000000ull;
-    return (i64)x;
-}
-SNX_INLINE u64 fcvtzu64(f64 x) { return fcvt_u64(x, 3); }
-SNX_INLINE f64 fp_pow2(int n) {
-    f64 r = 1.0;
-    while (n-- > 0) r *= 2.0;
-    return r;
-}
 SNX_INLINE u32 vfp_imm32(u32 i) {
     u32 b6 = (i >> 6) & 1;
     u32 e = ((b6 ^ 1) << 7) | ((b6 ? 0x1Fu : 0) << 2) | ((i >> 4) & 3);

@@ -11,7 +11,7 @@
    validate, a corpus file could not be read or an output could not be written. Shaders the translator doesn't support
    are counted, not failures.
 
-   --nvn fills the SPIR-V cache before the game first runs (scarletnx --recompile does it): DIR holds the game's own NVN
+   --nvn fills the SPIR-V cache before the game first runs (scarletnx -r does it): DIR holds the game's own NVN
    shader files, as Catherine ships them in romfs. Their programs translate the way the renderer translates them on
    first use (fragment programs alone, a vertex shader's VertexA and VertexB merged), for draws without integer
    attributes, textures or outputs, so those shaders skip glslang then. */
@@ -121,7 +121,8 @@ static int nvn_dir(const char* dir, const char* cache, int verbose) {
         total++;
         ShaderInfo si;
         memset(&si, 0, sizeof si);
-        char* glsl = vk_glsl_post(shader_to_glsl(prog, 0x10000, stage, &si), stage);
+        char* glsl = shader_to_glsl(prog, 0x10000, stage, &si);
+        glsl = vk_glsl_post(glsl, stage, shader_flushes_denorms(&si));
         free(merged);
         free(buf);
         if (!glsl || si.unsupported) {
@@ -211,7 +212,7 @@ int main(int argc, char** argv) {
             continue;
         }
         char* glsl = shader_to_glsl(code, max_bytes, stage, &si);
-        glsl = vk_glsl_post(glsl, stage); /* the GLSL the renderer compiles */
+        glsl = vk_glsl_post(glsl, stage, shader_flushes_denorms(&si)); /* the GLSL the renderer compiles */
         free(code);
         if (!glsl || si.unsupported) {
             untranslated++;

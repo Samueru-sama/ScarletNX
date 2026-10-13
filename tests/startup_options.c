@@ -10,21 +10,26 @@ static int check(int argc, char** argv, int expected, int value) {
     return 1;
 }
 int main(void) {
-    char *on[] = {"game", "--headless"}, *explicit_on[] = {"game", "--headless=1"};
-    char *off[] = {"game", "--headless=0"}, *bad[] = {"game", "--headless=yes"};
-    char *empty[] = {"game", "--headless="}, *last[] = {"game", "--headless=0", "--headless"};
-    char* other[] = {"game", "--seconds=1"};
+    char *on[] = {"game", "--headless"}, *short_on[] = {"game", "-H"};
+    char *explicit_on[] = {"game", "--headless=1"}, *off[] = {"game", "--headless=0"};
+    char *bad[] = {"game", "--headless=yes"}, *empty[] = {"game", "--headless="};
+    char *other[] = {"game", "--seconds=1"}, *boundary[] = {"game", "--", "-Hs", "--headless=0"};
+    char *combined[] = {"game", "-Hs"}, *server[] = {"game", "-S"};
+    int default_headless = 0;
 #ifdef SNX_HEADLESS_ONLY
-    if (!g_opt_headless || check(2, off, 2, 0)) return 1;
-#else
-    if (g_opt_headless || check(2, off, 0, 0)) return 1;
+    default_headless = 1;
 #endif
-    if (check(2, on, 0, 1) || check(2, explicit_on, 0, 1) || check(2, bad, 2, 0) || check(2, empty, 2, 0) ||
-        check(3, last, 0, 1) || check(2, other, 0, 1))
+    if (check(2, on, 0, 1) || check(2, short_on, 0, 1) || check(2, explicit_on, 2, 0) || check(2, off, 2, 0) ||
+        check(2, bad, 2, 0) || check(2, empty, 2, 0) || check(2, other, 0, default_headless) ||
+        check(4, boundary, 0, default_headless))
         return 1;
-#ifndef SNX_HEADLESS_ONLY
-    if (check(2, off, 0, 0)) return 1;
+    if (g_opt_gdb || g_opt_gdb_stop) return 1;
+#ifdef _WIN32
+    if (check(2, combined, 2, 0) || check(2, server, 2, 0)) return 1;
+#else
+    if (check(2, combined, 0, 1) || !g_opt_gdb || !g_opt_gdb_stop) return 1;
+    if (check(2, server, 0, default_headless) || !g_opt_gdb || g_opt_gdb_stop) return 1;
 #endif
-    puts("Headless startup options passed");
+    puts("Startup options passed");
     return 0;
 }

@@ -180,6 +180,9 @@ static int create_device(void) {
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
+    /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too */
+    g_vk_flush_denorm = p12.shaderDenormFlushToZeroFloat32 &&
+                        p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
     if (!g_vk_preserve_infnan)
         WARN("vulkan: this GPU can't keep infinities and NaNs in shaders, which some games' lighting needs\n");
 

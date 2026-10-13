@@ -303,7 +303,7 @@ typedef struct {
     int max_idx;
     int has_flow;
     int indent;
-    u8 gtag[256];      /* reg -> global buffer it holds the base of (index+1) */
+    u16 gtag[256];     /* reg -> the c0 offset / 16 + 1 of the global buffer base it holds (gbuf_tag), 0 none */
     u8 tgt[65536 / 8]; /* branch targets (BRA/SSY/PBK/PCNT and BRX table) */
     u32* pop_tgt;      /* static stack resolution: target of each SYNC/BRK/CONT (0 = unreachable) */
     int stk_static;    /* 1 if SSY/PBK/PCNT got resolved statically (no stack array emitted) */
@@ -337,7 +337,9 @@ const char* bop(u32 op, const char* a, const char* b);
 void setp2(Ctx* c, u32 pa, u32 pb, u32 bo, const char* t, const char* pc);
 u32 cb_idx(u64 w);
 u32 cb_off(u64 w);
-u8 gbuf_tag(Ctx* c, u64 w);
+u16 gbuf_tag(Ctx* c, u64 w);
+u16 gbuf_tag_off(Ctx* c, u32 idx, u32 off);
+int gbuf_use(Ctx* c, u16 tag); /* the tag's buffer index, taken now if it is new; -1 when there is none or no room */
 char* imm20f(u64 w);
 char* imm20i(u64 w);
 char* imm32(u64 w);

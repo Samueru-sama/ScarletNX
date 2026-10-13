@@ -16,7 +16,7 @@
 #include <string.h>
 
 static void usage(void) {
-    puts("Usage: scarletnx --recompile INPUT [NAME] [OPTIONS]\n"
+    puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
          "  INPUT                  Game/ExeFS directory or .nro\n"
          "  -o, --name, --out NAME  Output name (default: NPDM or input name)\n"
          "  --outdir DIR           Output directory (default: checkout/games)\n"
@@ -71,7 +71,7 @@ static char* title_name(const char* name, const SnxProgram* p, const char* input
     }
     return out;
 }
-static unsigned read_abi(const SnxPaths* paths) {
+unsigned snx_read_abi(const SnxPaths* paths) {
     char* path = snx_path_join(paths->repo, "src/common/cpu/aarch64/cpu.h");
     unsigned char* data;
     const char* p;
@@ -328,7 +328,7 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("--target expects auto, linux or win64");
     if (!no_build && host_win && !compile.target_win && (!runtime || !compile.cc))
         return snx_error("Linux cross-compilation on Windows requires --cc and --runtime");
-    gen.abi = read_abi(paths);
+    gen.abi = snx_read_abi(paths);
     if (!gen.abi) return snx_error("cannot read src/common/cpu/aarch64/cpu.h; set --repo to the checkout");
     if (snx_load_program(input, &program, error, sizeof(error))) return snx_error("%s", error);
     if (!program.npdm.is64) {
@@ -351,6 +351,14 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         goto done;
     }
     base = snx_path_join(out, title);
+    /* Invalidate the completion stamp before touching an existing game's data
+       or module. Failed recompilation must never leave a trusted checkpoint. */
+    if (!no_build) {
+        char* stamp = snx_format("%s.abi", base);
+        int failed = snx_is_file(stamp) && snx_remove_tree(stamp);
+        free(stamp);
+        if (failed) goto done;
+    }
     data = snx_format("%s_data", base);
     if (snx_is_link(data)) {
         snx_error("invalid output directory");
@@ -407,6 +415,17 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         snx_error("cannot deploy runtime to %s", exe);
         if (snx_is_file(tmp)) snx_remove_tree(tmp);
         goto done;
+    }
+    {
+        char* stamp = snx_format("%s.abi", base);
+        char version[32];
+        sprintf(version, "%u\n", gen.abi);
+        i = snx_write_file(stamp, version, strlen(version));
+        free(stamp);
+        if (i) {
+            snx_error("cannot record the compiled game's ABI");
+            goto done;
+        }
     }
     if (!compile.quiet) printf("Built %s\n", exe);
     rc = 0;

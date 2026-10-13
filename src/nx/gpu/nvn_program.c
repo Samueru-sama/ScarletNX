@@ -95,7 +95,7 @@ static void shader_translate_probe(void* ptr) {
             g_shader_cb_read = NULL;
             char* glsl = shader_to_glsl(code, NVN_SHADER_CODE_MAX, meta.stage, &info);
             g_shader_cb_read = old;
-            glsl = vk_glsl_post(glsl, meta.stage);
+            glsl = vk_glsl_post(glsl, meta.stage, shader_flushes_denorms(&info));
             size_t words = 0;
             char err[512] = "";
             u32* spirv = glsl ? vk_spirv_cached(glsl, meta.stage, NULL, &words, err, sizeof err) : NULL;

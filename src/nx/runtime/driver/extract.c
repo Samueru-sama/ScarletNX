@@ -30,7 +30,7 @@ typedef struct {
 } ExtractState;
 
 static void extract_help(void) {
-    puts("Usage: scarletnx --extract BASE.xci|BASE.nsp [options]\n"
+    puts("Usage: scarletnx -x BASE.xci|BASE.nsp [options]\n"
          "  --update FILE       Apply a same-title update during extraction\n"
          "  --name NAME         Output name (default: base dump stem)\n"
          "  --out DIR           Output directory (default: REPO/work/NAME)\n"

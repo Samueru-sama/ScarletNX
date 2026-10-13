@@ -20,7 +20,8 @@
     X(6, (w >> 31) || !(w & 0x8000UL))                                                                                 \
     X(7, ((w >> 22) & 3) != 3 && ((w >> 31) || !(w & 0x8000UL)))                                                       \
     X(8, ((w >> 10) & 7) <= 4)                                                                                         \
-    X(9, (w >> 31) || ((w >> 10) & 63) >= 32)
+    X(9, (w >> 31) || ((w >> 10) & 63) >= 32)                                                                          \
+    X(10, ((w >> 22) & 3) != 3) /* General-register half FMOV requires later FP16, not A57. */
 
 static int valid_word(unsigned validation, SnxU32 w) {
     switch (validation) {
@@ -270,29 +271,30 @@ int snx_a64_fast_simd(FILE* out, SnxU32 w) {
             hi = size >> 1;
             if (sz && !q) return 0;
             lanes = sz ? 2 : (q ? 4 : 2);
-            type = sz ? "df" : "f";
+            type = sz ? "d" : "s";
             operation = NULL;
             acc = NULL;
             if (!u && !hi && op == 0x1A)
-                operation = "+";
+                operation = "SNX_FP_ADD";
             else if (!u && hi && op == 0x1A)
-                operation = "-";
+                operation = "SNX_FP_SUB";
             else if (u && !hi && op == 0x1B)
-                operation = "*";
+                operation = "SNX_FP_MUL";
             else if (u && !hi && op == 0x1F)
-                operation = "/";
+                operation = "SNX_FP_DIV";
             else if (!u && op == 0x19)
-                acc = hi ? "-" : "";
+                acc = hi ? (sz ? "^0x8000000000000000ull" : "^0x80000000u") : "";
             if (!operation && !acc) return 0;
             fprintf(out, "{ V128 a=c->v[%u],b=c->v[%u],r", rn, rm);
             if (acc) fprintf(out, "=c->v[%u]", rd);
             fputs("; ", out);
             for (i = 0; i < lanes; ++i) {
                 if (acc)
-                    fprintf(out, "r.%s[%u]=FMLA%u(r.%s[%u],%sa.%s[%u],b.%s[%u]); ", type, i, sz ? 64 : 32, type, i, acc,
-                            type, i, type, i);
+                    fprintf(out, "r.%s[%u]=snx_fp_fma(c,r.%s[%u],a.%s[%u]%s,b.%s[%u],%u); ", type, i, type, i, type, i,
+                            acc, type, i, sz ? 64 : 32);
                 else
-                    fprintf(out, "r.%s[%u]=a.%s[%u]%sb.%s[%u]; ", type, i, type, i, operation, type, i);
+                    fprintf(out, "r.%s[%u]=snx_fp_binary(c,a.%s[%u],b.%s[%u],%u,%s); ", type, i, type, i, type, i,
+                            sz ? 64 : 32, operation);
             }
             if (!q) fputs("r.d[1]=0; ", out);
             fprintf(out, "c->v[%u]=r; }", rd);
@@ -323,23 +325,24 @@ int snx_a64_fast_simd(FILE* out, SnxU32 w) {
         m = (mb << 4) | ((w >> 16) & 15);
         if (!scalar && sz && !q) return 0;
         lanes = scalar ? 1 : (sz ? 2 : (q ? 4 : 2));
-        type = sz ? "df" : "f";
+        type = sz ? "d" : "s";
         fprintf(out, "{ V128 a=c->v[%u],r", rn);
         if (!scalar && op != 9) fprintf(out, "=c->v[%u]", rd);
         fputs("; ", out);
-        if (scalar && op != 9) fprintf(out, "%s d0=c->v[%u].%s[0]; ", sz ? "f64" : "f32", rd, type);
+        if (scalar && op != 9) fprintf(out, "%s d0=c->v[%u].%s[0]; ", sz ? "u64" : "u32", rd, type);
         if (scalar || op == 9) fputs("r.d[0]=0; r.d[1]=0; ", out);
-        fprintf(out, "%s e=c->v[%u].%s[%u]; ", sz ? "f64" : "f32", m, type, index);
+        fprintf(out, "%s e=c->v[%u].%s[%u]; ", sz ? "u64" : "u32", m, type, index);
         for (i = 0; i < lanes; ++i) {
             if (op == 9)
-                fprintf(out, "r.%s[%u]=a.%s[%u]*e; ", type, i, type, i);
+                fprintf(out, "r.%s[%u]=snx_fp_binary(c,a.%s[%u],e,%u,SNX_FP_MUL); ", type, i, type, i, sz ? 64 : 32);
             else {
-                fprintf(out, "r.%s[%u]=FMLA%u(", type, i, sz ? 64 : 32);
+                fprintf(out, "r.%s[%u]=snx_fp_fma(c,", type, i);
                 if (scalar)
                     fputs("d0", out);
                 else
                     fprintf(out, "r.%s[%u]", type, i);
-                fprintf(out, ",%sa.%s[%u],e); ", op == 5 ? "-" : "", type, i);
+                fprintf(out, ",a.%s[%u]%s,e,%u); ", type, i,
+                        op == 5 ? (sz ? "^0x8000000000000000ull" : "^0x80000000u") : "", sz ? 64 : 32);
             }
         }
         if (!q && !scalar) fputs("r.d[1]=0; ", out);

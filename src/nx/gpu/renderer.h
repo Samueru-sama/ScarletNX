@@ -32,6 +32,8 @@ typedef struct Renderer {
     void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                  u32 instances);
     void (*cb_bind)(GpuChannel* ch, int stage, u32 v);
+    /* DRAW_TEXTURE: a texture's rectangle onto color target 0. NULL: not drawn */
+    void (*draw_texture)(GpuChannel* ch);
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);

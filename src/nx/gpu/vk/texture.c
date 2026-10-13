@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "gpu/gpu.h"
+#include "gpu/texture/etc2.h"
 #include "runtime/platform/log.h"
 #include "gpu/vk/vk.h"
 
@@ -50,6 +51,13 @@ static u64 bl_layer_size(u32 w, u32 h, u32 d, const VkFmt* f, u32 bh, u32 bd, u3
 /* one level of one layer, from guest bytes to tightly packed rows, converted when the format needs it */
 static void level_convert(const VkFmt* f, const u8* lin, u32 lw, u32 lh, u32 ld, u32 rowb, u8* out) {
     u32 th = (lh + f->bh - 1) / f->bh;
+    if (f->conv >= VKC_ETC2) { /* each slice's blocks, decoded */
+        int kind = f->conv - VKC_ETC2;
+        for (u32 z = 0; z < ld; z++)
+            etc2_decode_image(lin + (u64)z * rowb * th, lw, lh, kind,
+                              out + (u64)z * lw * lh * etc2_pixel_bytes(kind));
+        return;
+    }
     switch (f->conv) {
         case VKC_RGBA4:
         case VKC_RGB5A1:
@@ -87,6 +95,7 @@ static void level_convert(const VkFmt* f, const u8* lin, u32 lw, u32 lh, u32 ld,
 }
 static u64 level_out_size(const VkFmt* f, u32 lw, u32 lh, u32 ld, u32 rowb) {
     u32 th = (lh + f->bh - 1) / f->bh;
+    if (f->conv >= VKC_ETC2) return (u64)lw * lh * ld * etc2_pixel_bytes(f->conv - VKC_ETC2);
     switch (f->conv) {
         case VKC_RGBA4:
         case VKC_RGB5A1:
@@ -105,7 +114,15 @@ static int tex_upload(Surf* t) {
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    if (f->depth && f->stencil && f->bpp != 4) {
+    /* Z32F and Z16 are the bytes D32_SFLOAT and D16_UNORM hold: they load through the depth aspect like a color
+       texture through its color one. Four-byte packed depth/stencil needs separate aspect uploads. */
+    int depth_raw = f->depth && (f->vk == VK_FORMAT_D32_SFLOAT || f->vk == VK_FORMAT_D16_UNORM);
+    int depth_packed = f->depth && f->stencil && f->bpp == 4;
+    if (f->depth && !depth_raw && !depth_packed) {
+        LOG_LIMIT(1,
+                   "vulkan: packed depth textures from memory aren't loaded yet, they read as 1.0 (only depth render "
+                   "targets are sampled)\n");
+        /* defined contents rather than whatever the image's memory held: far, so shadow tests pass */
         VkClearDepthStencilValue far = {1.0f, 0};
         VkImageSubresourceRange all = {vk_aspect(f), 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
         vkCmdClearDepthStencilImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &far, 1, &all);
@@ -114,7 +131,7 @@ static int tex_upload(Surf* t) {
     int is3d = t->type == VK_IMAGE_VIEW_TYPE_3D;
     u32 layers = t->layers, d3 = is3d ? t->depth3d : 1;
     VkBufferImageCopy* reg = f->conv == VKC_ASTC ? NULL
-        : calloc((size_t)layers * t->levels * (f->depth && f->stencil && f->bpp == 4 ? 2 : 1), sizeof *reg);
+        : calloc((size_t)layers * t->levels * (depth_packed ? 2 : 1), sizeof *reg);
     if (f->conv != VKC_ASTC && !reg) return 0;
     u32 nreg = 0;
     int complete = 1;
@@ -174,7 +191,7 @@ static int tex_upload(Surf* t) {
                 at += lsz;
                 continue;
             }
-            if (f->depth && f->stencil && f->bpp == 4) {
+            if (depth_packed) {
                 /* Maxwell stores S8 in the low byte and D24 in the upper three. Vulkan
                    buffer-to-image copies take separate, tightly packed aspect planes. */
                 u64 texels = (u64)lw * lh * ld;
@@ -224,7 +241,8 @@ static int tex_upload(Surf* t) {
                 level_convert(f, lin, lw, lh, ld, rowb, p);
                 reg[nreg++] = (VkBufferImageCopy){
                     .bufferOffset = off,
-                    .imageSubresource = {f->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, l, layer, 1},
+                    .imageSubresource = {depth_raw ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                                         l, layer, 1},
                     .imageExtent = {lw, lh, ld}};
             } else {
                 complete = 0;
@@ -327,11 +345,14 @@ static Surf* tex_create(u64 gva, u32 w, u32 h, u32 layers, u32 d3, u32 levels, V
    copy per size, in a list through next: one draw can hold copies of a target at two sizes (two headers, or two
    stages), so a copy isn't replaced while a draw may hold it. Copies not read for a second go; their views and image
    when the frame being recorded is done, as descriptors may still name them */
-static Surf* rt_crop(Surf* rt, u32 w, u32 h) {
+/* the target's top-left w x h copied out, in the target's format, or in as: another color format of the same texel
+   size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats) */
+static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     Surf* c = NULL;
+    VkFmt f = as ? *as : rt->f;
     for (Surf** pp = &rt->crop; *pp;) {
         Surf* x = *pp;
-        if (x->w == w && x->h == h)
+        if (x->w == w && x->h == h && x->f.vk == f.vk)
             c = x;
         else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
             *pp = x->next;
@@ -352,14 +373,14 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h) {
         c->sh = vk_sc(h) < rt->sh ? vk_sc(h) : rt->sh;
         c->layers = rt->layers;
         c->levels = c->depth3d = 1;
-        c->f = rt->f;
+        c->f = f;
         c->fkey = rt->fkey;
         c->type = rt->type;
         c->is_rt = 1; /* sampled like one; not in the table, so never found as one */
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                 .imageType = VK_IMAGE_TYPE_2D,
-                                .format = rt->f.vk,
+                                .format = f.vk,
                                 .extent = {c->sw, c->sh, 1},
                                 .mipLevels = 1,
                                 .arrayLayers = rt->layers,
@@ -403,7 +424,7 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h) {
 
 Surf* vk_rt_snapshot(Surf* rt) {
     if (!rt || rt->layout == VK_IMAGE_LAYOUT_UNDEFINED) return rt;
-    return rt_crop(rt, rt->w, rt->h);
+    return rt_crop(rt, rt->w, rt->h, NULL);
 }
 
 /* texture header type -> what the image is created as */
@@ -549,7 +570,12 @@ static Surf* tex_from_tic(const u32* tic) {
            own aspect, whatever the host format's size) */
         if (f.bpp == rt->f.bpp || f.depth || rt->f.depth) {
             vk_rt_note_read(rt);
-            return rt->w == w && rt->h == h ? rt : rt_crop(rt, w, h);
+            /* the same bytes in another color format (an RGBA8 target read as R32_Uint): sampling the target itself
+               would convert its texels, so a copy in the texture's format holds them as they are. sRGB and linear
+               twins are views of one image and need no copy */
+            if (!f.depth && !rt->f.depth && vk_srgb_as(f.vk, 0) != vk_srgb_as(rt->f.vk, 0))
+                return rt_crop(rt, w, h, &f);
+            return rt->w == w && rt->h == h ? rt : rt_crop(rt, w, h, NULL);
         }
         LOG_LIMIT(1,
                   "vulkan: a texture with %u-byte texels reads the render target at %llx, which has %u-byte pixels: it "

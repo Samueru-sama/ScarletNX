@@ -299,7 +299,8 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
             if (corpus == (const char*)-1) corpus = getenv("SNX_SHADER_CORPUS");
             if (corpus) shader_corpus_save(corpus, code, mlen, 0x10000, stage, &s->si, h ^ mix);
         }
-        char* src = vk_glsl_post(vk_translate(code, 0x10000, stage, &s->si, sh_cb_read, &s->cbr), stage);
+        char* src = vk_translate(code, 0x10000, stage, &s->si, sh_cb_read, &s->cbr);
+        src = vk_glsl_post(src, stage, shader_flushes_denorms(&s->si));
         if (s->si.unsupported)
             WARN("shader %016llx: %d untranslated instructions (first: %s)\n", (unsigned long long)h, s->si.unsupported,
                  s->si.first_unsupported);

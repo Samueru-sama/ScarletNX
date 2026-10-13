@@ -352,12 +352,13 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op);
    3 f32), returning the old value to dst unless it is RZ. Operations: add min max inc dec and or xor, exch, safeadd */
 static void global_atomic(Ctx* c, u64 w, const char* name, u32 ra, u32 rv, i32 off, u32 sz, u32 op, u32 dst) {
     if (op == 10) op = 0; /* SAFEADD */
-    if (!c->gtag[ra] || (sz != 0 && sz != 1 && sz != 3) || op > 8 || (sz == 3 && op != 0 && op != 8)) {
+    int known = !((sz != 0 && sz != 1 && sz != 3) || op > 8 || (sz == 3 && op != 0 && op != 8));
+    int gi = known ? gbuf_use(c, c->gtag[ra]) : -1;
+    if (gi < 0) {
         unsupported(c, name, w);
         if (dst != 255) setr(c, dst, "0u");
         return;
     }
-    int gi = c->gtag[ra] - 1;
     c->si->gbuf_wmask |= 1u << gi;
     emitl(c, "{ uint o_ = (%s + %uu - %s) >> 2u; uint v_ = %s; uint old_;", R(c, ra), (u32)off,
           CB(c, 0, c->si->gbuf_cbuf_off[gi]), R(c, rv));
@@ -618,9 +619,36 @@ void exit_epilogue(Ctx* c) {
     emitl(c, "return;");
 }
 
+/* the FTZ/FMZ field of the FP32 arithmetic (Eden's FADD, FMUL and FFMA layouts): set, denormal operands and
+   results flush to zero; clear, they are kept */
+static void note_denorms(Ctx* c, int id, u64 w) {
+    u32 f;
+    switch (id) {
+        case O_FADD_R:
+        case O_FADD_C:
+        case O_FADD_I: f = B(w, 44, 1); break;
+        case O_FADD32I: f = B(w, 55, 1); break;
+        case O_FMUL_R:
+        case O_FMUL_C:
+        case O_FMUL_I: f = B(w, 44, 2); break;
+        case O_FMUL32I:
+        case O_FFMA_R:
+        case O_FFMA_RC:
+        case O_FFMA_CR:
+        case O_FFMA_I:
+        case O_FFMA32I: f = B(w, 53, 2); break;
+        default: return;
+    }
+    if (f)
+        c->si->fp32_flush = 1;
+    else
+        c->si->fp32_preserve = 1;
+}
+
 static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
     u32 d = B(w, 0, 8), a = B(w, 8, 8);
     int id = op->id;
+    note_denorms(c, id, w);
     switch (id) {
         /* ---------------- float */
         case O_FADD_R:
@@ -802,8 +830,9 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
         case O_F2I_I: {
             char* src = opBf(c, w, id - O_F2I_R);
             if (B(w, 10, 2) == 1) src = T("unpackHalf2x16(%s).%c", opB(c, w, id - O_F2I_R), B(w, 41, 1) ? 'y' : 'x');
-            /* Pinned Eden F2I encoding: ABS at 45, NEG at 49. */
-            src = fneg_abs(src, B(w, 49, 1), B(w, 45, 1));
+            /* NEG at 45 and ABS at 49, as Ryujinx and rEden read them. Upstream Eden swaps the two (from yuzu), and
+               the console's signed % needs bit 45 to negate: F2I.TRUNC of -(a / b), then IMAD q * b + a */
+            src = fneg_abs(src, B(w, 45, 1), B(w, 49, 1));
             static const char* fn[4] = {"roundEven", "floor", "ceil", "trunc"};
             src = T("%s(%s)", fn[B(w, 39, 2)], src);
             /* saturating, NaN to 0, and a 16-bit destination (IDstFmt bits 8-9 = 1) clamped to its range */
@@ -928,7 +957,7 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
         case O_IADD_I: {
             if (d != 255) { /* a pointer plus an offset, not negated (AvgMode 1 negates B, 2 negates A) */
                 u32 avg = B(w, 48, 2);
-                u8 tg = 0;
+                u16 tg = 0;
                 if (id == O_IADD_C && avg != 1) tg = gbuf_tag(c, w);
                 if (!tg && avg != 2) tg = c->gtag[a];
                 if (!tg && id == O_IADD_R && avg != 1) tg = c->gtag[B(w, 20, 8)];
@@ -1642,6 +1671,10 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
                 setr(c, d, word);
             c->indent--;
             emitl(c, "}");
+            /* a 32 or 64 bit word of c0 at a constant address can be a storage buffer's address (deko3d loads it
+               with LDC.64 rather than MOV) */
+            if (d != 255) c->gtag[d] = ar == 255 && (sz == 4 || sz == 5) ? gbuf_tag_off(c, idx, (u32)off) : 0;
+            if (d < 254 && sz == 5) c->gtag[d + 1] = 0;
             break;
         }
         case O_LDS:
@@ -1692,9 +1725,9 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
             break;
         }
         case O_LDG:
-            if (c->gtag[a]) {
+            if (gbuf_use(c, c->gtag[a]) >= 0) {
                 /* ssbo load, addr = c0[off] + offset */
-                int gi = c->gtag[a] - 1;
+                int gi = gbuf_use(c, c->gtag[a]);
                 u32 goff = c->si->gbuf_cbuf_off[gi];
                 i32 imm = (i32)(B(w, 20, 24) << 8) >> 8;
                 u32 sz = B(w, 48, 3);
@@ -1718,9 +1751,9 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
             }
             /* unknown base -> unsupported */
         case O_STG:
-            if (id == O_STG && c->gtag[a]) {
+            if (id == O_STG && gbuf_use(c, c->gtag[a]) >= 0) {
                 /* ssbo store: 32/64/128 direct, 8/16 via atomics so neighbours survive */
-                int gi = c->gtag[a] - 1;
+                int gi = gbuf_use(c, c->gtag[a]);
                 u32 goff = c->si->gbuf_cbuf_off[gi];
                 i32 imm = (i32)(B(w, 20, 24) << 8) >> 8;
                 u32 sz = B(w, 48, 3);

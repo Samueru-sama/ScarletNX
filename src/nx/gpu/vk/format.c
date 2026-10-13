@@ -161,6 +161,12 @@ static VkFmt TA(int bw, int bh, int srgb) { /* ASTC, decoded by compute: few des
     r.conv = VKC_ASTC;
     return r;
 }
+static VkFmt TE(VkFormat f, int bpp, int conv) { /* ETC2 and EAC 4x4 blocks, decoded on upload: few desktop GPUs sample
+                                                    them */
+    VkFmt r = {f, (u8)bpp, 4, 4, 0, 0, 0, 0};
+    r.conv = (u8)conv;
+    return r;
+}
 static VkFmt TV(VkFormat f, int bpp, int conv) { /* converted on upload */
     VkFmt r = {f, (u8)bpp, 1, 1, 0, 0, 0, 0};
     r.conv = (u8)conv;
@@ -195,6 +201,13 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
                  VK_FORMAT_R8G8B8A8_UNORM, 4);
         case 0x09:
             return ui ? T(VK_FORMAT_A2B10G10R10_UINT_PACK32, 4, 1, 0) : T(VK_FORMAT_A2B10G10R10_UNORM_PACK32, 4, 0, 0);
+        /* ETC2 to RGBA8; EAC's 11 bits to 16 bit channels, so none are lost */
+        case 0x06: return TE(srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_ETC2);
+        case 0x0A: return TE(srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 8, VKC_ETC2_PTA);
+        case 0x0B: return TE(srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, 16, VKC_ETC2_RGBA);
+        case 0x19: return sn ? TE(VK_FORMAT_R16_SNORM, 8, VKC_EAC_R_SNORM) : TE(VK_FORMAT_R16_UNORM, 8, VKC_EAC_R);
+        case 0x1A:
+            return sn ? TE(VK_FORMAT_R16G16_SNORM, 16, VKC_EAC_RG_SNORM) : TE(VK_FORMAT_R16G16_UNORM, 16, VKC_EAC_RG);
         case 0x0C:
             PICK(VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16_SINT,
                  VK_FORMAT_R16G16_UNORM, 4);
@@ -257,7 +270,7 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
             return r;
         }
         case 0x2F: return vk_zt_format(0x0A);
-        case 0x30: return vk_zt_format(0x19); /* Zf32X24S8 (0x19 itself is EAC, not supported) */
+        case 0x30: return vk_zt_format(0x19); /* Zf32X24S8 (0x19 itself is EAC) */
         case 0x3A: return vk_zt_format(0x13);
     }
 #undef PICK

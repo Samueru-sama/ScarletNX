@@ -153,22 +153,28 @@ void setp2(Ctx* c, u32 pa, u32 pb, u32 bo, const char* t, const char* pc) {
 /* operand B per encoding */
 u32 cb_idx(u64 w) { return B(w, 34, 5); }
 u32 cb_off(u64 w) { return B(w, 20, 14) * 4; }
-/* is c0[off] the {address, size} of an NVN ssbo? returns its index in gbuf_cbuf_off + 1, or 0. NVN gives each stage
-   16 of them, 16-byte aligned, at its own place in c0 (Ryujinx GlobalMemory.GetStorageBaseCbOffset, MIT): 0x110
-   vertex, 0x210 tessellation control, 0x310 tessellation evaluation and compute, 0x410 geometry, 0x510 fragment (Tears
-   of the Kingdom's fragment shaders use 0x550). The graphics stages take c0[0x110..0x610] and compute c0[0x110..0x410],
-   which also holds deko3d's compute range at 0x110, up to the 16 the renderer binds (SNX_VKB_SSBO) */
-u8 gbuf_tag(Ctx* c, u64 w) {
-    u32 lo = 0x110, hi = c->stage == ST_CS ? 0x410 : 0x610;
-    if (cb_idx(w) != 0) return 0;
-    u32 off = cb_off(w);
-    if (off < lo || off >= hi || (off & 15)) return 0;
+/* can c0[off] be the {address, size} of a storage buffer? A tag (off / 16 + 1) for the register that takes its address,
+   or 0. The buffer is only taken (gbuf_use) when a global load, store or atomic goes through that register, so a c0
+   word that holds something else costs no binding. NVN gives each stage 16 of them, 16-byte aligned, at its own place
+   in c0 (Ryujinx GlobalMemory.GetStorageBaseCbOffset, MIT): 0x110 vertex, 0x210 tessellation control, 0x310
+   tessellation evaluation and compute, 0x410 geometry, 0x510 fragment (Tears of the Kingdom's fragment shaders use
+   0x550); deko3d puts the fragment ones at 0x730. The graphics stages take c0[0x110..0x830] and compute
+   c0[0x110..0x410], which also holds deko3d's compute range at 0x110, up to the 16 the renderer binds (SNX_VKB_SSBO) */
+u16 gbuf_tag_off(Ctx* c, u32 idx, u32 off) {
+    u32 lo = 0x110, hi = c->stage == ST_CS ? 0x410 : 0x830;
+    if (idx != 0 || off < lo || off >= hi || (off & 15)) return 0;
+    return (u16)(off / 16 + 1);
+}
+u16 gbuf_tag(Ctx* c, u64 w) { return gbuf_tag_off(c, cb_idx(w), cb_off(w)); }
+int gbuf_use(Ctx* c, u16 tag) {
+    if (!tag) return -1;
+    u32 off = (u32)(tag - 1) * 16;
     ShaderInfo* si = c->si;
     for (int i = 0; i < si->ngbuf; i++)
-        if (si->gbuf_cbuf_off[i] == off) return (u8)(i + 1);
-    if (si->ngbuf >= 16) return 0;
-    si->gbuf_cbuf_off[si->ngbuf++] = off;
-    return (u8)si->ngbuf;
+        if (si->gbuf_cbuf_off[i] == off) return i;
+    if (si->ngbuf >= 16) return -1;
+    si->gbuf_cbuf_off[si->ngbuf] = off;
+    return si->ngbuf++;
 }
 char* imm20f(u64 w) {
     u32 v = (B(w, 20, 19) << 12) | (B(w, 56, 1) << 31);
@@ -949,12 +955,16 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
     /* a clip distance below the last written one that the program leaves alone doesn't clip */
     for (int i = 0; c->stage == ST_VS && i < 8 && c->si->uses_clip_mask >> i; i++)
         if (!((c->si->uses_clip_mask >> i) & 1)) sb_f(D, "  gl_ClipDistance[%d] = 0.0;\n", i);
-    /* VS regs are precise. depth prepass and color pass use different shaders with the same position math;
-     if the driver fuses an fma in only one of them, depths differ by an ulp and the EQUAL test fails */
+    /* the registers are precise in every stage. Maxwell runs the float math as the console's compiler scheduled it,
+       neither fused nor reassociated, and a driver that does either changes answers: (a * c) * c folded into
+       a * (c * c) skips a product that flushes to 0 (edenprobe fmath); Eden translates FADD and FMUL with
+       no_contraction too. In a VS it also keeps a depth prepass and the color pass, different shaders with the
+       same position math, from fusing an fma in only one of them, which breaks the EQUAL depth test.
+       SNX_NO_PRECISE (or the older SNX_NO_PRECISE_VS) turns it off */
     {
         static int nop = -1;
-        if (nop < 0) nop = getenv("SNX_NO_PRECISE_VS") != NULL;
-        const char* rq = (c->stage == ST_VS && !nop) ? "precise uint" : "uint";
+        if (nop < 0) nop = getenv("SNX_NO_PRECISE") != NULL || getenv("SNX_NO_PRECISE_VS") != NULL;
+        const char* rq = !nop ? "precise uint" : "uint";
         for (int i = 0; i < 255; i++)
             if (c->used_reg[i]) sb_f(D, "  %s r%d = 0u;\n", rq, i);
     }

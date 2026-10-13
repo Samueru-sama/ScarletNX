@@ -68,6 +68,11 @@ static int vkr_async_submit(u64* e, u32 n, u32 syncpt, u32 incs) {
     __atomic_add_fetch(&g_vk_epoch, 1, __ATOMIC_RELAXED); /* memory may have changed since the last submit */
     return 0;                                             /* gpu_submit queues it for the GPU thread */
 }
+static void vkr_draw_texture(GpuChannel* ch) {
+    vk_lock();
+    vk_render_draw_texture(ch);
+    vk_unlock();
+}
 static void vkr_clear(GpuChannel* ch, u32 v) {
     vk_lock();
     vk_render_clear(ch, v);
@@ -446,6 +451,7 @@ const Renderer vk_renderer = {
     .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,
     .nvn_draw_prepare = vkr_nvn_draw_prepare,
     .nvn_dispatch = vkr_nvn_dispatch,
+    .draw_texture = vkr_draw_texture,
     .draw = vkr_draw,
     .cb_bind = vkr_cb_bind,
     .blit = vkr_blit,

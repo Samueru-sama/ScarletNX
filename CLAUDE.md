@@ -52,8 +52,8 @@ file holds the rules sessions get wrong and points to the skills that carry the 
 | --- | --- |
 | Build the runtime, hactool and the third-party libraries (deploys to every game in `games/`) | `cmake --preset default && cmake --build --preset default` (Windows: `scripts\bootstrap.ps1` once, `Set-ExecutionPolicy -Scope Process Bypass` and `. scripts\env.ps1` per window) |
 | Cross-build for Windows (llvm-mingw on PATH) | `cmake --preset windows-cross && cmake --build --preset windows-cross` |
-| Extract a dump | `build/default/scarletnx --extract "Game.xci" --name Game [--update u.nsp]` |
-| Recompile a game | `build/default/scarletnx --recompile work/Game Game` |
+| Extract a dump | `build/default/scarletnx -x "Game.xci" --name Game [--update u.nsp]` |
+| Recompile a game | `build/default/scarletnx -r work/Game Game` |
 | Run with scripted input and a screenshot | `cd games && ./Catherine --seconds=60 --shot=/path/out --script=ms:hexbuttons,...` |
 | Name addresses / disassemble game code | `tools/symbols.py work/Catherine ADDR...` / `tools/disasm.py work/Catherine FUNC` |
 | Format / check | `scripts/format.sh` / `scripts/format.sh --check` |

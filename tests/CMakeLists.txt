@@ -37,7 +37,20 @@ snx_test_target(snx-test-a64-fp 11)
 if(NOT WIN32)
     target_link_libraries(snx-test-a64-fp PRIVATE m)
 endif()
+# cpu_helpers.c's 16-byte CAS needs cmpxchg16b inline, not a libatomic call (the runtime's toolchain.c has the
+# same flag for the same reason; the function-level target("cx16") is not enough on this Clang)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(snx-test-a64-fp PRIVATE -mcx16)
+endif()
 add_test(NAME a64_fp_witnesses COMMAND snx-test-a64-fp)
+
+add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+snx_test_target(snx-test-a64-fp-arithmetic 11)
+if(NOT WIN32)
+    target_link_libraries(snx-test-a64-fp-arithmetic PRIVATE m)
+endif()
+add_test(NAME a64_fp_arithmetic_witnesses COMMAND snx-test-a64-fp-arithmetic)
 
 option(SNX_TEST_A64_FP_DIFF "Run the Linux AArch64 FP differential harness (requires Python unicorn 2.1.4)" OFF)
 if(SNX_TEST_A64_FP_DIFF)
@@ -72,6 +85,18 @@ snx_test_target(snx-test-driver 90)
 target_link_libraries(snx-test-driver PRIVATE snx_test_common)
 add_test(NAME driver_workflow COMMAND snx-test-driver)
 set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
+
+if(UNIX)
+    add_executable(snx-test-gdbstub gdbstub.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/gdbstub.c")
+    snx_test_target(snx-test-gdbstub 11)
+    target_link_libraries(snx-test-gdbstub PRIVATE snx_test_common)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME gdbstub_native COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/gdbstub.py" $<TARGET_FILE:snx-test-gdbstub>)
+        set_tests_properties(gdbstub_native PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77 RESOURCE_LOCK gdb_port_1234)
+    endif()
+endif()
 
 add_executable(snx-test-extract extract.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/extract.c")
 snx_test_target(snx-test-extract 90)
@@ -112,6 +137,29 @@ snx_test_target(snx-test-audio-out 11)
 target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
 add_test(NAME audio_out COMMAND snx-test-audio-out)
 
+add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
+snx_test_target(snx-test-render-enable 23)
+add_test(NAME render_enable COMMAND snx-test-render-enable)
+
+add_executable(snx-test-clear-flags clear_flags.c)
+snx_test_target(snx-test-clear-flags 23)
+add_test(NAME clear_flags COMMAND snx-test-clear-flags)
+
+add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
+snx_test_target(snx-test-instance-array 23)
+add_test(NAME instance_array COMMAND snx-test-instance-array)
+
+add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
+snx_test_target(snx-test-draw-texture 23)
+add_test(NAME draw_texture COMMAND snx-test-draw-texture)
+
+add_executable(snx-test-etc2 etc2_decode.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/etc2.c")
+snx_test_target(snx-test-etc2 23)
+add_test(NAME etc2_decode COMMAND snx-test-etc2)
+
 add_executable(snx-test-fs-fixture filesystem_fixture.c)
 snx_test_target(snx-test-fs-fixture 90)
 target_link_libraries(snx-test-fs-fixture PRIVATE snx_test_common)
@@ -140,7 +188,7 @@ endif()
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set_tests_properties(a64_fp_witnesses startup_windowed startup_headless driver_workflow extraction_native loader_native runtime_nro native_recompiler native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out
+    set_tests_properties(a64_fp_witnesses a64_fp_arithmetic_witnesses startup_windowed startup_headless driver_workflow extraction_native loader_native runtime_nro native_recompiler native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode
         PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
 endif()
 

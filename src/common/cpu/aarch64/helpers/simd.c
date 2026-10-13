@@ -113,27 +113,10 @@ static u64 vshl(CPU* c, u64 a, u64 b, int eb, int U, int round, int sat) {
     }
 }
 
-/* ---- per-lane fp; doing +,-,*,/,sqrt in double then rounding to single is exact ---- */
-static f64 rdf(const V128* v, int sz, int i) { return sz ? v->df[i] : (f64)v->f[i]; }
-static void wrf(V128* v, int sz, int i, f64 x) {
-    if (sz)
-        v->df[i] = x;
-    else
-        v->f[i] = (f32)x;
-}
-static f64 fmla_(f64 d, f64 a, f64 b, int sz) { return sz ? fp_fma64(a, b, d) : (f64)fp_fma32((f32)a, (f32)b, (f32)d); }
-static f64 fop2(int sel, f64 a, f64 b, int sz) { /* sel = our own op code */
-    switch (sel) {
-        case 0: return a + b;
-        case 1: return a - b;
-        case 2: return a * b;
-        case 3: return a / b;
-        case 8: return fabs_(sz ? a - b : (f64)((f32)a - (f32)b)); /* FABD: the f32 difference rounds before abs */
-        case 9: return sz ? fp_mulx64(a, b) : fp_mulx32((f32)a, (f32)b);
-        case 10: return sz ? fp_recps64(a, b) : fp_recps32((f32)a, (f32)b);
-        case 11: return sz ? fp_rsqrts64(a, b) : fp_rsqrts32((f32)a, (f32)b);
-    }
-    return 0;
+/* Per-lane FP stays in its source format, including signalling NaNs. */
+static u64 fop2(CPU* c, int sel, u64 a, u64 b, int width) {
+    int op = sel < 4 ? sel : sel == 8 ? SNX_FP_ABD : sel == 9 ? SNX_FP_MULX : sel == 10 ? SNX_FP_RECPS : SNX_FP_RSQRTS;
+    return snx_fp_binary(c, a, b, width, op);
 }
 static u64 fcmpmask(CPU* c, int sel, u64 a, u64 b, int sz) {
     if (sel == 3 || sel == 4) {
@@ -244,28 +227,15 @@ static int simd_3same(CPU* c, u32 w, int scalar) {
                 eset(&r, es, i, snx_fp_minmax(c, eget(va, es, ka), eget(vb, es, kb), sz ? 64 : 32, sel & 1, sel >= 6));
                 continue;
             }
-            if (!sz && (acc || sel == 10 || sel == 11)) { /* FMLA FMLS FRECPS FRSQRTS: the same, for their NaN choice */
-                f32 p = va->f[ka], q = vb->f[kb];
-                r.f[i] = acc == 1    ? fp_fma32(p, q, d.f[i])
-                         : acc == 2  ? fp_fma32(-p, q, d.f[i])
-                         : sel == 10 ? fp_recps32(p, q)
-                                     : fp_rsqrts32(p, q);
-                continue;
-            }
-            if (cmp >= 0) {
-                eset(&r, sz ? 3 : 2, i, fcmpmask(c, cmp, eget(va, sz ? 3 : 2, ka), eget(vb, sz ? 3 : 2, kb), sz));
-                continue;
-            }
-            f64 x = rdf(va, sz, ka), y = rdf(vb, sz, kb);
-            if (acc == 1) {
-                wrf(&r, sz, i, fmla_(rdf(&d, sz, i), x, y, sz));
-                continue;
-            }
-            if (acc == 2) {
-                wrf(&r, sz, i, fmla_(rdf(&d, sz, i), -x, y, sz));
-                continue;
-            }
-            wrf(&r, sz, i, fop2(sel, x, y, sz));
+            int es = sz ? 3 : 2, width = sz ? 64 : 32;
+            u64 x = eget(va, es, ka), y = eget(vb, es, kb), result;
+            if (cmp >= 0)
+                result = fcmpmask(c, cmp, x, y, sz);
+            else if (acc)
+                result = snx_fp_fma(c, eget(&d, es, i), x ^ (acc == 2 ? fp_sign(width) : 0), y, width);
+            else
+                result = fop2(c, sel, x, y, width);
+            eset(&r, es, i, result);
         }
         *VR(rd) = r;
         return 1;
@@ -546,44 +516,24 @@ static int simd_2misc(CPU* c, u32 w, int scalar) {
             V128 o = Q ? d : r;
             int off = Q ? (sz ? 2 : 4) : 0;
             if (sz) {
-                for (int i = 0; i < 2; i++) {
-                    f64 x = a.df[i];
-                    f32 y = (f32)x;
-                    if (U) { /* round to odd */
-                        u32 yb;
-                        memcpy(&yb, &y, 4);
-                        if ((f64)y != x && !isnan64(x) && !(yb & 1)) {
-                            f64 dd = (f64)y;
-                            if (fabs_(dd) > fabs_(x)) /* rounded away from zero (a tiny x can round to 0) */
-                                yb--;
-                            else
-                                yb++;
-                            yb |= 1;
-                            memcpy(&y, &yb, 4);
-                        }
-                    }
-                    if (scalar) {
-                        o.d[0] = 0;
-                        o.d[1] = 0;
-                        o.f[0] = y;
-                        break;
-                    }
-                    o.f[i + off] = y;
-                }
+                if (scalar) memset(&o, 0, sizeof(o));
+                for (int i = 0; i < (scalar ? 1 : 2); i++)
+                    o.s[i + off] = (u32)snx_fp_convert(c, a.d[i], 64, 32, U ? 5 : FPRM);
             } else {
                 if (U) return 0;
-                for (int i = 0; i < 4; i++) o.h[i + off] = f32_to_f16(a.f[i]);
+                for (int i = 0; i < 4; i++) o.h[i + off] = (u16)snx_fp_convert(c, a.s[i], 32, 16, FPRM);
             }
             if (!Q && !scalar) o.d[1] = 0;
             *VR(rd) = o;
             return 1;
         }
         if (op == 0x17 && !hi && !U) { /* FCVTL */
+            if (scalar) return 0;
             int off = Q ? (sz ? 2 : 4) : 0;
             if (sz) {
-                for (int i = 0; i < 2; i++) r.df[i] = (f64)a.f[i + off];
+                for (int i = 0; i < 2; i++) r.d[i] = snx_fp_convert(c, a.s[i + off], 32, 64, FPRM);
             } else {
-                for (int i = 0; i < 4; i++) r.f[i] = f16_to_f32(a.h[i + off]);
+                for (int i = 0; i < 4; i++) r.s[i] = (u32)snx_fp_convert(c, a.h[i + off], 16, 32, FPRM);
             }
             *VR(rd) = r;
             return 1;
@@ -600,7 +550,6 @@ static int simd_2misc(CPU* c, u32 w, int scalar) {
                 eset(&r, sz ? 3 : 2, i, snx_fp_round(c, bits, eb2, rm, k == 0x59));
                 continue;
             }
-            f64 x = rdf(&a, sz, i);
             switch (k) {
                 case 0x1A:
                 case 0x3A:
@@ -613,40 +562,28 @@ static int simd_2misc(CPU* c, u32 w, int scalar) {
                 case 0x7B:
                 case 0x5C: {
                     int rm = (k & 0x1F) == 0x1C ? 4 : (k & 0x1F) == 0x1A ? (hi ? 1 : 0) : (hi ? 3 : 2);
-                    int uns = U;
-                    u64 o = sz ? (uns ? fcvt_u64(x, rm) : (u64)fcvt_s64(x, rm))
-                               : (uns ? fcvt_u32(x, rm) : (u64)(u32)fcvt_s32(x, rm));
-                    eset(&r, sz ? 3 : 2, i, o);
+                    eset(&r, sz ? 3 : 2, i, snx_fp_to_int(c, bits, eb2, eb2, U, 0, rm));
                 } break;
-                case 0x1D: wrf(&r, sz, i, sz ? (f64)(i64)bits : (f64)(f32)(i32)(u32)bits); break; /* SCVTF */
-                case 0x5D: wrf(&r, sz, i, sz ? (f64)bits : (f64)(f32)(u32)bits); break;           /* UCVTF */
-                case 0x3D: wrf(&r, sz, i, sz ? fp_recpe64(x) : (f64)fp_recpe32((f32)x)); break;
-                case 0x7D: wrf(&r, sz, i, sz ? fp_rsqrte64(x) : (f64)fp_rsqrte32((f32)x)); break;
+                case 0x1D:
+                case 0x5D: eset(&r, sz ? 3 : 2, i, snx_fp_from_int(c, bits, eb2, eb2, U, 0)); break;
+                case 0x3D: eset(&r, sz ? 3 : 2, i, snx_fp_unary(c, bits, eb2, SNX_FP_RECPE)); break;
+                case 0x7D: eset(&r, sz ? 3 : 2, i, snx_fp_unary(c, bits, eb2, SNX_FP_RSQRTE)); break;
                 case 0x3C:
-                    if (sz) return 0;
+                    if (sz || scalar) return 0;
                     r.s[i] = urecpe32((u32)bits);
                     break;
                 case 0x7C:
-                    if (sz) return 0;
+                    if (sz || scalar) return 0;
                     r.s[i] = ursqrte32((u32)bits);
                     break;
-                case 0x7F: wrf(&r, sz, i, sz ? fp_sqrt64(x) : (f64)fp_sqrt32((f32)x)); break;
-                case 0x3F: {
-                    if (!scalar) return 0; /* FRECPX */
-                    if (sz) {
-                        u64 b = bits, e = (b >> 52) & 0x7FF;
-                        if (e == 0x7FF && (b & 0xFFFFFFFFFFFFFull))
-                            r.d[0] = b | 0x8000000000000ull;
-                        else
-                            r.d[0] = (b & 0x8000000000000000ull) | ((e ? (~e & 0x7FF) : 0x7FE) << 52);
-                    } else {
-                        u32 b = (u32)bits, e = (b >> 23) & 0xFF;
-                        if (e == 0xFF && (b & 0x7FFFFF))
-                            r.s[0] = b | 0x400000;
-                        else
-                            r.s[0] = (b & 0x80000000u) | ((e ? (~e & 0xFF) : 0xFE) << 23);
-                    }
-                } break;
+                case 0x7F:
+                    if (scalar) return 0;
+                    eset(&r, sz ? 3 : 2, i, snx_fp_unary(c, bits, eb2, SNX_FP_SQRT));
+                    break;
+                case 0x3F:
+                    if (!scalar) return 0;
+                    eset(&r, sz ? 3 : 2, i, snx_fp_unary(c, bits, eb2, SNX_FP_RECPX));
+                    break;
                 default: (void)eb2; return 0;
             }
         }
@@ -1048,20 +985,12 @@ static int simd_shimm(CPU* c, u32 w, int scalar) {
         if (size < 2) return 0;
         if (size == 3 && !Q && !scalar) return 0;
         int fb = shr;
-        f64 sc = 1.0;
-        for (int k = 0; k < fb; k++) sc *= 2.0;
         for (int i = 0; i < n; i++) {
             u64 x = eget(&a, size, i);
-            if (op == 0x1C) {
-                f64 v = size == 3 ? (U ? (f64)x : (f64)(i64)x) : (U ? (f64)(u32)x : (f64)(i32)(u32)x);
-                v /= sc;
-                wrf(&r, size == 3, i, v);
-            } else {
-                f64 v = rdf(&a, size == 3, i) * sc;
-                u64 o = size == 3 ? (U ? fcvt_u64(v, 3) : (u64)fcvt_s64(v, 3))
-                                  : (U ? fcvt_u32(v, 3) : (u64)(u32)fcvt_s32(v, 3));
-                eset(&r, size, i, o);
-            }
+            int width = size == 3 ? 64 : 32;
+            u64 v =
+                op == 0x1C ? snx_fp_from_int(c, x, width, width, U, fb) : snx_fp_to_int(c, x, width, width, U, fb, 3);
+            eset(&r, size, i, v);
         }
         *VR(rd) = r;
         return 1;
@@ -1167,30 +1096,16 @@ static int simd_elem(CPU* c, u32 w, int scalar) {
         if (sz && L) return 0;
         int m = (Mb << 4) | rm;
         if (sz && !Q && !scalar) return 0;
-        f64 b = rdf(VR(m), sz, idx);
+        int es = sz ? 3 : 2, width = sz ? 64 : 32;
+        u64 b = eget(VR(m), es, idx);
         int n = scalar ? 1 : (sz ? 2 : (Q ? 4 : 2));
         for (int i = 0; i < n; i++) {
-            f64 x = rdf(&a, sz, i), v;
-            if (!sz) { /* f32 straight from the lanes: via double, a signalling NaN would arrive quiet and lose its
-                          priority over a quiet NaN in the other operand (FPProcessNaNs) */
-                f32 p = a.f[i], e = VR(m)->f[idx];
-                if (op == 1 || op == 5)
-                    r.f[i] = fp_fma32(op == 1 ? p : -p, e, d.f[i]);
-                else if (!U)
-                    r.f[i] = isnan32(p) || isnan32(e) ? pnan32(p, e) : p * e;
-                else
-                    r.f[i] = fp_mulx32(p, e);
-                continue;
-            }
-            if (op == 1)
-                v = fmla_(rdf(&d, sz, i), x, b, sz);
-            else if (op == 5)
-                v = fmla_(rdf(&d, sz, i), -x, b, sz);
-            else if (!U)
-                v = x * b;
+            u64 x = eget(&a, es, i), v;
+            if (op == 1 || op == 5)
+                v = snx_fp_fma(c, eget(&d, es, i), x ^ (op == 5 ? fp_sign(width) : 0), b, width);
             else
-                v = sz ? fp_mulx64(x, b) : fp_mulx32((f32)x, (f32)b);
-            wrf(&r, sz, i, v);
+                v = snx_fp_binary(c, x, b, width, U ? SNX_FP_MULX : SNX_FP_MUL);
+            eset(&r, es, i, v);
         }
         *VR(rd) = r;
         return 1;

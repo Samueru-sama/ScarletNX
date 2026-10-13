@@ -6,6 +6,6 @@
 int main(int argc, char** argv) {
     int result = snx_driver(argc, argv);
     if (result >= 0) return result;
-    fputs("Pass a dump file, --extract, --recompile or --help. This build contains host tools only.\n", stderr);
+    fputs("Pass a dump file, -x, -r or -h. This build contains host tools only.\n", stderr);
     return 2;
 }

@@ -1,0 +1,13 @@
+scarletnx-gui uses the public-domain 8x16 VGA BIOS font from SeaBIOS.
+
+Source: vgasrc/vgafonts.c, vgafont16
+Commit: 81ec9ec0bcf45df11fb7f98339ec9036b546fca0
+https://github.com/coreboot/seabios/blob/81ec9ec0bcf45df11fb7f98339ec9036b546fca0/vgasrc/vgafonts.c
+
+Original notice:
+These fonts come from ftp://ftp.simtel.net/pub/simtelnet/msdos/screen/fntcol16.zip
+The package is (c) by Joseph Gil
+The individual fonts are public domain
+
+The integration and CP437 mapping are part of ScarletNX (GPL-3.0-or-later).
+The font bitmaps retain their public-domain status.

@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
         args[k++] = argv[1];
         args[k++] = "--repo";
         args[k++] = argv[2];
-        args[k++] = "--recompile";
+        args[k++] = "-r";
         args[k++] = input;
         args[k++] = "Native Fixture";
         args[k++] = "--outdir";
@@ -179,6 +179,9 @@ int main(int argc, char** argv) {
         else
             check(!rc, pass == 2 ? "interpreter CLI build" : "AOT CLI build");
         environment("SNX_CFLAGS", NULL);
+        data_file = snx_path_join(out, "Native Fixture.abi");
+        check(snx_is_file(data_file) == !rc, "ABI checkpoint published only after a successful build");
+        free(data_file);
         if (pass == 1) {
             data_file = snx_path_join(out, "Native Fixture_data/romfs.bin");
             check(!snx_is_file(data_file), "asset-free NRO removes stale RomFS");
@@ -220,7 +223,7 @@ int main(int argc, char** argv) {
     args[k++] = argv[1];
     args[k++] = "--repo";
     args[k++] = argv[2];
-    args[k++] = "--recompile";
+    args[k++] = "--recomp";
     args[k++] = input;
     args[k++] = "--out=Native Fixture";
     args[k++] = "--outdir";
@@ -244,7 +247,7 @@ int main(int argc, char** argv) {
     args[k++] = argv[1];
     args[k++] = "--repo";
     args[k++] = argv[2];
-    args[k++] = "--recompile";
+    args[k++] = "-r";
     args[k++] = input;
     args[k++] = "--jobs";
     args[k++] = "0";

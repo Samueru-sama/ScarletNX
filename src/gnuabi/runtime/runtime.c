@@ -29,22 +29,8 @@ static u64 ticks(void) {
     if (gnu_clock_gettime(1, &sec, &ns)) return 0;
     return (u64)sec * 19200000 + (u64)ns * 192 / 10000;
 }
-static void fpcr(CPU* c) {
-#if defined(__aarch64__)
-    u64 value = c->fpcr & 0x07c00000;
-    __asm__ __volatile__("msr fpcr, %0" ::"r"(value));
-#elif defined(__x86_64__) || defined(_M_X64)
-    u32 mx;
-    __asm__ __volatile__("stmxcsr %0" : "=m"(mx));
-    static const u32 modes[4] = {0, 0x4000, 0x2000, 0x6000};
-    mx &= ~(0x8040u | 0x6000u);
-    if (c->fpcr & (1u << 24)) mx |= 0x8040;
-    mx |= modes[(c->fpcr >> 22) & 3];
-    __asm__ __volatile__("ldmxcsr %0" ::"m"(mx));
-#else
-    (void)c;
-#endif
-}
+/* FP helpers consume c->fpcr directly without changing the host environment. */
+static void fpcr(CPU* c) { (void)c; }
 static void event(void) {}
 static void wait_event(CPU* c) { (void)c; }
 const RtAPI gnu_rtapi = {syscall_entry, undefined, hint, ticks, breakpoint, fpcr, event, wait_event};

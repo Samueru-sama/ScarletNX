@@ -267,9 +267,15 @@ void vk_rt_reload(u64 gva) {
     free(tmp);
 }
 
+/* a depth target whose Vulkan format holds the guest's bytes (Z32F as D32_SFLOAT, Z16 as D16_UNORM): its depth
+   aspect copies out in the guest's own layout. The packed ones (the Z24S8 kinds, Z32F_X24S8) would need converting,
+   and a scaled one a depth blit; those stay on the GPU */
+static int depth_copies_raw(const Surf* s) {
+    return (s->f.vk == VK_FORMAT_D32_SFLOAT || s->f.vk == VK_FORMAT_D16_UNORM) && s->sw == s->w && s->sh == s->h;
+}
 void vk_rt_flush(u64 gva) {
     Surf* s = vk_rt_find(gva);
-    if (!s || s->f.depth || !s->f.raw || s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    if (!s || (s->f.depth ? !depth_copies_raw(s) : !s->f.raw) || s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
     /* not drawn to since it was last written back or loaded: memory has it already (and a CPU write since then is
        newer than the target) */
     if (s->mem_wgen == s->wgen) return;
@@ -285,7 +291,8 @@ void vk_rt_flush(u64 gva) {
                 VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     for (u32 layer = 0; layer < s->layers; layer++) {
         VkBufferImageCopy c = {.bufferOffset = (u64)layer * slice,
-                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
+                               .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                                    layer, 1},
                                .imageExtent = {s->w, s->h, 1}};
         VmaAllocation tm;
         VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : unscaled_image(s, &tm);

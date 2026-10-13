@@ -34,11 +34,19 @@ static void decoder_test(void) {
                                      0x0A008000UL,
                                      0x0BC00000UL,
                                      0x0B201400UL,
-                                     0x1E180000UL};
+                                     0x1E180000UL,
+                                     0x1EE60020UL, /* General-register half FMOV requires later FP16. */
+                                     0x1EE70020UL,
+                                     0x9EE60020UL,
+                                     0x9EE70020UL};
     static const SnxU32 backwards[] = {0x17FFFFFFUL, 0x97FFFFFFUL, 0x54FFFFE0UL, 0xB4FFFFE0UL, 0x3607FFE0UL};
     size_t i;
     for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i)
         check(snx_a64_decode(invalid[i])->kind == SNX_FLOW_UNDEF, "reject reserved/invalid encoding");
+    check(snx_a64_decode(0x1EE24020UL)->kind == SNX_FLOW_PLAIN, "A57 FCVT S,H remains allocated");
+    check(snx_a64_decode(0x1EE2C020UL)->kind == SNX_FLOW_PLAIN, "A57 FCVT D,H remains allocated");
+    check(snx_a64_decode(0x1E23C020UL)->kind == SNX_FLOW_PLAIN, "A57 FCVT H,S remains allocated");
+    check(snx_a64_decode(0x1E63C020UL)->kind == SNX_FLOW_PLAIN, "A57 FCVT H,D remains allocated");
     check(snx_a64_decode(0xD503201FUL)->kind == SNX_FLOW_PLAIN, "NOP decode");
     check(snx_a64_decode(0xD65F03C0UL)->kind == SNX_FLOW_RET, "RET decode");
     check(snx_a64_decode(0x94000002UL)->kind == SNX_FLOW_BL, "BL decode");
@@ -218,7 +226,17 @@ static void emit_semantic_fixture(FILE* out) {
         0xF94007E0UL, /* LDR X0,[SP,#8]. */
         0xF900043FUL, /* STR XZR,[X1,#8]. */
         0x17FFFFFFUL, /* B pc-4. */
-        0x1200FC00UL  /* Invalid logical immediate traps in both paths. */
+        0x1200FC00UL, /* Invalid logical immediate traps in both paths. */
+        0x1E221820UL, /* FDIV S0,S1,S2: architectural invalid NaN and IOC. */
+        0x1F020C20UL, /* FMADD S0,S1,S2,S3: addend-first NaN priority. */
+        0x1E22C020UL, /* FCVT D0,S1: inspect signalling before widening. */
+        0x1E200020UL, /* FCVTNS W0,S1: QNaN is invalid for integer conversion. */
+        0x4E22D420UL, /* FADD V0.4S,V1.4S,V2.4S: AOT obeys guest rounding. */
+        0x5FA21820UL, /* FMLA S0,S1,V2.S[3]: by-element SNaN priority. */
+        0x1E63C020UL, /* FCVT H0,D1: alternative half infinity conversion. */
+        0x9E580020UL, /* FCVTZS X0,D1,#64: scaling before integer saturation. */
+        0x1E61C020UL, /* FSQRT D0,D1: directed rounding and IXC. */
+        0x1E228820UL  /* FNMUL S0,S1,S2: negate the architectural NaN result. */
     };
     size_t i;
     char function[32];
@@ -235,7 +253,9 @@ static void emit_semantic_fixture(FILE* out) {
         fprintf(out, "%s0x%08lXu", i ? "," : "", (unsigned long)words[i]);
     fputs("};\nstatic int traps;\nstatic void undefined(CPU*c,u64 pc,u32 w){(void)c;(void)pc;(void)w;++traps;}\n", out);
     fputs("int main(void){ unsigned mode,i,j; CPU c; RtAPI rt; u64 pc,value; u8 memory[64]; int ok;\n", out);
-    fputs(" memset(&rt,0,sizeof(rt));rt.undef=undefined;\n for(mode=0;mode<2;mode++)for(i=0;i<18;i++){\n", out);
+    fputs(
+        " memset(&rt,0,sizeof(rt));rt.undef=undefined;\n for(mode=0;mode<2;mode++)for(i=0;i<sizeof(words)/sizeof(words[0]);i++){\n",
+        out);
     fputs(" memset(&c,0,sizeof(c));memset(memory,0xAA,sizeof(memory));c.mem=memory;c.rt=&rt;traps=0;\n switch(i){\n",
           out);
     fputs(" case 0:c.x[1]=0xFFFFFFFFULL;break; case 1:c.cf=1;break; case 2:c.cf=0;break;\n", out);
@@ -247,13 +267,25 @@ static void emit_semantic_fixture(FILE* out) {
     fputs(" case 11:c.x[1]=0x123456789ABCDEF0ULL;break;case 12:c.v[1].d[1]=0xFEDCBA9876543210ULL;break;\n", out);
     fputs(" case 13:c.v[0].d[1]=~0ULL;c.v[0].f[0]=3;c.v[1].f[0]=4;c.v[2].f[3]=5;break;\n", out);
     fputs(" case 14:c.x[31]=16;value=0x123456789ABCDEF0ULL;memcpy(memory+24,&value,8);break;\n", out);
-    fputs(" case 15:c.x[1]=16;c.x[31]=0xFFFFFFFF;break;default:break;}\n", out);
+    fputs(" case 15:c.x[1]=16;c.x[31]=0xFFFFFFFF;break;case 18:c.v[2].s[0]=0x80000000;break;\n", out);
+    fputs(" case 19:c.v[1].s[0]=0xFFC00456;c.v[2].s[0]=0x7FC00789;c.v[3].s[0]=0x7FC00123;break;\n", out);
+    fputs(" case 20:c.v[1].s[0]=0x7F800456;break;case 21:c.x[0]=~0ULL;c.v[1].s[0]=0xFFC00123;break;\n", out);
+    fputs(" case 22:c.fpcr=1u<<22;for(j=0;j<4;j++){c.v[1].s[j]=0x3F800000;c.v[2].s[j]=0x33800000;}break;\n", out);
+    fputs(
+        " case 23:c.v[0].s[0]=0x7FC00123;c.v[0].d[1]=~0ULL;c.v[1].s[0]=0xFF800456;c.v[2].s[3]=0x7FC00ABC;c.fpsr=0x08000010;break;\n",
+        out);
+    fputs(" case 24:c.fpcr=1u<<26;c.v[1].d[0]=0x7FF0000000000000ULL;break;\n", out);
+    fputs(
+        " case 25:c.v[1].d[0]=0x3FE0000000000000ULL;break;case 26:c.fpcr=3u<<22;c.v[1].d[0]=0x4000000000000000ULL;break;\n",
+        out);
+    fputs(" case 27:c.v[2].s[0]=0x7F800000;break;default:break;}\n", out);
     fputs(" pc=mode?snx_step(&c,words[i],0x1000):steps[i](&c);ok=pc==(i==16?0xFFC:i==17?0x1000:0x1004);\n switch(i){\n",
           out);
     fputs(" case 0:ok&=c.x[0]==0&&c.z==1&&c.cf==1&&!c.n&&!c.vf;break;case 1:ok&=c.x[0]==1;break;\n", out);
     fputs(" case 2:ok&=c.x[0]==~0ULL;break;case 3:ok&=c.x[0]==0x3456;break;case 4:ok&=c.x[0]==~127ULL;break;\n", out);
-    fputs(" case 5:ok&=c.x[0]==0xF0123456789ABCDEULL;break;case 6:ok&=c.v[0].s[0]==0x4B800000u&&!c.v[0].d[1];break;\n",
-          out);
+    fputs(
+        " case 5:ok&=c.x[0]==0xF0123456789ABCDEULL;break;case 6:ok&=c.v[0].s[0]==0x4B800000u&&!c.v[0].d[1]&&c.fpsr==0x10;break;\n",
+        out);
     fputs(
         " case 7:ok&=c.x[0]==0x7FF8000000001234ULL;break;case 8:ok&=c.v[0].d[0]==0x7FF8000000001234ULL&&!c.v[0].d[1];break;\n",
         out);
@@ -264,8 +296,20 @@ static void emit_semantic_fixture(FILE* out) {
     fputs(
         " case 13:ok&=c.v[0].f[0]==23&&!c.v[0].s[1]&&!c.v[0].d[1];break;case 14:ok&=c.x[0]==0x123456789ABCDEF0ULL;break;\n",
         out);
+    fputs(" case 15:memcpy(&value,memory+24,8);ok&=value==0&&c.x[31]==0xFFFFFFFF;break;case 17:ok&=traps==1;break;\n",
+          out);
     fputs(
-        " case 15:memcpy(&value,memory+24,8);ok&=value==0&&c.x[31]==0xFFFFFFFF;break;case 17:ok&=traps==1;break;default:break;}\n",
+        " case 18:ok&=c.v[0].s[0]==0x7FC00000&&c.fpsr==1;break;case 19:ok&=c.v[0].s[0]==0x7FC00123&&c.fpsr==0;break;\n",
+        out);
+    fputs(" case 20:ok&=c.v[0].d[0]==0x7FF8008AC0000000ULL&&c.fpsr==1;break;case 21:ok&=c.x[0]==0&&c.fpsr==1;break;\n",
+          out);
+    fputs(" case 22:for(j=0;j<4;j++)ok&=c.v[0].s[j]==0x3F800001;ok&=c.fpsr==0x10;break;\n", out);
+    fputs(" case 23:ok&=c.v[0].s[0]==0xFFC00456&&!c.v[0].s[1]&&!c.v[0].d[1]&&c.fpsr==0x08000011;break;\n", out);
+    fputs(
+        " case 24:ok&=c.v[0].d[0]==0x7FFF&&!c.v[0].d[1]&&c.fpsr==1;break;case 25:ok&=c.x[0]==0x7FFFFFFFFFFFFFFFULL&&c.fpsr==1;break;\n",
+        out);
+    fputs(
+        " case 26:ok&=c.v[0].d[0]==0x3FF6A09E667F3BCCULL&&c.fpsr==0x10;break;case 27:ok&=c.v[0].s[0]==0xFFC00000&&c.fpsr==1;break;default:break;}\n",
         out);
     fputs(" if(!ok||(i!=17&&traps)){fprintf(stderr,\"semantic case %u mode %u failed\\n\",i,mode);return 1;}}\n", out);
     fputs(" puts(\"Static/interpreted scalar, FP, SIMD, memory and trap semantics passed\");return 0;}\n", out);

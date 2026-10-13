@@ -65,7 +65,7 @@ static wchar_t* stage_command(const char* const* argv) {
     free(text);
     return out;
 }
-int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
+static int run_stage(const char* const* argv, const char* cwd, const char* stage, int debugger) {
     STARTUPINFOW startup;
     PROCESS_INFORMATION process;
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
@@ -73,6 +73,7 @@ int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
     wchar_t *command = stage_command(argv), *directory = cwd ? stage_wide(cwd) : NULL;
     DWORD code = 1, error = 0, waited;
     int rc = 1, handler = 0;
+    (void)debugger;
     memset(&startup, 0, sizeof(startup));
     startup.cb = sizeof(startup);
     memset(&process, 0, sizeof(process));
@@ -129,10 +130,13 @@ static volatile sig_atomic_t stage_pid, interrupted;
 static void stage_interrupt(int sig) {
     int saved = errno;
     interrupted = sig;
-    if (stage_pid > 0) kill(-(pid_t)stage_pid, sig);
+    if (stage_pid > 0) {
+        kill(-(pid_t)stage_pid, sig);
+        if (sig == SIGTERM || sig == SIGHUP || sig == SIGINT) kill(-(pid_t)stage_pid, SIGCONT);
+    }
     errno = saved;
 }
-int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
+static int run_stage(const char* const* argv, const char* cwd, const char* stage, int debugger) {
     static const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGTSTP};
     struct sigaction action, old[4], ignore, old_ttou;
     sigset_t blocked, previous;
@@ -193,7 +197,8 @@ int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
     setpgid(pid, pid);
     stage_pid = (sig_atomic_t)pid;
     sigprocmask(SIG_SETMASK, &previous, NULL);
-    do { waited = waitpid(pid, &status, WUNTRACED); } while (waited < 0 && errno == EINTR);
+    /* Debugger stops are intentional, unlike a suspended extraction/compiler. */
+    do { waited = waitpid(pid, &status, debugger ? 0 : WUNTRACED); } while (waited < 0 && errno == EINTR);
     if (waited < 0)
         perror("scarletnx: waiting for child process");
     else if (WIFSTOPPED(status))
@@ -228,3 +233,9 @@ done:
     return rc;
 }
 #endif
+int snx_run_stage(const char* const* argv, const char* cwd, const char* stage) {
+    return run_stage(argv, cwd, stage, 0);
+}
+int snx_run_debug_stage(const char* const* argv, const char* cwd, const char* stage) {
+    return run_stage(argv, cwd, stage, 1);
+}

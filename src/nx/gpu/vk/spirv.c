@@ -138,17 +138,25 @@ u32* vk_spirv_cached(const char* glsl, int stage, const char* cache_dir, size_t*
    vertex shader for a guest in -1..1 depth mode moves z to Vulkan's 0..1 (the viewport handles y, see
    gpu/vk/render.c) */
 int g_vk_preserve_infnan = 1;
-char* vk_glsl_post(char* src, int stage) {
+int g_vk_flush_denorm = 1; /* until the device says otherwise, like g_vk_preserve_infnan */
+char* vk_glsl_post(char* src, int stage, int flush_denorms) {
     if (!src) return src;
     /* Maxwell's arithmetic keeps infinities and NaNs, and games rely on it: Tears of the Kingdom's compiler makes -inf
        with MUFU.LG2 of zero and its lighting multiplies it into an exp2 that gives 0. SPIR-V lets the driver assume
        there are none unless the shader says otherwise, and NVIDIA's optimizer turned that math into NaNs. Ryujinx
        declares the same execution mode */
     const char* ver = "#version 450\n";
-    if (g_vk_preserve_infnan && !strncmp(src, ver, strlen(ver))) {
-        const char* fc =
-            "#extension GL_EXT_spirv_intrinsics : require\n"
-            "spirv_execution_mode(extensions = [\"SPV_KHR_float_controls\"], capabilities = [4466], 4461, 32);\n";
+    /* and the console's compiler flushes FP32 denormals in every instruction (FTZ), which the probes and games
+       see: denormals the host keeps change products and sums that should be 0 (Eden declares the same mode) */
+    int ftz = flush_denorms && g_vk_flush_denorm;
+    if ((g_vk_preserve_infnan || ftz) && !strncmp(src, ver, strlen(ver))) {
+        char fc[320];
+        snprintf(fc, sizeof fc, "#extension GL_EXT_spirv_intrinsics : require\n%s%s",
+                 g_vk_preserve_infnan ? "spirv_execution_mode(extensions = [\"SPV_KHR_float_controls\"], "
+                                        "capabilities = [4466], 4461, 32);\n"
+                                      : "",
+                 ftz ? "spirv_execution_mode(extensions = [\"SPV_KHR_float_controls\"], capabilities = [4465], 4460, 32);\n"
+                     : "");
         size_t nv = strlen(ver), nf = strlen(fc), ns = strlen(src);
         char* t = malloc(ns + nf + 1);
         if (t) {

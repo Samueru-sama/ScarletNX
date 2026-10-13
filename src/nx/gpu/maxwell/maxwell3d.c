@@ -13,6 +13,7 @@
 #include "runtime/platform/plat.h"
 #include "gpu/gpu.h"
 void r3d_clear(GpuChannel* ch, u32 v) {
+    if (ch->render_off) return; /* SetRenderEnable says no */
     if (g_renderer_up) {
         g_renderer->clear(ch, v);
         return;
@@ -64,8 +65,12 @@ void r3d_clear(GpuChannel* ch, u32 v) {
     }
     free(row);
 }
+void r3d_draw_texture(GpuChannel* ch) {
+    if (g_renderer_up && g_renderer->draw_texture) g_renderer->draw_texture(ch);
+}
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances) {
+    if (ch->render_off) return; /* SetRenderEnable says no */
     if (g_renderer_up) {
         g_renderer->draw(ch, indexed, topology, first, count, base_vertex, base_instance, instances);
         return;

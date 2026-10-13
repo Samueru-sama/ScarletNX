@@ -75,10 +75,11 @@ void snx_msr(CPU* c, u32 r, u64 v) {
         case SYSREG(3, 3, 13, 0, 2): c->tpidr = v; break;
         case SYSREG(3, 3, 4, 2, 0): set_nzcv(c, (u32)(v >> 28)); break;
         case SYSREG(3, 3, 4, 4, 0):
-            c->fpcr = (u32)v;
+            /* A57 TRM Tables 14-3/14-4: exception enables and FZ16 are RES0. */
+            c->fpcr = (u32)v & 0x07C00000u;
             if (c->rt->fpcr_changed) c->rt->fpcr_changed(c);
             break;
-        case SYSREG(3, 3, 4, 4, 1): c->fpsr = (u32)v; break;
+        case SYSREG(3, 3, 4, 4, 1): c->fpsr = (u32)v & 0xF800009Fu; break;
         default: break;
     }
 }

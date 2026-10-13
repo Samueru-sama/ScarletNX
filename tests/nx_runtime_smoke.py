@@ -55,7 +55,7 @@ def main():
                 str(runtime),
                 '--repo',
                 str(repo),
-                '--recompile',
+                '-r',
                 str(fixture),
                 'NX Smoke',
                 '--runtime',
@@ -76,7 +76,7 @@ def main():
                 raise RuntimeError(f'NRO recompilation returned {compiled.returncode}')
             launcher = output / ('NX Smoke.exe' if os.name == 'nt' else 'NX Smoke')
             result = subprocess.run(
-                [str(launcher), '--headless'],
+                [str(launcher), '-H'],
                 cwd=output,
                 env=env,
                 capture_output=True,

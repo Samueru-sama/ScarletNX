@@ -40,7 +40,7 @@ function(snx_quiet)
     endforeach()
 endfunction()
 
-if(SNX_H264)
+if(SNX_BUILD_NX AND SNX_H264)
     # FFmpeg builds with its own configure and make, which cmake/ffmpeg.cmake runs
     CPMAddPackage(NAME FFmpeg VERSION 9.0.2
                   URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
@@ -49,7 +49,7 @@ if(SNX_H264)
     include("${CMAKE_SOURCE_DIR}/cmake/ffmpeg.cmake")
 endif()
 
-if(SNX_VULKAN)
+if(SNX_BUILD_NX AND SNX_VULKAN)
     CPMAddPackage(NAME Vulkan-Headers VERSION 1.4.365
                   URL https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.365.tar.gz
                   URL_HASH SHA256=ed832b3292cce324ebba6522fd2d3004bf1b797fa49bfbcad0b302ff23d56abc
@@ -75,7 +75,7 @@ if(SNX_VULKAN)
 endif()
 
 set(SNX_SDL3_FROM_SOURCE OFF)
-if(SNX_BACKEND STREQUAL "sdl3")
+if((SNX_BUILD_NX AND SNX_BACKEND STREQUAL "sdl3") OR SNX_BUILD_GUI)
     if(NOT WIN32 AND NOT SNX_BUNDLED_SDL3)
         find_package(SDL3 QUIET CONFIG)
     endif()
@@ -99,7 +99,7 @@ if(SNX_BACKEND STREQUAL "sdl3")
 endif()
 
 # hactool runs on the machine doing the extraction (--extract), so a cross build leaves it out
-if(NOT CMAKE_CROSSCOMPILING)
+if((SNX_BUILD_NX OR SNX_HACTOOL_ONLY) AND NOT CMAKE_CROSSCOMPILING)
     CPMAddPackage(NAME hactool VERSION 1.4.0.13
                   URL https://github.com/SciresM/hactool/archive/1d64a83450e025622f3468c28fc4164dad2c5ef6.tar.gz
                   URL_HASH SHA256=f7148daad624ba909f5ae253210734b1a0ce19e89a7914b6cf71401f7134ebbc

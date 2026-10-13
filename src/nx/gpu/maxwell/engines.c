@@ -34,12 +34,33 @@ u64 gpu_ticks(void) {
     last = n; /* monotonic: 16 ns on, so the tick (ns * 384 / 625) moves too */
     return n * 384 / 625;
 }
+/* the report addresses a counter wrote a made-up value to (every counter but ZERO is an estimate or a constant,
+   samples passed included): a render enable condition over them would compare made-up counts and could skip a draw
+   the game needs, so it draws, as it did before conditions were read. A release there, a real value, clears it */
+#define FAKE_REPORTS 64
+static u64 g_fake_report[FAKE_REPORTS];
+static u32 g_fake_next;
+static void fake_report_mark(u64 addr, int fake) {
+    for (u32 i = 0; i < FAKE_REPORTS; i++)
+        if (g_fake_report[i] == addr) {
+            if (!fake) g_fake_report[i] = 0;
+            return;
+        }
+    if (fake && addr) g_fake_report[g_fake_next++ % FAKE_REPORTS] = addr;
+}
+static int fake_report(u64 addr) {
+    for (u32 i = 0; addr && i < FAKE_REPORTS; i++)
+        if (g_fake_report[i] == addr) return 1;
+    return 0;
+}
+
 void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     u64 addr = ((u64)(r[base] & 0xFF) << 32) | r[base + 1];
     u32 seq = r[base + 2];
     u32 op = v & 3;
     if (op != 1) gpu_signal_point();
-    if (op == 0) {                                /* release */
+    if (op == 0) { /* release */
+        fake_report_mark(addr, 0);
         if (((v >> 4) & 1) && !((v >> 28) & 1)) { /* the size is bit 28: does bit 4 alone mean one word? */
             LOG_LIMIT(4, "gpu: report release %x at %llx with bit 4 set and bit 28 clear, written as one word\n", v,
                       (unsigned long long)addr);
@@ -68,12 +89,40 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     } else if (op == 2) { /* counter */
         u32 sel = (v >> 23) & 31;
         u64 val = sel == 0 ? 0 : (sel == 1 ? g_draws * 3 : 1000);
+        fake_report_mark(addr, sel != 0);
         if ((v >> 28) & 1)
             gmem_w32(addr, (u32)val);
         else {
             u64 q[2] = {val, gpu_ticks()};
             gmem_write(addr, q, 16);
         }
+    }
+}
+
+/* SetRenderEnable, decided when its mode or the override is written, as Eden's ProcessQueryCondition does. The
+   override (0x651: 1 always, 2 never) wins; IF_EQUAL and IF_NOT_EQUAL compare the 64 bit words at the address and
+   16 bytes past it, the values of a pair of counter reports; CONDITIONAL, whose bytes aren't settled, draws when
+   both words at the address are nonzero, as Eden reads it. Over made-up counter values (fake_report) it draws */
+static int render_enabled(const GpuChannel* ch) {
+    const u32* r = ch->r3d;
+    u32 ov = r[0x651] & 3;
+    if (ov == 1) return 1;
+    if (ov == 2) return 0;
+    u64 addr = ((u64)(r[0x554] & 0xFF) << 32) | r[0x555];
+    u32 w[6] = {0};
+    switch (r[0x556] & 7) {
+        case 0: return 0; /* FALSE */
+        case 1: return 1; /* TRUE */
+        case 2:
+            if (fake_report(addr)) return 1;
+            gmem_read(addr, w, 8);
+            return w[0] != 0 && w[1] != 0;
+        case 3:
+        case 4:
+            if (fake_report(addr) || fake_report(addr + 16)) return 1;
+            gmem_read(addr, w, 24);
+            return (r[0x556] & 7) == 3 ? w[0] == w[4] && w[1] == w[5] : w[0] != w[4] || w[1] != w[5];
+        default: LOG_LIMIT(4, "gpu: render enable mode %u isn't known, drawing\n", r[0x556] & 7); return 1;
     }
 }
 
@@ -98,6 +147,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
         int keep;
         switch (m) {
             case 0x586: keep = (v >> 26) & 1; break;
+            case 0x486: keep = 1; break; /* VERTEX_ARRAY_INSTANCE_SUBSEQUENT: decides below */
             case 0x585:
             case 0x35D:
             case 0x35E:
@@ -137,6 +187,9 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             }
             break;
         case 0x674: r3d_clear(ch, v); break; /* ClearBuffers */
+        case 0x556: /* SetRenderEnableC: the mode */
+        case 0x651: ch->render_off = !render_enabled(ch); break; /* the override */
+        case 0x42B: r3d_draw_texture(ch); break; /* DRAW_TEXTURE: its last word starts it */
         case 0x6C3: query_get(ch, ch->r3d, 0x6C0, v); break;
         case 0x585: { /* END: flush */
             u32 topo = R3(0x586) & 0xFFFF;
@@ -169,6 +222,34 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             /* hw consumes the counts on each draw; if we don't, the next non-indexed draw picks up stale indices */
             R3(0x5F8) = 0;
             R3(0x35E) = 0;
+            break;
+        }
+        case 0x485: /* VERTEX_ARRAY_INSTANCE_FIRST: vertices first .. first + count - 1 now, as instance 0 */
+        case 0x486: { /* _SUBSEQUENT: the same range again, as the next instance. Word: first 0-15, count 16-27,
+                         topology 28-31 */
+            u32 first = v & 0xFFFF, count = (v >> 16) & 0xFFF, topo = (v >> 28) & 0xF, bi = R3(0x50E);
+            if (m == 0x485)
+                g_instance_count = 0;
+            else
+                g_instance_count++;
+            if (m == 0x486 && g_pd.on && g_pd.ch == ch && !g_pd.indexed && g_pd.topo == topo && g_pd.first == first &&
+                g_pd.count == count && g_pd.bv == 0 && g_pd.bi == bi) {
+                g_pd.inst = g_instance_count + 1; /* one more instance */
+                break;
+            }
+            if (g_instance_count) /* like END: what doesn't continue the draw before is drawn as instances 0..N */
+                LOG_LIMIT(4, "gpu: instanced array draw at instance %u doesn't continue the one before, drawn as %u\n",
+                          g_instance_count, g_instance_count + 1);
+            r3d_pending_flush();
+            g_pd.on = 1;
+            g_pd.ch = ch;
+            g_pd.indexed = 0;
+            g_pd.topo = topo;
+            g_pd.first = first;
+            g_pd.count = count;
+            g_pd.bv = 0;
+            g_pd.bi = bi;
+            g_pd.inst = g_instance_count + 1;
             break;
         }
         case 0x586: /* BEGIN, bit 26 = next instance */

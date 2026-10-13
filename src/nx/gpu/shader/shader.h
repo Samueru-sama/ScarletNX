@@ -35,6 +35,7 @@ typedef struct {
     u32 attr_sint_mask;
     u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), others aren't written */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
+    int fp32_flush, fp32_preserve; /* FP32 arithmetic whose FTZ/FMZ field flushes denormals, and whose doesn't */
     u32 gbuf_cbuf_off[16];
     int ngbuf;       /* global buffers found (their cbuf0 offset) */
     int unsupported; /* count of instructions we couldn't translate */
@@ -50,6 +51,9 @@ typedef struct {
     u32 img_int_mask, img_sint_mask; /* image descriptor types used to key fragment shader translation */
     u32 tex_int_mask, tex_sint_mask, rt_int_mask, rt_sint_mask; /* FS key: integer textures / outputs */
 } ShaderInfo;
+/* the shader flushes FP32 denormals everywhere: every FADD, FMUL and FFMA it has asks for it, as the console's
+   compiler emits them (Eden declares DenormFlushToZero on the same condition) */
+static inline int shader_flushes_denorms(const ShaderInfo* si) { return si->fp32_flush && !si->fp32_preserve; }
 /* the GLSL is for Vulkan: one descriptor set per stage (shader_vk_set), bindings in it by kind */
 #define SNX_VKB_CB   0  /* 18 constant buffers */
 #define SNX_VKB_SSBO 18 /* 16 global memory buffers */

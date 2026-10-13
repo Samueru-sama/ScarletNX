@@ -84,7 +84,7 @@ installation is needed. It still needs your platform's window-system development
 - If SDL3's configure reports missing X11/Wayland development libraries, install the packages above.
   Do not work around that by disabling both display backends for a windowed build.
 - A no-window Vulkan build needs no SDL3. Use `-DSNX_BACKEND=headless -DSNX_VULKAN=ON` as shown below.
-  The runtime flag `--headless` alone does not remove the SDL3 build dependency from a window-capable binary.
+  The runtime flag `-H` alone does not remove the SDL3 build dependency from a window-capable binary.
 
 After installing dependencies, rerun:
 
@@ -167,7 +167,7 @@ cmake --preset windows-cross && cmake --build --preset windows-cross
 # -> build/windows-cross/scarletnx.exe; requires llvm-mingw on PATH
 ```
 
-The normal SDL3 build also supports `--headless` at runtime, with `--headless=0` returning to windowed startup.
+The normal SDL3 build also supports `-H` at runtime. Omit the flag for windowed startup.
 The no-SDL3 builds cannot switch to a window. [Software Vulkan / lavapipe setup](USAGE.md#headless-vulkan--lavapipe).
 
 Offscreen integration test, with an installed Vulkan 1.3 ICD (lavapipe works):
@@ -183,14 +183,14 @@ The test uses synthetic pixels, not a game. It checks offscreen submissions, fra
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
 `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
-Cross-builds omit host hactool. Use a native driver for `--extract`; `--recompile --target win64`
+Cross-builds omit host hactool. Use a native driver for `-x`; `-r --target win64`
 uses llvm-mingw and builds the cross runtime in `build/win64-recomp`.
 
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
 ```sh
 cmake --preset default -B build/tools -DSNX_TOOLS_ONLY=ON && cmake --build build/tools
-build/tools/scarletnx --recompile --help
+build/tools/scarletnx -r -h
 ctest --test-dir build/tools --output-on-failure
 ```
 

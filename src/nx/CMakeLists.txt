@@ -35,7 +35,7 @@ function(snx_component name)
     target_link_libraries(snx_${name} PUBLIC snx_nx_flags)
 endfunction()
 
-snx_component(core runtime/main.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c runtime/startup.c
+snx_component(core runtime/main.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c runtime/startup.c runtime/gdbstub.c
               runtime/present.c)
 target_link_libraries(snx_core PRIVATE snx_driver)
 snx_component(kernel hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
@@ -71,7 +71,7 @@ if(SNX_VULKAN)
     # volk uses SDL's loader for windows and loads Vulkan directly for headless runs
     snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                   gpu/vk/nvn.c gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c
-                  gpu/vk/astc.c gpu/vk/vma.cpp
+                  gpu/vk/astc.c gpu/texture/etc2.c gpu/vk/vma.cpp
                   "${volk_SOURCE_DIR}/volk.c")
     list(APPEND components shader spirv vk)
     # third-party code (vma.cpp is VMA's implementation)
@@ -112,6 +112,48 @@ if(SNX_BACKEND STREQUAL "sdl3")
     target_link_libraries(scarletnx PRIVATE SDL3::SDL3)
 endif()
 
+# The shader translator offline: F2I's negate and absolute value bits
+if(BUILD_TESTING AND SNX_VULKAN)
+    add_executable(snx-test-shader-f2i "${PROJECT_SOURCE_DIR}/tests/shader_f2i.c")
+    target_link_libraries(snx-test-shader-f2i PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-f2i PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_f2i COMMAND snx-test-shader-f2i)
+endif()
+
+# The shader translator and its SPIR-V step offline (no ICD or GPU): the FP32 denormal mode a shader declares
+if(BUILD_TESTING AND SNX_VULKAN)
+    add_executable(snx-test-shader-denorm "${PROJECT_SOURCE_DIR}/tests/shader_denorm.c")
+    target_link_libraries(snx-test-shader-denorm PRIVATE snx_shader snx_spirv)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-denorm PRIVATE Threads::Threads m)
+    endif()
+    set_target_properties(snx-test-shader-denorm PROPERTIES LINKER_LANGUAGE CXX)
+    add_test(NAME shader_denorm COMMAND snx-test-shader-denorm)
+endif()
+
+# The shader translator and glslang offline (no ICD or GPU): the float math keeps the console's order
+if(BUILD_TESTING AND SNX_VULKAN)
+    add_executable(snx-test-shader-precise "${PROJECT_SOURCE_DIR}/tests/shader_precise.c")
+    target_link_libraries(snx-test-shader-precise PRIVATE snx_shader snx_spirv)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-precise PRIVATE Threads::Threads m)
+    endif()
+    set_target_properties(snx-test-shader-precise PROPERTIES LINKER_LANGUAGE CXX)
+    add_test(NAME shader_precise COMMAND snx-test-shader-precise)
+endif()
+
+# The shader translator offline: which c0 words become storage buffers
+if(BUILD_TESTING AND SNX_VULKAN)
+    add_executable(snx-test-shader-gbuf "${PROJECT_SOURCE_DIR}/tests/shader_gbuf.c")
+    target_link_libraries(snx-test-shader-gbuf PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-gbuf PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_gbuf COMMAND snx-test-shader-gbuf)
+endif()
+
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.
 if(BUILD_TESTING AND SNX_TEST_VULKAN AND SNX_VULKAN)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c")
@@ -125,7 +167,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN AND SNX_VULKAN)
     if(SNX_BACKEND STREQUAL "sdl3")
         target_link_libraries(snx-test-vulkan PRIVATE SDL3::SDL3)
     endif()
-    add_test(NAME vulkan_headless COMMAND snx-test-vulkan --headless)
+    add_test(NAME vulkan_headless COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_headless PROPERTIES TIMEOUT 60
         FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
 endif()
