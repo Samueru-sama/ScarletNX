@@ -1374,8 +1374,9 @@ static VkPipeline prepare_draw_pipeline(const NvnDrawCommand* command, const VkS
         if ((command->color_target_mask & (1u << i)) && command->color_target[i].samples > 1)
             default_single_sample = 0;
     if (command->depth_target_bound && command->depth_target.samples > 1) default_single_sample = 0;
+    /* With no depth attachment, depth/stencil state cannot affect the color output. */
     if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known ||
-        !command->polygon_state_known || !command->depth_stencil_state_known ||
+        !command->polygon_state_known || (command->depth_target_bound && !command->depth_stencil_state_known) ||
         (!command->multisample_state_known && !default_single_sample)) {
         LOG_LIMIT(8,
                   "nvn-pipeline: missing base state shader=%d/%d channel=%d color=%d polygon=%d depth=%d samples=%d\n",

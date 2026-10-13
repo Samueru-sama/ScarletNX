@@ -1229,6 +1229,12 @@ viewport, scissor, culling, and vertex count matched. The cause of that later mi
 producer comparisons do not establish full source parity at the consumer draw. `SNX_NVN_SHADOW_COMPARE_ADDRESS`
 selects an intermediate GPU address for these opt-in comparisons.
 
+An ABI-7 Scarlet replay issues direct shadow draws, but its first 1920×1080 R11G11B10F comparison is still
+uncovered and differs from Maxwell. Its first native draw has no captured channel-mask or depth/stencil binding;
+the direct pipeline cannot infer the channel mask safely. Missing depth/stencil state now stops a pipeline only
+when a depth attachment is bound, since a color-only draw cannot use that state. This leaves channel-mask
+provenance as the first gate for Scarlet's initial draw.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
