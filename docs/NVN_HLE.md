@@ -1049,7 +1049,8 @@ address-register state across gaps and rejecting incomplete addresses or overflo
 to be checked against each live shadow image's physical backing before the opaque-list marker can be narrowed.
 Decoded report and explicit constant-buffer data writes now enter the semantic batch in command order. Contiguous
 constant-buffer words are coalesced into one bounded range; an MME macro invalidates the tracked constant-buffer
-address until explicit registers re-establish it. On the GPU thread, the direct path compares
+address until explicit registers re-establish it. A malformed or unbounded gap clears all remembered write-address
+registers before later gaps are parsed. On the GPU thread, the direct path compares
 their physical backing with every covered shadow image and cached storage buffer; it invalidates only aliases and
 bridges each write's synthetic marker when every translation succeeds. The opaque-list boundary marker remains for
 other hidden effects, including macro-generated writes and unclassified methods, so this does not yet certify the

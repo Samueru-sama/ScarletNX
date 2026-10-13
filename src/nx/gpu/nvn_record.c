@@ -2029,16 +2029,20 @@ u64 nvn_record_before(const CPU* c, const char* name) {
             if (gap_size > 65536 || (gap_size & 3) || !readable_range(r->command_cursor, gap_size) ||
                 !nvn_command_gap_no_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
                 r->command_gaps_safe = 0;
+            int parsed_writes = 0;
             if (gap_size <= 65536 && !(gap_size & 3) && readable_range(r->command_cursor, gap_size)) {
                 NvnGapMemoryWrite writes[32];
                 u32 write_count = 0;
                 if (nvn_command_gap_memory_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
-                                                  &r->memory_state, writes, 32, &write_count))
+                                                  &r->memory_state, writes, 32, &write_count)) {
+                    parsed_writes = 1;
                     for (u32 i = 0; i < write_count; i++) {
                         u64 args[7] = {writes[i].address, writes[i].size, writes[i].kind};
                         append_inlined_op(r, OP_TRANSFER, "nvnInlinedMemoryWrite", args);
                     }
+                }
             }
+            if (!parsed_writes) memset(&r->memory_state, 0, sizeof r->memory_state);
             const char* state_opt = getenv("SNX_NVN_INLINED_STATE");
             if ((!state_opt || strcmp(state_opt, "0")) && gap_size <= 65536 && !(gap_size & 3) &&
                 readable_range(r->command_cursor, gap_size) &&
@@ -2051,7 +2055,10 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                 append_inlined_draw(r, args);
             else
                 inlined_unparsed++;
-        } else if (cursor != r->command_cursor) r->command_gaps_safe = 0;
+        } else if (cursor != r->command_cursor) {
+            r->command_gaps_safe = 0;
+            memset(&r->memory_state, 0, sizeof r->memory_state);
+        }
     }
     if (!strcmp(name, "nvnCommandBufferBeginRecording")) {
         if (r->key && r->key != UINT64_MAX && r->key != c->x[0]) active_collisions++;
