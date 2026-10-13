@@ -835,6 +835,17 @@ image-bound draws retained complete descriptor and target snapshots, and 624 dra
 uses an image prepared the storage view. The remaining bound-image draws do not necessarily access that binding.
 Host descriptor writes, storage-image layout transitions, write ordering, and draw submission remain required.
 
+In a TotK boot comparison, the first 640×360 RGBA16F shadow target differed from the Maxwell target in exactly
+its top 36 rows (23,040 pixels). The direct NVN path issued all 31 recorded draws for that target, but the Maxwell
+renderer had issued three earlier draws on the same target with one vertex attribute and index counts 1,656, 3,384,
+and 3,384. All three used GPU channel 20, the same channel as the subsequent recorded draw, but none appeared among
+those 31 recorded NVN draws. Temporarily omitting only those three Maxwell draws
+made the two targets match byte-for-byte (0/230,400 different pixels); that omission was removed after diagnosis.
+The direct draw itself left a forced magenta target unchanged, including with depth testing, culling, and blending
+disabled independently. This establishes a command-coverage gap for the first three draws, not a wrong color value
+from the 31 direct draws. Recovering the source and semantics of those unobserved commands is required before the
+direct path can replace their GPFIFO execution or certify whole-frame parity.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

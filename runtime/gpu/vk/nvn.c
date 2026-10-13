@@ -1691,9 +1691,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int prior_covered = (color->color_layers[0] & 1) &&
                         color->subresource_sequence[0][0] > effective_unknown;
     static int sample_first = 1;
-    int capture = sample_first && color_written && !prior_covered &&
+    static int force_capture = -1;
+    if (force_capture < 0) {
+        const char* opt = getenv("SNX_NVN_SHADOW_FORCE_CAPTURE");
+        force_capture = opt && !strcmp(opt, "1");
+    }
+    int capture = sample_first && color_written && (!prior_covered || force_capture) &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||
-                   color_target->format == 0x3f);
+                   color_target->format == 0x29 || color_target->format == 0x3f);
     int capture_full = 0;
     if (capture) {
         color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -1778,7 +1783,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     vkCmdEndRendering(cb);
     if (capture) {
-        u64 bytes = (u64)color_target->width * color_target->height * 4;
+        u64 bytes = (u64)color_target->width * color_target->height * color_format.bpp;
         VkBuffer readback;
         u8* pixels = color->transfer_src && bytes <= (32ull << 20)
                          ? vk_readback_buffer(bytes, &readback) : NULL;
@@ -1796,15 +1801,16 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             vk_finish();
             vk_readback_ready();
             u64 changed = 0;
-            /* The magenta clear encodes as RGBA8 FF00FFFF or R11G11B10F 780003C0.
-               Compare packed pixels so float targets cannot be certified with RGBA8 bytes. */
-            const u32 sentinel = color_target->format == 0x3f ? 0x780003c0u : 0xffff00ffu;
-            for (u64 i = 0; i < bytes; i += 4)
-                changed += memcmp(pixels + i, &sentinel, 4) != 0;
-            capture_full = changed == bytes / 4;
-            u64 center = ((u64)(color_target->height / 2) * color_target->width + color_target->width / 2) * 4;
+            const u8 magenta_rgba16f[8] = {0, 0x3c, 0, 0, 0, 0x3c, 0, 0x3c};
+            const u32 magenta_packed = color_target->format == 0x3f ? 0x780003c0u : 0xffff00ffu;
+            const void* sentinel = color_format.bpp == 8 ? (const void*)magenta_rgba16f : &magenta_packed;
+            for (u64 i = 0; i < bytes; i += color_format.bpp)
+                changed += memcmp(pixels + i, sentinel, color_format.bpp) != 0;
+            capture_full = changed == bytes / color_format.bpp;
+            u64 center = ((u64)(color_target->height / 2) * color_target->width + color_target->width / 2) *
+                         color_format.bpp;
             LOG("nvn-shadow-readback: changed-pixels=%llu total=%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
-                (unsigned long long)changed, (unsigned long long)(bytes / 4), pixels[0], pixels[1], pixels[2],
+                (unsigned long long)changed, (unsigned long long)(bytes / color_format.bpp), pixels[0], pixels[1], pixels[2],
                 pixels[3], pixels[bytes - 4], pixels[bytes - 3], pixels[bytes - 2], pixels[bytes - 1],
                 pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3]);
         }
