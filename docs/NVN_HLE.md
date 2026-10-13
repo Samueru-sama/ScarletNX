@@ -248,16 +248,23 @@ image allocation; old images are retired after GPU use when the 128-slot, 256 Mi
 packets run in their original replay order. The cache tracks written mip levels separately and has a base-level view
 for a draw that requests only level zero. A draw may use a matching image written earlier in its batch only when all
 levels in its selected view were written and no unmodeled image writer intervened; all other textures continue through
-the guest texture cache. Selected non-base mip and 2D-array-layer clears also execute into shadow images. Array clears
-are not yet marked ready for sampled-array descriptors. The shadow cache also executes cubemap-face clears and maps
+the guest texture cache. Selected non-base mip, 2D-array-layer, and cubemap-face clears also execute into shadow
+images. An array or cubemap image is eligible as a semantic draw source only after every requested layer and mip has
+been written in the current semantic batch without an intervening unmodeled writer. Images with more than 64 layers
+can receive clears, but they are not eligible as semantic draw sources. The shadow cache maps
 NVN R16F, RG16F, and RG16 to matching Vulkan formats. In a 22-second TotK boot, 4,693 clear callbacks issued,
 including 616 array clears, 156 cubemap-face clears, and 875 non-base-mip clears. No completed clear callback was
 unsupported, and no image-cache capacity failure occurred. These target and format values follow the
 [reconstructed NVN header](https://codeviewer.zeldamods.org/uking/uking/lib/NintendoSDK/include/nvn/nvn.h.html).
 Catherine's boot
 recorded and executed 157/157 buffer-to-texture copies with no rejected copies. TotK recorded no such copies in its
-boot run. Neither boot observed a draw sampling a semantic image in the same batch. The source bytes are still read
-after guest GPFIFO execution, so this shadow path does not establish historical texture contents at each NVN command.
+boot run. Neither boot observed a draw sampling a semantic image in the same batch. A temporary lookup probe found
+Catherine draws matching the same texture object after its shadow write's batch had ended. TotK sometimes matched the
+same object, dimensions, and format within a batch, but an unmodeled write marker followed the last shadow write.
+The recorder advances that marker after guest draws because their image writes are not represented in the shadow
+stream. Keeping those draws as global invalidations is conservative; relaxing it requires modeling render-target and
+storage-image writes and their aliases. The source bytes are still read after guest GPFIFO execution, so this shadow
+path does not establish historical texture contents at each NVN command.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each

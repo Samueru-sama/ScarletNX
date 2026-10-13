@@ -13,7 +13,7 @@
 #define NVN_IMAGE_BUDGET (256ull << 20)
 typedef struct {
     u64 texture, pool, address, texture_generation, pool_generation;
-    u64 mip_sequence[16];
+    u64 subresource_sequence[16][64];
     u32 width, height, levels, layers, target, format;
     u64 bytes;
     u64 last_batch;
@@ -23,7 +23,7 @@ typedef struct {
     VkImageLayout layout;
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
-    VkImageAspectFlags mip_aspects[16];
+    u64 color_layers[16], depth_layers[16];
     int sampled;
 } NvnImage;
 static NvnImage images[NVN_IMAGE_SLOTS];
@@ -32,7 +32,10 @@ static u64 batch_serial;
 
 void vk_nvn_batch_begin(void) {
     batch_serial++;
-    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) memset(images[i].mip_aspects, 0, sizeof images[i].mip_aspects);
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        memset(images[i].color_layers, 0, sizeof images[i].color_layers);
+        memset(images[i].depth_layers, 0, sizeof images[i].depth_layers);
+    }
 }
 
 static NvnImage* evict_old_image(void) {
@@ -247,9 +250,10 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         memcpy(&value.depth, &command->depth_bits, sizeof value.depth);
         vkCmdClearDepthStencilImage(cb, image->image, image->layout, &value, 1, &range);
     }
-    if (target->target == 1) {
-        image->mip_sequence[mip] = command->sequence;
-        image->mip_aspects[mip] = range.aspectMask;
+    if (layer < 64 && (range.aspectMask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT))) {
+        image->subresource_sequence[mip][layer] = command->sequence;
+        if (range.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) image->color_layers[mip] |= 1ull << layer;
+        if (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) image->depth_layers[mip] |= 1ull << layer;
     }
     image->last_batch = batch_serial;
     return 1;
@@ -337,33 +341,40 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     image->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     image->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    image->mip_sequence[mip] = command->sequence;
-    image->mip_aspects[mip] = VK_IMAGE_ASPECT_COLOR_BIT;
+    image->subresource_sequence[mip][0] = command->sequence;
+    image->color_layers[mip] |= 1;
     image->last_batch = batch_serial;
     return 1;
 }
 
 static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write) {
     u64 address;
-    u32 width, height, levels;
+    u32 width, height, layers, levels;
+    VkImageViewType view_type;
     VkFormat format;
     if (!descriptor->texture || !descriptor->texture_generation ||
-        !vk_tex_tic_2d(descriptor->tic, &address, &width, &height, &levels, &format))
+        !vk_tex_tic_shadow(descriptor->tic, &address, &width, &height, &layers, &levels, &view_type, &format))
         return VK_NULL_HANDLE;
+    if (layers > 64) return VK_NULL_HANDLE;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
-        if (!image->image || !image->sampled || image->target != 1 || image->layers != 1 ||
+        VkImageViewType image_type = image->target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
+                                     : image->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                          : VK_IMAGE_VIEW_TYPE_2D;
+        if (!image->image || !image->sampled || image_type != view_type || image->layers != layers ||
             image->texture != descriptor->texture || image->texture_generation != descriptor->texture_generation ||
             image->address != address || image->width != width || image->height != height ||
             (levels != image->levels && (levels != 1 || !image->base_view)))
             continue;
         VkFmt source = nvn_format(image->format);
         if (source.vk != format) continue;
-        VkImageAspectFlags aspect = source.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         int complete = 1;
         for (u32 level = 0; level < levels; level++)
-            if (!(image->mip_aspects[level] & aspect) || image->mip_sequence[level] <= last_unmodeled_write)
-                complete = 0;
+            for (u32 layer = 0; layer < layers; layer++) {
+                u64 written = source.depth ? image->depth_layers[level] : image->color_layers[level];
+                if (!(written & (1ull << layer)) || image->subresource_sequence[level][layer] <= last_unmodeled_write)
+                    complete = 0;
+            }
         if (!complete) continue;
         VkCommandBuffer cb = vk_cmd();
         vk_barrier(cb, image->image, vk_aspect(&source), image->stage, image->access, image->layout,
