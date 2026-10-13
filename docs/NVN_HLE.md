@@ -969,10 +969,25 @@ shadow buffer maps its physical word offset through the graphics shader's SSBO p
 the device's descriptor-offset alignment. A TotK capture showed one later binding beginning 448 bytes inside a
 58,848-byte cached range.
 Other partial overlaps remain ineligible. CPU write tracking is armed at creation, and cross-batch guest writes
-invalidate the shadow buffer rather than silently merging emulated results into HLE state. The contained-alias path
-builds and the unit suite passes, but the subsequent TotK runs did not reach the same comparison frame, so visible
-pixel improvement is still unverified. Full-list HLE replacement is needed to remove duplicate GPFIFO writes from
-the coherence problem.
+invalidate the shadow buffer rather than silently merging emulated results into HLE state. With inline-draw capture,
+cross-batch preservation, direct draws, and shadow comparison enabled, TotK exercised the 448-byte alias map and the
+first 640×360 RGBA16F target matched the Maxwell result byte-for-byte: 0/230,400 differing pixels, with 23,040
+nonblack pixels on both sides. At the third comparison the direct target was blank while the Maxwell target had
+108,654 nonblack pixels. Full-list HLE replacement is still needed to remove duplicate GPFIFO writes from the
+coherence problem.
+
+`SNX_NVN_SHADOW_VERIFY_GUEST_WRITES=1` adds a diagnostic readback when a cached SSBO's guest backing changes. It
+accepts the HLE buffer for another batch only if every byte equals the guest result and no CPU/GPU write occurs
+during the check. In a TotK run both results were stable but unequal: 2,524 bytes differed in the 48,544-byte
+buffer, and three bytes differed in the 58,848-byte buffer. At the first differing byte of the larger mismatch,
+HLE retained its initial zero while Maxwell wrote `0x39`; at the first byte of the smaller mismatch, HLE changed
+`0xe1` to `0xc2` while Maxwell retained `0xe1`. The 48,544-byte buffer is written by a three-index draw using
+vertex shader `27b7f745d6bc07dc` and fragment shader `f846bb94dc89d8fe`, then a six-index draw using fragment
+shader `44d33822c7c9dc8f`; the latter also writes the 58,848-byte buffer. A later three-index draw uses fragment
+shader `39c33661040df4bc` on that second buffer. All six captured shaders translated and validated as SPIR-V.
+The first vertex shader stores zeros, while the fragment shaders include `atomicMax`, `atomicAdd`, and ordinary
+stores. The remaining difference needs command-order and shader-input investigation; ignoring guest write markers
+would hide it rather than establish parity.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
