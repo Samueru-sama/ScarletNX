@@ -1282,6 +1282,16 @@ with this change. This establishes parity for that target on the sampled frame; 
 draws still need independent comparison. The fragment shader also selects integer texture variants
 from the recorded TIC formats, enabling the R8 UINT input used by draw 50.
 
+A later Catherine consumer still differs only in alpha on the sampled black frame. Its source
+target is byte exact at the next present, and the compared draw uses matching fragment shader
+module, uniform bytes, vertex buffer, texture descriptor, and unblended color mask. The native
+Maxwell window-origin flip register (`0x4EB`) is zero for the first submission and `0x10` for
+the next, changing the Vulkan front-face state, although the NVN device getter reports upper-left
+origin from startup. Applying that getter to every recorded draw culls the first producer passes,
+so it cannot model the register transition. The NVN recorder must recover the ordered command
+state that changes facing before it can use window origin to resolve this mismatch. Temporary
+draw-specific facing overrides were removed after the probe.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
