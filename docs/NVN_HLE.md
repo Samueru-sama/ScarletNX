@@ -845,6 +845,10 @@ eight secondary-list calls. The outer list had no draws. Its new secondary list 
 39 recorded draws contained about 9,920 captured state and memory operations, zero captured draws, and was marked
 opaque because its begin was inlined. This places the missing GPU entry near an opaque secondary-list boundary;
 the captured operation counts alone do not prove which secondary list emitted its three draws.
+That list itself includes nested `CallCommands` references, so its zero direct-draw count does not mean its full
+subtree is draw-free. Its final operations contain three repeated program, texture, vertex-attribute, and
+vertex-stream bindings with no intervening draw call recorded. This is a specific place to investigate an inlined
+draw producer, but matching the encoded command bytes to those operations is still necessary before replay.
 Temporarily omitting only those three Maxwell draws
 made the two targets match byte-for-byte (0/230,400 different pixels); that omission was removed after diagnosis.
 The direct draw itself left a forced magenta target unchanged, including with depth testing, culling, and blending
