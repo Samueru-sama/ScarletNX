@@ -2684,7 +2684,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = zero_probe
             ? (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}}
-            : (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
+            : color_target->format == 0x25
+                ? (VkClearColorValue){{0.2f, 0.4f, 0.6f, 0.8f}}
+                : (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
         if (depth) {
             depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
@@ -2803,20 +2805,32 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
             vk_finish();
             vk_readback_ready();
-            u64 changed = 0;
+            u64 changed = 0, changed_components = 0;
             const u8 magenta_rgba16f[8] = {0, 0x3c, 0, 0, 0, 0x3c, 0, 0x3c};
             const u32 magenta_packed = color_target->format == 0x3f ? 0x780003c0u : 0xffff00ffu;
+            const u8 rgba8_sentinel[4] = {51, 102, 153, 204};
             const u64 zero = 0;
             const void* sentinel = zero_probe ? (const void*)&zero
+                                   : color_target->format == 0x25 ? (const void*)rgba8_sentinel
                                    : color_format.bpp == 8 ? (const void*)magenta_rgba16f : &magenta_packed;
-            for (u64 i = 0; i < bytes; i += color_format.bpp)
+            for (u64 i = 0; i < bytes; i += color_format.bpp) {
                 changed += memcmp(pixels + i, sentinel, color_format.bpp) != 0;
-            capture_full = !zero_probe && changed == bytes / color_format.bpp;
+                if (!zero_probe && color_target->format == 0x25)
+                    for (u32 component = 0; component < 4; component++)
+                        changed_components += pixels[i + component] != rgba8_sentinel[component];
+            }
+            /* A changed RGB pixel does not prove alpha was written. For unblended RGBA8,
+               require every component to differ from its initialized sentinel. */
+            capture_full = !zero_probe && color_target->format == 0x25 && !key->blend[0].en &&
+                           key->blend[0].mask == 15 && (fragment->si.sph[18] & 15) == 15 &&
+                           changed_components == bytes;
             u64 center = ((u64)(color_target->height / 2) * color_target->width + color_target->width / 2) *
                          color_format.bpp;
-            LOG("nvn-shadow-readback: zero-probe=%d changed-pixels=%llu total=%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
+            LOG("nvn-shadow-readback: zero-probe=%d changed-pixels=%llu total=%llu components=%llu/%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
                 zero_probe,
-                (unsigned long long)changed, (unsigned long long)(bytes / color_format.bpp), pixels[0], pixels[1], pixels[2],
+                (unsigned long long)changed, (unsigned long long)(bytes / color_format.bpp),
+                (unsigned long long)changed_components, (unsigned long long)bytes,
+                pixels[0], pixels[1], pixels[2],
                 pixels[3], pixels[bytes - 4], pixels[bytes - 3], pixels[bytes - 2], pixels[bytes - 1],
                 pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3]);
         }
@@ -2833,7 +2847,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         storage_images[k]->image_was_written = 1;
         storage_images[k]->last_batch = batch_serial;
     }
-    /* Full coverage comes from a scoped zero seed or from a first-draw sentinel overwritten at every pixel.
+    /* Full coverage comes from a scoped zero seed or from a first-draw sentinel overwritten in every component.
        Other draws preserve provenance only after modeled full-subresource initialization. */
     int preserved = prior_covered;
     int any_color_written = 0;

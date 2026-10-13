@@ -1209,7 +1209,8 @@ An ABI-7 Catherine run traced its first 1280×720 mismatch through a chain of 64
 passes. Draw preflight had checked sampled-image coverage against the raw unmodeled-write marker, although draw
 execution had already resolved that marker through scoped writes. Preflight now uses the effective marker too.
 `SNX_NVN_SHADOW_CAPTURE_CHAIN=1` extends the opt-in sentinel readback to the first draw into each of up to eight
-distinct targets; it marks a target covered only if every pixel overwrites the sentinel. All five producer targets
+distinct targets. For unblended RGBA8 draws with all channels enabled, it marks a target covered only if every
+component of every pixel overwrites a distinct sentinel value. All five producer targets
 in Catherine's first chain passed that check. The resulting direct image still had alpha zero because the program
 snapshot named only Vertex A, while Maxwell executed a paired Vertex B at the next 0x200-byte code slot. The direct
 path now uses that pair only when the candidate has a mapped, valid Vertex B SPH. Its translated vertex shader then
@@ -1222,8 +1223,11 @@ those copy markers into GPU-thread replay, which scopes each write by physical b
 images and storage buffers even if direct upload is unsupported. The 640×360 and 320×180 producer targets in the
 next submission then compared byte-exactly, as did its 1280×720 producer. The later 1280×720 consumer remained
 different in 921,600/921,600 pixels, with only alpha differing (direct `ff`, Maxwell `00` in the sampled black frame).
-The cause of that later mismatch remains open; the exact producer comparisons do not establish presented-frame
-parity. `SNX_NVN_SHADOW_COMPARE_ADDRESS` selects an intermediate GPU address for these opt-in comparisons.
+The component-level sentinel check confirmed that the direct draw wrote alpha rather than retaining the initial
+clear value. A one-pixel source readback at the consumer draw, the shader hashes, texture and sampler descriptors,
+viewport, scissor, culling, and vertex count matched. The cause of that later mismatch remains open; present-time
+producer comparisons do not establish full source parity at the consumer draw. `SNX_NVN_SHADOW_COMPARE_ADDRESS`
+selects an intermediate GPU address for these opt-in comparisons.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
