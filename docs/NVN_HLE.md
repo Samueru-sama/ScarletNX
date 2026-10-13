@@ -1064,6 +1064,12 @@ The upload parser now rejects offsets that would wrap its 32-bit address registe
 misclassified as a write near the start of the constant buffer. After rebuilding Catherine against the merged-main
 ABI, a 35-second headless probe issued at least 23,300 direct shadow draws with semantic texture sampling and no
 fatal error. This confirms continued execution coverage, not presented-frame parity.
+After the Vulkan headless merge, an ABI-matched Odyssey rebuild issued over 6,200 direct shadow draws in 30 seconds
+without a fatal error. Its first 1600×900 comparison had previously been skipped because the direct RGBA8 UNORM
+image and Maxwell's RGBA8 sRGB view have different Vulkan format tags. The diagnostic now compares their identical
+four-byte storage layouts. All 1,440,000 pixels differed in that first target: the direct image was magenta across
+the surface, while Maxwell's had 518,400 nonblack pixels. The comparison exposes a real early rendering mismatch;
+it does not imply the sRGB transfer behavior itself is correct.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

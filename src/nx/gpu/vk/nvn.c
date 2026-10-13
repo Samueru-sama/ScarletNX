@@ -2831,7 +2831,13 @@ void vk_nvn_shadow_compare(void) {
         return;
     }
     Surf* emulated = vk_rt_find(shadow->address);
-    if (!emulated || emulated->f.vk != format.vk || emulated->f.bpp != format.bpp ||
+    int rgba8_transfer_pair = emulated &&
+        ((format.vk == VK_FORMAT_R8G8B8A8_UNORM && emulated->f.vk == VK_FORMAT_R8G8B8A8_SRGB) ||
+         (format.vk == VK_FORMAT_R8G8B8A8_SRGB && emulated->f.vk == VK_FORMAT_R8G8B8A8_UNORM));
+    /* sRGB and UNORM RGBA8 views have identical stored bytes. Color conversion happens on access,
+       so the diagnostic can compare their raw readbacks without changing either image. */
+    if (!emulated || (emulated->f.vk != format.vk && !rgba8_transfer_pair) ||
+        emulated->f.bpp != format.bpp ||
         emulated->w != shadow->width ||
         emulated->h != shadow->height || emulated->sw != emulated->w || emulated->sh != emulated->h ||
         emulated->layout == VK_IMAGE_LAYOUT_UNDEFINED) {
