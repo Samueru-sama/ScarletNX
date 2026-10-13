@@ -176,7 +176,7 @@ static void compose_cpu(const VicSlot* sl, u32 fmt, const VicPlane* oy, const Vi
             for (u32 k = 0; k < w; k++) g_rowo[k] = (u8)(g_slotrow[k].r >> 2);
             plane_row(oy, dx0, out_y, g_rowo, w, 1);
             /* the chroma rows follow the luma pairs; the row keeps the chroma of its even row */
-            if ((out_y & 1) == 0 || y == 0) {
+            if (oc->p && !(out_y & 1)) { /* no chroma plane mapped (vic_execute logs it) */
                 for (u32 k = 0; k < wc; k += 2) {
                     g_rowo[k] = (u8)(g_slotrow[k].g >> 2);
                     g_rowo[k + 1] = (u8)(g_slotrow[k].b >> 2);
