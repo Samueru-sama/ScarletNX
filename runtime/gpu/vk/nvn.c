@@ -616,9 +616,10 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
         memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
         memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
         if (!shader || !shader->mod || shader->failed || shader->si.unsupported) {
-            LOG_LIMIT(8, "nvn-shader-module: compile failure stage=%u code=%llx failed=%d unsupported=%d\n", stage,
-                      (unsigned long long)(stage ? fragment : (vertex_b ? vertex_b : vertex_a)),
-                      shader ? shader->failed : -1, shader ? shader->si.unsupported : -1);
+            LOG_LIMIT(8, "nvn-shader-module: compile failure stage=%u code=%llx failed=%d unsupported=%d first=%s\n",
+                      stage, (unsigned long long)(stage ? fragment : (vertex_b ? vertex_b : vertex_a)),
+                      shader ? shader->failed : -1, shader ? shader->si.unsupported : -1,
+                      shader ? shader->si.first_unsupported : "unavailable");
             return 0;
         }
         if (stage)

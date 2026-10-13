@@ -518,6 +518,12 @@ missing texture registrations as handle zero; none used a nonzero handle. The re
 bound slots. Resource-use analysis must establish whether each zero handle is an unused slot or a shader-visible null
 descriptor before host draw preparation can skip it or supply a defined replacement.
 
+In a 15-second hooked Scarlet run with shader materialization enabled, 7,084 draws had ready shader modules and 612
+failed because their fragment shaders first hit `SUST` or `SURED`. The translator's image-store path currently supports
+compute only, and the graphics descriptor path has no storage-image bindings for these writes or reductions.
+Fragment storage-image resource translation and ordering are required before those modules can participate in host
+draws.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
