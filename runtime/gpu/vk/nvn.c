@@ -667,8 +667,16 @@ static VkBlendOp nvn_blend_op(u32 equation) {
    can form a Vulkan pipeline. Dynamic raster and depth state is set by a future host draw. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
     if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known ||
-        !command->polygon_state_known || !command->depth_stencil_state_known)
+        !command->polygon_state_known || !command->depth_stencil_state_known || !command->multisample_state_known)
         return 0;
+    u32 multisample = command->multisample_state[0];
+    u32 samples = (multisample >> 8) & 31, raster_samples = (multisample >> 15) & 31;
+    /* The current attachment and pipeline path is single-sample only. Zero is the SDK default for one sample. */
+    if (samples > 1 || raster_samples > 1 || (multisample & 0x1a) || ((multisample >> 13) & 3) ||
+        (multisample & (1u << 20))) {
+        LOG_LIMIT(8, "nvn-pipeline: unsupported multisample state=%08x\n", multisample);
+        return 0;
+    }
     /* The existing pipeline key does not represent logic operations or alpha testing. */
     if (((command->color_state >> 16) & 0xff) != 3 || ((command->color_state >> 24) & 0xf) != 8) {
         LOG_LIMIT(8, "nvn-pipeline: unsupported color state=%08x\n", command->color_state);

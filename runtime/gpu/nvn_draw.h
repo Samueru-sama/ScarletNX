@@ -83,6 +83,8 @@ typedef struct {
     u8 polygon_state_known;
     u32 depth_stencil_state[2];
     u8 depth_stencil_state_known;
+    u32 multisample_state[6];
+    u8 multisample_state_known;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;
