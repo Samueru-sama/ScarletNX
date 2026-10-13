@@ -243,6 +243,14 @@ int vk_vic_compose(const VicJob* j) {
     vkCmdBindDescriptorSets(g_vic_cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vic_layout, 0, 1, &set, 0, NULL);
     /* a workgroup composes a 32x8 tile of output pixels (gpu/video/vic.comp) */
     vkCmdDispatch(g_vic_cb, (j->sw + 31) / 32, (j->sh + 7) / 8, 1);
+    /* the fence alone does not make the writes visible to the host */
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(g_vic_cb, &di);
     VK_OK(vkEndCommandBuffer(g_vic_cb));
     VkCommandBufferSubmitInfo c = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = g_vic_cb};
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
