@@ -40,12 +40,17 @@ static u64 pool_table_full, descriptor_table_full, command_table_full;
 static u64 view_snapshots, view_snapshot_failures;
 static u64 tic_snapshots, tic_gpu_snapshots, tic_storage_snapshots, tic_missing_base, tic_address_mismatch;
 
-static int texture_current(const Descriptor* d) {
+static int texture_current(const Descriptor* d, NvnTextureSnapshot* out) {
     NvnTextureSnapshot texture = {0};
     if (!nvn_texture_snapshot(d->texture, &texture) || texture.generation != d->texture_generation) return 0;
-    if (!texture.pool) return 1;
+    if (!texture.pool) {
+        if (out) *out = texture;
+        return 1;
+    }
     NvnPoolSnapshot pool = {0};
-    return nvn_pool_snapshot(texture.pool, &pool) && pool.generation == texture.pool_generation;
+    if (!nvn_pool_snapshot(texture.pool, &pool) || pool.generation != texture.pool_generation) return 0;
+    if (out) *out = texture;
+    return 1;
 }
 
 static u32 hash(u64 key, u32 mask) { return (u32)((key >> 4) * 2654435761u) & mask; }
@@ -251,7 +256,7 @@ void nvn_descriptor_after(const CPU* c, const char* name, const NvnDescriptorCal
             if (!d || d->pool_generation != p->generation) {
                 missing_descriptors++;
             } else {
-                if (!texture_current(d))
+                if (!texture_current(d, NULL))
                     stale_textures++;
                 else {
                     resolved++;
@@ -290,7 +295,7 @@ int nvn_descriptor_check(u64 pool, u64 handle) {
     TexturePool* p = pool_slot(pool, 0);
     Descriptor* d = p && p->alive ? descriptor_slot(pool, (u32)handle & 0xfffff, 0) : NULL;
     int result = 0;
-    if (d && d->pool_generation == p->generation) { result = texture_current(d) ? 1 : -1; }
+    if (d && d->pool_generation == p->generation) { result = texture_current(d, NULL) ? 1 : -1; }
     pm_unlock(&lock);
     return result;
 }
@@ -302,11 +307,14 @@ int nvn_descriptor_snapshot(u64 pool, u64 handle, NvnDescriptorSnapshot* out) {
     Descriptor* d = p && p->alive ? descriptor_slot(pool, (u32)handle & 0xfffff, 0) : NULL;
     int result = 0;
     if (d && d->pool_generation == p->generation) {
-        if (texture_current(d)) {
+        NvnTextureSnapshot texture = {0};
+        if (texture_current(d, &texture)) {
             *out = (NvnDescriptorSnapshot){.texture = d->texture,
                                            .view = d->view,
                                            .texture_generation = d->texture_generation,
                                            .pool_generation = d->pool_generation,
+                                           .memory_pool = texture.pool,
+                                           .memory_pool_generation = texture.pool_generation,
                                            .view_selection = d->view_selection,
                                            .view_known = d->view_known,
                                            .tic_valid = d->tic_valid};

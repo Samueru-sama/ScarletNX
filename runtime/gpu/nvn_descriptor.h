@@ -15,6 +15,7 @@ typedef struct {
 } NvnDescriptorCall;
 typedef struct {
     u64 texture, view, texture_generation, pool_generation;
+    u64 memory_pool, memory_pool_generation;
     NvnTextureViewSelection view_selection;
     u32 tic[8];
     u8 view_known;

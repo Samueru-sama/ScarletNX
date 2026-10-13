@@ -422,6 +422,7 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
                                                           : VK_IMAGE_VIEW_TYPE_2D;
         if (!image->image || !image->sampled || image_type != view_type || image->layers != layers ||
             image->texture != descriptor->texture || image->texture_generation != descriptor->texture_generation ||
+            image->pool != descriptor->memory_pool || image->pool_generation != descriptor->memory_pool_generation ||
             image->address != address || image->width != width || image->height != height ||
             (levels != image->levels && (levels != 1 || !image->base_view)))
             continue;
