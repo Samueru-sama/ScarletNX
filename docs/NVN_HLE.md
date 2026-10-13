@@ -1292,6 +1292,19 @@ so it cannot model the register transition. The NVN recorder must recover the or
 state that changes facing before it can use window origin to resolve this mismatch. Temporary
 draw-specific facing overrides were removed after the probe.
 
+The origin packets appear in GPU pushbuffers that the current NVN recorder does not
+associate with a command-list operation. On Catherine's sampled run, the initial zero
+comes from GPU pushbuffer VA `0x5ec030000`,
+then paired `0x10` writes recur in short pushbuffers beginning at `0x5ec0324d4`,
+`0x5ec032698`, and subsequent submission-adjacent addresses. The three recorded NVN
+command buffers instead use CPU-visible memory ranges beginning at `0x181001a00`,
+`0x181501b00`, and `0x181a01c00`. Those addresses are from different address spaces,
+so their numeric difference alone does not prove separate storage. The recorder's
+eligible command-gap scans found no origin write; its full-list scan did not become
+eligible in this run. The next fix needs to establish these packets' ordering relative
+to command lists and capture their effective
+state at that boundary, rather than treating the device getter as draw-local state.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
