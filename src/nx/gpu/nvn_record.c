@@ -1993,7 +1993,7 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         if (r->command_cursor >= r->command_low && cursor <= r->command_high && cursor > r->command_cursor) {
             u64 gap_size = cursor - r->command_cursor;
             if (gap_size > 65536 || (gap_size & 3) || !readable_range(r->command_cursor, gap_size) ||
-                !nvn_command_gap_buffer_bindings_only((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
+                !nvn_command_gap_no_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
                 r->command_gaps_safe = 0;
             const char* state_opt = getenv("SNX_NVN_INLINED_STATE");
             if ((!state_opt || strcmp(state_opt, "0")) && gap_size <= 65536 && !(gap_size & 3) &&
@@ -2375,7 +2375,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
             else if (end > r->command_cursor && end <= r->command_high &&
                      end - r->command_cursor <= 65536 && !((end - r->command_cursor) & 3) &&
                      readable_range(r->command_cursor, end - r->command_cursor))
-                r->command_tail_known = nvn_command_gap_buffer_bindings_only(
+                r->command_tail_known = nvn_command_gap_no_writes(
                     (const u32*)GP(r->command_cursor), (u32)((end - r->command_cursor) / 4));
         }
         *list = *r;

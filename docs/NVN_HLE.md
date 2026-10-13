@@ -1035,9 +1035,15 @@ The newer marker comes from an opaque TotK list boundary, not from a known draw 
 3,811 recorded operations, one command-memory allocation, and known prefix and tail, but its cursor gaps failed the
 buffer-bindings-only check. Some failures were omitted constant-buffer binds for the other Maxwell stages; the
 classifier now recognizes all five read-only bind methods. Other gaps contain report-semaphore writes, constant data
-uploads, vertex ranges, and MME draw packets. They cannot be declared harmless as a group. The next provenance step
+uploads, vertex ranges, and MME draw packets. The no-write classifier now also accepts observed vertex-range
+registers, constant-buffer offset setup, and semaphore acquires (which read their addresses). Semaphore releases,
+counter reports, data uploads, draws, and unrecognized methods still require the barrier. These gaps cannot be declared
+harmless as a group. The next provenance step
 is to replay or scope those hidden memory writes in command order and retain a global barrier for any gap whose write
 range cannot be proved. A query write to an unrelated address should not invalidate a covered sampled image.
+In a merged-main TotK probe, repeated puller releases wrote near GPU address `0x5031ca5e0`; their host backing was
+about 9 MB from the sampled image at `0x5113e0000`. This proves those observed releases did not overlap that image
+in that run, but does not classify the list's constant-data uploads, macros, or future memory mappings.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

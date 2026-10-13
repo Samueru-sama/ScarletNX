@@ -47,16 +47,30 @@ int main(void) {
     assert(methods.methods[4] == 0x8e3 && methods.values[4] == 1);
     const u32 binding_packets[] = {0x200308e0, 0x100, 6, 0x22ad0000,
                                    0x60010904, 0x31, 0x60010924, 0x41};
-    assert(nvn_command_gap_buffer_bindings_only(binding_packets, 8));
+    assert(nvn_command_gap_no_writes(binding_packets, 8));
     const u32 other_stage_bindings[] = {0x6001090c, 0x31, 0x60010914, 0x41, 0x6001091c, 0x51};
-    assert(nvn_command_gap_buffer_bindings_only(other_stage_bindings, 6));
-    assert(!nvn_command_gap_buffer_bindings_only(state_packets, 7)); /* 0x8e3 is not classified. */
-    assert(!nvn_command_gap_buffer_bindings_only(packet, 12)); /* Indexed draw writes attachments. */
+    assert(nvn_command_gap_no_writes(other_stage_bindings, 6));
+    assert(nvn_command_gap_no_writes(state_packets, 7)); /* CBUF offset is register state. */
+    const u32 vertex_range[] = {0x20020701, 6, 0x22ad0000, 0x200207c0, 6, 0x22ad0d8b};
+    assert(nvn_command_gap_no_writes(vertex_range, 6));
+    assert(!nvn_command_gap_no_writes(packet, 12)); /* Indexed draw writes attachments. */
     const u32 clear_packet[] = {0x60010674, 1};
+    const u32 upload_packet[] = {0x200408e1, 6, 0x22ad0000, 0, 0x12345678};
+    const u32 report_packet[] = {0x200406c0, 6, 0x22ad0000, 1, 0};
+    const u32 acquire_packet[] = {0x200406c0, 6, 0x22ad0000, 1, 1};
+    const u32 counter_packet[] = {0x200406c0, 6, 0x22ad0000, 1, 2};
+    const u32 puller_acquire[] = {0x20040004, 6, 0x22ad0000, 1, 1};
+    const u32 puller_release[] = {0x20040004, 6, 0x22ad0000, 1, 2};
     const u32 other_subchannel[] = {0x60012904, 0x31};
-    assert(!nvn_command_gap_buffer_bindings_only(clear_packet, 2));
-    assert(!nvn_command_gap_buffer_bindings_only(other_subchannel, 2));
-    assert(!nvn_command_gap_buffer_bindings_only(binding_packets, 7));
+    assert(!nvn_command_gap_no_writes(clear_packet, 2));
+    assert(!nvn_command_gap_no_writes(upload_packet, 5)); /* CBUF data method writes guest memory. */
+    assert(!nvn_command_gap_no_writes(report_packet, 5)); /* Query release writes guest memory. */
+    assert(nvn_command_gap_no_writes(acquire_packet, 5)); /* Query acquire reads the semaphore. */
+    assert(!nvn_command_gap_no_writes(counter_packet, 5));
+    assert(nvn_command_gap_no_writes(puller_acquire, 5));
+    assert(!nvn_command_gap_no_writes(puller_release, 5));
+    assert(!nvn_command_gap_no_writes(other_subchannel, 2));
+    assert(!nvn_command_gap_no_writes(binding_packets, 7));
 
     u32 altered[12];
     memcpy(altered, packet, sizeof altered);
@@ -82,6 +96,7 @@ int main(void) {
         0x60010e0e, 4, 0x6001068b, 0, 0x600108e3, 0xa8, 0x600108e4, 0x14d0103c,
         0x60010e20, 0x154, 0x200308e4, 0x23130000, 6, 0xe5e0,
     };
+    assert(!nvn_command_gap_no_writes(descriptor_packet, 14)); /* CBUF data upload writes memory. */
     NvnGapMacroData3 descriptor = {0};
     assert(nvn_command_gap_macro_data3(descriptor_packet, 14, 0xe20, &descriptor));
     assert(descriptor.macro_argument == 0x154);

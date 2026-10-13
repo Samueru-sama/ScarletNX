@@ -18,8 +18,8 @@ typedef void (*NvnGapMethodVisitor)(u32 subchannel, u32 method, u32 value, void*
 /* Visit only complete, well-formed cursor gaps. No callbacks run if validation fails. */
 int nvn_command_gap_methods(const u32* words, u32 count, NvnGapMethodVisitor visit, void* context);
 
-/* Only the observed Maxwell constant-buffer setup and bind methods; every other method may write. */
-int nvn_command_gap_buffer_bindings_only(const u32* words, u32 count);
+/* True only for validated register writes with no direct guest-memory or attachment write effect. */
+int nvn_command_gap_no_writes(const u32* words, u32 count);
 
 /* Recognize one complete indexed draw packet at the end of a command-buffer cursor gap. */
 int nvn_command_gap_indexed_draw(const u32* words, u32 count, NvnGapIndexedDraw* out);
