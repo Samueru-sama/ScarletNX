@@ -605,6 +605,13 @@ The SDK's GPFIFO still supplies the displayed frame; this path does not replace 
 image writes with guest memory, or establish visual parity. It deliberately accepts only the verified bank-3-only,
 one-attribute, non-indexed, single-color-plus-depth triangle-strip state until more generated buffers and dynamic
 state are modeled.
+The shadow descriptor setup now also handles one fragment sampled texture and permits a color-only attachment for
+the same simple triangle-strip shape. It decodes the shader's generated handle slot, binds the captured TIC/TSC,
+and uses the existing texture view and sampler rules. It accepts only guest-memory-backed textures here; sampling
+a Maxwell render target would make the shadow result depend on the emulated GPU. Catherine's observed textured
+fullscreen candidates sampled Maxwell render targets, so this extension did not increase issued shadow-draw count.
+Their source images need to come from earlier ordered HLE clears/copies/draws before these draws can execute
+independently.
 With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN color target is also read back
 alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
 in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target

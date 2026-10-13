@@ -1075,19 +1075,23 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         enabled = opt && !strcmp(opt, "1");
     }
     if (!enabled || !pipeline || !vertex || !fragment ||
-        ((vertex->si.cbuf_mask | fragment->si.cbuf_mask) & ~8u) || vertex->si.ntex || fragment->si.ntex ||
+        ((vertex->si.cbuf_mask | fragment->si.cbuf_mask) & ~8u) || vertex->si.ntex || fragment->si.ntex > 1 ||
         fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf || vertex->si.in_mask != 1 ||
-        command->color_target_mask != 1 || !command->depth_target_bound || !command->target_complete ||
+        command->color_target_mask != 1 || !command->target_complete ||
         command->primitive != 5 || command->indexed || !command->count || !command->instance_count ||
-        command->polygon_state != 0x16 || command->color_state != 0x08030100 ||
-        command->depth_stencil_state[0] != 0x42 || !(command->viewport_known & 1) ||
+        command->polygon_state != 0x16 ||
+        command->color_state != (command->depth_target_bound ? 0x08030100u : 0x08030000u) ||
+        command->depth_stencil_state[0] != (command->depth_target_bound ? 0x42u : 0x40u) ||
+        !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) || command->color_target[0].format != 0x25 ||
-        command->depth_target.format != 0x35 || command->color_target[0].target != 1 ||
-        command->color_target[0].storage_target != 1 || command->depth_target.target != 1 ||
-        command->depth_target.storage_target != 1 || command->color_target[0].view.base_level ||
-        command->color_target[0].view.first_layer || command->depth_target.view.base_level ||
-        command->depth_target.view.first_layer || command->color_target[0].width != command->depth_target.width ||
-        command->color_target[0].height != command->depth_target.height || key->nbind != 1 || key->nattr != 1 ||
+        command->color_target[0].target != 1 || command->color_target[0].storage_target != 1 ||
+        command->color_target[0].view.base_level || command->color_target[0].view.first_layer ||
+        (command->depth_target_bound &&
+         (command->depth_target.format != 0x35 || command->depth_target.target != 1 ||
+          command->depth_target.storage_target != 1 || command->depth_target.view.base_level ||
+          command->depth_target.view.first_layer || command->color_target[0].width != command->depth_target.width ||
+          command->color_target[0].height != command->depth_target.height)) ||
+        key->nbind != 1 || key->nattr != 1 ||
         key->attr[0].loc != 0 || key->attr[0].binding != 0 || !command->vertex_attrib[0].enabled ||
         command->vertex_attrib[0].stream != 0 || !(command->vertex_bound & 1))
         return 0;
@@ -1109,61 +1113,97 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         return 0;
     VkDescriptorSet sets[2];
     VkDescriptorBufferInfo uniforms[2] = {0};
-    VkWriteDescriptorSet writes[2] = {0};
+    VkDescriptorImageInfo texture_info = {0};
+    VkWriteDescriptorSet writes[3] = {0};
     u32 nwrites = 0;
     u64 setup_frame = vk_frame_number();
     const VkSh* shaders[2] = {vertex, fragment};
     for (u32 stage = 0; stage < 2; stage++) {
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
         if (!sets[stage]) return 0;
-        if (!(shaders[stage]->si.cbuf_mask & 8)) continue;
-        if (!(command->uniform_bound[stage] & 1)) return 0;
-        u32 size = shaders[stage]->si.cbuf_max[3];
-        if (size < 16) size = 16;
-        if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
-        VkBuffer uniform_buffer;
-        u64 uniform_offset;
-        u8* staged = vk_stage(size, vk_stage_align(), &uniform_buffer, &uniform_offset);
-        if (!staged) return 0;
-        memset(staged, 0, size);
-        u64 read_size = command->uniform[stage][0].size;
-        if (read_size > size) read_size = size;
-        if (read_size) gmem_read(command->uniform[stage][0].address, staged, read_size);
-        uniforms[nwrites] = (VkDescriptorBufferInfo){uniform_buffer, uniform_offset, size};
+        if (shaders[stage]->si.cbuf_mask & 8) {
+            if (!(command->uniform_bound[stage] & 1)) return 0;
+            u32 size = shaders[stage]->si.cbuf_max[3];
+            if (size < 16) size = 16;
+            if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
+            VkBuffer uniform_buffer;
+            u64 uniform_offset;
+            u8* staged = vk_stage(size, vk_stage_align(), &uniform_buffer, &uniform_offset);
+            if (!staged) return 0;
+            memset(staged, 0, size);
+            u64 read_size = command->uniform[stage][0].size;
+            if (read_size > size) read_size = size;
+            if (read_size) gmem_read(command->uniform[stage][0].address, staged, read_size);
+            uniforms[nwrites] = (VkDescriptorBufferInfo){uniform_buffer, uniform_offset, size};
+            writes[nwrites] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                   .dstSet = sets[stage],
+                                                   .dstBinding = SNX_VKB_CB + 3,
+                                                   .descriptorCount = 1,
+                                                   .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                   .pBufferInfo = &uniforms[nwrites]};
+            nwrites++;
+        }
+    }
+    if (fragment->si.ntex) {
+        const ShTex* shader_texture = &fragment->si.tex[0];
+        u32 word = shader_texture->cbuf_off;
+        if (shader_texture->bindless || shader_texture->bl2 || word < 8 ||
+            ((word - 8) & 1) || (word - 8) / 2 >= NVN_DRAW_TEXTURE_SLOTS) return 0;
+        u32 slot = (word - 8) / 2;
+        if (!(command->texture_descriptor_valid[1] & (1u << slot)) ||
+            !(command->sampler_descriptor_valid[1] & (1u << slot))) return 0;
+        const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[1][slot];
+        const NvnSamplerDescriptorSnapshot* sampler = &command->sampler_descriptor[1][slot];
+        if (!descriptor->tic_valid || !sampler->tsc_valid) return 0;
+        Surf* sampled = vk_tex_from_tic(descriptor->tic);
+        if (!sampled || sampled->is_rt) return 0;
+        int num = shader_texture->shadow || !(fragment->si.tex_int_mask & 1) ? 0
+                  : (fragment->si.tex_sint_mask & 1) ? 2 : 1;
+        VkImageView view = vk_tex_bind_view(sampled, vk_tex_view_type(shader_texture), descriptor->tic, num);
+        VkSampler sampler_handle = vk_tex_bind_sampler(sampler->tsc, shader_texture, num);
+        if (!view || !sampler_handle) return 0;
+        vk_surf_use(vk_cmd(), sampled, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        texture_info = (VkDescriptorImageInfo){sampler_handle, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         writes[nwrites] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                               .dstSet = sets[stage],
-                                               .dstBinding = SNX_VKB_CB + 3,
+                                               .dstSet = sets[1],
+                                               .dstBinding = SNX_VKB_TEX,
                                                .descriptorCount = 1,
-                                               .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                               .pBufferInfo = &uniforms[nwrites]};
+                                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                               .pImageInfo = &texture_info};
         nwrites++;
     }
     if (setup_frame != vk_frame_number()) return 0;
     if (nwrites) vkUpdateDescriptorSets(g_vk.dev, nwrites, writes, 0, NULL);
     int full = 0;
-    VkFmt color_format = nvn_format(color_target->format), depth_format = nvn_format(depth_target->format);
+    VkFmt color_format = nvn_format(color_target->format);
+    VkFmt depth_format = command->depth_target_bound ? nvn_format(depth_target->format) : (VkFmt){0};
     NvnImage* color = image_for(color_target, color_format.vk, VK_IMAGE_ASPECT_COLOR_BIT, &full);
-    NvnImage* depth = image_for(depth_target, depth_format.vk, vk_aspect(&depth_format), &full);
-    if (!color || !depth || !color->attachment || !depth->attachment) return 0;
+    NvnImage* depth = command->depth_target_bound
+                          ? image_for(depth_target, depth_format.vk, vk_aspect(&depth_format), &full) : NULL;
+    if (!color || !color->attachment || (command->depth_target_bound && (!depth || !depth->attachment))) return 0;
     VkImageView color_view = shadow_attachment_view(color, color_format.vk);
-    VkImageView depth_view = shadow_attachment_view(depth, depth_format.vk);
-    if (!color_view || !depth_view) return 0;
+    VkImageView depth_view = depth ? shadow_attachment_view(depth, depth_format.vk) : VK_NULL_HANDLE;
+    if (!color_view || (depth && !depth_view)) return 0;
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT, color->stage, color->access, color->layout,
                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    vk_barrier(cb, depth->image, vk_aspect(&depth_format), depth->stage, depth->access, depth->layout,
-               VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    if (depth)
+        vk_barrier(cb, depth->image, vk_aspect(&depth_format), depth->stage, depth->access, depth->layout,
+                   VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                   VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     color->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     color->stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     color->access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    depth->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth->stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    depth->access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (depth) {
+        depth->layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depth->stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        depth->access = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
     VkRenderingAttachmentInfo color_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                                   .imageView = color_view,
                                                   .imageLayout = color->layout,
@@ -1171,7 +1211,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingAttachmentInfo depth_attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                                   .imageView = depth_view,
-                                                  .imageLayout = depth->layout,
+                                                  .imageLayout = depth ? depth->layout : VK_IMAGE_LAYOUT_UNDEFINED,
                                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     static int sample_first = 1;
@@ -1179,16 +1219,18 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (capture) {
         color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachment.clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
-        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
+        if (depth) {
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
+        }
     }
     VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
                                  .renderArea = {{0, 0}, {color_target->width, color_target->height}},
                                  .layerCount = 1,
                                  .colorAttachmentCount = 1,
                                  .pColorAttachments = &color_attachment,
-                                 .pDepthAttachment = &depth_attachment,
-                                 .pStencilAttachment = depth_format.stencil ? &depth_attachment : NULL};
+                                 .pDepthAttachment = depth ? &depth_attachment : NULL,
+                                 .pStencilAttachment = depth && depth_format.stencil ? &depth_attachment : NULL};
     vkCmdBeginRendering(cb, &rendering);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_playout, 0, 2, sets, 0, NULL);
@@ -1255,7 +1297,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         }
         sample_first = 0;
     }
-    color->last_batch = depth->last_batch = batch_serial;
+    color->last_batch = batch_serial;
+    if (depth) depth->last_batch = batch_serial;
     color->shadow_draw_stamp = ++shadow_draw_stamp;
     static u64 issued;
     issued++;
