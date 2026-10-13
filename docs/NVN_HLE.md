@@ -512,6 +512,19 @@ of 132 and all 3,724 texture-header copies missing a base. That title needs desc
 coverage before the texture-image path can be evaluated there. All 116,195 replayed draws also lacked a captured
 render target, so host draw execution remains unavailable in this trace.
 
+Odyssey also exceeded the original 16,384-entry program registry. Increasing its bounded table to 65,536 retained
+all 26,344 initialized programs in an eighty-second run: 124,536 program binds resolved, with no untracked shader
+sets or full-table events. The remaining shader-materialization failure was a zero size field in Odyssey's NVN blob
+wrapper, despite its valid magic and Maxwell SPH at the expected offset. The loader now accepts that wrapper only
+when the SPH identifies a supported shader stage. In a 35-second run, all 2,613 prepared Odyssey draws then had
+ready shader modules. Sampler descriptors and draw targets remain separate blockers for the title.
+In a subsequent eighty-second rendered-scene run, 142,369/142,369 prepared Odyssey draws had ready shader modules;
+95,982 textured draws fit the observed texture-slot layout and 46,387 had no texture instructions. None of the
+textured draws had a usable sampler or TIC snapshot, and all 142,491 replayed draws still lacked a captured target.
+The descriptor observer reported 3,940 texture registrations with no readable TIC base, 132 sampler registrations
+without a readable TSC, and 70,495 stale texture resolutions. Those object-lifetime and pool-layout gaps, plus
+render-target capture, now dominate Odyssey's direct-draw path.
+
 An optimized direct-call-hooked Scarlet module reached 1,150 frames in 45 seconds, with 29,653 draws and complete
 render-target snapshots, but no draw passed the all-bound-descriptors preflight. A shorter run classified all 42,242
 missing texture registrations as handle zero; none used a nonzero handle. The recorder still treats those calls as

@@ -464,7 +464,7 @@ static int shader_code_stage(u64 address, u32* type) {
     if (!address || address > UINT64_MAX - 0x34) return -1;
     u32 header[2], sph;
     gmem_read_code(address, header, sizeof header);
-    if (header[0] != 0x12345678 || header[1] < 0x80 || header[1] > 0x10030) return -1;
+    if (header[0] != 0x12345678 || (header[1] && (header[1] < 0x80 || header[1] > 0x10030))) return -1;
     gmem_read_code(address + 0x30, &sph, sizeof sph);
     *type = (sph >> 10) & 15;
     if ((sph & 31) == 1 && *type <= 1) return ST_VS;

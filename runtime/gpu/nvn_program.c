@@ -20,7 +20,7 @@ typedef struct {
     u8 alive, configured, refs_known;
     NvnShaderRef refs[NVN_PROGRAM_MAX_SHADERS];
 } Program;
-#define PROGRAM_SLOTS 16384
+#define PROGRAM_SLOTS 65536
 static Program programs[PROGRAM_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 initialized, init_failed, finalized, live, reinitialized, unknown_finalizes;
