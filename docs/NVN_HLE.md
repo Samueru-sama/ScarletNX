@@ -963,6 +963,15 @@ In the captured TotK chain, the three-index writer binds the same 48,544-byte SS
 fragment stages. The following six-index reader binds a 58,848-byte SSBO at `0x622f20000`. These GPU virtual ranges
 do not overlap; physical aliasing and later consumers still need checking. The writable draw must use shadow-owned
 storage with ordered reads and writes so the direct path does not modify guest memory while GPFIFO is authoritative.
+The direct path now allocates shadow-owned Vulkan storage for writable SSBOs and orders subsequent shader accesses
+with buffer barriers. Bindings with identical physical backing share that storage; a range wholly inside an existing
+shadow buffer uses its physical byte offset when it meets Vulkan's storage-offset alignment. A TotK capture showed
+one later binding beginning 448 bytes inside a 58,848-byte cached range; this device's required alignment is 16 bytes.
+Other partial overlaps remain ineligible. CPU write tracking is armed at creation, and cross-batch guest writes
+invalidate the shadow buffer rather than silently merging emulated results into HLE state. The contained-alias path
+builds and the unit suite passes, but the subsequent TotK runs did not reach the same comparison frame, so visible
+pixel improvement is still unverified. Full-list HLE replacement is needed to remove duplicate GPFIFO writes from
+the coherence problem.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.

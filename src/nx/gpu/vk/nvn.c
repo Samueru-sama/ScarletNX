@@ -15,6 +15,8 @@
 
 #define NVN_IMAGE_SLOTS  128
 #define NVN_IMAGE_BUDGET (256ull << 20)
+#define NVN_SHADOW_STORAGE_SLOTS 128
+#define NVN_SHADOW_STORAGE_BUDGET (64ull << 20)
 typedef struct {
     VkImageView view;
     VkFormat format;
@@ -47,6 +49,18 @@ typedef struct {
     int transfer_src;
 } NvnImage;
 static NvnImage images[NVN_IMAGE_SLOTS];
+typedef struct {
+    u64 address, size, gpu_generation, checked_batch;
+    u32 cpu_clock;
+    const u8* guest_host;
+    VkBuffer buffer;
+    VmaAllocation allocation;
+    VkPipelineStageFlags2 stage;
+    VkAccessFlags2 access;
+    int invalid;
+} NvnShadowStorage;
+static NvnShadowStorage shadow_storage[NVN_SHADOW_STORAGE_SLOTS];
+static u64 shadow_storage_bytes;
 static u64 image_bytes;
 static u64 batch_serial;
 static u64 shadow_draw_stamp;
@@ -1445,6 +1459,103 @@ static const NvnStorageBinding* shadow_storage_binding(const NvnDrawCommand* com
     return selected;
 }
 
+static int shadow_host_overlap(const u8* a, u64 a_size, const u8* b, u64 b_size) {
+    uintptr_t first = (uintptr_t)a, second = (uintptr_t)b;
+    if (!a || !b || first > UINTPTR_MAX - a_size || second > UINTPTR_MAX - b_size) return 1;
+    return first < second + b_size && second < first + a_size;
+}
+
+/* Shadow SSBOs never write the guest's backing. Contained physical aliases share one buffer
+   when Vulkan can represent their starting offset exactly. */
+static int shadow_storage_get(u64 address, u32 size, int writable, NvnShadowStorage** out,
+                              u64* out_offset) {
+    *out = NULL;
+    *out_offset = 0;
+    if (!address || !size || size > (16u << 20) || address > UINT64_MAX - size) return 0;
+    const u8* host = gmem_ptr_untracked(address, size);
+    if (!host) return 0;
+    /* Image registrations can occur after a shadow SSBO was created. Recheck on every bind. */
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        const NvnImage* image = &images[i];
+        if (!image->image) continue;
+        if (!image->storage_size || image->address > UINT64_MAX - image->storage_size) return 0;
+        const u8* image_host = gmem_ptr_untracked(image->address, image->storage_size);
+        if (!image_host || shadow_host_overlap(host, size, image_host, image->storage_size)) return 0;
+    }
+    for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++) {
+        NvnShadowStorage* entry = &shadow_storage[i];
+        if (!entry->buffer || !shadow_host_overlap(host, size, entry->guest_host, entry->size)) continue;
+        uintptr_t start = (uintptr_t)host, base = (uintptr_t)entry->guest_host;
+        u64 offset = start >= base ? start - base : UINT64_MAX;
+        u64 alignment = g_vk.props.limits.minStorageBufferOffsetAlignment;
+        if (entry->invalid || offset > entry->size || size > entry->size - offset ||
+            (alignment && offset % alignment)) {
+            LOG_LIMIT(12, "nvn-shadow-storage-reject: alias-or-invalid addr=%llx size=%u cached=%llx/%llu invalid=%d\n",
+                      (unsigned long long)address, size, (unsigned long long)entry->address,
+                      (unsigned long long)entry->size, entry->invalid);
+            return 0;
+        }
+        if (entry->checked_batch != batch_serial) {
+            entry->checked_batch = batch_serial;
+            int gpu_dirty = gpu_mem_dirty_since(entry->gpu_generation, entry->address, entry->size);
+            int cpu_dirty = vk_written_since(entry->guest_host, entry->size, entry->cpu_clock);
+            if (gpu_dirty || cpu_dirty) {
+                LOG_LIMIT(12, "nvn-shadow-storage-reject: guest-write addr=%llx size=%u gpu=%d cpu=%d batch=%llu\n",
+                          (unsigned long long)address, size, gpu_dirty, cpu_dirty,
+                          (unsigned long long)batch_serial);
+                entry->invalid = 1;
+                return 0;
+            }
+            entry->gpu_generation = gpu_mem_generation();
+            entry->cpu_clock = vk_ww_now();
+        }
+        *out = entry;
+        *out_offset = offset;
+        return 1;
+    }
+    if (!writable) return 1;
+    if (shadow_storage_bytes > NVN_SHADOW_STORAGE_BUDGET - size) return 0;
+    NvnShadowStorage* slot = NULL;
+    for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++)
+        if (!shadow_storage[i].buffer) {
+            slot = &shadow_storage[i];
+            break;
+        }
+    if (!slot) return 0;
+    VkBufferCreateInfo buffer_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                      .size = size,
+                                      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VmaAllocationCreateInfo allocation_info = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                                        VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                               .usage = VMA_MEMORY_USAGE_AUTO};
+    VmaAllocationInfo mapped = {0};
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = NULL;
+    if (vmaCreateBuffer(g_vk.vma, &buffer_info, &allocation_info, &buffer, &allocation, &mapped) != VK_SUCCESS)
+        return 0;
+    if (!mapped.pMappedData) {
+        vk_defer_buffer(buffer, allocation);
+        return 0;
+    }
+    /* Arm page write tracking before recording the clock used by subsequent batches. */
+    vk_written_since(host, size, vk_ww_now());
+    memcpy(mapped.pMappedData, host, size);
+    if (vmaFlushAllocation(g_vk.vma, allocation, 0, VK_WHOLE_SIZE) != VK_SUCCESS) {
+        vk_defer_buffer(buffer, allocation);
+        return 0;
+    }
+    *slot = (NvnShadowStorage){.address = address, .size = size, .guest_host = host,
+                               .buffer = buffer, .allocation = allocation,
+                               .gpu_generation = gpu_mem_generation(), .checked_batch = batch_serial,
+                               .cpu_clock = vk_ww_now(), .stage = VK_PIPELINE_STAGE_2_HOST_BIT,
+                               .access = VK_ACCESS_2_HOST_WRITE_BIT};
+    shadow_storage_bytes += size;
+    *out = slot;
+    return 1;
+}
+
 static int shadow_cbuf0_fill(const NvnDrawCommand* command, const ShaderInfo* si, u32 stage,
                              u8* staged, u32 size) {
     if (si->cbuf0_untracked_read) return 0;
@@ -1498,7 +1609,6 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         vertex->si.nimg || fragment->si.nimg > NVN_DRAW_IMAGE_SLOTS ||
         vertex->si.ngbuf < 0 || vertex->si.ngbuf > 16 ||
         fragment->si.ngbuf < 0 || fragment->si.ngbuf > 16 ||
-        vertex->si.gbuf_wmask || fragment->si.gbuf_wmask ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !triangles && !indexed_triangles) || !command->count || !command->instance_count ||
         !fill_polygon ||
@@ -1572,6 +1682,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                            &index_buffer, &index_offset))
         return 0;
     VkDrawStorage storage = {0};
+    NvnShadowStorage* shadow_buffers[2][16] = {0};
+    u64 shadow_buffer_offsets[2][16] = {0};
     const VkSh* storage_shaders[2] = {vertex, fragment};
     for (u32 stage = 0; stage < 2; stage++) {
         const ShaderInfo* si = &storage_shaders[stage]->si;
@@ -1579,10 +1691,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         for (int i = 0; i < si->ngbuf; i++) {
             const NvnStorageBinding* binding = shadow_storage_binding(command, stage, si->gbuf_cbuf_off[i]);
             if (!binding || !binding->range.address || !binding->range.size ||
-                binding->range.size > (16u << 20) ||
-                binding->range.size > g_vk.props.limits.maxStorageBufferRange) return 0;
+                binding->range.size > (16u << 20)) return 0;
+            u64 aligned_size = (binding->range.size + 3) & ~3ull;
+            if (aligned_size > (16u << 20) || aligned_size > g_vk.props.limits.maxStorageBufferRange ||
+                !shadow_storage_get(binding->range.address, (u32)aligned_size,
+                                    !!(si->gbuf_wmask & (1u << i)), &shadow_buffers[stage][i],
+                                    &shadow_buffer_offsets[stage][i])) return 0;
             storage.b[stage][i].addr = binding->range.address;
-            storage.b[stage][i].size = (u32)binding->range.size;
+            storage.b[stage][i].size = (u32)aligned_size;
         }
     }
     if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) return 0;
@@ -1680,7 +1796,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             VkBuffer buffer;
             u64 offset;
             VkDrawGbuf* binding = &storage.b[stage][i];
-            if (!vk_buf_get_strict(binding->addr, binding->size, &buffer, &offset)) return 0;
+            if (shadow_buffers[stage][i]) {
+                buffer = shadow_buffers[stage][i]->buffer;
+                offset = shadow_buffer_offsets[stage][i];
+            } else if (!vk_buf_get_strict(binding->addr, binding->size, &buffer, &offset)) return 0;
             storage_buffers[stage][i] = (VkDescriptorBufferInfo){buffer, offset, binding->size};
             writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                       .dstSet = sets[stage],
@@ -1812,6 +1931,37 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (!color_view || (depth && !depth_view)) return 0;
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    NvnShadowStorage* used_storage[32] = {0};
+    u8 used_writable[32] = {0};
+    u32 used_count = 0;
+    for (u32 stage = 0; stage < 2; stage++)
+        for (int i = 0; i < storage.n[stage]; i++) {
+            NvnShadowStorage* entry = shadow_buffers[stage][i];
+            if (!entry) continue;
+            u32 j = 0;
+            while (j < used_count && used_storage[j] != entry) j++;
+            if (j == used_count) used_storage[used_count++] = entry;
+            used_writable[j] |= !!(storage_shaders[stage]->si.gbuf_wmask & (1u << i));
+        }
+    for (u32 i = 0; i < used_count; i++) {
+        NvnShadowStorage* entry = used_storage[i];
+        VkBufferMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                          .srcStageMask = entry->stage,
+                                          .srcAccessMask = entry->access,
+                                          .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                          .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                                           (used_writable[i] ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT : 0),
+                                          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                          .buffer = entry->buffer,
+                                          .offset = 0,
+                                          .size = entry->size};
+        VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                       .bufferMemoryBarrierCount = 1,
+                                       .pBufferMemoryBarriers = &barrier};
+        vkCmdPipelineBarrier2(cb, &dependency);
+    }
     for (int k = 0; k < fragment->si.nimg; k++) {
         NvnImage* image = storage_images[k];
         vk_barrier(cb, image->image, VK_IMAGE_ASPECT_COLOR_BIT, image->stage, image->access, image->layout,
@@ -1943,6 +2093,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     } else {
         vkCmdDraw(cb, command->count, command->instance_count, command->first, command->base_instance);
     }
+    for (u32 i = 0; i < used_count; i++) {
+        used_storage[i]->stage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        used_storage[i]->access = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                  (used_writable[i] ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT : 0);
+    }
     vkCmdEndRendering(cb);
     if (capture) {
         u64 bytes = (u64)color_target->width * color_target->height * color_format.bpp;
@@ -2001,19 +2156,21 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (color_written) color->shadow_draw_stamp = ++shadow_draw_stamp;
     static u64 issued;
     static u64 preserved_count, semantic_sample_count, embedded_bank1_count, storage_draw_count, color_write_count;
-    static u64 readonly_ssbo_count;
+    static u64 ssbo_count, writable_ssbo_count;
     issued++;
     preserved_count += preserved;
     semantic_sample_count += semantic_sampled;
     embedded_bank1_count += !!(cbuf_mask & 2);
     storage_draw_count += !!fragment->si.nimg;
-    readonly_ssbo_count += !!(vertex->si.ngbuf || fragment->si.ngbuf);
+    ssbo_count += !!(vertex->si.ngbuf || fragment->si.ngbuf);
+    writable_ssbo_count += !!(vertex->si.gbuf_wmask || fragment->si.gbuf_wmask);
     color_write_count += !!color_written;
     if (issued <= 8 || !(issued % 100))
-        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu storage=%llu readonly-ssbo=%llu color-writes=%llu target=%llx size=%ux%u\n",
+        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu storage=%llu ssbo=%llu writable-ssbo=%llu color-writes=%llu target=%llx size=%ux%u\n",
             (unsigned long long)issued, (unsigned long long)preserved_count,
             (unsigned long long)semantic_sample_count, (unsigned long long)embedded_bank1_count,
-            (unsigned long long)storage_draw_count, (unsigned long long)readonly_ssbo_count,
+            (unsigned long long)storage_draw_count, (unsigned long long)ssbo_count,
+            (unsigned long long)writable_ssbo_count,
             (unsigned long long)color_write_count,
             (unsigned long long)color_target->gpu_address,
             color_target->width, color_target->height);
