@@ -1402,9 +1402,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         (command->color_state != 0x08030000u && command->color_state != 0x08030100u) ||
         (key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
-         ((command->depth_stencil_state[0] & ~0xf3u) ||
-          ((command->depth_stencil_state[0] >> 4) & 15) < 1 ||
-          ((command->depth_stencil_state[0] >> 4) & 15) > 8)) ||
+         (((command->depth_stencil_state[0] & 1) &&
+           (((command->depth_stencil_state[0] >> 4) & 15) < 1 ||
+            ((command->depth_stencil_state[0] >> 4) & 15) > 8)) ||
+          (command->depth_target.format == 0x35 && (command->depth_stencil_state[0] & 4)) ||
+          (command->depth_bounds_enabled &&
+           (!command->depth_bounds_known || !g_vk.feat.depthBounds)))) ||
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
         (command->color_target[0].format != 0x0a && command->color_target[0].format != 0x25 &&
@@ -1747,8 +1750,15 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdSetDepthCompareOp(cb, depth && (depth_state & 1)
                                    ? (VkCompareOp)(((depth_state >> 4) & 15) - 1)
                                    : VK_COMPARE_OP_ALWAYS);
-    vkCmdSetDepthBoundsTestEnable(cb, VK_FALSE);
-    vkCmdSetDepthBounds(cb, 0.0f, 1.0f);
+    int depth_bounds = depth && command->depth_bounds_enabled;
+    vkCmdSetDepthBoundsTestEnable(cb, depth_bounds);
+    if (depth_bounds) {
+        float bounds[2];
+        memcpy(bounds, command->depth_bounds, sizeof bounds);
+        vkCmdSetDepthBounds(cb, bounds[0], bounds[1]);
+    } else {
+        vkCmdSetDepthBounds(cb, 0.0f, 1.0f);
+    }
     vkCmdSetStencilTestEnable(cb, VK_FALSE);
     vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
                       VK_COMPARE_OP_ALWAYS);
@@ -1913,9 +1923,18 @@ void vk_nvn_shadow_compare(void) {
     vk_finish();
     vk_readback_ready();
     u64 different = 0, different_bytes = 0, first_different = ~0ull;
+    u64 nonblack_shadow = 0, nonblack_emulated = 0;
+    const u8 black_rgba8[4] = {0, 0, 0, 255};
+    const u8 black_rgba16f[8] = {0, 0, 0, 0, 0, 0, 0, 0x3c};
+    const u8* black = shadow->format == 0x25 ? black_rgba8
+                    : shadow->format == 0x29 ? black_rgba16f : NULL;
     u64 components[4] = {0};
     u32 min_x = shadow->width, min_y = shadow->height, max_x = 0, max_y = 0;
     for (u64 i = 0; i < bytes; i += format.bpp) {
+        if (black) {
+            nonblack_shadow += memcmp(pixels + i, black, format.bpp) != 0;
+            nonblack_emulated += memcmp(pixels + bytes + i, black, format.bpp) != 0;
+        }
         if (memcmp(pixels + i, pixels + bytes + i, format.bpp)) {
             different++;
             if (first_different == ~0ull) first_different = i;
@@ -1940,6 +1959,11 @@ void vk_nvn_shadow_compare(void) {
         (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],
         pixels[bytes + center], pixels[bytes + center + 1], pixels[bytes + center + 2], pixels[bytes + center + 3]);
+    if (black)
+        LOG("nvn-shadow-coverage: target=%llx nonblack=%llu/%llu emulated=%llu/%llu stamp=%llu\n",
+            (unsigned long long)shadow->address, (unsigned long long)nonblack_shadow,
+            (unsigned long long)(bytes / format.bpp), (unsigned long long)nonblack_emulated,
+            (unsigned long long)(bytes / format.bpp), (unsigned long long)shadow->shadow_draw_stamp);
     if (different) {
         u64 first_shadow = 0, first_emulated = 0;
         memcpy(&first_shadow, pixels + first_different, format.bpp < 8 ? format.bpp : 8);
