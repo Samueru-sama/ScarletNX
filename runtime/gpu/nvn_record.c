@@ -166,6 +166,7 @@ static int pipeline_prepare;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
+static u64 replay_missing_zero_handle, replay_missing_nonzero_handle;
 static u64 replay_sampler_resolved, replay_sampler_missing_pool, replay_sampler_missing_descriptor,
     replay_sampler_stale;
 static u64 replay_program_binds, replay_program_resolved, replay_program_missing, replay_program_unconfigured;
@@ -570,8 +571,13 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     replay_resolved++;
                 else if (result == -1)
                     replay_stale++;
-                else
+                else {
                     replay_missing_descriptor++;
+                    if (op->args[2])
+                        replay_missing_nonzero_handle++;
+                    else
+                        replay_missing_zero_handle++;
+                }
             }
             if (!state->sampler_pool) {
                 replay_sampler_missing_pool++;
@@ -1714,6 +1720,8 @@ void nvn_record_report(void) {
             (unsigned long long)replay_binds, (unsigned long long)replay_resolved,
             (unsigned long long)replay_missing_pool, (unsigned long long)replay_missing_descriptor,
             (unsigned long long)replay_stale);
+        LOG("nvn-replay-missing-handles: zero=%llu nonzero=%llu\n", (unsigned long long)replay_missing_zero_handle,
+            (unsigned long long)replay_missing_nonzero_handle);
         LOG("nvn-replay-sampler: resolved=%llu missing-pool=%llu missing-descriptor=%llu stale=%llu\n",
             (unsigned long long)replay_sampler_resolved, (unsigned long long)replay_sampler_missing_pool,
             (unsigned long long)replay_sampler_missing_descriptor, (unsigned long long)replay_sampler_stale);

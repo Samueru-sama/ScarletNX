@@ -512,6 +512,12 @@ of 132 and all 3,724 texture-header copies missing a base. That title needs desc
 coverage before the texture-image path can be evaluated there. All 116,195 replayed draws also lacked a captured
 render target, so host draw execution remains unavailable in this trace.
 
+An optimized direct-call-hooked Scarlet module reached 1,150 frames in 45 seconds, with 29,653 draws and complete
+render-target snapshots, but no draw passed the all-bound-descriptors preflight. A shorter run classified all 42,242
+missing texture registrations as handle zero; none used a nonzero handle. The recorder still treats those calls as
+bound slots. Resource-use analysis must establish whether each zero handle is an unused slot or a shader-visible null
+descriptor before host draw preparation can skip it or supply a defined replacement.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
