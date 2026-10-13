@@ -1100,6 +1100,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                    !strcmp(op->name, "nvnCommandBufferDrawElements") ||
                    !strcmp(op->name, "nvnCommandBufferDrawElementsBaseVertex") ||
                    !strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
+            /* A direct draw must obey an explicit disable. Conditional draws also need the
+               GPU's fake-counter provenance before their absence can be trusted. */
+            if (queue && state->render_condition_active == 1 && !state->render_enabled) continue;
             NvnDrawCommand draw = {0};
             draw.last_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
             draw.load_textures = texture_load;

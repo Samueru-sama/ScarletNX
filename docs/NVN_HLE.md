@@ -1100,7 +1100,7 @@ matched byte for byte (0 differences); its later guest-backing comparison still 
 The second matching dispatch differed by 242 bytes, starting at offset 29. Between those dispatches, the
 direct path logged several fragment-shader draws that write the same storage buffer. The output mismatch
 alone does not identify which stage is wrong.
-The paired input probe now finds 0 differing bytes before the first dispatch and 240 before the second.
+The initial paired input probe found 0 differing bytes before the first dispatch and 240 before the second.
 That places the first confirmed mismatch between the two dispatches, before the second compute shader runs.
 The second output differs by 242 bytes, so fixing compute translation alone cannot close this gap; the
 intervening storage-writing draws and their ordering need per-draw comparison.
@@ -1116,8 +1116,17 @@ only after the list cannot reconstruct those decisions. The sidecar now captures
 payload and keeps a bounded, command-order shadow of counter values. It evaluates the NVN
 equal/not-equal render condition for color and depth clears; unknown values conservatively leave
 the clear enabled. In the TotK trace, the first clear executes, the two later clears are skipped,
-and the direct feedback source matches Maxwell's solid-white image. Conditional draws and other
-query-write mechanisms still need the same treatment before whole-list GPU replacement.
+and the direct feedback source matches Maxwell's solid-white image. An explicit `SetRenderEnable(false)`
+now gates recorded draws. Conditional draws need fake-counter provenance and other query-write
+mechanisms before they can safely be skipped during whole-list GPU replacement.
+
+After that fix, the second dispatch still has 239 differing input bytes and the same 239 output
+bytes; the first dispatch remains byte-exact. In a controlled TotK probe, submitting the first two
+58,848-byte storage-writing draws separately before later draws made the second dispatch input
+and output byte-exact too. Completion or memory barriers at only one of those draws did not help;
+barriers at both also left 239 differing bytes. A broader submit after an unrelated earlier writer
+did not reproduce the match. This points to command-buffer lifetime or resource reuse around
+those two draws, and the submit probe remains diagnostic because its broader use changes results.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
