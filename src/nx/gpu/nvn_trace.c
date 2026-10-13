@@ -31,6 +31,8 @@ static GuestFn texture_class_original;
 static u64 texture_class_entry;
 static GuestFn depth_mode_original;
 static u64 depth_mode_entry;
+static GuestFn pool_address_original;
+static u64 pool_address_entry;
 static int tracing, hle, verify, recording, pools, buffers, textures, samplers, programs, aliases, descriptors,
     descriptor_replay;
 static u64 verify_failures;
@@ -123,6 +125,16 @@ static void proc_trace(CPU* c, u64 entry) {
         }
     }
     p->original(c, entry);
+    if (recording && !strcmp(p->name, "nvnCommandBufferAddCommandMemory") && arg1) {
+        GuestFn getter = __atomic_load_n(&pool_address_original, __ATOMIC_ACQUIRE);
+        NvnPoolSnapshot pool = {0};
+        if (getter && nvn_pool_snapshot(arg1, &pool) && !pool.gpu_seen) {
+            CPU query = *c;
+            query.x[0] = arg1;
+            getter(&query, __atomic_load_n(&pool_address_entry, __ATOMIC_RELAXED));
+            nvn_pool_observe_buffer_address(arg1, pool.generation, 0, query.x[0]);
+        }
+    }
     if (recording && !strcmp(p->name, "nvnCommandBufferInitialize") && c->x[0]) {
         GuestFn getter = __atomic_load_n(&depth_mode_original, __ATOMIC_ACQUIRE);
         if (getter) {
@@ -248,6 +260,14 @@ static void getproc_trace(CPU* c, u64 entry) {
             if (getter->addr == c->x[0]) {
                 __atomic_store_n(&depth_mode_entry, c->x[0], __ATOMIC_RELAXED);
                 __atomic_store_n(&depth_mode_original, getter->original, __ATOMIC_RELEASE);
+            }
+        }
+        if (recording && !strcmp(name, "nvnMemoryPoolGetBufferAddress") && c->x[0] >= g_code_lo &&
+            c->x[0] < g_code_hi && !(c->x[0] & 3)) {
+            NvProc* getter = proc_slot(c->x[0]);
+            if (getter->addr == c->x[0]) {
+                __atomic_store_n(&pool_address_entry, c->x[0], __ATOMIC_RELAXED);
+                __atomic_store_n(&pool_address_original, getter->original, __ATOMIC_RELEASE);
             }
         }
     }

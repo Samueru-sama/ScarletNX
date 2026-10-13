@@ -1305,6 +1305,17 @@ eligible in this run. The next fix needs to establish these packets' ordering re
 to command lists and capture their effective
 state at that boundary, rather than treating the device getter as draw-local state.
 
+GPU-to-CPU translation confirmed the origin packet source at `0x5ec030000` maps to
+`0x160cff000`, while the NVN command pool at CPU `0x181000000` maps near GPU
+`0x50c030000`. The origin writes therefore come from a separate queue-side backing,
+not the recorded command pool. Sampling the emulated GPU register when the direct
+batch runs is also too late: Catherine's first direct batch already sees `0x10`,
+although the native producer draws in that batch used zero. Keep the register probe
+out of replay and preserve the state transition in submission order instead.
+The recorder now queries the exported pool-address getter when command memory is
+added, so command pools have a GPU base even when the game does not explicitly call
+that getter.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
