@@ -779,6 +779,68 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
     return VK_NULL_HANDLE;
 }
 
+/* A shader can sample the bound depth attachment while a draw updates it. Snapshot the
+   pre-draw depth aspect so the descriptor observes the old contents without a feedback loop. */
+static VkImageView shadow_depth_feedback(const NvnTextureTarget* target, u64 prior_unmodeled_write) {
+    VkFmt format = nvn_format(target->format);
+    if (!format.depth || target->target != 1 || target->storage_target != 1 ||
+        target->depth != 1 || target->levels != 1 || target->samples > 1) return VK_NULL_HANDLE;
+    int full = 0;
+    VkImageAspectFlags aspect = vk_aspect(&format);
+    NvnImage* source = image_for(target, format.vk, aspect, &full);
+    if (!source || !source->sampled || !source->transfer_src || !(source->depth_layers[0] & 1) ||
+        source->subresource_sequence[0][0] <= effective_unknown_write(prior_unmodeled_write))
+        return VK_NULL_HANDLE;
+    VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                              .imageType = VK_IMAGE_TYPE_2D,
+                              .format = format.vk,
+                              .extent = {target->width, target->height, 1},
+                              .mipLevels = 1,
+                              .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    VmaAllocationCreateInfo allocation = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VkImage snapshot = VK_NULL_HANDLE;
+    VmaAllocation memory = NULL;
+    if (vmaCreateImage(g_vk.vma, &info, &allocation, &snapshot, &memory, NULL) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    VkImageViewCreateInfo view_info = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                       .image = snapshot,
+                                       .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                       .format = format.vk,
+                                       .components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                                                      VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE},
+                                       .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(g_vk.dev, &view_info, NULL, &view) != VK_SUCCESS) {
+        vk_defer_image(snapshot, memory, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        return VK_NULL_HANDLE;
+    }
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_barrier(cb, source->image, aspect, source->stage, source->access, source->layout,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vk_barrier(cb, snapshot, aspect, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                          .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+                          .extent = {target->width, target->height, 1}};
+    vkCmdCopyImage(cb, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snapshot,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vk_barrier(cb, snapshot, aspect, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    source->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    source->stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+    source->access = VK_ACCESS_2_TRANSFER_READ_BIT;
+    source->last_batch = batch_serial;
+    vk_defer_image(snapshot, memory, view, VK_NULL_HANDLE);
+    return view;
+}
+
 /* Only the NVN blob wrapper and Maxwell SPH are needed to select a stage. An unrecognized
    reference must stay unresolved; SetShadersExt does not always put code in its first word. */
 static int shader_code_stage(u64 address, u32* type) {
@@ -1430,6 +1492,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     VkWriteDescriptorSet writes[2 * (18 + SH_MAXTEX + NVN_DRAW_IMAGE_SLOTS)] = {0};
     u32 nwrites = 0;
     int semantic_sampled = 0;
+    VkImageView depth_feedback_view = VK_NULL_HANDLE;
     const VkSh* shaders[2] = {vertex, fragment};
     for (u32 stage = 0; stage < 2; stage++) {
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
@@ -1500,10 +1563,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             int semantic_shape = vk_tex_tic_shadow(descriptor->tic, &sampled_address, &sampled_width,
                                                    &sampled_height, &sampled_layers, &sampled_levels,
                                                    &sampled_type, &sampled_format);
-            if (semantic_shape &&
-                (sampled_address == color_target->gpu_address ||
-                 (command->depth_target_bound && sampled_address == depth_target->gpu_address)))
-                return 0; /* attachment feedback needs a separate source snapshot */
+            if (semantic_shape && sampled_address == color_target->gpu_address)
+                return 0;
+            int depth_feedback = semantic_shape && command->depth_target_bound &&
+                                 sampled_address == depth_target->gpu_address;
             if (semantic_shape)
                 for (int k = 0; k < fragment->si.nimg; k++)
                     if (sampled_address == storage_images[k]->address) return 0;
@@ -1516,13 +1579,27 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                with the same zero/one values for its other components. */
             int depth_swizzle = descriptor->tic[0] == 0x60124a0eu &&
                                 sampled_format == nvn_format(0x35).vk;
-            if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0 &&
-                (identity_swizzle || depth_swizzle))
-                view = image_view_from_semantic(descriptor, effective_unknown);
+            if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0) {
+                if (depth_feedback && sampled_width == depth_target->width &&
+                    sampled_height == depth_target->height && sampled_layers == 1 && sampled_levels == 1 &&
+                    sampled_format == nvn_format(depth_target->format).vk) {
+                    if (!depth_feedback_view)
+                        depth_feedback_view = shadow_depth_feedback(depth_target, command->last_unmodeled_write);
+                    view = depth_feedback_view;
+                }
+                else if (!depth_feedback && (identity_swizzle || depth_swizzle))
+                    view = image_view_from_semantic(descriptor, effective_unknown);
+            }
+            if (depth_feedback && !view) return 0;
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
                 Surf* sampled = vk_tex_from_tic(descriptor->tic);
-                if (!sampled || sampled->is_rt) return 0;
+                if (!sampled) return 0;
+                /* A distinct Maxwell target can still supply a sampled input while its NVN
+                   producer is being modeled. Bound attachments require the snapshot above. */
+                if (sampled->gva == color_target->gpu_address ||
+                    (command->depth_target_bound && sampled->gva == depth_target->gpu_address))
+                    return 0;
                 view = vk_tex_bind_view(sampled, vk_tex_view_type(shader_texture), descriptor->tic, num);
                 if (view)
                     vk_surf_use(vk_cmd(), sampled, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
