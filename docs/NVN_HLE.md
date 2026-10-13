@@ -593,8 +593,10 @@ Shader materialization now supplies only those known low words from the semantic
 unknown words remain unavailable. This makes the shader translation input independent of the emulated GPU's later
 CBUF 2 state. A host draw still needs an uploaded buffer containing the full generated bank and descriptor bindings.
 The first Catherine boot draws had vertex/fragment CBUF masks `0/8`, `0/a`, or `8/0`: some need only application
-bank 3, while one fragment case also reads the first 16 bytes of generated bank 1. That bank's sampled prefix was
-zero, but it had substantial data later in the 64 KiB allocation, so zero-filling it generally would be wrong.
+bank 3, while one fragment case also reads the first 16 bytes of generated bank 1. An earlier sample of that prefix
+was zero, but a targeted Maxwell draw to Catherine's intermediate `0x5acf62e00` target read nonzero bank-1 word 0
+(`0x3f40a3d7`), and another target read three nonzero words. Neither the captured alpha reference, blend color,
+viewport, nor application uniform slot 0 matched that word. Generated bank 1 must be reconstructed, not zero-filled.
 This identified a bank-3-only shader pair for the first shadow-draw experiment.
 `SNX_NVN_SHADOW_DRAW=1` now enables an opt-in executable slice for Catherine's observed fullscreen triangle-strip
 draws. It prepares the required resources, binds application CBUF 3 and one vertex stream, and records the translated
@@ -619,6 +621,11 @@ ordered host-image read-after-write without treating a failed or unsupported dra
 batch now executes a three-draw chain: a fullscreen strip certifies all 921,600 color pixels written, a 12-index
 triangle-list draw updates that same image, and a later strip samples the NVN-owned image into a target that VI
 presents. Earlier textured draws in the batch still read Maxwell targets because their producers are not modeled.
+Immediately before the modeled chain, Maxwell makes an unblended four-vertex pass to that intermediate target;
+the NVN fragment shader uses generated CBUF 1 and three sampled textures, so the shadow path does not execute it.
+Maxwell then uses two blend configurations on the target, including an indexed pass with a different source-alpha
+factor. The missing producer and the diagnostic magenta initialization limit what the black-frame RGB agreement
+can establish, and they are plausible contributors to the observed alpha difference.
 With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN color target is also read back
 alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
 in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target
