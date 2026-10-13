@@ -556,6 +556,11 @@ static int select_partition(int seed, int x, int y, int z, int count, int small)
 }
 
 /* ---------------------------------------------------------------- block */
+/* a 2D void extent's S and T bounds are 13 bits each from bit 12; all ones means no extent, and otherwise each low one
+   below its high one, or the block is an error */
+static int void_extent_ok(u32 s0, u32 s1, u32 t0, u32 t1) {
+    return (s0 == 0x1FFF && s1 == 0x1FFF && t0 == 0x1FFF && t1 == 0x1FFF) || (s0 < s1 && t0 < t1);
+}
 static void error_block(u8* out, int bw, int bh) {
     for (int i = 0; i < bw * bh; i++) {
         out[i * 4] = 255;
@@ -641,7 +646,8 @@ static void decode_block(const u8* blk, int bw, int bh, u8* out, int srgb) {
     if ((bm & 0x1FF) == 0x1FC) {  /* void extent = solid color */
         /* bit 9 makes it HDR (FP16 colours), which an LDR decoder can't give, and bits 10-11 are reserved as 1s:
            otherwise the block is an error */
-        if (((bm >> 9) & 1) || getbits(blk, 10, 2) != 3) {
+        if (((bm >> 9) & 1) || getbits(blk, 10, 2) != 3 ||
+            !void_extent_ok(getbits(blk, 12, 13), getbits(blk, 25, 13), getbits(blk, 38, 13), getbits(blk, 51, 13))) {
             error_block(out, bw, bh);
             return;
         }

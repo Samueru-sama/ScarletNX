@@ -626,6 +626,9 @@
         %791 = OpConstantComposite %_arr_v2int_uint_3 %789 %790 %636
 %_ptr_Function__arr_v2int_uint_3 = OpTypePointer Function %_arr_v2int_uint_3
     %int_255 = OpConstant %int 255
+%int_19 = OpConstant %int 19
+%int_25 = OpConstant %int 25
+%uint_8191 = OpConstant %uint 8191
     %int_511 = OpConstant %int 511
     %int_204 = OpConstant %int 204
      %int_93 = OpConstant %int 93
@@ -4386,8 +4389,31 @@
                OpBranch %2701
        %2701 = OpLabel
        %2706 = OpPhi %bool %2698 %2693 %2705 %2700
+%snx_ve_blk = OpLoad %v4uint %blk
+%snx_ve_w0 = OpCompositeExtract %uint %snx_ve_blk 0
+%snx_ve_w1 = OpCompositeExtract %uint %snx_ve_blk 1
+%snx_ve_s0 = OpBitFieldUExtract %uint %snx_ve_w0 %int_12 %int_13
+%snx_ve_s1lo = OpShiftRightLogical %uint %snx_ve_w0 %int_25
+%snx_ve_s1hi = OpShiftLeftLogical %uint %snx_ve_w1 %int_7
+%snx_ve_s1or = OpBitwiseOr %uint %snx_ve_s1lo %snx_ve_s1hi
+%snx_ve_s1 = OpBitwiseAnd %uint %snx_ve_s1or %uint_8191
+%snx_ve_t0 = OpBitFieldUExtract %uint %snx_ve_w1 %int_6 %int_13
+%snx_ve_t1 = OpBitFieldUExtract %uint %snx_ve_w1 %int_19 %int_13
+%snx_ve_a0 = OpIEqual %bool %snx_ve_s0 %uint_8191
+%snx_ve_a1 = OpIEqual %bool %snx_ve_s1 %uint_8191
+%snx_ve_a2 = OpIEqual %bool %snx_ve_t0 %uint_8191
+%snx_ve_a3 = OpIEqual %bool %snx_ve_t1 %uint_8191
+%snx_ve_a01 = OpLogicalAnd %bool %snx_ve_a0 %snx_ve_a1
+%snx_ve_a23 = OpLogicalAnd %bool %snx_ve_a2 %snx_ve_a3
+%snx_ve_ones = OpLogicalAnd %bool %snx_ve_a01 %snx_ve_a23
+%snx_ve_ls = OpULessThan %bool %snx_ve_s0 %snx_ve_s1
+%snx_ve_lt = OpULessThan %bool %snx_ve_t0 %snx_ve_t1
+%snx_ve_order = OpLogicalAnd %bool %snx_ve_ls %snx_ve_lt
+%snx_ve_ok = OpLogicalOr %bool %snx_ve_ones %snx_ve_order
+%snx_ve_bad = OpLogicalNot %bool %snx_ve_ok
+%snx_ve_err = OpLogicalOr %bool %2706 %snx_ve_bad
                OpSelectionMerge %2708 None
-               OpBranchConditional %2706 %2707 %2708
+               OpBranchConditional %snx_ve_err %2707 %2708
        %2707 = OpLabel
        %2711 = OpLoad %int %bw_0
                OpStore %param_88 %2711
