@@ -1163,6 +1163,9 @@ overlapping that texture means the guest bytes may be stale, so the direct draw 
 NVN producer instead of importing the emulated pixels. A cached texture previously filled from a
 Maxwell target is reloaded from guest memory before NVN samples it. This improves provenance but
 does not yet cover compute or DMA outputs that the emulated path materializes into guest memory.
+An NVN-owned image with a partial direct write also blocks guest-memory fallback at the same
+texture address. The sampler can use it once the required levels and layers have complete direct
+coverage; until then the direct draw is skipped instead of reading older backing bytes.
 The shader dump then exposed the missing input: the fragment shader scales `gl_FragCoord` by
 `SNX_RS.x` before computing the storage index, but the direct NVN draw did not bind the
 `SNX_RS` descriptor. It now binds the same `1 / g_vk_scale` constant as the emulated draw.

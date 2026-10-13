@@ -39,6 +39,7 @@ typedef struct {
     u32 storage_size;
     u64 last_batch;
     u64 shadow_draw_stamp;
+    int image_was_written; /* guest backing cannot replace an incomplete NVN image */
     u64 guest_gpu_generation, guest_checked_batch;
     u32 guest_write_clock;
     const u8* guest_host;
@@ -573,6 +574,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         vkCmdClearAttachments(cb, 1, &clear, 1, &rect);
         vkCmdEndRendering(cb);
         if (covered) image->subresource_sequence[mip][layer] = command->sequence;
+        image->image_was_written = 1;
         image->last_batch = batch_serial;
         mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
         static u64 partial_clears;
@@ -604,6 +606,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
         if (range.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) image->color_layers[mip] |= 1ull << layer;
         if (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) image->depth_layers[mip] |= 1ull << layer;
     }
+    image->image_was_written = 1;
     image->last_batch = batch_serial;
     mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
     shadow_record_backing(image);
@@ -625,6 +628,7 @@ static void shadow_invalidate_backing(const NvnTextureTarget* target) {
             continue;
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
+        image->image_was_written = 1;
         image->guest_host = NULL;
     }
 }
@@ -715,6 +719,7 @@ static int shadow_blit_texture(const NvnCopyBufferTextureCommand* command) {
         destination->subresource_sequence[0][0] = command->sequence;
         shadow_record_backing(destination);
     }
+    destination->image_was_written = 1;
     source->last_batch = destination->last_batch = batch_serial;
     return 1;
 }
@@ -813,6 +818,7 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     image->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     image->subresource_sequence[mip][0] = command->sequence;
     image->color_layers[mip] |= 1;
+    image->image_was_written = 1;
     image->last_batch = batch_serial;
     shadow_record_backing(image);
     return 1;
@@ -862,21 +868,28 @@ static VkImageView image_sample_view(NvnImage* image, VkFormat format, VkImageVi
     return view;
 }
 
-static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write) {
+static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write,
+                                            int* pending) {
+    if (pending) *pending = 0;
     u64 address;
     u32 width, height, layers, levels;
     VkImageViewType view_type;
     VkFormat format;
-    if (!descriptor->texture || !descriptor->texture_generation ||
-        !vk_tex_tic_shadow(descriptor->tic, &address, &width, &height, &layers, &levels, &view_type, &format))
+    if (!vk_tex_tic_shadow(descriptor->tic, &address, &width, &height, &layers, &levels, &view_type, &format))
         return VK_NULL_HANDLE;
-    if (layers > 64) return VK_NULL_HANDLE;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
+        if (pending && image->image && image->image_was_written && image->address == address &&
+            (!descriptor->memory_pool ||
+             (image->pool == descriptor->memory_pool &&
+              image->pool_generation == descriptor->memory_pool_generation)))
+            *pending = 1;
         VkImageViewType image_type = image->target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
                                      : image->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                                                           : VK_IMAGE_VIEW_TYPE_2D;
-        if (!image->image || !image->sampled || image_type != view_type || image->layers != layers ||
+        if (layers > 64 || !descriptor->texture || !descriptor->texture_generation ||
+            !image->image || !image->sampled ||
+            image_type != view_type || image->layers != layers ||
             image->pool != descriptor->memory_pool || image->pool_generation != descriptor->memory_pool_generation ||
             image->address != address || image->width != width || image->height != height)
             continue;
@@ -1942,9 +1955,11 @@ static int shadow_dispatch_simple(const NvnDispatchCommand* command) {
         const NvnDescriptorSnapshot* descriptor = &command->texture0_descriptor;
         const NvnSamplerDescriptorSnapshot* sampler = &command->texture0_sampler;
         vk_render_end();
+        int pending = 0;
         VkImageView view = image_view_from_semantic(descriptor,
-                                                    effective_unknown_write(command->prior_unmodeled_write));
+                                                    effective_unknown_write(command->prior_unmodeled_write), &pending);
         if (!view) {
+            if (pending) return 0;
             Surf* sampled = vk_tex_from_tic_guest(descriptor->tic);
             if (!sampled) return 0;
             view = vk_tex_bind_view(sampled, vk_tex_view_type(sampled_shader), descriptor->tic, 0);
@@ -2352,6 +2367,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             int num = shader_texture->shadow || !(si->tex_int_mask & (1u << tex_index)) ? 0
                       : (si->tex_sint_mask & (1u << tex_index)) ? 2 : 1;
             VkImageView view = VK_NULL_HANDLE;
+            int pending = 0;
             u64 sampled_address = 0;
             u32 sampled_width = 0, sampled_height = 0, sampled_layers = 0, sampled_levels = 0;
             VkImageViewType sampled_type = 0;
@@ -2394,11 +2410,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                     view = depth_feedback_view;
                 }
                 else if (!color_feedback && !depth_feedback)
-                    view = image_view_from_semantic(descriptor, effective_unknown);
+                    view = image_view_from_semantic(descriptor, effective_unknown, &pending);
             }
             if ((color_feedback || depth_feedback) && !view) return 0;
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
+                if (pending) return 0;
                 Surf* sampled = vk_tex_from_tic_guest(descriptor->tic);
                 if (!sampled) return 0;
                 /* A distinct Maxwell target can still supply a sampled input while its NVN
@@ -2735,9 +2752,13 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     for (u32 i = 0; i < key->ncolor; i++)
         if (colors[i]) colors[i]->last_batch = batch_serial;
-    if (depth) depth->last_batch = batch_serial;
+    if (depth) {
+        if (command->depth_stencil_state[0] & 2) depth->image_was_written = 1;
+        depth->last_batch = batch_serial;
+    }
     for (int k = 0; k < fragment->si.nimg; k++) {
         storage_images[k]->color_layers[0] &= ~1ull;
+        storage_images[k]->image_was_written = 1;
         storage_images[k]->last_batch = batch_serial;
     }
     /* The magenta first-draw probe certifies full coverage only when no pixel retains that initial color.
@@ -2753,6 +2774,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         int written = ((fragment->si.sph[18] >> (i * 4)) & 15) && key->blend[i].mask;
         if (!written) continue;
         any_color_written = 1;
+        attachment->image_was_written = 1;
         int covered = (attachment->color_layers[mip] & (1ull << layer)) &&
                       attachment->subresource_sequence[mip][layer] > effective_unknown;
         if (i == 0) covered = capture ? capture_full : prior_covered;
@@ -3255,12 +3277,13 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                     ready = 0;
                     break;
                 }
-                VkImageView view = image_view_from_semantic(descriptor, command->last_unmodeled_write);
+                int pending = 0;
+                VkImageView view = image_view_from_semantic(descriptor, command->last_unmodeled_write, &pending);
                 if (view) {
                     from_clear = 1;
                     continue;
                 }
-                Surf* surf = vk_tex_from_tic_guest(descriptor->tic);
+                Surf* surf = pending ? NULL : vk_tex_from_tic_guest(descriptor->tic);
                 if (!surf) {
                     failure = NVN_DRAW_TEXTURE_IMAGE_MISSING;
                     ready = 0;
