@@ -489,6 +489,17 @@ positive stride; six storage-class values appeared. A zero stride does not by it
 offsets, or array-layer packing. Those address rules still need to be translated before sharing NVN images with the
 Vulkan surface cache.
 
+Draw packets also carry the ordered viewport, scissor, and depth-range arrays, blend constants, front and back
+stencil masks and references, and raster controls observed through NVN setters. Pointer arguments are copied at the
+guest call boundary; scalar floating-point arguments are captured from the guest floating-point registers. In an
+eight-second Catherine run, all 3,807 replayed draws had viewport, scissor, depth range, blend color, and both-face
+stencil state. A twenty-two-second TotK run covered all 3,870 draws for viewport, scissor, depth range, and blend
+color; 3,858 had complete stencil state. In a later run, Catherine had polygon offset, depth bounds, rasterizer
+discard, and depth clamp on all 3,887 draws, while TotK had line width and polygon offset on all 3,738 draws and
+depth bounds and discard on 3,726. Neither boot called the sample-mask setter. These are draw-state snapshots, not
+Vulkan dynamic-state commands. The future host path must apply SDK defaults when a setter was not observed and reject
+or translate unsupported state before recording a host draw.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
