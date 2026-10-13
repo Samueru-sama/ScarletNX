@@ -1268,6 +1268,10 @@ depth inputs and R8 UINT array input. Its output remains black across the active
 where Maxwell produces color. Draw 128 samples a black, alpha-one image and uses blend factors that
 preserve the existing target, so it does not explain the mismatch. Remaining candidates include
 the arrays' other layers, guest-loaded textures, uniform state, and shader execution.
+The Maxwell fragment constant-buffer bindings for draw 50 round the NVN ranges up to 256 bytes
+(for example, 3,680 to 3,840 bytes). The direct path now snapshots those trailing bytes and
+bounds its Vulkan descriptors to the rounded range, matching the native bindings for the tested
+draw. This does not resolve the output mismatch: the same 921,600 pixels still differ.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

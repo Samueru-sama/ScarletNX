@@ -1266,9 +1266,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             if (draw_prepare && queue)
                 for (u32 stage = 0; stage < 2; stage++)
                     for (u32 slot = 0; slot < NVN_DRAW_UNIFORM_SLOTS; slot++)
-                        if (draw.uniform_bound[stage] & (1u << slot))
-                            draw.uniform_seed[stage][slot] =
-                                replay_storage_seed(queue, draw.uniform[stage][slot]);
+                        /* Maxwell binds uniform ranges in 256-byte units; retain the bytes it can read. */
+                        if ((draw.uniform_bound[stage] & (1u << slot)) &&
+                            draw.uniform[stage][slot].size <= UINT64_MAX - 255)
+                            draw.uniform_seed[stage][slot] = replay_storage_seed(
+                                queue, (NvnBufferRange){draw.uniform[stage][slot].address,
+                                                        (draw.uniform[stage][slot].size + 255ull) & ~255ull});
             memcpy(draw.storage[0], state->storage[0], sizeof draw.storage[0]);
             memcpy(draw.storage[1], state->storage[1], sizeof draw.storage[1]);
             draw.storage_known[0] = state->storage_known[0];

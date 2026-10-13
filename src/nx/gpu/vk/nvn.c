@@ -2394,6 +2394,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                 (bank >= 3 && !(command->uniform_bound[stage] & (1u << slot)))) return 0;
             u32 size = si->cbuf_max[bank];
             if (size < 16) size = 16;
+            if (bank >= 3) {
+                /* Match the 256-byte Maxwell binding range, including its trailing readable bytes.
+                   Dynamic shader indexing must still see zero beyond that range. */
+                u64 bound = command->uniform[stage][slot].size;
+                if (!bound || bound > UINT64_MAX - 255) return 0;
+                bound = (bound + 255) & ~255ull;
+                if (size > bound) size = (u32)bound;
+            }
             if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
             if (bank == 1 && !shader_bank_range_mapped(embedded_bank1[stage], size)) return 0;
             VkBuffer buffer;
@@ -2406,9 +2414,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                     if (handle_known[word]) memcpy(staged + word * 4, &handle_words[word], 4);
             /* The observed SDK draw-parameter words are zero when the recorded draw has zero bases.
                Other bank-0 reads remain ineligible until their source is reconstructed. */
-            u64 read_size = bank == 0 || bank == 2 ? 0
-                            : bank == 1 ? size : command->uniform[stage][slot].size;
-            if (read_size > size) read_size = size;
+            u64 read_size = bank == 0 || bank == 2 ? 0 : size;
             if (read_size) {
                 if (bank >= 3) {
                     const NvnStorageSeed* seed = command->uniform_seed[stage][slot];
