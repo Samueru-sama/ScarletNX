@@ -104,6 +104,9 @@ typedef struct {
     u8 vertex_attrib_count, vertex_stream_count;
     u32 channel_mask;
     u8 channel_mask_known;
+    u32 color_state;
+    u8 color_state_known, blend_state_known;
+    u32 blend_state[8][2];
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
@@ -557,6 +560,18 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         } else if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState")) {
             state->channel_mask_known = !!op->payload;
             if (op->payload) state->channel_mask = *(const u32*)op->payload;
+        } else if (!strcmp(op->name, "nvnCommandBufferBindColorState")) {
+            state->color_state_known = !!op->payload;
+            if (op->payload) state->color_state = *(const u32*)op->payload;
+        } else if (!strcmp(op->name, "nvnCommandBufferBindBlendState")) {
+            if (!op->payload) {
+                state->blend_state_known = 0;
+            } else {
+                const u32* blend = op->payload;
+                u32 target = blend[0] & 7;
+                memcpy(state->blend_state[target], blend, sizeof state->blend_state[target]);
+                state->blend_state_known |= 1u << target;
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferBindUniformBuffer")) {
             u32 stage = (u32)op->args[0], index = (u32)op->args[1];
             if (stage >= NVN_DRAW_SHADER_STAGES || index >= NVN_DRAW_UNIFORM_SLOTS)
@@ -613,6 +628,10 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             draw.vertex_stream_count = state->vertex_stream_count;
             draw.channel_mask = state->channel_mask;
             draw.channel_mask_known = state->channel_mask_known;
+            draw.color_state = state->color_state;
+            draw.color_state_known = state->color_state_known;
+            draw.blend_state_known = state->blend_state_known;
+            memcpy(draw.blend_state, state->blend_state, sizeof draw.blend_state);
             memcpy(draw.vertex_attrib_raw, state->vertex_attrib_raw, sizeof draw.vertex_attrib_raw);
             memcpy(draw.vertex_stream_raw, state->vertex_stream_raw, sizeof draw.vertex_stream_raw);
             for (u32 j = 0; j < draw.vertex_attrib_count; j++) {
@@ -869,15 +888,17 @@ static void snapshot_view(u64 ptr, NvnView* view) {
 
 /* The SDK consumes these pointers immediately. Copy them before the caller can reuse its stack. */
 static void snapshot_semantic(NvnOp* op, const CPU* c) {
-    if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState")) {
-        if (!readable_range(op->args[0], sizeof(u32))) return;
-        u32* mask = malloc(sizeof *mask);
-        if (!mask) {
+    if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState") ||
+        !strcmp(op->name, "nvnCommandBufferBindColorState") || !strcmp(op->name, "nvnCommandBufferBindBlendState")) {
+        u32 count = !strcmp(op->name, "nvnCommandBufferBindBlendState") ? 2 : 1;
+        if (!readable_range(op->args[0], (u64)count * sizeof(u32))) return;
+        u32* words = malloc(count * sizeof *words);
+        if (!words) {
             allocation_failures++;
             return;
         }
-        *mask = gr32(op->args[0]);
-        op->payload = mask;
+        for (u32 i = 0; i < count; i++) words[i] = gr32(op->args[0] + (u64)i * 4);
+        op->payload = words;
     } else if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
         if (!readable_range(op->args[3], 24)) {
             copy_snapshot_failures++;

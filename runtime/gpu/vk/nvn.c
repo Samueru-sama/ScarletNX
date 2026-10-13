@@ -627,10 +627,51 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
     return 1;
 }
 
-/* This key checks that the observed shader, vertex, and attachment interface can form
-   a Vulkan pipeline. Blend and raster state are placeholders until their NVN binds are recorded. */
+static VkBlendFactor nvn_blend_factor(u32 factor) {
+    switch (factor) {
+        case 1: return VK_BLEND_FACTOR_ZERO;
+        case 2: return VK_BLEND_FACTOR_ONE;
+        case 3: return VK_BLEND_FACTOR_SRC_COLOR;
+        case 4: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case 5: return VK_BLEND_FACTOR_SRC_ALPHA;
+        case 6: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case 7: return VK_BLEND_FACTOR_DST_ALPHA;
+        case 8: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        case 9: return VK_BLEND_FACTOR_DST_COLOR;
+        case 10: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        case 11: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+        case 16: return VK_BLEND_FACTOR_SRC1_COLOR;
+        case 17: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
+        case 18: return VK_BLEND_FACTOR_SRC1_ALPHA;
+        case 19: return VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+        case 0x61: return VK_BLEND_FACTOR_CONSTANT_COLOR;
+        case 0x62: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+        case 0x63: return VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        case 0x64: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        default: return VK_BLEND_FACTOR_MAX_ENUM;
+    }
+}
+
+static VkBlendOp nvn_blend_op(u32 equation) {
+    switch (equation) {
+        case 1: return VK_BLEND_OP_ADD;
+        case 2: return VK_BLEND_OP_SUBTRACT;
+        case 3: return VK_BLEND_OP_REVERSE_SUBTRACT;
+        case 4: return VK_BLEND_OP_MIN;
+        case 5: return VK_BLEND_OP_MAX;
+        default: return VK_BLEND_OP_MAX_ENUM;
+    }
+}
+
+/* This key checks that the observed shader, vertex, blend, and attachment interface can form
+   a Vulkan pipeline. Raster state is still a placeholder until its NVN bind is recorded. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
-    if (!vertex || !fragment_shader || !command->channel_mask_known) return 0;
+    if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known) return 0;
+    /* The existing pipeline key does not represent logic operations or alpha testing. */
+    if (((command->color_state >> 16) & 0xff) != 3 || ((command->color_state >> 24) & 0xf) != 8) {
+        LOG_LIMIT(8, "nvn-pipeline: unsupported color state=%08x\n", command->color_state);
+        return 0;
+    }
     PipeKey key = {0};
     key.vs = vertex->mod;
     key.fs = fragment_shader->mod;
@@ -687,6 +728,30 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         }
         key.color[i] = format.vk;
         key.blend[i].mask = (command->channel_mask >> (i * 4)) & 0xf;
+        key.blend[i].en = !!(command->color_state & (1u << (8 + i)));
+        if (key.blend[i].en) {
+            if (!(command->blend_state_known & (1u << i))) {
+                LOG_LIMIT(8, "nvn-pipeline: missing blend state target=%u\n", i);
+                return 0;
+            }
+            const u32* blend = command->blend_state[i];
+            if (blend[0] & 0x3f00) {
+                LOG_LIMIT(8, "nvn-pipeline: unsupported advanced blend target=%u state=%08x\n", i, blend[0]);
+                return 0;
+            }
+            key.blend[i].sc = nvn_blend_factor(blend[1] & 0x7f);
+            key.blend[i].dc = nvn_blend_factor((blend[1] >> 8) & 0x7f);
+            key.blend[i].sa = nvn_blend_factor((blend[1] >> 16) & 0x7f);
+            key.blend[i].da = nvn_blend_factor((blend[1] >> 24) & 0x7f);
+            key.blend[i].cop = nvn_blend_op((blend[0] >> 24) & 0xf);
+            key.blend[i].aop = nvn_blend_op((blend[0] >> 28) & 0xf);
+            if (key.blend[i].sc == VK_BLEND_FACTOR_MAX_ENUM || key.blend[i].dc == VK_BLEND_FACTOR_MAX_ENUM ||
+                key.blend[i].sa == VK_BLEND_FACTOR_MAX_ENUM || key.blend[i].da == VK_BLEND_FACTOR_MAX_ENUM ||
+                key.blend[i].cop == VK_BLEND_OP_MAX_ENUM || key.blend[i].aop == VK_BLEND_OP_MAX_ENUM) {
+                LOG_LIMIT(8, "nvn-pipeline: unsupported blend target=%u state=%08x:%08x\n", i, blend[0], blend[1]);
+                return 0;
+            }
+        }
         key.ncolor = i + 1;
     }
     if (command->depth_target_bound) {
