@@ -88,7 +88,8 @@ typedef struct {
 } NvnList;
 #define ACTIVE_SLOTS 8192
 #define LIST_SLOTS   32768
-#define MAX_OPS      16384
+/* Odyssey records more than 16,384 operations in one list. Keep the bound within u16 capacity. */
+#define MAX_OPS      32768
 static NvnList active[ACTIVE_SLOTS], lists[LIST_SLOTS];
 static PMutex lock = PMUTEX_INIT;
 static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_found, submitted_missing, submitted_opaque;
