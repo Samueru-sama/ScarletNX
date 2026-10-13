@@ -635,7 +635,9 @@ Immediately before the modeled chain, Maxwell makes an unblended four-vertex pas
 the NVN fragment shader uses embedded CBUF 1 and three sampled textures. The bank-1 mapping removes its uniform
 blocker, but the repeated eight-second probe issued zero bank-1 shadow draws because other eligibility checks still
 failed. A focused probe found the first fragment texture samples render target `0x5acba2c00`, which has no complete
-NVN-owned source at that point; accepting its Maxwell surface would invalidate the direct-path comparison.
+NVN-owned source at that point; accepting its Maxwell surface would invalidate the direct-path comparison. The
+current semantic replay staged no draw, clear, or buffer-to-texture copy targeting that address in the sampled boot,
+so its producer may be an unmodeled operation or an address alias and needs to be traced at submission.
 Maxwell then uses two blend configurations on the target, including an indexed pass with a different source-alpha
 factor. Its sampled inputs still need ordered provenance checks, and diagnostic magenta initialization limits what
 the black-frame comparison can establish.
