@@ -556,6 +556,9 @@ static int select_partition(int seed, int x, int y, int z, int count, int small)
 }
 
 /* ---------------------------------------------------------------- block */
+/* a 16-bit channel to a byte: the nearest one for a linear texture (the reference decoders' C * 255 / 65535), the top
+   8 bits for sRGB, whose endpoints already carry 0x80 in the low byte */
+static u8 unorm8(u32 c, int srgb) { return (u8)(srgb ? c >> 8 : (c * 255 + 32767) / 65535); }
 /* a 2D void extent's S and T bounds are 13 bits each from bit 12; all ones means no extent, and otherwise each low one
    below its high one, or the block is an error */
 static int void_extent_ok(u32 s0, u32 s1, u32 t0, u32 t1) {
@@ -653,10 +656,10 @@ static void decode_block(const u8* blk, int bw, int bh, u8* out, int srgb) {
         }
         u32 r = getbits(blk, 64, 16), g = getbits(blk, 80, 16), b = getbits(blk, 96, 16), a = getbits(blk, 112, 16);
         for (int i = 0; i < bw * bh; i++) {
-            out[i * 4] = (u8)(r >> 8);
-            out[i * 4 + 1] = (u8)(g >> 8);
-            out[i * 4 + 2] = (u8)(b >> 8);
-            out[i * 4 + 3] = (u8)(a >> 8);
+            out[i * 4] = unorm8(r, srgb);
+            out[i * 4 + 1] = unorm8(g, srgb);
+            out[i * 4 + 2] = unorm8(b, srgb);
+            out[i * 4 + 3] = unorm8(a, srgb);
         }
         return;
     }
@@ -767,7 +770,7 @@ static void decode_block(const u8* blk, int bw, int bh, u8* out, int srgb) {
                 /* endpoints to 16 bits: for an sRGB texture the low byte is 0x80 (the ASTC spec's decode mode) */
                 int C0 = srgb ? (e0 << 8) | 0x80 : e0 * 257, C1 = srgb ? (e1 << 8) | 0x80 : e1 * 257;
                 int C = (C0 * (64 - w) + C1 * w + 32) >> 6;
-                o[c] = (u8)(C >> 8);
+                o[c] = unorm8((u32)C, srgb);
             }
         }
 }

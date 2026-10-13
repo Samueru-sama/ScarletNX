@@ -4,13 +4,14 @@
 #include <stdio.h>
 #include <string.h>
 
-static int check(const u8* block, const u8 expected[4]) {
+static int check_srgb(const u8* block, const u8 expected[4], int srgb) {
     u8 pixels[4 * 4 * 4];
-    astc_decode_image(block, 4, 4, 4, 4, pixels, 0);
+    astc_decode_image(block, 4, 4, 4, 4, pixels, srgb);
     for (int i = 0; i < 16; i++)
         if (memcmp(pixels + i * 4, expected, 4)) return 0;
     return 1;
 }
+static int check(const u8* block, const u8 expected[4]) { return check_srgb(block, expected, 0); }
 /* a 2D void extent's four 13-bit S and T bounds, bits 12 to 63 */
 static void set_extent(u8 block[16], u32 s0, u32 s1, u32 t0, u32 t1) {
     u64 low = 0, bounds = (u64)s0 | (u64)s1 << 13 | (u64)t0 << 26 | (u64)t1 << 39;
@@ -65,6 +66,33 @@ int main(void) {
         }
     }
 
-    puts("PASS ASTC void extent color, bounds and invalid modes");
+    /* a linear channel takes the nearest byte of C / 65535, sRGB the top 8 bits: 0x00ff and 0xff00 are where the two
+       differ */
+    const u8 colour[8] = {0xff, 0x00, 0x00, 0xff, 0x80, 0x80, 0xff, 0xff};
+    memcpy(block + 8, colour, sizeof colour);
+    const u8 linear[4] = {1, 254, 128, 255}, srgb[4] = {0, 255, 128, 255};
+    if (!check_srgb(block, linear, 0) || !check_srgb(block, srgb, 1)) {
+        fputs("ASTC void extent channels did not round to the nearest byte (linear) or keep the top byte (sRGB)\n",
+              stderr);
+        return 1;
+    }
+
+    /* an interpolated block, astcenc's texels (4-bit weights, dual plane, RGBA endpoints) */
+    static const u8 dual[16] = {0x02, 0xa6, 0xbb, 0x3d, 0x74, 0x25, 0x24, 0xf3,
+                                0x14, 0xe3, 0x6f, 0x68, 0xe0, 0xd9, 0x5d, 0x17};
+    static const u32 dual_texels[16] = {0xafecfdd5, 0xaaebfdd7, 0xa6ebfed8, 0x95ecfcd4, 0xa8ecfdd5, 0xacecfdd6,
+                                        0xa8ebfdd7, 0x96ecfcd4, 0x9fecfcd3, 0xafecfcd4, 0xaaecfdd5, 0x98ecfdd5,
+                                        0x97edfcd3, 0xb1edfcd3, 0xacecfcd4, 0x99ecfdd5};
+    u8 pixels[4 * 4 * 4];
+    astc_decode_image(dual, 4, 4, 4, 4, pixels, 0);
+    for (int i = 0; i < 16; i++) {
+        u32 got =
+            pixels[i * 4] | (u32)pixels[i * 4 + 1] << 8 | (u32)pixels[i * 4 + 2] << 16 | (u32)pixels[i * 4 + 3] << 24;
+        if (got != dual_texels[i]) {
+            fprintf(stderr, "ASTC interpolated texel %d is %08x, astcenc gives %08x\n", i, got, dual_texels[i]);
+            return 1;
+        }
+    }
+    puts("PASS ASTC void extent color, bounds and invalid modes; channel rounding");
     return 0;
 }
