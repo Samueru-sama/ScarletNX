@@ -47,6 +47,26 @@ typedef struct {
     u32 format, linear, bh, depth, layer, pitch, width, height;
     u64 addr;
 } Surf2D;
+/* the VIC composition (gpu/video/vic.c): a surface plane as VIC addresses it (pitch linear rows or block linear
+   GOBs), a slot's resolved rectangles and color matrix, and a job's planes and slots. The renderer's vic_compose
+   runs the composition as a compute shader (gpu/vk/vic.c); when it returns 0 the caller composes in guest memory */
+typedef struct VicPlane {
+    u8* p;   /* the plane's bytes in guest memory */
+    u64 lim; /* bytes p may touch */
+    u32 pitch, h, blk, bh;
+} VicPlane;
+typedef struct VicSlot {
+    int on; /* the slot composes */
+    u32 sx0, sy0, dx0, dy0, w, h; /* the resolved rectangles: source start, destination start and size */
+    int mat[3][4], mat_shift, mat_enable; /* the color matrix, out = (R*c0 + G*c1 + B*c2) >> shift, + c3, >> 8 */
+    u32 alpha, clamp_lo, clamp_hi; /* the planar alpha and the soft clamp range (10 bit) */
+    VicPlane iy, ic;
+} VicSlot;
+typedef struct VicJob {
+    u32 fmt, sw, sh;
+    VicPlane oy, oc; /* oc.p is NULL when the format has no chroma */
+    VicSlot slots[8];
+} VicJob;
 int gmem_read(u64 gva, void* dst, u64 size);
 void gmem_read_code(u64 gva, void* dst, u64 size); /* a shader program: stops where guest memory does */
 int gmem_write(u64 gva, const void* src, u64 size);

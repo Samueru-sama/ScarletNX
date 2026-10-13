@@ -217,6 +217,10 @@ int vk_blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, 
    Caller ends rendering and transitions t to TRANSFER_DST_OPTIMAL first. */
 void vk_astc_upload(VkCommandBuffer cb, Surf* t, const u8* blocks, u32 w, u32 h, u32 depth, u32 level, u32 layer);
 
+/* vic.c: the VIC composition as a compute shader, synchronously: 1 when it composed the picture into the job's
+   output planes, 0 when the job is too large for the GPU and the caller composes in guest memory */
+int vk_vic_compose(const VicJob* j);
+
 /* texture.c */
 Surf* vk_tex_from_tic(const u32* tic);
 /* a view of s as the shader declares it, sRGB or linear (color formats that have both), with a component mapping;

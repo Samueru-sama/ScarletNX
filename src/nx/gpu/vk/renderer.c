@@ -104,6 +104,15 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
     vk_unlock();
     return r; /* 0: the front end copies through memory, with the renderer's rt_flush and rt_reload around it */
 }
+static int vkr_vic_compose(const VicJob* j) {
+    static int off = -1;
+    if (off < 0) off = getenv("SNX_NO_VIC_GPU") != NULL;
+    if (off) return 0;
+    vk_lock();
+    int r = vk_vic_compose(j);
+    vk_unlock();
+    return r; /* 0: the caller composes in guest memory */
+}
 static void vkr_rt_flush(u64 gva) {
     vk_lock();
     vk_rt_flush(gva);
@@ -418,6 +427,7 @@ const Renderer vk_renderer = {
     .draw = vkr_draw,
     .cb_bind = vkr_cb_bind,
     .blit = vkr_blit,
+    .vic_compose = vkr_vic_compose,
     .rt_flush = vkr_rt_flush,
     .rt_reload = vkr_rt_reload,
     .dispatch = vkr_dispatch,
