@@ -507,7 +507,8 @@ TotK reused a semantic image for 11 draws. The probe still does not bind these i
 direct-call-hooked Super Mario Odyssey run reached 1,849 frames and replayed 116,195 draws, but none had a complete
 sampler descriptor or a readable texture-header base. Its observer reported 131 untracked sampler registrations out
 of 132 and all 3,724 texture-header copies missing a base. That title needs descriptor-pool and sampler-lifetime
-coverage before the texture-image path can be evaluated there.
+coverage before the texture-image path can be evaluated there. All 116,195 replayed draws also lacked a captured
+render target, so host draw execution remains unavailable in this trace.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
