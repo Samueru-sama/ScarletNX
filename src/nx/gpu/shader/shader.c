@@ -85,9 +85,16 @@ char* PN(Ctx* c, u32 p, int neg) {
     if (neg) return T("(!%s)", s);
     return s;
 }
+void shader_track_cbuf0_read(ShaderInfo* si, u32 off) {
+    if (off != 0x640 && off != 0x644) si->cbuf0_draw_params_only = 0;
+    if ((off & 3) || off / 4 >= 13 * 32)
+        si->cbuf0_untracked_read = 1;
+    else
+        si->cbuf0_read_words[off / 128] |= 1u << ((off / 4) & 31);
+}
 char* CB(Ctx* c, u32 idx, u32 off) {
     c->si->cbuf_mask |= 1u << idx;
-    if (idx == 0 && off != 0x640 && off != 0x644) c->si->cbuf0_draw_params_only = 0;
+    if (idx == 0) shader_track_cbuf0_read(c->si, off);
     if (idx == 2) {
         if ((off & 3) || off / 4 >= 96)
             c->si->cbuf2_untracked_read = 1;
@@ -99,7 +106,7 @@ char* CB(Ctx* c, u32 idx, u32 off) {
 }
 char* CBF(Ctx* c, u32 idx, u32 off) {
     c->si->cbuf_mask |= 1u << idx;
-    if (idx == 0 && off != 0x640 && off != 0x644) c->si->cbuf0_draw_params_only = 0;
+    if (idx == 0) shader_track_cbuf0_read(c->si, off);
     if (idx == 2) {
         if ((off & 3) || off / 4 >= 96)
             c->si->cbuf2_untracked_read = 1;

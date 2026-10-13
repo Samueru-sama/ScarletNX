@@ -24,6 +24,8 @@ typedef struct {
     u32 cbuf_mask;    /* cbufs used */
     u32 cbuf_max[18]; /* bytes used per cbuf, so we upload less */
     u8 cbuf0_draw_params_only; /* bank 0 reads only the SDK's base-vertex/instance words at 0x640 */
+    u8 cbuf0_untracked_read; /* dynamic or outside the tracked SDK-generated range */
+    u32 cbuf0_read_words[13]; /* static bank-0 reads through 0x67f, one bit per word */
     u8 cbuf2_untracked_read; /* dynamic or out-of-range direct bank-2 read */
     u32 cbuf2_read_words[3]; /* statically addressed direct reads in the first 96 words */
     ShTex tex[SH_MAXTEX];
@@ -59,6 +61,7 @@ typedef struct {
 int shader_vk_set(int stage);
 /* malloc'd GLSL, or NULL */
 char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si);
+void shader_track_cbuf0_read(ShaderInfo* si, u32 off);
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len);
 /* shader corpus (SNX_SHADER_CORPUS=dir): each translated shader's code and its ShaderInfo inputs, so

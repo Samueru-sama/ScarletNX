@@ -832,16 +832,19 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
     return VK_NULL_HANDLE;
 }
 
-/* A shader can sample the bound depth attachment while a draw updates it. Snapshot the
-   pre-draw depth aspect so the descriptor observes the old contents without a feedback loop. */
-static VkImageView shadow_depth_feedback(const NvnTextureTarget* target, u64 prior_unmodeled_write) {
+/* Snapshot a bound attachment before a draw samples and writes it. The descriptor sees the
+   preceding contents without asking Vulkan to sample the live writable attachment. */
+static VkImageView shadow_attachment_feedback(const NvnTextureTarget* target, u64 prior_unmodeled_write,
+                                              int depth, const u32 tic[8]) {
     VkFmt format = nvn_format(target->format);
-    if (!format.depth || target->target != 1 || target->storage_target != 1 ||
+    if (!!format.depth != !!depth || target->target != 1 || target->storage_target != 1 ||
         target->depth != 1 || target->levels != 1 || target->samples > 1) return VK_NULL_HANDLE;
     int full = 0;
-    VkImageAspectFlags aspect = vk_aspect(&format);
+    VkImageAspectFlags aspect = depth ? vk_aspect(&format) : VK_IMAGE_ASPECT_COLOR_BIT;
+    VkImageAspectFlags copy_aspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     NvnImage* source = image_for(target, format.vk, aspect, &full);
-    if (!source || !source->sampled || !source->transfer_src || !(source->depth_layers[0] & 1) ||
+    if (!source || !source->transfer_src ||
+        !((depth ? source->depth_layers[0] : source->color_layers[0]) & 1) ||
         source->subresource_sequence[0][0] <= effective_unknown_write(prior_unmodeled_write))
         return VK_NULL_HANDLE;
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -858,13 +861,24 @@ static VkImageView shadow_depth_feedback(const NvnTextureTarget* target, u64 pri
     VmaAllocation memory = NULL;
     if (vmaCreateImage(g_vk.vma, &info, &allocation, &snapshot, &memory, NULL) != VK_SUCCESS)
         return VK_NULL_HANDLE;
+    static const VkComponentSwizzle swizzle[8] = {
+        VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
+        VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE};
+    VkComponentSwizzle components[4] = {depth ? VK_COMPONENT_SWIZZLE_R : swizzle[(tic[0] >> 19) & 7],
+                                        depth ? VK_COMPONENT_SWIZZLE_R : swizzle[(tic[0] >> 22) & 7],
+                                        depth ? VK_COMPONENT_SWIZZLE_R : swizzle[(tic[0] >> 25) & 7],
+                                        depth ? VK_COMPONENT_SWIZZLE_ONE : swizzle[(tic[0] >> 28) & 7]};
+    if (format.bgra)
+        for (u32 i = 0; i < 4; i++)
+            components[i] = components[i] == VK_COMPONENT_SWIZZLE_R ? VK_COMPONENT_SWIZZLE_B
+                          : components[i] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
+                                                                     : components[i];
     VkImageViewCreateInfo view_info = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                        .image = snapshot,
                                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                        .format = format.vk,
-                                       .components = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
-                                                      VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ONE},
-                                       .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1}};
+                                       .components = {components[0], components[1], components[2], components[3]},
+                                       .subresourceRange = {copy_aspect, 0, 1, 0, 1}};
     VkImageView view = VK_NULL_HANDLE;
     if (vkCreateImageView(g_vk.dev, &view_info, NULL, &view) != VK_SUCCESS) {
         vk_defer_image(snapshot, memory, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -878,8 +892,8 @@ static VkImageView shadow_depth_feedback(const NvnTextureTarget* target, u64 pri
     vk_barrier(cb, snapshot, aspect, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
-                          .dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
+    VkImageCopy region = {.srcSubresource = {copy_aspect, 0, 0, 1},
+                          .dstSubresource = {copy_aspect, 0, 0, 1},
                           .extent = {target->width, target->height, 1}};
     vkCmdCopyImage(cb, source->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, snapshot,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -1417,6 +1431,42 @@ static VkImageView shadow_storage_view(const NvnImage* image, VkFormat format, u
     return VK_NULL_HANDLE;
 }
 
+static const NvnStorageBinding* shadow_storage_binding(const NvnDrawCommand* command, u32 stage, u32 offset) {
+    const NvnStorageBinding* selected = NULL;
+    for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+        if (!(command->storage_known[stage] & (1u << slot))) continue;
+        const NvnStorageBinding* binding = &command->storage[stage][slot];
+        u32 candidate = 0;
+        if (!gpu_unique_cb_offset_macro(0xe20, binding->cbuf_word, stage ? 4 : 0, &candidate)) return NULL;
+        if (candidate != offset) continue;
+        if (selected) return NULL;
+        selected = binding;
+    }
+    return selected;
+}
+
+static int shadow_cbuf0_fill(const NvnDrawCommand* command, const ShaderInfo* si, u32 stage,
+                             u8* staged, u32 size) {
+    if (si->cbuf0_untracked_read) return 0;
+    u32 known[13] = {0};
+    known[0x640 / 128] |= (1u << ((0x640 / 4) & 31)) | (1u << ((0x644 / 4) & 31));
+    for (int i = 0; i < si->ngbuf; i++) {
+        u32 off = si->gbuf_cbuf_off[i];
+        if (off > size || size - off < 12 || off >= 0x680 || (off & 3)) return 0;
+        const NvnStorageBinding* binding = shadow_storage_binding(command, stage, off);
+        if (!binding || !binding->range.address || !binding->range.size || binding->range.size > UINT32_MAX)
+            return 0;
+        u32 words[3] = {(u32)binding->range.address, (u32)(binding->range.address >> 32),
+                        (u32)binding->range.size};
+        memcpy(staged + off, words, sizeof words);
+        for (u32 word = off / 4; word < off / 4 + 3; word++)
+            known[word / 32] |= 1u << (word & 31);
+    }
+    for (u32 i = 0; i < 13; i++)
+        if (si->cbuf0_read_words[i] & ~known[i]) return 0;
+    return 1;
+}
+
 /* First executable NVN slice: an isolated draw with application constant buffers and sampled textures.
    It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
 static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
@@ -1442,13 +1492,13 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                          (g_vk.feat.depthBiasClamp || !command->polygon_offset[2])));
     if (!enabled || !pipeline || !vertex || !fragment ||
         (cbuf_mask & ~((1u << 18) - 1)) ||
-        ((vertex->si.cbuf_mask & 1) && !vertex->si.cbuf0_draw_params_only) ||
-        ((fragment->si.cbuf_mask & 1) && !fragment->si.cbuf0_draw_params_only) ||
         ((cbuf_mask & 1) && (command->first || command->base_vertex || command->base_instance)) ||
         vertex->si.ntex < 0 ||
         vertex->si.ntex > SH_MAXTEX || fragment->si.ntex < 0 || fragment->si.ntex > SH_MAXTEX ||
         vertex->si.nimg || fragment->si.nimg > NVN_DRAW_IMAGE_SLOTS ||
-        vertex->si.ngbuf || fragment->si.ngbuf ||
+        vertex->si.ngbuf < 0 || vertex->si.ngbuf > 16 ||
+        fragment->si.ngbuf < 0 || fragment->si.ngbuf > 16 ||
+        vertex->si.gbuf_wmask || fragment->si.gbuf_wmask ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !triangles && !indexed_triangles) || !command->count || !command->instance_count ||
         !fill_polygon ||
@@ -1521,6 +1571,21 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         !vk_buf_get_strict(command->index_address, (u64)command->count << command->index_type,
                            &index_buffer, &index_offset))
         return 0;
+    VkDrawStorage storage = {0};
+    const VkSh* storage_shaders[2] = {vertex, fragment};
+    for (u32 stage = 0; stage < 2; stage++) {
+        const ShaderInfo* si = &storage_shaders[stage]->si;
+        storage.n[stage] = si->ngbuf;
+        for (int i = 0; i < si->ngbuf; i++) {
+            const NvnStorageBinding* binding = shadow_storage_binding(command, stage, si->gbuf_cbuf_off[i]);
+            if (!binding || !binding->range.address || !binding->range.size ||
+                binding->range.size > (16u << 20) ||
+                binding->range.size > g_vk.props.limits.maxStorageBufferRange) return 0;
+            storage.b[stage][i].addr = binding->range.address;
+            storage.b[stage][i].size = (u32)binding->range.size;
+        }
+    }
+    if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) return 0;
     NvnImage* storage_images[NVN_DRAW_IMAGE_SLOTS] = {0};
     VkDescriptorImageInfo storage_infos[NVN_DRAW_IMAGE_SLOTS] = {0};
     for (int k = 0; k < fragment->si.nimg; k++) {
@@ -1554,10 +1619,13 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     VkDescriptorSet sets[2];
     VkDescriptorBufferInfo uniforms[2][18] = {0};
+    VkDescriptorBufferInfo storage_buffers[2][16] = {0};
+    VkDescriptorBufferInfo storage_maps[2] = {0};
     VkDescriptorImageInfo textures[2][SH_MAXTEX] = {0};
-    VkWriteDescriptorSet writes[2 * (18 + SH_MAXTEX + NVN_DRAW_IMAGE_SLOTS)] = {0};
+    VkWriteDescriptorSet writes[2 * (18 + 16 + 1 + SH_MAXTEX + NVN_DRAW_IMAGE_SLOTS)] = {0};
     u32 nwrites = 0;
     int semantic_sampled = 0;
+    VkImageView color_feedback_view = VK_NULL_HANDLE;
     VkImageView depth_feedback_view = VK_NULL_HANDLE;
     const VkSh* shaders[2] = {vertex, fragment};
     for (u32 stage = 0; stage < 2; stage++) {
@@ -1599,6 +1667,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             if (read_size)
                 gmem_read(bank == 1 ? embedded_bank1[stage] : command->uniform[stage][slot].address,
                           staged, read_size);
+            if (bank == 0 && !shadow_cbuf0_fill(command, si, stage, staged, size)) return 0;
             uniforms[stage][bank] = (VkDescriptorBufferInfo){buffer, offset, size};
             writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                                       .dstSet = sets[stage],
@@ -1606,6 +1675,29 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                                       .descriptorCount = 1,
                                                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                                       .pBufferInfo = &uniforms[stage][bank]};
+        }
+        for (int i = 0; i < si->ngbuf; i++) {
+            VkBuffer buffer;
+            u64 offset;
+            VkDrawGbuf* binding = &storage.b[stage][i];
+            if (!vk_buf_get_strict(binding->addr, binding->size, &buffer, &offset)) return 0;
+            storage_buffers[stage][i] = (VkDescriptorBufferInfo){buffer, offset, binding->size};
+            writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                      .dstSet = sets[stage],
+                                                      .dstBinding = SNX_VKB_SSBO + i,
+                                                      .descriptorCount = 1,
+                                                      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                      .pBufferInfo = &storage_buffers[stage][i]};
+        }
+        if (si->ngbuf) {
+            storage_maps[stage] =
+                (VkDescriptorBufferInfo){storage.map_buf[stage], storage.map_off[stage], storage.map_size[stage]};
+            writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                      .dstSet = sets[stage],
+                                                      .dstBinding = SNX_VKB_SMAP,
+                                                      .descriptorCount = 1,
+                                                      .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                      .pBufferInfo = &storage_maps[stage]};
         }
         for (int tex_index = 0; tex_index < si->ntex; tex_index++) {
             const ShTex* shader_texture = &si->tex[tex_index];
@@ -1623,14 +1715,13 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                       : (si->tex_sint_mask & (1u << tex_index)) ? 2 : 1;
             VkImageView view = VK_NULL_HANDLE;
             u64 sampled_address = 0;
-            u32 sampled_width, sampled_height, sampled_layers, sampled_levels;
-            VkImageViewType sampled_type;
-            VkFormat sampled_format;
+            u32 sampled_width = 0, sampled_height = 0, sampled_layers = 0, sampled_levels = 0;
+            VkImageViewType sampled_type = 0;
+            VkFormat sampled_format = VK_FORMAT_UNDEFINED;
             int semantic_shape = vk_tex_tic_shadow(descriptor->tic, &sampled_address, &sampled_width,
                                                    &sampled_height, &sampled_layers, &sampled_levels,
                                                    &sampled_type, &sampled_format);
-            if (semantic_shape && sampled_address == color_target->gpu_address)
-                return 0;
+            int color_feedback = semantic_shape && sampled_address == color_target->gpu_address;
             int depth_feedback = semantic_shape && command->depth_target_bound &&
                                  sampled_address == depth_target->gpu_address;
             if (semantic_shape)
@@ -1646,17 +1737,28 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             int depth_swizzle = descriptor->tic[0] == 0x60124a0eu &&
                                 sampled_format == nvn_format(0x35).vk;
             if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0) {
-                if (depth_feedback && sampled_width == depth_target->width &&
+                if (color_feedback && sampled_width == color_target->width &&
+                    sampled_height == color_target->height && sampled_layers == 1 && sampled_levels == 1 &&
+                    sampled_format == nvn_format(color_target->format).vk) {
+                    if (!color_feedback_view)
+                        color_feedback_view = shadow_attachment_feedback(color_target,
+                                                                         command->last_unmodeled_write, 0,
+                                                                         descriptor->tic);
+                    view = color_feedback_view;
+                }
+                else if (depth_feedback && sampled_width == depth_target->width &&
                     sampled_height == depth_target->height && sampled_layers == 1 && sampled_levels == 1 &&
                     sampled_format == nvn_format(depth_target->format).vk) {
                     if (!depth_feedback_view)
-                        depth_feedback_view = shadow_depth_feedback(depth_target, command->last_unmodeled_write);
+                        depth_feedback_view = shadow_attachment_feedback(depth_target,
+                                                                         command->last_unmodeled_write, 1,
+                                                                         descriptor->tic);
                     view = depth_feedback_view;
                 }
-                else if (!depth_feedback && (identity_swizzle || depth_swizzle))
+                else if (!color_feedback && !depth_feedback && (identity_swizzle || depth_swizzle))
                     view = image_view_from_semantic(descriptor, effective_unknown);
             }
-            if (depth_feedback && !view) return 0;
+            if ((color_feedback || depth_feedback) && !view) return 0;
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
                 Surf* sampled = vk_tex_from_tic(descriptor->tic);
@@ -1899,17 +2001,20 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (color_written) color->shadow_draw_stamp = ++shadow_draw_stamp;
     static u64 issued;
     static u64 preserved_count, semantic_sample_count, embedded_bank1_count, storage_draw_count, color_write_count;
+    static u64 readonly_ssbo_count;
     issued++;
     preserved_count += preserved;
     semantic_sample_count += semantic_sampled;
     embedded_bank1_count += !!(cbuf_mask & 2);
     storage_draw_count += !!fragment->si.nimg;
+    readonly_ssbo_count += !!(vertex->si.ngbuf || fragment->si.ngbuf);
     color_write_count += !!color_written;
     if (issued <= 8 || !(issued % 100))
-        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu storage=%llu color-writes=%llu target=%llx size=%ux%u\n",
+        LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu storage=%llu readonly-ssbo=%llu color-writes=%llu target=%llx size=%ux%u\n",
             (unsigned long long)issued, (unsigned long long)preserved_count,
             (unsigned long long)semantic_sample_count, (unsigned long long)embedded_bank1_count,
-            (unsigned long long)storage_draw_count, (unsigned long long)color_write_count,
+            (unsigned long long)storage_draw_count, (unsigned long long)readonly_ssbo_count,
+            (unsigned long long)color_write_count,
             (unsigned long long)color_target->gpu_address,
             color_target->width, color_target->height);
     return 1;
@@ -2012,6 +2117,7 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
    diagnostic of the corresponding intermediate image, which need not be the VI-presented image. */
 void vk_nvn_shadow_compare(void) {
     static int compared;
+    static u64 eligible_count;
     if (compared || !shadow_draw_stamp) return;
     const char* size_filter = getenv("SNX_NVN_SHADOW_COMPARE_SIZE");
     const char* format_filter = getenv("SNX_NVN_SHADOW_COMPARE_FORMAT");
@@ -2040,6 +2146,13 @@ void vk_nvn_shadow_compare(void) {
         emulated->h != shadow->height || emulated->sw != emulated->w || emulated->sh != emulated->h ||
         emulated->layout == VK_IMAGE_LAYOUT_UNDEFINED)
         return;
+    eligible_count++;
+    const char* present_filter = getenv("SNX_NVN_SHADOW_COMPARE_PRESENT");
+    if (present_filter) {
+        char* end = NULL;
+        unsigned long requested = strtoul(present_filter, &end, 0);
+        if (!requested || !end || *end || eligible_count != requested) return;
+    }
     u64 bytes = (u64)shadow->width * shadow->height * format.bpp;
     VkBuffer readback;
     u8* pixels = vk_readback_buffer(bytes * 2, &readback);
@@ -2099,8 +2212,8 @@ void vk_nvn_shadow_compare(void) {
                                                 pixels + bytes + i + component * 2, 2) != 0;
     }
     u64 center = ((u64)(shadow->height / 2) * shadow->width + shadow->width / 2) * format.bpp;
-    LOG("nvn-shadow-compare: target=%llx format=%x bpp=%u different=%llu/%llu bytes=%llu/%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
-        (unsigned long long)shadow->address, shadow->format, format.bpp,
+    LOG("nvn-shadow-compare: eligible=%llu target=%llx format=%x bpp=%u different=%llu/%llu bytes=%llu/%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
+        (unsigned long long)eligible_count, (unsigned long long)shadow->address, shadow->format, format.bpp,
         (unsigned long long)different, (unsigned long long)(bytes / format.bpp),
         (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],

@@ -947,6 +947,18 @@ The recorder snapshots the syntactic `0xe20` plus three-data-word packet at EndR
 be reused. Per-call matching requires those three words to equal the semantic NVN address and size. A 16-second TotK
 run matched over 4,000 storage-bind packets with no mismatches and scoped at least 374 writable-storage draws among
 4,600 shadow draws. This establishes a bounded write set for those draws, not correct pixels or a visible HLE frame.
+The shadow renderer now accepts read-only graphics SSBOs when the recorded NVN bind and the uploaded MME macro prove
+the shader's bank-0 descriptor offset. Shader translation tracks each static bank-0 word read; any dynamic or
+unreconstructed read rejects the draw. The descriptor and storage-buffer binding then come from the same per-draw
+NVN snapshot. If a shader samples the color or depth attachment it is writing, the direct path snapshots the
+covered pre-draw attachment with the TIC's component mapping. A TotK probe executed the first two six-index draws
+that previously invalidated the shared depth target. The third six-index draw remains ineligible because a preceding
+unsupported writable-storage draw invalidated its source color target at `0x512460000`; there is no safe prior color
+image to snapshot. That draw has active fragment color output and a full channel mask, so its color write cannot be
+ignored. The third 640×360 comparison still had zero nonblack HLE pixels versus roughly 116,000 emulated
+pixels. `SNX_NVN_SHADOW_COMPARE_PRESENT=N` selects the Nth present where both versions of the filtered target exist,
+so later-pass comparisons can be reproduced without assuming startup presents contain that target. Writable graphics
+SSBO execution and ordered shadow buffer contents are required to close this gap.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
