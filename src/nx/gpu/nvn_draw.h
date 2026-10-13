@@ -16,6 +16,12 @@
 #define NVN_DRAW_IMAGE_SLOTS    8
 #define NVN_DRAW_VIEWPORT_SLOTS 16
 struct NvnStorageSeed;
+typedef struct NvnUniformUpdate {
+    struct NvnUniformUpdate* next; /* newest first; draw snapshots retain this head */
+    u64 address;
+    u32 size;
+    u8 bytes[];
+} NvnUniformUpdate;
 enum {
     NVN_DRAW_PREPARED = 1,
     NVN_DRAW_SHARED_TARGET = 2,
@@ -81,6 +87,8 @@ typedef struct {
     u8 vertex_attrib_count, vertex_stream_count;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     const struct NvnStorageSeed* uniform_seed[2][NVN_DRAW_UNIFORM_SLOTS];
+    const NvnUniformUpdate* uniform_updates;
+    u8 uniform_updates_complete;
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     NvnStorageBinding storage[2][NVN_DRAW_STORAGE_SLOTS]; /* vertex and fragment */
     u16 storage_known[2];

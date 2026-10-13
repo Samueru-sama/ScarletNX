@@ -22,7 +22,7 @@ typedef struct {
     u32 size;
     u8 kind;
 } NvnGapMemoryWrite;
-enum { NVN_GAP_WRITE_PULLER, NVN_GAP_WRITE_QUERY, NVN_GAP_WRITE_CBUF };
+enum { NVN_GAP_WRITE_PULLER, NVN_GAP_WRITE_QUERY, NVN_GAP_WRITE_CBUF, NVN_GAP_WRITE_UNIFORM };
 
 typedef void (*NvnGapMethodVisitor)(u32 subchannel, u32 method, u32 value, void* context);
 

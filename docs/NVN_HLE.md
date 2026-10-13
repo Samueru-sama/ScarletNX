@@ -1073,7 +1073,14 @@ establish full target coverage, so the comparison is a useful failure location b
 completed pass. The comparator now reports coverage alongside the pixel count.
 The first direct Odyssey draw is a six-index triangle list with a 1280×720 viewport and scissor inside the
 1600×900 target. Its magenta sentinel remained unchanged even in a temporary no-culling probe, so face culling
-alone does not explain the missing coverage. Vertex/index inputs and shader output are the next suspects.
+alone did not explain the missing coverage. The translated vertex shader reads its transform from CBUF bank 3,
+but the pre-submit uniform seed had zero bytes in all four matrix rows. The list contained a 64-byte
+`UpdateUniformBuffer` for that exact range before the draw. The recorder now snapshots each update payload while
+recording, scopes its guest write, and applies ordered updates to the direct draw's private constant-buffer copy.
+The same Odyssey probe then changed all 921,600 pixels inside its 1280×720 viewport. Those pixels matched Maxwell's
+readback; the 518,400 differing pixels were outside the viewport, where the diagnostic magenta clear remained and
+Maxwell's surface was black. Full-surface coverage and a presented-frame comparison still need a proven initial
+image state. Compute dispatch uniforms do not yet consume these replayed update payloads.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

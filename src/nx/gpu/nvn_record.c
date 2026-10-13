@@ -200,6 +200,9 @@ typedef struct {
     NvnMemoryWriteBatch* memory_writes;
     NvnStorageSeed* storage_seeds;
     u64 storage_seed_bytes;
+    NvnUniformUpdate* uniform_updates;
+    u64 uniform_update_bytes;
+    u8 uniform_update_failed;
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
@@ -211,6 +214,7 @@ static int copy_execute;
 static int draw_prepare;
 static int dispatch_execute;
 #define NVN_DISPATCH_SEED_BUDGET (16u << 20)
+#define NVN_UNIFORM_UPDATE_BUDGET (16u << 20)
 static int texture_load;
 static int attachment_prepare;
 static int shader_materialize;
@@ -540,9 +544,35 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     (unsigned long long)op->args[0], (unsigned long long)op->args[1],
                     (unsigned long long)op->args[2], (unsigned long long)op->args[3],
                     (unsigned long long)op->args[4]);
+            if (queue) {
+                u64 size = op->args[3], address = op->args[0], offset = op->args[2];
+                if (!op->payload || size > NVN_UNIFORM_UPDATE_BUDGET - sizeof(NvnUniformUpdate) ||
+                    queue->uniform_update_bytes > NVN_UNIFORM_UPDATE_BUDGET - sizeof(NvnUniformUpdate) - size ||
+                    address > UINT64_MAX - offset || address + offset > UINT64_MAX - size) {
+                    queue->uniform_update_failed = 1;
+                    queue->last_unmodeled_write = queue->next_sequence++;
+                } else {
+                    NvnUniformUpdate* update = malloc(sizeof *update + (size_t)size);
+                    if (!update) {
+                        allocation_failures++;
+                        queue->uniform_update_failed = 1;
+                        queue->last_unmodeled_write = queue->next_sequence++;
+                    } else {
+                        update->address = address + offset;
+                        update->size = (u32)size;
+                        memcpy(update->bytes, op->payload, (size_t)size);
+                        update->next = queue->uniform_updates;
+                        queue->uniform_updates = update;
+                        queue->uniform_update_bytes += sizeof *update + size;
+                        if (!stage_memory_write(queue, update->address, update->size,
+                                                NVN_GAP_WRITE_UNIFORM))
+                            queue->uniform_update_failed = 1;
+                    }
+                }
+            }
         }
-        /* UpdateUniformBuffer writes buffer bytes, not a texture subresource. It must not invalidate
-           independent NVN-owned images while the shadow path tracks unknown image writes globally. */
+        /* A captured uniform update has its own bounded write marker. Its payload is applied to
+           later direct draws without modifying the guest buffer while GPFIFO remains authoritative. */
         if (queue &&
             (op->kind == OP_CLEAR ||
              (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
@@ -1127,6 +1157,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             }
             memcpy(draw.uniform, state->uniform, sizeof draw.uniform);
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
+            draw.uniform_updates = queue ? queue->uniform_updates : NULL;
+            draw.uniform_updates_complete = queue && !queue->uniform_update_failed;
             if (draw_prepare && queue)
                 for (u32 stage = 0; stage < 2; stage++)
                     for (u32 slot = 0; slot < NVN_DRAW_UNIFORM_SLOTS; slot++)
@@ -1613,7 +1645,16 @@ static int snapshot_target(u64 texture, const NvnTextureViewSelection* view, Nvn
 
 /* The SDK consumes these pointers immediately. Copy them before the caller can reuse its stack. */
 static void snapshot_semantic(NvnOp* op, const CPU* c) {
-    if (!strcmp(op->name, "nvnCommandBufferSetBlendColor")) {
+    if (!strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) {
+        u64 address = op->args[0], buffer_size = op->args[1], offset = op->args[2];
+        u64 size = op->args[3], source = op->args[4];
+        if (!size || size > 65536 || offset > buffer_size || size > buffer_size - offset ||
+            address > UINT64_MAX - offset || !readable_range(source, size)) return;
+        void* bytes = malloc((size_t)size);
+        if (!bytes) { allocation_failures++; return; }
+        memcpy(bytes, GP(source), (size_t)size);
+        op->payload = bytes;
+    } else if (!strcmp(op->name, "nvnCommandBufferSetBlendColor")) {
         if (!readable_range(op->args[0], 4 * sizeof(u32))) {
             invalid_arrays++;
             return;
@@ -2169,6 +2210,7 @@ typedef struct {
     NvnDispatchBatch* dispatches;
     NvnMemoryWriteBatch* memory_writes;
     NvnStorageSeed* storage_seeds;
+    NvnUniformUpdate* uniform_updates;
 } NvnGpuBatch;
 
 static void free_storage_seeds(NvnStorageSeed* seed) {
@@ -2176,6 +2218,13 @@ static void free_storage_seeds(NvnStorageSeed* seed) {
         NvnStorageSeed* next = seed->next;
         free(seed);
         seed = next;
+    }
+}
+static void free_uniform_updates(NvnUniformUpdate* update) {
+    while (update) {
+        NvnUniformUpdate* next = update->next;
+        free(update);
+        update = next;
     }
 }
 
@@ -2275,6 +2324,7 @@ static void execute_nvn_batch(void* arg) {
     free(batch->dispatches);
     free(batch->memory_writes);
     free_storage_seeds(batch->storage_seeds);
+    free_uniform_updates(batch->uniform_updates);
     free(batch);
 }
 
@@ -2321,6 +2371,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
         NvnDispatchBatch* dispatch_batch = NULL;
         NvnMemoryWriteBatch* memory_write_batch = NULL;
         NvnStorageSeed* storage_seeds = NULL;
+        NvnUniformUpdate* uniform_updates = NULL;
         pm_lock(&lock);
         ReplayQueue* queue = replay_queue_slot(command_buffer);
         if (queue && queue->key == command_buffer) {
@@ -2385,6 +2436,10 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
             storage_seeds = queue->storage_seeds;
             queue->storage_seeds = NULL;
             queue->storage_seed_bytes = 0;
+            uniform_updates = queue->uniform_updates;
+            queue->uniform_updates = NULL;
+            queue->uniform_update_bytes = 0;
+            queue->uniform_update_failed = 0;
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
@@ -2397,6 +2452,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
                 owned->dispatches = dispatch_batch;
                 owned->memory_writes = memory_write_batch;
                 owned->storage_seeds = storage_seeds;
+                owned->uniform_updates = uniform_updates;
                 gpu_call(execute_nvn_batch, owned);
             } else {
                 free(clear_batch);
@@ -2405,9 +2461,13 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 re
                 free(dispatch_batch);
                 free(memory_write_batch);
                 free_storage_seeds(storage_seeds);
+                free_uniform_updates(uniform_updates);
                 __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
             }
-        } else free_storage_seeds(storage_seeds);
+        } else {
+            free_storage_seeds(storage_seeds);
+            free_uniform_updates(uniform_updates);
+        }
         return;
     }
     if (strcmp(name, "nvnCommandBufferEndRecording")) return;

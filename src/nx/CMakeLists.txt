@@ -49,7 +49,7 @@ if(SNX_H264)
     target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec)
 endif()
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/maxwell3d.c gpu/renderer.c
-              gpu/nvn_trace.c gpu/nvn_hle.c gpu/nvn_record.c gpu/nvn_command_gap.c gpu/nvn_pool.c gpu/nvn_buffer.c gpu/nvn_texture.c gpu/nvn_sampler.c gpu/nvn_program.c gpu/nvn_shader.c gpu/nvn_alias.c gpu/nvn_descriptor.c gpu/nvn_sampler_descriptor.c)
+              gpu/nvn_trace.c gpu/nvn_hle.c gpu/nvn_record.c gpu/nvn_command_gap.c gpu/nvn_uniform.c gpu/nvn_pool.c gpu/nvn_buffer.c gpu/nvn_texture.c gpu/nvn_sampler.c gpu/nvn_program.c gpu/nvn_shader.c gpu/nvn_alias.c gpu/nvn_descriptor.c gpu/nvn_sampler_descriptor.c)
 
 set(platform runtime/platform/plat.c runtime/platform/unattended.c runtime/platform/backend/${SNX_BACKEND}.c)
 if(WIN32)

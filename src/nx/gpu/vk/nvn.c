@@ -5,6 +5,7 @@
 #include "gpu/vk/vk.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_command_gap.h"
+#include "gpu/nvn_uniform.h"
 #include "gpu/nvn_pool.h"
 #include "gpu/nvn_shader.h"
 #include "gpu/shader/shader.h"
@@ -66,6 +67,8 @@ static u64 shadow_storage_bytes;
 static u64 image_bytes;
 static u64 batch_serial;
 static u64 shadow_draw_stamp;
+static u64 shadow_capture_target;
+static u32 shadow_capture_scissor[4];
 static u64 modeled_unknown_marker, modeled_unknown_prior;
 
 static int cross_batch_enabled(void) {
@@ -1968,7 +1971,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                        !command->rasterizer_discard &&
                        (!fill_offset || (command->polygon_offset_known &&
                                          (g_vk.feat.depthBiasClamp || !command->polygon_offset[2])));
-    if (!enabled || !pipeline || !vertex || !fragment ||
+    if (!enabled || !pipeline || !vertex || !fragment || !command->uniform_updates_complete ||
         (cbuf_mask & ~((1u << 18) - 1)) ||
         ((cbuf_mask & 1) && (command->first || command->base_vertex || command->base_instance)) ||
         vertex->si.ntex < 0 ||
@@ -2183,6 +2186,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                 } else
                     gmem_read(embedded_bank1[stage], staged, read_size);
             }
+            if (bank >= 3 &&
+                !nvn_uniform_updates_apply(command->uniform_updates,
+                                           command->uniform[stage][slot].address, size, staged)) return 0;
             if (bank == 0 && !shadow_cbuf0_fill(command, si, stage, staged, size)) return 0;
             uniforms[stage][bank] = (VkDescriptorBufferInfo){buffer, offset, size};
             writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -2455,11 +2461,26 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                    color_target->format == 0x29 || color_target->format == 0x3f);
     int capture_full = 0;
     if (capture) {
-        LOG("nvn-shadow-capture-draw: count=%u indexed=%d primitive=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
-            command->count, command->indexed, command->primitive,
+        shadow_capture_target = color->address;
+        memcpy(shadow_capture_scissor, sc_data, sizeof shadow_capture_scissor);
+        LOG("nvn-shadow-capture-draw: count=%u indexed=%d type=%u index=%llx primitive=%u vs=%llx fs=%llx attrs=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
+            command->count, command->indexed, command->index_type,
+            (unsigned long long)command->index_address, command->primitive,
+            (unsigned long long)vertex->hash, (unsigned long long)fragment->hash, key->nattr,
             vp_data[0], vp_data[1], vp_data[2], vp_data[3],
             sc_data[0], sc_data[1], sc_data[2], sc_data[3], color_width, color_height,
             command->polygon_state & 3, command->depth_stencil_state[0]);
+        const NvnStorageSeed* vertex_uniform = command->uniform_seed[0][0];
+        if (vertex_uniform && vertex_uniform->size >= 80) {
+            float diagonal[4];
+            u32 matrix_nonzero = 0;
+            for (u32 i = 0; i < 4; i++)
+                memcpy(&diagonal[i], vertex_uniform->bytes + 16 + i * 20, sizeof(float));
+            for (u32 i = 16; i < 80; i++) matrix_nonzero += !!vertex_uniform->bytes[i];
+            LOG("nvn-shadow-capture-uniform: address=%llx size=%u matrix-nonzero=%u diagonal=%g,%g,%g,%g\n",
+                (unsigned long long)vertex_uniform->address, vertex_uniform->size,
+                matrix_nonzero, diagonal[0], diagonal[1], diagonal[2], diagonal[3]);
+        }
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
         if (depth) {
@@ -2890,6 +2911,7 @@ void vk_nvn_shadow_compare(void) {
     vk_finish();
     vk_readback_ready();
     u64 different = 0, different_bytes = 0, first_different = ~0ull;
+    u64 capture_inside_different = 0, capture_inside_pixels = 0;
     u64 nonblack_shadow = 0, nonblack_emulated = 0;
     const u8 black_rgba8[4] = {0, 0, 0, 255};
     const u8 black_rgba16f[8] = {0, 0, 0, 0, 0, 0, 0, 0x3c};
@@ -2911,6 +2933,18 @@ void vk_nvn_shadow_compare(void) {
             if (y < min_y) min_y = y;
             if (x > max_x) max_x = x;
             if (y > max_y) max_y = y;
+            if (shadow->address == shadow_capture_target &&
+                x >= shadow_capture_scissor[0] && y >= shadow_capture_scissor[1] &&
+                x - shadow_capture_scissor[0] < shadow_capture_scissor[2] &&
+                y - shadow_capture_scissor[1] < shadow_capture_scissor[3])
+                capture_inside_different++;
+        }
+        if (shadow->address == shadow_capture_target) {
+            u64 pixel = i / format.bpp;
+            u32 x = (u32)(pixel % shadow->width), y = (u32)(pixel / shadow->width);
+            if (x >= shadow_capture_scissor[0] && y >= shadow_capture_scissor[1] &&
+                x - shadow_capture_scissor[0] < shadow_capture_scissor[2] &&
+                y - shadow_capture_scissor[1] < shadow_capture_scissor[3]) capture_inside_pixels++;
         }
         for (u32 b = 0; b < format.bpp; b++)
             different_bytes += pixels[i + b] != pixels[bytes + i + b];
@@ -2927,6 +2961,11 @@ void vk_nvn_shadow_compare(void) {
         (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],
         pixels[bytes + center], pixels[bytes + center + 1], pixels[bytes + center + 2], pixels[bytes + center + 3]);
+    if (shadow->address == shadow_capture_target)
+        LOG("nvn-shadow-capture-region: different=%llu/%llu scissor=%u,%u %ux%u\n",
+            (unsigned long long)capture_inside_different, (unsigned long long)capture_inside_pixels,
+            shadow_capture_scissor[0], shadow_capture_scissor[1],
+            shadow_capture_scissor[2], shadow_capture_scissor[3]);
     if (black)
         LOG("nvn-shadow-coverage: target=%llx nonblack=%llu/%llu emulated=%llu/%llu stamp=%llu\n",
             (unsigned long long)shadow->address, (unsigned long long)nonblack_shadow,

@@ -132,6 +132,10 @@ add_executable(snx-test-nvn-command-gap nvn_command_gap.c "${PROJECT_SOURCE_DIR}
 snx_test_target(snx-test-nvn-command-gap 23)
 add_test(NAME nvn_command_gap COMMAND snx-test-nvn-command-gap)
 
+add_executable(snx-test-nvn-uniform nvn_uniform.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_uniform.c")
+snx_test_target(snx-test-nvn-uniform 23)
+add_test(NAME nvn_uniform COMMAND snx-test-nvn-uniform)
+
 add_executable(snx-test-audio-out audio_out.c)
 snx_test_target(snx-test-audio-out 11)
 target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
