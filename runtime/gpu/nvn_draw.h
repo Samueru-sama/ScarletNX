@@ -74,6 +74,8 @@ typedef struct {
     u32 sampler_descriptor_valid[NVN_DRAW_SHADER_STAGES];
     NvnTextureTarget color_target[8], depth_target;
     u8 color_target_mask, depth_target_bound, target_complete;
+    u32 channel_mask;
+    u8 channel_mask_known;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;

@@ -298,6 +298,9 @@ clip-distance enables, full descriptor binding, exact vertex offsets, image cohe
 unmodeled, so the pipeline cannot replace the guest draw. In opt-in boots, Catherine reported no pipeline failures.
 TotK reported one rejection among roughly 2,900 prepared draws because a used attribute's stream had no bound vertex
 buffer; its other sampled pipelines were created. The guest produced both displayed frames.
+The recorder now copies `BindChannelMaskState`'s 32-bit value before the guest can reuse the state object and replays
+its RGBA nibble for each color target into the pipeline key. Both games retained the same pipeline readiness in
+opt-in boots; blend enable and factors remain unresolved.
 
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each

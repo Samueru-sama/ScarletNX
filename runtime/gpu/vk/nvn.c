@@ -630,7 +630,7 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
 /* This key checks that the observed shader, vertex, and attachment interface can form
    a Vulkan pipeline. Blend and raster state are placeholders until their NVN binds are recorded. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
-    if (!vertex || !fragment_shader) return 0;
+    if (!vertex || !fragment_shader || !command->channel_mask_known) return 0;
     PipeKey key = {0};
     key.vs = vertex->mod;
     key.fs = fragment_shader->mod;
@@ -686,7 +686,7 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
             return 0;
         }
         key.color[i] = format.vk;
-        key.blend[i].mask = 0xf;
+        key.blend[i].mask = (command->channel_mask >> (i * 4)) & 0xf;
         key.ncolor = i + 1;
     }
     if (command->depth_target_bound) {

@@ -102,6 +102,8 @@ typedef struct {
     u32 vertex_attrib_raw[NVN_DRAW_VERTEX_SLOTS];
     u64 vertex_stream_raw[NVN_DRAW_VERTEX_SLOTS];
     u8 vertex_attrib_count, vertex_stream_count;
+    u32 channel_mask;
+    u8 channel_mask_known;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
@@ -552,6 +554,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 state->vertex_stream_count = vertex->count;
                 memcpy(state->vertex_stream_raw, vertex->stream, sizeof vertex->stream);
             }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState")) {
+            state->channel_mask_known = !!op->payload;
+            if (op->payload) state->channel_mask = *(const u32*)op->payload;
         } else if (!strcmp(op->name, "nvnCommandBufferBindUniformBuffer")) {
             u32 stage = (u32)op->args[0], index = (u32)op->args[1];
             if (stage >= NVN_DRAW_SHADER_STAGES || index >= NVN_DRAW_UNIFORM_SLOTS)
@@ -606,6 +611,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.vertex, state->vertex, sizeof draw.vertex);
             draw.vertex_attrib_count = state->vertex_attrib_count;
             draw.vertex_stream_count = state->vertex_stream_count;
+            draw.channel_mask = state->channel_mask;
+            draw.channel_mask_known = state->channel_mask_known;
             memcpy(draw.vertex_attrib_raw, state->vertex_attrib_raw, sizeof draw.vertex_attrib_raw);
             memcpy(draw.vertex_stream_raw, state->vertex_stream_raw, sizeof draw.vertex_stream_raw);
             for (u32 j = 0; j < draw.vertex_attrib_count; j++) {
@@ -862,7 +869,16 @@ static void snapshot_view(u64 ptr, NvnView* view) {
 
 /* The SDK consumes these pointers immediately. Copy them before the caller can reuse its stack. */
 static void snapshot_semantic(NvnOp* op, const CPU* c) {
-    if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
+    if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState")) {
+        if (!readable_range(op->args[0], sizeof(u32))) return;
+        u32* mask = malloc(sizeof *mask);
+        if (!mask) {
+            allocation_failures++;
+            return;
+        }
+        *mask = gr32(op->args[0]);
+        op->payload = mask;
+    } else if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
         if (!readable_range(op->args[3], 24)) {
             copy_snapshot_failures++;
             return;
