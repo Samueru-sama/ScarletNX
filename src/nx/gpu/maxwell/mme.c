@@ -8,6 +8,7 @@
 typedef struct {
     u32 regs[8];
     u32 carry;
+    u8 taint[8], carry_taint, method_taint;
     u32 method, incr, idx;
     const u32* params;
     u32 np, pi;
@@ -15,8 +16,28 @@ typedef struct {
     u32 pc;
     int delayed;
     u32 dpc;
+    int probe, invalid;
+    u32 offset_writes, observed_offset;
+    u32 cb_words[3], cb_word_mask;
 } Mme;
-static void mme_send(Mme* m, u32 v) {
+static void mme_send(Mme* m, u32 v, u8 taint) {
+    if (m->probe) {
+        if (m->method_taint) m->invalid = 1;
+        if (m->method >= 0x8e0 && m->method <= 0x8e2) {
+            u32 index = m->method - 0x8e0;
+            if (m->cb_word_mask & (1u << index)) m->invalid = 1;
+            m->cb_words[index] = v;
+            m->cb_word_mask |= 1u << index;
+        } else if (m->method == 0x8e3) {
+            if (taint || m->cb_word_mask != 7) m->invalid = 1;
+            m->offset_writes++;
+            m->observed_offset = v;
+        } else if ((m->method >= 0x8e4 && m->method <= 0x8f3) ||
+                   m->method == 0x904 || m->method == 0x924)
+            m->invalid = 1;
+        m->method = (m->method + m->incr) & 0xfff;
+        return;
+    }
     /* a send to the macro methods (0xE00+) only sets the register, as in Ryujinx, where macros start from the
        pushbuffer alone: going through maxwell3d_method would start a macro inside this one, over the parameters
        (ch->mme_params) this one is still reading */
@@ -27,43 +48,48 @@ static void mme_send(Mme* m, u32 v) {
     m->method += m->incr;
     m->method &= 0xFFF;
 }
-static void mme_setmethod(Mme* m, u32 v) {
+static void mme_setmethod(Mme* m, u32 v, u8 taint) {
     m->method = v & 0xFFF;
     m->incr = (v >> 12) & 0x3F;
+    m->method_taint = taint;
+    if (m->probe && taint) m->invalid = 1;
 }
 static u32 mme_fetch(Mme* m) { return m->pi < m->np ? m->params[m->pi++] : 0; }
-static void mme_setreg(Mme* m, u32 r, u32 v) {
-    if (r) m->regs[r] = v;
+static void mme_setreg(Mme* m, u32 r, u32 v, u8 taint) {
+    if (r) {
+        m->regs[r] = v;
+        m->taint[r] = taint;
+    }
 }
-static void mme_result(Mme* m, u32 op, u32 dst, u32 res) {
+static void mme_result(Mme* m, u32 op, u32 dst, u32 res, u8 taint) {
     switch (op) {
-        case 0: mme_setreg(m, dst, mme_fetch(m)); break;
-        case 1: mme_setreg(m, dst, res); break;
+        case 0: mme_setreg(m, dst, mme_fetch(m), 0); break;
+        case 1: mme_setreg(m, dst, res, taint); break;
         case 2:
-            mme_setreg(m, dst, res);
-            mme_setmethod(m, res);
+            mme_setreg(m, dst, res, taint);
+            mme_setmethod(m, res, taint);
             break;
         case 3:
-            mme_setreg(m, dst, mme_fetch(m));
-            mme_send(m, res);
+            mme_setreg(m, dst, mme_fetch(m), 0);
+            mme_send(m, res, taint);
             break;
         case 4:
-            mme_setreg(m, dst, res);
-            mme_send(m, res);
+            mme_setreg(m, dst, res, taint);
+            mme_send(m, res, taint);
             break;
         case 5:
-            mme_setreg(m, dst, mme_fetch(m));
-            mme_setmethod(m, res);
+            mme_setreg(m, dst, mme_fetch(m), 0);
+            mme_setmethod(m, res, taint);
             break;
         case 6:
-            mme_setreg(m, dst, res);
-            mme_setmethod(m, res);
-            mme_send(m, mme_fetch(m));
+            mme_setreg(m, dst, res, taint);
+            mme_setmethod(m, res, taint);
+            mme_send(m, mme_fetch(m), 0);
             break;
         case 7:
-            mme_setreg(m, dst, res);
-            mme_setmethod(m, res);
-            mme_send(m, (res >> 12) & 0x3F);
+            mme_setreg(m, dst, res, taint);
+            mme_setmethod(m, res, taint);
+            mme_send(m, (res >> 12) & 0x3F, taint);
             break;
     }
 }
@@ -93,6 +119,10 @@ static u32 mme_alu(Mme* m, u32 op, u32 a, u32 b) {
         case 12: return ~(a & b);
     }
     {
+        if (m->probe) {
+            m->invalid = 1;
+            return 0;
+        }
         WARN_LIMIT(8, "mme: alu %u (not a Maxwell ALU operation) in macro %u at pc %x\n", op, m->idx, m->pc - 4);
         static int dumped;
         if (!dumped) {
@@ -130,32 +160,44 @@ static int mme_step(Mme* m, int delay) {
     u32 mask = (1u << bf_size) - 1;
     if (bf_size == 0) mask = 0;
     switch (op) {
-        case 0: mme_result(m, rop, dst, mme_alu(m, (w >> 17) & 31, m->regs[sa], m->regs[sb])); break;
-        case 1: mme_result(m, rop, dst, m->regs[sa] + (u32)imm); break;
+        case 0: {
+            u8 taint = m->taint[sa] | m->taint[sb] | m->carry_taint;
+            u32 result = mme_alu(m, (w >> 17) & 31, m->regs[sa], m->regs[sb]);
+            m->carry_taint |= taint;
+            mme_result(m, rop, dst, result, taint);
+            break;
+        }
+        case 1: mme_result(m, rop, dst, m->regs[sa] + (u32)imm, m->taint[sa]); break;
         case 2: {
             u32 d = m->regs[sa], s = m->regs[sb];
             s = (s >> bf_src) & mask;
             d &= ~(mask << bf_dst);
             d |= s << bf_dst;
-            mme_result(m, rop, dst, d);
+            mme_result(m, rop, dst, d, m->taint[sa] | m->taint[sb]);
             break;
         }
         case 3: {
             u32 d = m->regs[sa], s = m->regs[sb];
-            mme_result(m, rop, dst, ((s >> (d & 31)) & mask) << bf_dst); /* shift counts as Ryujinx's (mod 32) */
+            mme_result(m, rop, dst, ((s >> (d & 31)) & mask) << bf_dst,
+                       m->taint[sa] | m->taint[sb]); /* shift counts as Ryujinx's (mod 32) */
             break;
         }
         case 4: {
             u32 d = m->regs[sa], s = m->regs[sb];
-            mme_result(m, rop, dst, ((s >> bf_src) & mask) << (d & 31));
+            mme_result(m, rop, dst, ((s >> bf_src) & mask) << (d & 31), m->taint[sa] | m->taint[sb]);
             break;
         }
         case 5: {
+            if (m->probe && m->taint[sa]) m->invalid = 1;
             u32 a = (m->regs[sa] + (u32)imm) & 0xFFF;
-            mme_result(m, rop, dst, m->ch->r3d[a]);
+            mme_result(m, rop, dst, m->ch->r3d[a], 1);
             break;
         }
         case 7: {
+            if (m->probe && m->taint[sa]) {
+                m->invalid = 1;
+                return 0;
+            }
             u32 v = m->regs[sa];
             int nz = (w >> 4) & 1, annul = (w >> 5) & 1;
             int taken = nz ? v != 0 : v == 0;
@@ -171,7 +213,10 @@ static int mme_step(Mme* m, int delay) {
             }
             break; /* not taken: the exit bit counts, as for any instruction (as in Ryujinx's interpreter) */
         }
-        default: WARN("mme: op %u\n", op); break;
+        default:
+            if (m->probe) m->invalid = 1;
+            else WARN("mme: op %u\n", op);
+            break;
     }
     if (((w >> 7) & 1) && !delay) {
         mme_step(m, 1);
@@ -191,4 +236,32 @@ void mme_run(GpuChannel* ch, u32 idx, const u32* params, u32 np) {
     m.pc = ch->mme_start[idx & 0xFF] * 4;
     for (int guard = 0; guard < 5000000; guard++)
         if (!mme_step(&m, 0)) break;
+}
+
+/* A side-effect-free proof of an SDK macro's CBUF offset effect. GPU register reads may determine
+   the buffer base, but taint tracking rejects any influence on the offset or control flow. */
+int mme_probe_cb_offset(const GpuChannel* ch, u32 idx, u32 argument, int stage, u32* byte_offset) {
+    if (!ch || !byte_offset || idx >= 256 || stage < 0 || stage >= 5 || !ch->mme_upload_ptr ||
+        ch->mme_start[idx] >= 0x2000) return 0;
+    Mme m = {0};
+    m.ch = (GpuChannel*)ch;
+    m.idx = idx;
+    m.params = &argument;
+    m.np = 1;
+    m.pi = 1;
+    m.regs[1] = argument;
+    m.pc = ch->mme_start[idx] * 4;
+    m.probe = 1;
+    int finished = 0;
+    for (u32 guard = 0; guard < 10000 && !m.invalid; guard++) {
+        if (!mme_step(&m, 0)) {
+            finished = 1;
+            break;
+        }
+    }
+    if (!finished || m.invalid || m.offset_writes != 1 || m.cb_word_mask != 7 ||
+        (((u64)m.cb_words[1] << 32) | m.cb_words[2]) != ch->cb0_addr[stage] ||
+        m.cb_words[0] != ch->cb0_size[stage]) return 0;
+    *byte_offset = m.observed_offset;
+    return 1;
 }

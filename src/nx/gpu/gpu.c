@@ -420,6 +420,28 @@ int gpu_unique_cb0_binding(int stage, u64* address, u32* size, u64* generation) 
     return found;
 }
 
+int gpu_unique_cb_offset_macro(u32 method, u32 argument, int stage, u32* byte_offset) {
+    if (!byte_offset || stage < 0 || stage >= 5 || method < 0xe00 || method > 0xffe || (method & 1)) return 0;
+    pm_lock(&g_gpulock);
+    u32 offset = 0;
+    int found = 0;
+    for (int i = 0; i < g_gpu.nchan; i++) {
+        const GpuChannel* ch = g_gpu.chan[i];
+        if (!ch->cb0_addr[stage] || !ch->cb0_size[stage]) continue;
+        u32 candidate = 0;
+        if (!mme_probe_cb_offset(ch, (method - 0xe00) / 2, argument, stage, &candidate) ||
+            (found && candidate != offset)) {
+            pm_unlock(&g_gpulock);
+            return 0;
+        }
+        offset = candidate;
+        found = 1;
+    }
+    pm_unlock(&g_gpulock);
+    if (found) *byte_offset = offset;
+    return found;
+}
+
 void gpu_channel_close(u32 channel) {
     pm_lock(&g_gpulock);
     for (int i = 0; i < g_gpu.nchan; i++)

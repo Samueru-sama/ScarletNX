@@ -45,6 +45,8 @@ typedef struct {
 } GpuState;
 extern GpuState g_gpu;
 int gpu_unique_cb0_binding(int stage, u64* address, u32* size, u64* generation);
+int gpu_unique_cb_offset_macro(u32 method, u32 argument, int stage, u32* byte_offset);
+int mme_probe_cb_offset(const GpuChannel* ch, u32 index, u32 argument, int stage, u32* byte_offset);
 /* a 2D engine surface, the source or destination of a blit */
 typedef struct {
     u32 format, linear, bh, depth, layer, pitch, width, height;

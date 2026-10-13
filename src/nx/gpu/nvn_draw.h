@@ -11,6 +11,7 @@
 #define NVN_DRAW_VERTEX_SLOTS   16
 #define NVN_DRAW_SHADER_STAGES  6
 #define NVN_DRAW_UNIFORM_SLOTS  16
+#define NVN_DRAW_STORAGE_SLOTS  16
 #define NVN_DRAW_TEXTURE_SLOTS  32
 #define NVN_DRAW_IMAGE_SLOTS    8
 #define NVN_DRAW_VIEWPORT_SLOTS 16
@@ -52,6 +53,10 @@ typedef struct {
     u64 address, size;
 } NvnBufferRange;
 typedef struct {
+    NvnBufferRange range;
+    u32 cbuf_word; /* encoded MME argument; the offset is validated before use */
+} NvnStorageBinding;
+typedef struct {
     u64 handle;
     NvnProgramSnapshot snapshot;
 } NvnStageProgram;
@@ -75,6 +80,8 @@ typedef struct {
     u8 vertex_attrib_count, vertex_stream_count;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
+    NvnStorageBinding storage[2][NVN_DRAW_STORAGE_SLOTS]; /* vertex and fragment */
+    u16 storage_known[2];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     NvnDescriptorSnapshot texture_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     NvnSamplerDescriptorSnapshot sampler_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];

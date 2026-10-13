@@ -51,6 +51,8 @@ typedef struct {
     u64 args[7];      /* x1..x7 at the NVN call boundary */
     u64 refs[8];      /* CallCommands list handles, copied before the guest may reuse its array */
     void* payload;    /* owned snapshot for pointer arguments used by semantic replay */
+    u32 storage_cbuf_word;
+    u8 storage_cbuf_word_known;
 } NvnOp;
 typedef struct {
     NvnTextureViewSelection selection;
@@ -91,6 +93,7 @@ typedef struct {
 } NvnDynamicArray;
 typedef struct {
     u64 key;
+    u32 record_generation;
     u64 command_cursor, command_low, command_high;
     NvnGapMacroData3 cbuf_macro_data;
     u8 cbuf_macro_data_known;
@@ -113,10 +116,13 @@ typedef struct {
 #define MAX_OPS      32768
 static NvnList active[ACTIVE_SLOTS], lists[LIST_SLOTS];
 static PMutex lock = PMUTEX_INIT;
+static u32 next_record_generation = 1;
 static u64 began, implicit_begins, ended, ended_opaque, submitted, submitted_found, submitted_missing, submitted_opaque;
 static u64 inlined_draws, inlined_uniform_binds, inlined_uniform_unknown, inlined_vertex_binds,
     inlined_vertex_unknown, inlined_gaps, inlined_unparsed;
 static u64 cbuf_macro_packets;
+static u64 storage_bind_packets, storage_bind_mismatches;
+static u64 storage_draw_snapshots, storage_bind_invalid;
 static int inlined_draw_replay;
 static u64 calls, call_refs, call_ref_missing, call_ref_opaque, truncated_refs;
 static u64 active_collisions, list_collisions, truncated_lists, dropped_ops, invalid_arrays, allocation_failures;
@@ -158,6 +164,8 @@ typedef struct {
     u8 depth_clamp_known, depth_clamp;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
+    NvnStorageBinding storage[NVN_DRAW_SHADER_STAGES][NVN_DRAW_STORAGE_SLOTS];
+    u16 storage_known[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     u32 texture_bound[NVN_DRAW_SHADER_STAGES];
     u64 image[NVN_DRAW_SHADER_STAGES][NVN_DRAW_IMAGE_SLOTS];
@@ -865,6 +873,29 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     state->uniform_bound[stage] |= (u16)(1u << (first + j));
                 }
             }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindStorageBuffer")) {
+            u32 stage = (u32)op->args[0], index = (u32)op->args[1];
+            if (stage >= NVN_DRAW_SHADER_STAGES || index >= NVN_DRAW_STORAGE_SLOTS) {
+                storage_bind_invalid++;
+            } else {
+                u16 bit = (u16)(1u << index);
+                if (op->storage_cbuf_word_known && op->args[2] && op->args[3]) {
+                    state->storage_known[stage] &= (u16)~bit;
+                    state->storage[stage][index] = (NvnStorageBinding){
+                        .range = {op->args[2], op->args[3]}, .cbuf_word = op->storage_cbuf_word};
+                    state->storage_known[stage] |= bit;
+                } else state->storage_known[stage] = 0;
+            }
+        } else if (!strcmp(op->name, "nvnCommandBufferBindStorageBuffers")) {
+            u32 stage = (u32)op->args[0], first = (u32)op->args[1], count = (u32)op->args[2];
+            if (stage >= NVN_DRAW_SHADER_STAGES || first >= NVN_DRAW_STORAGE_SLOTS ||
+                count > NVN_DRAW_STORAGE_SLOTS - first) {
+                storage_bind_invalid++;
+                if (stage < NVN_DRAW_SHADER_STAGES) state->storage_known[stage] = 0;
+            } else {
+                /* The array call's macro offsets have not been paired with its semantic ranges. */
+                state->storage_known[stage] = 0;
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferDrawArrays") ||
                    !strcmp(op->name, "nvnCommandBufferDrawArraysInstanced") ||
                    !strcmp(op->name, "nvnCommandBufferDrawElements") ||
@@ -992,6 +1023,11 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             }
             memcpy(draw.uniform, state->uniform, sizeof draw.uniform);
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
+            memcpy(draw.storage[0], state->storage[0], sizeof draw.storage[0]);
+            memcpy(draw.storage[1], state->storage[1], sizeof draw.storage[1]);
+            draw.storage_known[0] = state->storage_known[0];
+            draw.storage_known[1] = state->storage_known[1];
+            storage_draw_snapshots += !!(draw.storage_known[0] | draw.storage_known[1]);
             memcpy(draw.texture, state->texture, sizeof draw.texture);
             memcpy(draw.texture_bound, state->texture_bound, sizeof draw.texture_bound);
             memcpy(draw.image, state->image, sizeof draw.image);
@@ -1693,10 +1729,11 @@ int nvn_record_wants(const char* name) {
     return kind(name) != OP_OTHER;
 }
 
-void nvn_record_before(const CPU* c, const char* name) {
+u64 nvn_record_before(const CPU* c, const char* name) {
+    u64 token = 0;
     if (!strcmp(name, "nvnCommandBufferEndRecording") || !strcmp(name, "nvnQueueFlush") ||
         !strcmp(name, "nvnQueuePresentTexture"))
-        return;
+        return 0;
     if (!strcmp(name, "nvnQueueSubmitCommands")) {
         u32 count = (u32)c->x[1];
         u64 ptr = c->x[2];
@@ -1709,7 +1746,7 @@ void nvn_record_before(const CPU* c, const char* name) {
                 queue->last_unmodeled_write = queue->next_sequence++;
             }
             pm_unlock(&lock);
-            return;
+            return 0;
         }
         pm_lock(&lock);
         ReplayQueue* queue = descriptor_replay ? replay_queue_slot(c->x[0]) : NULL;
@@ -1751,13 +1788,13 @@ void nvn_record_before(const CPU* c, const char* name) {
             queue->state = state;
         }
         pm_unlock(&lock);
-        return;
+        return 0;
     }
     pm_lock(&lock);
     NvnList* r = active_slot(c->x[0], 1);
     if (!r) {
         pm_unlock(&lock);
-        return;
+        return 0;
     }
     if (inlined_draw_replay && r->key == c->x[0] && r->opaque && r->command_cursor &&
         readable_range(c->x[0], 8)) {
@@ -1785,6 +1822,7 @@ void nvn_record_before(const CPU* c, const char* name) {
         if (r->key && r->key != UINT64_MAX && r->key != c->x[0]) active_collisions++;
         reset(r);
         r->key = c->x[0];
+        r->record_generation = next_record_generation++;
         began++;
     } else {
         int op_kind = kind(name);
@@ -1793,6 +1831,7 @@ void nvn_record_before(const CPU* c, const char* name) {
             if (r->key && r->key != UINT64_MAX) active_collisions++;
             reset(r);
             r->key = c->x[0];
+            r->record_generation = next_record_generation++;
             r->opaque = 1; /* command-buffer activity without a visible BeginRecording */
         }
         if (inlined_draw_replay && !strcmp(name, "nvnCommandBufferAddCommandMemory")) {
@@ -1848,8 +1887,10 @@ void nvn_record_before(const CPU* c, const char* name) {
                     }
                 }
                 if (r->count < r->capacity) {
-                    NvnOp* op = &r->ops[r->count++];
+                    u16 op_index = r->count++;
+                    NvnOp* op = &r->ops[op_index];
                     memset(op, 0, sizeof *op);
+                    token = ((u64)r->record_generation << 16) | ((u64)op_index + 1);
                     op->kind = op_kind;
                     op->name = name;
                     memcpy(op->args, &c->x[1], sizeof op->args);
@@ -1876,6 +1917,7 @@ void nvn_record_before(const CPU* c, const char* name) {
         }
     }
     pm_unlock(&lock);
+    return token;
 }
 
 typedef struct {
@@ -1967,13 +2009,33 @@ static void execute_nvn_batch(void* arg) {
     free(batch);
 }
 
-void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
+void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 record_token) {
     if (inlined_draw_replay && !strncmp(name, "nvnCommandBuffer", 16) &&
         strcmp(name, "nvnCommandBufferEndRecording") && readable_range(command_buffer, 8)) {
         pm_lock(&lock);
         NvnList* list = active_slot(command_buffer, 0);
         if (list && list->key == command_buffer && list->command_low < list->command_high) {
             u64 cursor = gr64(command_buffer);
+            if (record_token && !strcmp(name, "nvnCommandBufferBindStorageBuffer") &&
+                list->record_generation == (u32)(record_token >> 16) &&
+                (u16)record_token && (u16)record_token <= list->count &&
+                !strcmp(list->ops[(u16)record_token - 1].name, name) && list->command_cursor &&
+                cursor > list->command_cursor && cursor <= list->command_high &&
+                cursor - list->command_cursor <= 65536 && !((cursor - list->command_cursor) & 3) &&
+                readable_range(list->command_cursor, cursor - list->command_cursor)) {
+                NvnOp* op = &list->ops[(u16)record_token - 1];
+                NvnGapMacroData3 packet;
+                if (nvn_command_gap_macro_data3((const u32*)GP(list->command_cursor),
+                                                (u32)((cursor - list->command_cursor) / 4), 0xe20, &packet)) {
+                    u64 address = op->args[2], size = op->args[3];
+                    if (packet.words[0] == (u32)address && packet.words[1] == (u32)(address >> 32) &&
+                        size <= UINT32_MAX && packet.words[2] == (u32)size) {
+                        op->storage_cbuf_word = packet.macro_argument;
+                        op->storage_cbuf_word_known = 1;
+                        storage_bind_packets++;
+                    } else storage_bind_mismatches++;
+                }
+            }
             list->command_cursor = cursor >= list->command_low && cursor <= list->command_high ? cursor : 0;
             if (!strcmp(name, "nvnCommandBufferAddCommandMemory"))
                 list->command_prefix_known = list->command_cursor == list->command_low;
@@ -2132,6 +2194,10 @@ void nvn_record_report(void) {
             (unsigned long long)inlined_uniform_binds, (unsigned long long)inlined_uniform_unknown,
             (unsigned long long)inlined_vertex_binds, (unsigned long long)inlined_vertex_unknown,
             (unsigned long long)inlined_unparsed, (unsigned long long)cbuf_macro_packets);
+    if (inlined_draw_replay)
+        LOG("nvn-record: storage-bind-packets=%llu mismatches=%llu invalid=%llu draws-with-storage=%llu\n",
+            (unsigned long long)storage_bind_packets, (unsigned long long)storage_bind_mismatches,
+            (unsigned long long)storage_bind_invalid, (unsigned long long)storage_draw_snapshots);
     LOG("nvn-record: refs=%llu missing_refs=%llu opaque_refs=%llu truncated_refs=%llu\n", (unsigned long long)call_refs,
         (unsigned long long)call_ref_missing, (unsigned long long)call_ref_opaque, (unsigned long long)truncated_refs);
     LOG("nvn-record: calls=%llu active_collisions=%llu list_collisions=%llu truncated_lists=%llu dropped_ops=%llu "

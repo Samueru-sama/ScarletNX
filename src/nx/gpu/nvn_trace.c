@@ -90,7 +90,7 @@ static void proc_trace(CPU* c, u64 entry) {
     int sampler_descriptor_call = descriptors && nvn_sampler_descriptor_wants(p->name);
     NvnSamplerDescriptorCall sampler_descriptor;
     if (sampler_descriptor_call) nvn_sampler_descriptor_before(c, p->name, &sampler_descriptor);
-    if (record_call) nvn_record_before(c, p->name);
+    u64 record_token = record_call ? nvn_record_before(c, p->name) : 0;
     int submit = tracing && !strcmp(p->name, "nvnQueueSubmitCommands");
     int queue_op = tracing && (!strcmp(p->name, "nvnQueueFlush") || !strcmp(p->name, "nvnQueueFenceSync") ||
                                !strcmp(p->name, "nvnQueuePresentTexture") || !strcmp(p->name, "nvnQueueWaitSync"));
@@ -163,7 +163,7 @@ static void proc_trace(CPU* c, u64 entry) {
     if (program_call) nvn_program_after(c, p->name, &program);
     if (descriptor_call) nvn_descriptor_after(c, p->name, &descriptor);
     if (sampler_descriptor_call) nvn_sampler_descriptor_after(c, p->name, &sampler_descriptor);
-    if (record_call) nvn_record_after(c, p->name, command_buffer);
+    if (record_call) nvn_record_after(c, p->name, command_buffer, record_token);
     if (submit || queue_op)
         LOG("nvn-%s: GPFIFO submissions during call=%llu\n", p->name,
             (unsigned long long)(__atomic_load_n(&g_gpu_submits, __ATOMIC_RELAXED) - gpu_before));

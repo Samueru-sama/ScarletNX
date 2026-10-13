@@ -1915,11 +1915,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     return 1;
 }
 
-/* A failed direct draw may still have a bounded storage write set. CBUF 0 is initialized by
-   GPFIFO before NVN submits its first recorded list, so read the front end's binding rather
-   than the renderer's mutable global state. Require contiguous guest backing for every covered
-   image and writable buffer: a missing translation must leave the global unknown marker intact. */
-static int scope_storage_writes(const VkSh* vertex, const VkSh* fragment) {
+/* A failed direct draw may still have a bounded storage write set. Its NVN storage binds carry
+   the address and size, while a validated SDK macro packet places that binding in CBUF 0.
+   Require contiguous guest backing for every covered image and writable buffer: a missing
+   translation must leave the global unknown marker intact. */
+static int scope_storage_writes(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment) {
     typedef struct { u32 size; const u8* host; } StorageWrite;
     StorageWrite writes[32];
     u8 invalidate[NVN_IMAGE_SLOTS] = {0};
@@ -1929,20 +1929,24 @@ static int scope_storage_writes(const VkSh* vertex, const VkSh* fragment) {
         const ShaderInfo* si = &shaders[s]->si;
         if (!si->gbuf_wmask) continue;
         if (si->ngbuf < 0 || si->ngbuf > 16 || (si->gbuf_wmask >> si->ngbuf)) return 0;
-        u64 cb0 = 0;
-        u64 generation = 0;
-        u32 cb0_size = 0;
-        if (!gpu_unique_cb0_binding(s ? 4 : 0, &cb0, &cb0_size, &generation)) return 0;
         for (u32 i = 0; i < (u32)si->ngbuf; i++) {
             if (!(si->gbuf_wmask & (1u << i))) continue;
             u32 off = si->gbuf_cbuf_off[i];
-            if (off > cb0_size || cb0_size - off < 12 || cb0 > UINT64_MAX - off ||
-                !shader_bank_range_mapped(cb0 + off, 12) || gpu_mem_dirty_since(generation, cb0 + off, 12)) return 0;
-            u32 descriptor[3];
-            gmem_read(cb0 + off, descriptor, sizeof descriptor);
-            u64 address = ((u64)descriptor[1] << 32) | descriptor[0];
-            u32 size = descriptor[2] ? descriptor[2] : 16;
-            if (size > (16u << 20)) size = 16u << 20;
+            const NvnStorageBinding* selected = NULL;
+            for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+                if (!(command->storage_known[s] & (1u << slot))) continue;
+                const NvnStorageBinding* binding = &command->storage[s][slot];
+                u32 candidate = 0;
+                if (!gpu_unique_cb_offset_macro(0xe20, binding->cbuf_word, s ? 4 : 0, &candidate)) return 0;
+                if (candidate != off) continue;
+                if (selected) return 0;
+                selected = binding;
+            }
+            if (!selected) return 0;
+            u64 address = selected->range.address;
+            if (selected->range.size > (16u << 20)) return 0;
+            u32 size = (u32)selected->range.size;
+            if (!size) size = 16;
             size = (size + 3) & ~3u;
             if (!address || address > UINT64_MAX - size) return 0;
             const u8* host = gmem_ptr_untracked(address, size);
@@ -1989,7 +1993,7 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
         if ((command->color_target_mask & (1u << i)) && !shadow_range_known(&command->color_target[i])) return;
     if (command->depth_target_bound && !shadow_range_known(&command->depth_target)) return;
     int storage_writes = !!(vertex->si.gbuf_wmask || fragment->si.gbuf_wmask);
-    if (storage_writes && !scope_storage_writes(vertex, fragment)) return;
+    if (storage_writes && !scope_storage_writes(command, vertex, fragment)) return;
     for (u32 i = 0; i < 8; i++)
         if (command->color_target_mask & (1u << i)) shadow_invalidate_backing(&command->color_target[i]);
     if (command->depth_target_bound) shadow_invalidate_backing(&command->depth_target);

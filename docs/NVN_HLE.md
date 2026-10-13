@@ -918,17 +918,17 @@ fragment SSBO descriptor at bank-0 offset `0x550` named `0x623130000` for 58,848
 virtual address from the blocked depth target. A diagnostic that borrowed this emulated binding still did not restore
 the third pass; other unknown writes remain. The direct path must recover the initialization binding and any needed
 physical-alias proof without depending on emulated render state.
-The GPU command front end now retains the SDK's bank-0 address, size, and GPU write generation per graphics stage
-and channel, even when the emulated renderer is inactive. The shadow probe scopes a writable SSBO draw only if all
-bound channels agree, its descriptor remained untouched since that bind, and the writable range and every covered
-shadow image have contiguous guest backing. Any physical overlap invalidates the image. An initial TotK probe
-without the generation check appeared to scope 594 writable-storage draws in 20 seconds, but that borrowed a
-descriptor value from after the guest command list had executed. With the generation check, none of those draws
-qualifies: the 4 KiB page containing the descriptor was written after the original bind. Capturing the descriptor
-value at each guest draw is required before these unknown-write markers can safely be narrowed. TotK still issued
-1,200 direct shadow draws in an 18-second headless run. The first selected shadow/emulated target comparison differed
-in all 921,600 pixels; the probe has not established complete-pass or presented-frame parity. Direct draws do not yet
-receive bank-0 shader data.
+The GPU command front end retains the SDK's bank-0 address, size, and GPU write generation per graphics stage and
+channel, even when the emulated renderer is inactive. Reading a writable SSBO descriptor from bank 0 after list
+execution proved unsafe: its page changes after the original bind, so the write-generation guard rejected every
+draw. The direct path now snapshots the semantic `nvnCommandBufferBindStorageBuffer` address and size at recording
+time and pairs each call with its raw macro packet. Its side-effect-free MME probe requires exactly one untainted
+constant-buffer offset, a base and size matching the front end's stage binding, and no other constant-buffer writes.
+Replay carries validated bindings into each draw. An undecodable bind clears the stage's known storage state; a
+failed range or physical-alias proof still leaves the global unknown-write marker. This scopes writable SSBO effects
+without borrowing descriptor data from after GPFIFO execution. The first selected shadow/emulated target comparison
+still differed in all 921,600 pixels; complete-pass and presented-frame parity remain unproven. Direct draws do not
+yet receive bank-0 shader data.
 A temporary trace at the actual Maxwell draw boundary found the same fragment SSBO descriptor, address
 `0x623130000` and size 58,848 bytes, for the first 80 six-index draws to TotK color target `0x5187f0000`.
 GPU write generations advanced throughout that sample. The current write-generation guard is page-granular, so it
@@ -943,10 +943,10 @@ The actual GPFIFO entry mapped back to a recorded 80-byte NVN list span. That sp
 `0x500390550` (`0x154` words past CBUF 0), repeatedly during the workload. TotK's uploaded macro index 16 began
 at word `0xfe` in the captured MME program. A direct command-list decoder must retain the inherited CBUF binding,
 execute or validate the macro's offset effect, and attach the resulting descriptor words to draws in list order.
-The recorder now snapshots the syntactic `0xe20` plus three-data-word packet at EndRecording, before command memory
-can be reused. A 16-second TotK run captured 1,273 such packets while still issuing 900 direct shadow draws. This
-snapshot proves packet order and values only; interpreting the macro and associating its effect with each semantic
-draw remain required before the packet can drive rendering or narrow unknown-write markers.
+The recorder snapshots the syntactic `0xe20` plus three-data-word packet at EndRecording, before command memory can
+be reused. Per-call matching requires those three words to equal the semantic NVN address and size. A 16-second TotK
+run matched over 4,000 storage-bind packets with no mismatches and scoped at least 374 writable-storage draws among
+4,600 shadow draws. This establishes a bounded write set for those draws, not correct pixels or a visible HLE frame.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
