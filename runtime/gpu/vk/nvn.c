@@ -1065,7 +1065,7 @@ static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format
     return VK_NULL_HANDLE;
 }
 
-/* First executable NVN slice: an isolated one-stream draw with application constant buffers and sampled textures.
+/* First executable NVN slice: an isolated draw with application constant buffers and sampled textures.
    It renders to NVN-owned images for comparison; the SDK's GPFIFO still owns presentation. */
 static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment,
                               VkPipeline pipeline, const PipeKey* key) {
