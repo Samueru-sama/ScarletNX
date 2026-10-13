@@ -190,7 +190,7 @@ static void compose_cpu(const VicSlot* sl, u32 fmt, const VicPlane* oy, const Vi
 /* ------------------------------------------------------------ the job */
 /* slot s of config cs: its rectangles, color matrix and planes resolved, as Eden's Blend clips them. 1 when the
    slot composes anything */
-static int slot_prepare(const u32* r, const u8* cs, int s, u32 sw, u32 sh, VicSlot* out) {
+static int slot_prepare(const u32* r, const u8* cs, int s, u32 sw, u32 sh, u32 fmt, VicSlot* out) {
     const u8* sl = cs + 0x90 + s * 0xB0;
     u64 sc = rd64(sl, 0x40);
     u32 ifmt = (u32)(sc & 0x7F), iblk = (u32)((sc >> 11) & 15), ibh = (u32)((sc >> 15) & 15);
@@ -263,11 +263,13 @@ static int slot_prepare(const u32* r, const u8* cs, int s, u32 sw, u32 sh, VicSl
         LOG_LIMIT(4, "video: VIC slot %d rectangles are empty or outside the surfaces, slot skipped\n", s);
         return 0;
     }
-    /* 4:2:0 chroma covers pixel pairs: the rectangles start on even pixels */
-    sx0 &= ~1u;
-    sy0 &= ~1u;
-    dx0 &= ~1u;
-    dy0 &= ~1u;
+    /* NV12 chroma is written by pixel pairs; RGBA keeps odd starts, or an odd target would shift */
+    if (fmt == 0x44) {
+        sx0 &= ~1u;
+        sy0 &= ~1u;
+        dx0 &= ~1u;
+        dy0 &= ~1u;
+    }
     u64 cfg2 = rd64(sl, 0x10);
     out->alpha = (u32)((cfg2 >> 32) & 0x3FF);
     out->clamp_lo = (u32)(cfg2 & 0x3FF);
@@ -352,7 +354,7 @@ void vic_execute(const u32* r) {
     /* the slots in order, a later one over an earlier one (no blending) */
     int any = 0;
     for (int s = 0; s < VIC_NUM_SLOTS; s++)
-        if (rd64(cs, 0x90 + s * 0xB0) & 1) any |= slot_prepare(r, cs, s, sw, sh, &job.slots[s]);
+        if (rd64(cs, 0x90 + s * 0xB0) & 1) any |= slot_prepare(r, cs, s, sw, sh, fmt, &job.slots[s]);
     if (!any) {
         LOG_LIMIT(4, "video: VIC job with no slot it could compose\n");
         return;
