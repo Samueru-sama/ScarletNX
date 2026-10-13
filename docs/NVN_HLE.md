@@ -1216,6 +1216,15 @@ path now uses that pair only when the candidate has a mapped, valid Vertex B SPH
 matched Maxwell's hash, and the compared 1280×720 target was byte-exact: 0/921,600 differing pixels and
 0/3,686,400 differing bytes. This diagnostic verifies one intermediate chain, not a presented HLE frame.
 
+The next Catherine submission exposed a separate provenance gap. Two observed `CopyBufferToTexture` uploads wrote
+bounded texture destinations, yet their markers invalidated every older shadow image. The recorder now carries
+those copy markers into GPU-thread replay, which scopes each write by physical backing and invalidates overlapping
+images and storage buffers even if direct upload is unsupported. The 640×360 and 320×180 producer targets in the
+next submission then compared byte-exactly, as did its 1280×720 producer. The later 1280×720 consumer remained
+different in 921,600/921,600 pixels, with only alpha differing (direct `ff`, Maxwell `00` in the sampled black frame).
+The cause of that later mismatch remains open; the exact producer comparisons do not establish presented-frame
+parity. `SNX_NVN_SHADOW_COMPARE_ADDRESS` selects an intermediate GPU address for these opt-in comparisons.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

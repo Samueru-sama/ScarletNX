@@ -765,6 +765,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 const NvnTextureViewSelection* view = copy->has_view ? &copy->view.selection : NULL;
                 if (nvn_texture_resolve_target(op->args[1], view, &target) == NVN_TARGET_RESOLVED) {
                     NvnCopyBufferTextureCommand packet = {.target = target,
+                                                          .unknown_marker = queue->last_unmodeled_write,
+                                                          .prior_unmodeled_write = prior_unmodeled_write,
                                                           .source = op->args[0],
                                                           .row_stride = state->copy_row_stride,
                                                           .image_stride = state->copy_image_stride,

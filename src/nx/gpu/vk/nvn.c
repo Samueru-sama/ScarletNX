@@ -736,7 +736,7 @@ static int shadow_blit_texture(const NvnCopyBufferTextureCommand* command) {
     return 1;
 }
 
-int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
+static int copy_buffer_texture_impl(const NvnCopyBufferTextureCommand* command) {
     const NvnTextureTarget* target = &command->target;
     if (command->scoped_texture_write) {
         if (!shadow_range_known(target)) return 0;
@@ -825,6 +825,9 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
                                 .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1},
                                 .imageExtent = {mip_width, mip_height, 1}};
     vkCmdCopyBufferToImage(cb, buffer, image->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    /* A full subresource upload replaces this view, but aliases and other mip levels can
+       retain stale provenance. Drop it before certifying the newly copied mip. */
+    shadow_invalidate_backing(target);
     image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     image->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     image->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -834,6 +837,19 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     image->last_batch = batch_serial;
     shadow_record_backing(image);
     return 1;
+}
+
+int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
+    if (!command->scoped_texture_write && shadow_range_known(&command->target)) {
+        /* Scope the guest copy before certifying its new image. This also invalidates physical
+           aliases and writable storage buffers when the direct upload is unsupported. */
+        NvnMemoryWriteCommand write = {.sequence = command->unknown_marker,
+                                       .prior_unmodeled_write = command->prior_unmodeled_write,
+                                       .address = command->target.gpu_address,
+                                       .size = command->target.storage_size};
+        vk_nvn_memory_write(&write);
+    }
+    return copy_buffer_texture_impl(command);
 }
 
 static VkImageView image_sample_view(NvnImage* image, VkFormat format, VkImageViewType type,
@@ -3024,8 +3040,15 @@ void vk_nvn_shadow_compare(void) {
     if (compared || !shadow_draw_stamp) return;
     const char* size_filter = getenv("SNX_NVN_SHADOW_COMPARE_SIZE");
     const char* format_filter = getenv("SNX_NVN_SHADOW_COMPARE_FORMAT");
+    const char* address_filter = getenv("SNX_NVN_SHADOW_COMPARE_ADDRESS");
     unsigned filter_width = 0, filter_height = 0;
     unsigned long filter_format = format_filter ? strtoul(format_filter, NULL, 0) : 0;
+    unsigned long long filter_address = 0;
+    if (address_filter) {
+        char* end = NULL;
+        filter_address = strtoull(address_filter, &end, 0);
+        if (!filter_address || !end || *end) return;
+    }
     if (size_filter && (sscanf(size_filter, "%ux%u", &filter_width, &filter_height) != 2 ||
                         !filter_width || !filter_height))
         return;
@@ -3034,6 +3057,7 @@ void vk_nvn_shadow_compare(void) {
         if (images[i].shadow_draw_stamp &&
             (!size_filter || (images[i].width == filter_width && images[i].height == filter_height)) &&
             (!format_filter || images[i].format == filter_format) &&
+            (!address_filter || images[i].address == filter_address) &&
             (!shadow || images[i].shadow_draw_stamp > shadow->shadow_draw_stamp))
             shadow = &images[i];
     if (!shadow || !shadow->transfer_src || shadow->levels != 1 || shadow->layers != 1 ||
