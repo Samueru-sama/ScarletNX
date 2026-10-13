@@ -45,6 +45,16 @@ int main(void) {
     assert(methods.methods[2] == 0x8e2 && methods.values[2] == 0x22ad0000);
     assert(methods.methods[3] == 0x904 && methods.values[3] == 0x31);
     assert(methods.methods[4] == 0x8e3 && methods.values[4] == 1);
+    const u32 binding_packets[] = {0x200308e0, 0x100, 6, 0x22ad0000,
+                                   0x60010904, 0x31, 0x60010924, 0x41};
+    assert(nvn_command_gap_buffer_bindings_only(binding_packets, 8));
+    assert(!nvn_command_gap_buffer_bindings_only(state_packets, 7)); /* 0x8e3 is not classified. */
+    assert(!nvn_command_gap_buffer_bindings_only(packet, 12)); /* Indexed draw writes attachments. */
+    const u32 clear_packet[] = {0x60010674, 1};
+    const u32 other_subchannel[] = {0x60012904, 0x31};
+    assert(!nvn_command_gap_buffer_bindings_only(clear_packet, 2));
+    assert(!nvn_command_gap_buffer_bindings_only(other_subchannel, 2));
+    assert(!nvn_command_gap_buffer_bindings_only(binding_packets, 7));
 
     u32 altered[12];
     memcpy(altered, packet, sizeof altered);

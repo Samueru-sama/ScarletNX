@@ -102,6 +102,8 @@ typedef struct {
     NvnOp* ops;
     u16 count, capacity;
     u8 truncated, opaque, implicit_counted;
+    u16 command_memory_count;
+    u8 command_prefix_known, command_gaps_safe, command_tail_known;
 } NvnList;
 #define ACTIVE_SLOTS 8192
 #define LIST_SLOTS   32768
@@ -186,6 +188,7 @@ static int shader_materialize;
 static int pipeline_prepare;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
+static u64 replay_complete_opaque;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
 static u64 replay_missing_zero_handle, replay_missing_nonzero_handle;
 static u64 replay_sampler_resolved, replay_sampler_missing_pool, replay_sampler_missing_descriptor,
@@ -408,6 +411,21 @@ static NvnTargetResult replay_target(u64 texture, const NvnTextureViewSelection*
     return NVN_TARGET_RESOLVED;
 }
 
+/* Visible calls have their own write markers. An opaque list needs an additional marker only when its hidden
+   command-memory span may contain writes or when calls preceded the observed command-memory allocation. */
+static int list_command_memory_complete(const NvnList* list) {
+    if (!list->opaque || list->truncated || list->command_memory_count != 1 ||
+        !list->command_prefix_known || !list->command_gaps_safe || !list->command_tail_known || !list->count)
+        return 0;
+    int saw_command_memory = 0;
+    for (u32 i = 0; i < list->count; i++) {
+        if (list->ops[i].name && !strcmp(list->ops[i].name, "nvnCommandBufferAddCommandMemory"))
+            saw_command_memory = 1;
+        else if (!saw_command_memory && list->ops[i].kind != OP_MEMORY) return 0;
+    }
+    return 1;
+}
+
 /* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
 static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
@@ -429,7 +447,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     }
     replay_lists++;
     if (list->opaque) replay_opaque++;
-    if (queue && (list->opaque || list->truncated)) {
+    int complete_opaque = list_command_memory_complete(list);
+    replay_complete_opaque += complete_opaque;
+    if (queue && (list->truncated || (list->opaque && !complete_opaque))) {
         queue->observed_clear_only = 0;
         queue->last_unmodeled_write = queue->next_sequence++;
     }
@@ -441,8 +461,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         if (queue &&
             (op->kind == OP_CLEAR ||
              (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) ||
-             op->kind == OP_DISPATCH || op->kind == OP_OTHER))
+             op->kind == OP_DISPATCH || op->kind == OP_OTHER)) {
             queue->last_unmodeled_write = queue->next_sequence++;
+        }
         if (queue && op->kind != OP_MEMORY && strcmp(op->name, "nvnCommandBufferSetRenderTargets") &&
             strcmp(op->name, "nvnCommandBufferClearColor") && strcmp(op->name, "nvnCommandBufferClearTexture") &&
             strcmp(op->name, "nvnCommandBufferClearDepthStencil") &&
@@ -1696,8 +1717,10 @@ void nvn_record_before(const CPU* c, const char* name) {
         ReplayState state = queue && queue->key ? queue->state : (ReplayState){0};
         if (descriptor_replay && !queue) replay_queue_full++;
         if (queue) {
-            /* Guest CPU writes between SubmitCommands calls are not represented by NVN packets. */
-            queue->last_unmodeled_write = queue->next_sequence++;
+            /* Cross-batch shadow images check CPU and GPU backing-memory writes before reuse. Without that
+               opt-in check, a submit boundary remains an unknown write to every NVN image. */
+            const char* cross = getenv("SNX_NVN_CROSS_BATCH");
+            if (!cross || strcmp(cross, "1")) queue->last_unmodeled_write = queue->next_sequence++;
             queue->pending_roots += count;
         }
         for (u32 i = 0; i < count; i++) {
@@ -1738,6 +1761,9 @@ void nvn_record_before(const CPU* c, const char* name) {
         u64 cursor = gr64(c->x[0]);
         if (r->command_cursor >= r->command_low && cursor <= r->command_high && cursor > r->command_cursor) {
             u64 gap_size = cursor - r->command_cursor;
+            if (gap_size > 65536 || (gap_size & 3) || !readable_range(r->command_cursor, gap_size) ||
+                !nvn_command_gap_buffer_bindings_only((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
+                r->command_gaps_safe = 0;
             const char* state_opt = getenv("SNX_NVN_INLINED_STATE");
             if ((!state_opt || strcmp(state_opt, "0")) && gap_size <= 65536 && !(gap_size & 3) &&
                 readable_range(r->command_cursor, gap_size) &&
@@ -1750,7 +1776,7 @@ void nvn_record_before(const CPU* c, const char* name) {
                 append_inlined_draw(r, args);
             else
                 inlined_unparsed++;
-        }
+        } else if (cursor != r->command_cursor) r->command_gaps_safe = 0;
     }
     if (!strcmp(name, "nvnCommandBufferBeginRecording")) {
         if (r->key && r->key != UINT64_MAX && r->key != c->x[0]) active_collisions++;
@@ -1767,6 +1793,7 @@ void nvn_record_before(const CPU* c, const char* name) {
             r->opaque = 1; /* command-buffer activity without a visible BeginRecording */
         }
         if (inlined_draw_replay && !strcmp(name, "nvnCommandBufferAddCommandMemory")) {
+            r->command_memory_count++;
             NvnPoolSnapshot pool = {0};
             u64 offset = c->x[2], size = c->x[3];
             if (nvn_pool_snapshot(c->x[1], &pool) && pool.storage && offset <= pool.size &&
@@ -1774,6 +1801,7 @@ void nvn_record_before(const CPU* c, const char* name) {
                 r->command_low = pool.storage + offset;
                 r->command_high = r->command_low + size;
                 r->command_cursor = 0;
+                r->command_gaps_safe = 1;
             }
         }
         if (r->opaque && !r->implicit_counted && op_kind != OP_MEMORY) {
@@ -1944,6 +1972,8 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
         if (list && list->key == command_buffer && list->command_low < list->command_high) {
             u64 cursor = gr64(command_buffer);
             list->command_cursor = cursor >= list->command_low && cursor <= list->command_high ? cursor : 0;
+            if (!strcmp(name, "nvnCommandBufferAddCommandMemory"))
+                list->command_prefix_known = list->command_cursor == list->command_low;
         }
         pm_unlock(&lock);
     }
@@ -2040,6 +2070,16 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer) {
     }
     reset(list);
     if (r) {
+        if (inlined_draw_replay && r->command_cursor && readable_range(command_buffer, 8)) {
+            u64 end = gr64(command_buffer);
+            if (end == r->command_cursor)
+                r->command_tail_known = 1;
+            else if (end > r->command_cursor && end <= r->command_high &&
+                     end - r->command_cursor <= 65536 && !((end - r->command_cursor) & 3) &&
+                     readable_range(r->command_cursor, end - r->command_cursor))
+                r->command_tail_known = nvn_command_gap_buffer_bindings_only(
+                    (const u32*)GP(r->command_cursor), (u32)((end - r->command_cursor) / 4));
+        }
         *list = *r;
         for (u32 j = 0; j < list->count; j++) ended_ops[list->ops[j].kind]++;
         if (list->opaque) ended_opaque++;
@@ -2112,8 +2152,9 @@ void nvn_record_report(void) {
         LOG("nvn-target-replay: stale-pool=%llu no-address=%llu bad-view=%llu\n",
             (unsigned long long)replay_target_stale_pool, (unsigned long long)replay_target_no_address,
             (unsigned long long)replay_target_bad_view);
-        LOG("nvn-replay: roots=%llu lists=%llu opaque=%llu missing-lists=%llu truncated-refs=%llu depth-limit=%llu queue-full=%llu\n",
+        LOG("nvn-replay: roots=%llu lists=%llu opaque=%llu complete-opaque=%llu missing-lists=%llu truncated-refs=%llu depth-limit=%llu queue-full=%llu\n",
             (unsigned long long)replay_roots, (unsigned long long)replay_lists, (unsigned long long)replay_opaque,
+            (unsigned long long)replay_complete_opaque,
             (unsigned long long)replay_missing_lists, (unsigned long long)replay_truncated_refs,
             (unsigned long long)replay_depth_limit, (unsigned long long)replay_queue_full);
         LOG("nvn-replay: binds=%llu resolved=%llu missing-pool=%llu missing-descriptor=%llu stale=%llu\n",

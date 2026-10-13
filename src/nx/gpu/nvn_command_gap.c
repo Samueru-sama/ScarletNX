@@ -31,6 +31,18 @@ int nvn_command_gap_methods(const u32* words, u32 length, NvnGapMethodVisitor vi
     return 1;
 }
 
+static void check_buffer_binding(u32 subchannel, u32 method, u32 value, void* context) {
+    (void)value;
+    int* valid = context;
+    if (subchannel || !((method >= 0x8e0 && method <= 0x8e2) || method == 0x904 || method == 0x924))
+        *valid = 0;
+}
+
+int nvn_command_gap_buffer_bindings_only(const u32* words, u32 length) {
+    int valid = 1;
+    return nvn_command_gap_methods(words, length, check_buffer_binding, &valid) && valid;
+}
+
 int nvn_command_gap_indexed_draw(const u32* words, u32 length, NvnGapIndexedDraw* out) {
     if (!words || !out || length < 6 || length > 16384) return 0;
     for (u32 i = 0; i < length;) {

@@ -901,6 +901,23 @@ draw. The next implementation task is to track depth and color writes by resourc
 which unmodeled writes can actually alias an attachment; simply bypassing the depth check would let stale shadow
 contents pass as valid.
 
+The recorder now proves when an opaque list has no hidden command-memory writes: its single observed command-memory
+range must begin at the recorded cursor, every inter-call gap and the EndRecording tail must contain only validated
+Maxwell constant-buffer setup/bind methods, and no operations may precede that allocation. Visible draws and clears
+retain their own write markers. In a 27-second TotK boot, 2,259 of 2,757 opaque replayed lists met this proof.
+`SNX_NVN_CROSS_BATCH=1` is an opt-in shadow probe that carries image coverage across replay batches, checking tracked
+guest CPU and GPU writes to the backing memory before reuse. It also lets an unsupported draw with read-only SSBOs
+invalidate only its known attachments. This still does not restore the third TotK pass: an earlier six-index draw
+uses a writable fragment SSBO whose address the direct recorder cannot yet prove disjoint from the reused depth
+image, so its global unknown-write marker remains. Resolving the SDK-generated constant-buffer data that names
+that SSBO, or modeling its write range directly, is the next required step.
+An instrumented TotK run scanned 198,135 complete SDK-call command spans plus the inter-call gaps and found no raw
+binds for Maxwell CBUF banks 0–2. The internal bank binding may come from MME expansion or earlier queue state;
+that source still needs to be established from the command stream before using it for direct draw descriptors.
+An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
+direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
+an image-parity result.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

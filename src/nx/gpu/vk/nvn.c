@@ -28,6 +28,9 @@ typedef struct {
     u32 storage_size;
     u64 last_batch;
     u64 shadow_draw_stamp;
+    u64 guest_gpu_generation, guest_checked_batch;
+    u32 guest_write_clock;
+    const u8* guest_host;
     VkImage image;
     VkImageView sampled_view, base_view, sampled_view_alt, base_view_alt;
     VkFormat alt_format;
@@ -49,6 +52,15 @@ static u64 batch_serial;
 static u64 shadow_draw_stamp;
 static u64 modeled_unknown_marker, modeled_unknown_prior;
 
+static int cross_batch_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* opt = getenv("SNX_NVN_CROSS_BATCH");
+        enabled = opt && !strcmp(opt, "1");
+    }
+    return enabled;
+}
+
 static u64 effective_unknown_write(u64 marker) {
     return marker == modeled_unknown_marker ? modeled_unknown_prior : marker;
 }
@@ -59,8 +71,40 @@ static void mark_modeled_unknown(u64 marker, u64 prior) {
     modeled_unknown_marker = marker;
 }
 
+static void shadow_record_backing(NvnImage* image) {
+    if (!cross_batch_enabled()) return;
+    image->guest_host = gmem_ptr_untracked(image->address, image->storage_size);
+    image->guest_checked_batch = batch_serial;
+    if (!image->guest_host || vk_written_since(image->guest_host, image->storage_size, vk_ww_now()) < 0) {
+        image->guest_host = NULL;
+        return;
+    }
+    image->guest_write_clock = vk_ww_now();
+    image->guest_gpu_generation = gpu_mem_generation();
+}
+
+static void shadow_check_backing(NvnImage* image) {
+    if (!cross_batch_enabled()) return;
+    if (image->guest_checked_batch == batch_serial) return;
+    image->guest_checked_batch = batch_serial;
+    const u8* host = gmem_ptr_untracked(image->address, image->storage_size);
+    int gpu_dirty = image->guest_host && host == image->guest_host &&
+                    gpu_mem_dirty_since(image->guest_gpu_generation, image->address, image->storage_size);
+    int cpu_dirty = image->guest_host && host == image->guest_host && !gpu_dirty &&
+                    vk_written_since(host, image->storage_size, image->guest_write_clock) != 0;
+    if (!image->guest_host || host != image->guest_host || gpu_dirty || cpu_dirty) {
+        memset(image->color_layers, 0, sizeof image->color_layers);
+        memset(image->depth_layers, 0, sizeof image->depth_layers);
+        image->guest_host = NULL;
+        return;
+    }
+    image->guest_write_clock = vk_ww_now();
+    image->guest_gpu_generation = gpu_mem_generation();
+}
+
 void vk_nvn_batch_begin(void) {
     batch_serial++;
+    if (cross_batch_enabled()) return;
     modeled_unknown_marker = modeled_unknown_prior = 0;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         memset(images[i].color_layers, 0, sizeof images[i].color_layers);
@@ -152,7 +196,11 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
             image->pool_generation == target->pool_generation && image->width == target->width &&
             image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
             image->target == target->storage_target && image->format == target->storage_format) {
-            if (target->storage_size > image->storage_size) image->storage_size = target->storage_size;
+            if (target->storage_size > image->storage_size) {
+                image->storage_size = target->storage_size;
+                image->guest_host = NULL;
+            }
+            shadow_check_backing(image);
             return image;
         }
     }
@@ -527,6 +575,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     }
     image->last_batch = batch_serial;
     mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
+    shadow_record_backing(image);
     return 1;
 }
 
@@ -545,6 +594,7 @@ static void shadow_invalidate_backing(const NvnTextureTarget* target) {
             continue;
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
+        image->guest_host = NULL;
     }
 }
 
@@ -632,6 +682,7 @@ static int shadow_blit_texture(const NvnCopyBufferTextureCommand* command) {
         else
             destination->color_layers[0] |= 1;
         destination->subresource_sequence[0][0] = command->sequence;
+        shadow_record_backing(destination);
     }
     source->last_batch = destination->last_batch = batch_serial;
     return 1;
@@ -732,6 +783,7 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     image->subresource_sequence[mip][0] = command->sequence;
     image->color_layers[mip] |= 1;
     image->last_batch = batch_serial;
+    shadow_record_backing(image);
     return 1;
 }
 
@@ -1838,6 +1890,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         if (preserved) {
             color->color_layers[0] |= 1ull << color_layer;
             color->subresource_sequence[0][color_layer] = command->sequence;
+            if (!color->guest_host) shadow_record_backing(color);
         } else {
             color->color_layers[0] &= ~(1ull << color_layer);
         }
@@ -1866,9 +1919,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
    unrelated shadow images across that draw, but discard every target it could have modified. */
 static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment) {
     const char* shadow = getenv("SNX_NVN_SHADOW_DRAW");
+    /* Read-only SSBOs cannot add writes beyond the captured attachments. */
     if (!shadow || strcmp(shadow, "1") || !vertex || !fragment || !command->target_complete ||
         (!command->color_target_mask && !command->depth_target_bound) ||
-        vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf ||
+        vertex->si.nimg || fragment->si.nimg ||
         vertex->si.gbuf_wmask || fragment->si.gbuf_wmask)
         return;
     for (u32 i = 0; i < 8; i++)
