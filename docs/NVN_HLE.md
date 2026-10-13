@@ -1150,6 +1150,12 @@ The direct shader's coordinate uniforms contained the expected 1/64 X/Y scales a
 The two paths used the same vertex and index addresses, strides, offsets, and formats for both
 draws. At a later image-comparison point, their 1280×720 feedback target at 0x511cc0000 was
 byte-exact; that result does not yet prove its contents matched when the writer sampled it.
+The second writer's vertex shader also samples a 640×360 R32F image with a nonidentity TIC
+swizzle. A cached semantic view now carries that component mapping, but the 239-byte dispatch
+input difference remains. Its fragment shader samples a separate 320×180, two-level image;
+at this draw, only mip 0 has direct-image coverage, so that source still uses the Maxwell
+texture path. The earlier unknown-write rejection seen while preparing the emulated texture
+was not the direct draw's reason for falling back.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped

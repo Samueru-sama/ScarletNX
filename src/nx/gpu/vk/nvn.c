@@ -17,6 +17,7 @@
 
 #define NVN_IMAGE_SLOTS  128
 #define NVN_IMAGE_BUDGET (256ull << 20)
+#define NVN_SAMPLE_VIEW_SLOTS 8
 #define NVN_SHADOW_STORAGE_SLOTS 128
 #define NVN_SHADOW_STORAGE_BUDGET (64ull << 20)
 typedef struct {
@@ -24,6 +25,12 @@ typedef struct {
     VkFormat format;
     u16 mip, layer;
 } NvnAttachmentView;
+typedef struct {
+    VkImageView view;
+    VkFormat format;
+    u32 swizzle;
+    u16 levels;
+} NvnSampleView;
 typedef struct {
     u64 texture, pool, address, texture_generation, pool_generation;
     u64 subresource_sequence[16][64];
@@ -38,6 +45,8 @@ typedef struct {
     VkImage image;
     VkImageView sampled_view, base_view, sampled_view_alt, base_view_alt;
     VkFormat alt_format;
+    NvnSampleView sample_views[NVN_SAMPLE_VIEW_SLOTS];
+    u8 next_sample_view;
     NvnAttachmentView attachments[16];
     NvnAttachmentView storage_views[16];
     VmaAllocation allocation;
@@ -145,6 +154,9 @@ static NvnImage* evict_old_image(void) {
     for (u32 i = 0; i < 16; i++)
         if (oldest->storage_views[i].view)
             vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->storage_views[i].view, VK_NULL_HANDLE);
+    for (u32 i = 0; i < NVN_SAMPLE_VIEW_SLOTS; i++)
+        if (oldest->sample_views[i].view)
+            vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->sample_views[i].view, VK_NULL_HANDLE);
     if (oldest->sampled_view_alt || oldest->base_view_alt)
         vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->sampled_view_alt, oldest->base_view_alt);
     vk_defer_image(oldest->image, oldest->allocation, oldest->sampled_view, oldest->base_view);
@@ -806,6 +818,50 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     return 1;
 }
 
+static VkImageView image_sample_view(NvnImage* image, VkFormat format, VkImageViewType type,
+                                     u32 levels, const u32 tic[8], const VkFmt* source) {
+    static const VkComponentSwizzle swizzle[8] = {
+        VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
+        VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE};
+    VkComponentSwizzle components[4] = {
+        swizzle[(tic[0] >> 19) & 7], swizzle[(tic[0] >> 22) & 7],
+        swizzle[(tic[0] >> 25) & 7], swizzle[(tic[0] >> 28) & 7]};
+    if (source->bgra)
+        for (u32 i = 0; i < 4; i++)
+            components[i] = components[i] == VK_COMPONENT_SWIZZLE_R ? VK_COMPONENT_SWIZZLE_B
+                            : components[i] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
+                                                                        : components[i];
+    if (source->depth) {
+        components[0] = components[1] = components[2] = VK_COMPONENT_SWIZZLE_R;
+        components[3] = VK_COMPONENT_SWIZZLE_ONE;
+    }
+    u32 key = (u32)components[0] | (u32)components[1] << 4 |
+              (u32)components[2] << 8 | (u32)components[3] << 12;
+    if (key == ((u32)VK_COMPONENT_SWIZZLE_R | (u32)VK_COMPONENT_SWIZZLE_G << 4 |
+                (u32)VK_COMPONENT_SWIZZLE_B << 8 | (u32)VK_COMPONENT_SWIZZLE_A << 12))
+        return levels == 1 && image->levels > 1
+                   ? (format == image->alt_format ? image->base_view_alt : image->base_view)
+                   : (format == image->alt_format ? image->sampled_view_alt : image->sampled_view);
+    for (u32 i = 0; i < NVN_SAMPLE_VIEW_SLOTS; i++) {
+        const NvnSampleView* cached = &image->sample_views[i];
+        if (cached->view && cached->format == format && cached->levels == levels && cached->swizzle == key)
+            return cached->view;
+    }
+    VkImageViewCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                  .image = image->image, .viewType = type, .format = format,
+                                  .components = {components[0], components[1], components[2], components[3]},
+                                  .subresourceRange = {source->depth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                     : VK_IMAGE_ASPECT_COLOR_BIT,
+                                                       0, levels, 0, image->layers}};
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(g_vk.dev, &info, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
+    NvnSampleView* slot = &image->sample_views[image->next_sample_view];
+    image->next_sample_view = (image->next_sample_view + 1) % NVN_SAMPLE_VIEW_SLOTS;
+    if (slot->view) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, slot->view, VK_NULL_HANDLE);
+    *slot = (NvnSampleView){.view = view, .format = format, .swizzle = key, .levels = levels};
+    return view;
+}
+
 static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descriptor, u64 last_unmodeled_write) {
     u64 address;
     u32 width, height, layers, levels;
@@ -827,10 +883,10 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
         VkFmt source = nvn_format(image->format);
         int alt = source.vk != format;
         if (alt && image->alt_format != format) continue;
-        VkImageView sampled_view = levels == 1 && image->levels > 1
-                                       ? (alt ? image->base_view_alt : image->base_view)
-                                       : (alt ? image->sampled_view_alt : image->sampled_view);
-        if (!sampled_view || (levels != image->levels && levels != 1)) continue;
+        if ((levels != image->levels && levels != 1) ||
+            !(levels == 1 && image->levels > 1
+                  ? (alt ? image->base_view_alt : image->base_view)
+                  : (alt ? image->sampled_view_alt : image->sampled_view))) continue;
         int complete = 1;
         for (u32 level = 0; level < levels; level++)
             for (u32 layer = 0; layer < layers; layer++) {
@@ -839,6 +895,8 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
                     complete = 0;
             }
         if (!complete) continue;
+        VkImageView sampled_view = image_sample_view(image, format, view_type, levels, descriptor->tic, &source);
+        if (!sampled_view) continue;
         VkCommandBuffer cb = vk_cmd();
         vk_barrier(cb, image->image, vk_aspect(&source), image->stage, image->access, image->layout,
                    VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -2273,15 +2331,6 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             if (semantic_shape)
                 for (int k = 0; k < fragment->si.nimg; k++)
                     if (sampled_address == storage_images[k]->address) return 0;
-            /* Semantic views currently have identity component mapping. Other swizzles require views. */
-            int identity_swizzle = ((descriptor->tic[0] >> 19) & 7) == 2 &&
-                                   ((descriptor->tic[0] >> 22) & 7) == 3 &&
-                                   ((descriptor->tic[0] >> 25) & 7) == 4 &&
-                                   ((descriptor->tic[0] >> 28) & 7) == 5;
-            /* G24R8's G component is depth; a depth-aspect Vulkan view exposes that as R,
-               with the same zero/one values for its other components. */
-            int depth_swizzle = descriptor->tic[0] == 0x60124a0eu &&
-                                sampled_format == nvn_format(0x35).vk;
             if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0) {
                 if (color_feedback && sampled_width == command->color_target[color_feedback_index].width &&
                     sampled_height == command->color_target[color_feedback_index].height &&
@@ -2302,7 +2351,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                                                          descriptor->tic);
                     view = depth_feedback_view;
                 }
-                else if (!color_feedback && !depth_feedback && (identity_swizzle || depth_swizzle))
+                else if (!color_feedback && !depth_feedback)
                     view = image_view_from_semantic(descriptor, effective_unknown);
             }
             if ((color_feedback || depth_feedback) && !view) return 0;
