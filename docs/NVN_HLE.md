@@ -640,7 +640,9 @@ current semantic replay staged no draw, clear, or buffer-to-texture copy targeti
 so its producer may be an unmodeled operation or an address alias and needs to be traced at submission. A Maxwell
 surface probe confirmed this is live render output: its write generation advanced from 2 to 9 over the first eight
 presented frames while its last guest-memory generation remained 1. Importing those pixels would reintroduce a
-dependency on GPU emulation.
+dependency on GPU emulation. A broader semantic target trace also found no staged draw, clear, or copy target within
+1 MiB of that surface address in the boot sample, making a small view-offset mismatch unlikely; the Maxwell draw
+that writes it must be associated with its originating NVN call or command list.
 Maxwell then uses two blend configurations on the target, including an indexed pass with a different source-alpha
 factor. Its sampled inputs still need ordered provenance checks, and diagnostic magenta initialization limits what
 the black-frame comparison can establish.
