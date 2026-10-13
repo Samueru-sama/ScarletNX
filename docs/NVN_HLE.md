@@ -1021,6 +1021,16 @@ An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batc
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
 
+The TotK graphics path now snapshots application uniform slots when replaying each draw, executes observed
+multi-target color passes, and accepts single-layer array attachments at the selected mip level. The render area is
+bounded by the selected color and depth mip extents, so a 160×90 depth attachment can accompany a 320×180 backing
+image rendered at mip 1. In a headless probe, all six consecutive passes that write TotK's 320×180 array texture
+issued through the direct path, and both sampled mip levels retained coverage. The later consumer still rejects
+that semantic image: its global unmodeled-write sequence is newer than the two image writes, despite the image's
+coverage surviving. Resolve the intervening write's resource scope, then compare the 58,848-byte SSBO against
+Maxwell again. Before these passes executed, the direct second graphics writer set only one of the 240 flags that
+Maxwell set. This remains a diagnostic shadow path; it does not yet present an HLE-rendered frame.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command

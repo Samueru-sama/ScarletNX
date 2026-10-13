@@ -1093,6 +1093,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             }
             memcpy(draw.uniform, state->uniform, sizeof draw.uniform);
             memcpy(draw.uniform_bound, state->uniform_bound, sizeof draw.uniform_bound);
+            if (draw_prepare && queue)
+                for (u32 stage = 0; stage < 2; stage++)
+                    for (u32 slot = 0; slot < NVN_DRAW_UNIFORM_SLOTS; slot++)
+                        if (draw.uniform_bound[stage] & (1u << slot))
+                            draw.uniform_seed[stage][slot] =
+                                replay_storage_seed(queue, draw.uniform[stage][slot]);
             memcpy(draw.storage[0], state->storage[0], sizeof draw.storage[0]);
             memcpy(draw.storage[1], state->storage[1], sizeof draw.storage[1]);
             draw.storage_known[0] = state->storage_known[0];
