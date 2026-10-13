@@ -673,6 +673,8 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
             const Op* op = decode(c->w[i]);
             if (!op) {
                 c->si->unsupported++;
+                if (!c->si->first_unsupported[0]) /* the log names it: an opcode the decoder doesn't have */
+                    snprintf(c->si->first_unsupported, 64, "unknown %016llx", (unsigned long long)c->w[i]);
                 emitl(c, "/* unknown %016llx */", (unsigned long long)c->w[i]);
                 continue;
             }
@@ -746,6 +748,8 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
         const Op* op = decode(c->w[i]);
         if (!op) {
             c->si->unsupported++;
+            if (!c->si->first_unsupported[0]) /* the log names it: an opcode the decoder doesn't have */
+                snprintf(c->si->first_unsupported, 64, "unknown %016llx", (unsigned long long)c->w[i]);
             emitl(c, "/* unknown %016llx */", (unsigned long long)c->w[i]);
             continue;
         }

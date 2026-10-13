@@ -37,6 +37,13 @@ static void translate(const u64* insn, int n, ShaderInfo* si) {
 int main(void) {
     ShaderInfo si;
     {
+        /* an opcode the decoder doesn't have: the log line names it, as it names an untranslated known one */
+        const u64 p[] = {0xFFFFFFFFFFFFFFFFull};
+        translate(p, 1, &si);
+        check(si.unsupported == 1 && !strcmp(si.first_unsupported, "unknown ffffffffffffffff"),
+              "an unknown opcode is named");
+    }
+    {
         const u64 p[] = {0xEF9500007307FF00ull, 0xEED4200000070000ull}; /* LDC.64 R0, c[0x0][0x730]; LDG.E R0, [R0] */
         translate(p, 2, &si);
         check(!si.unsupported && si.ngbuf == 1 && si.gbuf_cbuf_off[0] == 0x730, "deko3d's LDC.64 then LDG");
