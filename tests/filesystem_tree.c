@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Synthetic integration tests. The Python runner creates and removes the sandbox. */
-#include "hle/fs_tree.h"
+#include "hle/filesystem/fs_tree.h"
 #include <stdlib.h>
 #include <sys/stat.h>
 #if defined(_WIN32)

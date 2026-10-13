@@ -2,12 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* Opt-in integration test: real renderer, no game data. Works with Mesa lavapipe and no display server. */
 #include "common.h"
-#include "core/main.h"
-#include "core/options.h"
+#include "runtime/main.h"
+#include "runtime/options.h"
 #include "gpu/renderer.h"
 #include "gpu/vk/vk.h"
-#include "kernel/mem.h"
-#include "platform/backend.h"
+#include "memory/mem.h"
+#include "runtime/platform/backend.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

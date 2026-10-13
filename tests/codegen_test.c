@@ -4,6 +4,7 @@
    supplied host Clang, then checks static and interpreted architectural results. */
 #include "a64.h"
 #include "codegen.h"
+#include "codegen_view.h"
 #include "module.h"
 #include <stdlib.h>
 #include <string.h>
@@ -98,7 +99,7 @@ static void analysis_and_module_test(const char* directory) {
     symbol = 20;
     module.functions = &symbol;
     module.function_count = 1;
-    check(!snx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze FDE and BL target");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze FDE and BL target");
     check(codegen.function_count == 2, "overlapping FDE discarded, BL function discovered");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && function->addresses == NULL && function->count == 11, "FDE uses a compact address range");
@@ -111,7 +112,7 @@ static void analysis_and_module_test(const char* directory) {
     check(snx_codegen_function(&codegen, SNX_CODE_BASE + 48) != NULL, "recursive BL target exists");
     snx_codegen_free(&codegen);
     interior = SNX_CODE_BASE + 20;
-    check(!snx_codegen_analyze(&codegen, &program, &interior, 1, 1), "analyze explicit interior hint");
+    check(!snx_nx_codegen_analyze(&codegen, &program, &interior, 1, 1), "analyze explicit interior hint");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && has_leader(function, interior), "execution hint adds interior dispatch entry");
     snx_codegen_free(&codegen);
@@ -190,7 +191,7 @@ static void large_range_test(void) {
     range.size = size;
     module.fde = &range;
     module.fde_count = 1;
-    check(!snx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze a large FDE");
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze a large FDE");
     check(codegen.function_count == 1 && codegen.functions[0].addresses == NULL &&
               codegen.functions[0].count == size / 4 && codegen.functions[0].leader_count == 1,
           "large FDE stays a range, without one address allocation per instruction");
@@ -281,7 +282,7 @@ static void semantics_test(const char* compiler, const char* repo, const char* d
 #else
     binary = snx_path_join(directory, "semantics");
 #endif
-    include = snx_path_join(repo, "runtime/abi");
+    include = snx_path_join(repo, "src/common/cpu/aarch64");
     output = NULL;
     file = snx_fopen(source, "wb");
     check(file != NULL, "open ISA semantics fixture");

@@ -24,17 +24,17 @@ def main():
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     flags = ['-O1', '-g', '-ffunction-sections', '-fdata-sections', '-DVK_NO_PROTOTYPES']
-    for path in (repo / 'runtime', args.vulkan_include, args.volk, args.vma_include):
+    for path in (repo / 'src/nx', repo / 'src/common', args.vulkan_include, args.volk, args.vma_include):
         flags += ['-I', str(path.resolve())]
     with tempfile.TemporaryDirectory(prefix='snx-astc-') as temp:
         out = Path(temp)
         sources = [
             repo / 'tests/astc_vulkan.c',
-            repo / 'runtime/gpu/texture/astc.c',
-            repo / 'runtime/gpu/vk/astc.c',
-            repo / 'runtime/gpu/vk/cmd.c',
+            repo / 'src/nx/gpu/texture/astc.c',
+            repo / 'src/nx/gpu/vk/astc.c',
+            repo / 'src/nx/gpu/vk/cmd.c',
             args.volk.resolve() / 'volk.c',
-            repo / 'runtime/gpu/vk/vma.cpp',
+            repo / 'src/nx/gpu/vk/vma.cpp',
         ]
         objects = []
         for i, source in enumerate(sources):

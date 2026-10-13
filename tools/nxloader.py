@@ -4,7 +4,7 @@
 # This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE).
 """
 nxloader: NSO0/NRO0, MOD0, dynamic section, symbols, relocs, .eh_frame.
-Optional diagnostic loader for symbols.py/disasm.py. Production uses scarletnx/loader.c.
+Optional diagnostic loader for symbols.py/disasm.py. Production uses src/nx/loader/loader.c.
 Load addresses are decided here and baked into the generated code, the C runtime
 loads modules in the same order.
 """

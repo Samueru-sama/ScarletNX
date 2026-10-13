@@ -1,55 +1,93 @@
 # Architecture
 
-ScarletNX AOT: AArch64 -> C -> native module; HOS HLE, Maxwell execution, host1x videodec.
+ScarletNX AOT: AArch64 -> C -> native module, shared by Horizon HLE/Maxwell
+and CPU-only Linux AArch64 ABI runtimes.
 Source map: [CLAUDE.md](../CLAUDE.md).
+
+## Runtime boundaries
+
+| Source / CMake target | Ownership |
+| --- | --- |
+| `src/common/` / `scarletnx-common` | AArch64 CPU state, instruction semantics, code discovery/emission, native module execution, runtime callback interface, host utilities |
+| `src/nx/` / `scarletnx-nx` | Horizon SVC/kernel/services/filesystems, NSO/NRO loading, Switch memory, Maxwell and graphics/media backends, Switch frontend/tooling |
+| `src/gnuabi/` / `scarletnx-gnuabi` | Linux syscall/errno/structure translation, ELF loading, isolated VFS, Linux process/memory/signal/futex compatibility |
+
+The common target has no runtime-specific imports. NX and GNU ABI each link
+common and have no dependency on each other. The GNU executable target is
+`scarletnx-gnuabi-run`, whose output is `scarletnx-gnuabi`; its library output is
+`scarletnx-gnuabi-runtime`. `SNX_BUILD_NX=OFF` builds GNU ABI without fetching or
+linking NX graphics/media packages. CTest checks include ownership and the actual
+transitive CMake dependency graph and target source ownership.
+
+`src/common/runtime/interface.h` defines `RtAPI`; the active runtime supplies
+the callbacks on `CPU.rt`. NX routes SVC to Horizon. GNU ABI accepts `SVC #0`,
+reads Linux syscall number `x8` and arguments `x0` through `x5`, and writes result
+`x0`. CPU helpers and instruction emission are shared; Horizon handlers are never
+used as Linux syscalls.
+
+`scarletnx-erista`, `scarletnx-mariko`, and `scarletnx-aula` share the existing
+`scarletnx` NX implementation through Unix symlinks or Windows executable copies.
+The original game-name entry points and CLI remain available. GNU ABI has an
+independent CPU-only entry point; see [GNUABI.md](GNUABI.md) for implemented
+syscalls, ELF execution, filesystem scope, and differential testing.
 
 ## Recompiler + module ABI
 
-`scarletnx/`: `work/<Game>/{exefs,romfs}` -> `games/<Game>[.exe]`, `<Game>_code.{so,dll}`, `<Game>_data/`:
+NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
+`work/<Game>/{exefs,romfs}` -> `games/<Game>[.exe]`, `<Game>_code.{so,dll}`, `<Game>_data/`:
 
 - `driver.c`: CLI dispatch only; `extract.c` and `recompile.c` own their workflows.
-- `loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
-- `a64.c` + `a64_templates.inc`: shared instruction semantics for AOT and interpreter.
-- `codegen.c`: function/CFG discovery; `module.c`: chunks, dispatch tables, `SnxModule`.
+- `src/nx/loader/loader.c`: NSO/NRO, LZ4, SHA-256, NPDM, MOD0, symbols/relocs/FDEs.
+- `src/common/cpu/aarch64/a64.c` + `a64_templates.inc`: shared instruction semantics for AOT and interpreter.
+- `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
+  `src/nx/loader/codegen_view.c` adapts NX images; `module.c` owns NX chunks, dispatch tables, `SnxModule`.
 - `toolchain.c`: parallel Clang jobs, ABI/source-keyed object cache, linking, shader prebuild.
-- `common.c`: host files/processes; argv-based subprocesses, isolated extraction key environment.
+- `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
+  NX extraction retains its isolated key environment.
 
 Host tooling uses C90 syntax with SDK fixed-width types, formatting and OS APIs.
 The runtime and generated guest code retain their existing Clang/ABI requirements.
 Normal builds link the driver into the runtime; `SNX_TOOLS_ONLY` builds the same CLI independently.
 
-ABI (`runtime/abi/`): guest functions take `CPU*`; `snx_lookup` dispatches indirect branches, with interpreter fallback.
+Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lookup` dispatches indirect branches, with interpreter fallback.
 `CPU.rt` supplies `RtAPI` callbacks: SVC, UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE; no named runtime imports.
 `cpu_helpers.c` + `helpers/`: SIMD, crypto, FP.
 
-Rebuild game modules after `runtime/abi/` changes; bump `SNX_ABI` for ABI changes. Version mismatches reject loading.
+GNU supplies an optional fetch callback that checks execute permissions and
+compares the live instruction against the compiled word. Modified code falls
+back to shared interpreter semantics. NX leaves this callback unset and keeps
+its existing execution path.
+
+NX module ABI is in `src/nx/loader/module_abi.h`; the shared CPU layout is in
+`src/common/cpu/aarch64/cpu.h`. Rebuild game modules after shared ABI changes;
+bump `SNX_ABI` for ABI changes. Version mismatches reject loading.
 
 ## Runtime ownership
 
-| `runtime/` directory | Responsibility |
+| `src/nx/` directory | Responsibility |
 | --- | --- |
-| `core/` | Module loading, INI, clock, `RtAPI`, crashes |
-| `kernel/` | Objects, threads, sync, SVC, memory, IPC |
-| `hle/` | Services, nvdrv |
-| `gpu/` | GPFIFO, Maxwell, shaders, Vk/null renderers |
-| `video/` | host1x, NVDEC/FFmpeg, VIC |
-| `platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit |
+| `runtime/` | Module loading, INI, clock, `RtAPI`, crashes |
+| `hle/kernel/`, `hle/svc/`, `memory/` | Objects, threads, sync, SVC, Switch memory, IPC |
+| `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
+| `gpu/` and `gpu/maxwell/` | GPFIFO, Maxwell engine implementation, shaders, Vk/null renderers |
+| `gpu/video/` | host1x, NVDEC/FFmpeg, VIC |
+| `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit |
 
 ### Guest exec
 
-Guest thread = host thread + `CPU` + TLS. `kernel/thread.c`: one owner/core, four cores; release on kernel block,
+Guest thread = host thread + `CPU` + TLS. `hle/kernel/thread.c`: one owner/core, four cores; release on kernel block,
 sleep/yield, IPC, WFE. Waiters: priority then FIFO; higher-priority preemption at the next SVC.
 SVC/WFE-free spins retain their core.
 
-`kernel/mem.c`: one guest VA reservation; `GP(addr) = g_mem + addr`, accessed directly by generated code.
+`memory/mem.c`: one guest VA reservation; `GP(addr) = g_mem + addr`, accessed directly by generated code.
 
-SVC -> `kernel/svc.c`; `svcSendSyncRequest` -> `kernel/ipc.c` -> session's HLE service object.
+SVC -> `hle/svc/svc.c`; `svcSendSyncRequest` -> `hle/kernel/ipc.c` -> session's HLE service object.
 
 [Filesystem](FILESYSTEM.md): startup scan; indexed lookup, metadata, enumeration, mutations.
 
 ### GPU submit/present
 
-1. NVN command buffers -> `/dev/nvhost-gpu` GPFIFO ioctl -> `hle/nvdrv.c` -> `gpu_submit` (`gpu/gpu.c`).
+1. NVN command buffers -> `/dev/nvhost-gpu` GPFIFO ioctl -> `hle/services/nvdrv.c` -> `gpu_submit` (`gpu/gpu.c`).
 2. Copy entries to GPU queue; `nv.submit_lk` orders fence promises and cross-channel submits.
    Promised GPU-channel fences wait on the GPU thread; host1x/CPU/unpromised fences wait on the submitter.
 3. GPU-thread dispatch: 3D, MME, compute, 2D, DMA, inline-to-memory. Draws -> `g_renderer` (`gpu/renderer.h`).

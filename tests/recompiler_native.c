@@ -3,6 +3,7 @@
 /* Synthetic NRO -> CLI -> C -> DSO -> AOT/interpreter execution. No game data. */
 #include "common.h"
 #include "cpu.h"
+#include "loader/module_abi.h"
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
@@ -145,6 +146,11 @@ int main(int argc, char** argv) {
     put32(image, 0x88, 0xd65f03c0); /* RET */
     check(!snx_write_file(input, image, sizeof(image)), "write NRO");
     for (pass = 0; pass < 6; ++pass) {
+        if (pass == 1) {
+            data_file = snx_path_join(out, "Native Fixture_data/romfs.bin");
+            check(!snx_write_file(data_file, "old RomFS", 9), "stale NRO assets fixture");
+            free(data_file);
+        }
         k = 0;
         args[k++] = argv[1];
         args[k++] = "--repo";
@@ -173,6 +179,11 @@ int main(int argc, char** argv) {
         else
             check(!rc, pass == 2 ? "interpreter CLI build" : "AOT CLI build");
         environment("SNX_CFLAGS", NULL);
+        if (pass == 1) {
+            data_file = snx_path_join(out, "Native Fixture_data/romfs.bin");
+            check(!snx_is_file(data_file), "asset-free NRO removes stale RomFS");
+            free(data_file);
+        }
         check_empty(temp);
         if (pass == 5)
             check_sources(build);

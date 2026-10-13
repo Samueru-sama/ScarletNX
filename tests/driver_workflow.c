@@ -89,14 +89,26 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     char *game, *partial;
     int rc;
     CHECK(argc == 5 && !strcmp(argv[0], "--outdir") && !strcmp(argv[2], "--"));
-    CHECK(snx_is_dir(argv[3]));
+    if (getenv("SNX_WORKFLOW_NRO") && *getenv("SNX_WORKFLOW_NRO")) {
+        char *given, *expected;
+        CHECK(snx_is_file(argv[3]));
+        /* The driver hands the stage a resolved path (Windows: backslashes and long
+           names), so compare canonical spellings like the game's cwd check does. */
+        given = snx_absolute(argv[3]);
+        expected = snx_absolute(getenv("SNX_WORKFLOW_NRO"));
+        CHECK(given && expected && !strcmp(given, expected));
+        free(given);
+        free(expected);
+    } else
+        CHECK(snx_is_dir(argv[3]));
     CHECK(!snx_mkdirs(argv[1]));
     partial = snx_path_join(argv[1], "partial-build");
     CHECK(!snx_write_file(partial, "partial", 7));
     free(partial);
     rc = event('R');
     if (rc || (!strcmp(getenv("SNX_WORKFLOW_MODE"), "missing") && getenv("SNX_WORKFLOW_FAIL") &&
-               !strcmp(getenv("SNX_WORKFLOW_FAIL"), "R"))) return rc;
+               !strcmp(getenv("SNX_WORKFLOW_FAIL"), "R")))
+        return rc;
 #ifdef _WIN32
     game = snx_format("%s/%s.exe", argv[1], argv[4]);
 #else
@@ -195,6 +207,7 @@ int main(int argc, char** argv) {
     set_env("SNX_WORKFLOW_MODE", "exit");
     set_env("SNX_WORKFLOW_HEADLESS", "");
     set_env("SNX_WORKFLOW_PREFIX", "0");
+    set_env("SNX_WORKFLOW_NRO", "");
     reset(repo, dump);
     run(exe, repo, dump, log, 0, "ERG", NULL);
     CHECK(snx_is_dir(extracted) && snx_is_file(game));
@@ -257,6 +270,31 @@ int main(int argc, char** argv) {
             reset(repo, dump);
             run(exe, repo, dump, log, 0, "ERG", NULL);
         }
+        set_env("SNX_WORKFLOW_HEADLESS", "");
+    }
+    /* NROs bypass extraction even with a stale same-stem work directory or game executable. */
+    {
+        const char* names[] = {"Test [game];.nro", "Test [game];.NRO"};
+        unsigned j;
+        for (j = 0; j < 2; ++j) {
+            char* nro = snx_path_join(repo, names[j]);
+            reset(repo, nro);
+            set_env("SNX_WORKFLOW_MODE", "exit");
+            set_env("SNX_WORKFLOW_NRO", nro);
+            set_env("SNX_WORKFLOW_HEADLESS", "--headless");
+            run(exe, repo, nro, log, 0, "RG", NULL);
+            CHECK(!snx_is_dir(extracted) && snx_is_file(game));
+            CHECK(!snx_mkdirs(extracted));
+            run(exe, repo, nro, log, 0, "RG", NULL);
+            set_env("SNX_WORKFLOW_FAIL", "R");
+            run(exe, repo, nro, log, 7, "R", "Recompilation failed");
+            set_env("SNX_WORKFLOW_FAIL", "");
+            run(exe, repo, nro, log, 0, "RG", NULL);
+            CHECK(!snx_remove_tree(nro));
+            run(exe, repo, nro, log, 1, "", "Input dump is missing");
+            free(nro);
+        }
+        set_env("SNX_WORKFLOW_NRO", "");
         set_env("SNX_WORKFLOW_HEADLESS", "");
     }
     /* The probe takes a third argument, so use a separate, terminated vector. */

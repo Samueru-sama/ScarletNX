@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Compile with scarletnx/common.c + extract.c. This executable also acts as a synthetic hactool. */
+/* Compile with src/common/utilities/common.c + extract.c. This executable also acts as a synthetic hactool. */
 #define _POSIX_C_SOURCE 200809L
 #include "extract.h"
 #include <stdio.h>

@@ -142,7 +142,7 @@ def main():
     if (position + 16 + 6 * sizes['SixAxisSensorProperties'] + 7) & ~7 != sizes['NpadInternalState']:
         raise SystemExit("NpadInternalState tail arithmetic disagrees with Eden's size assertion")
 
-    header = Path(__file__).resolve().parents[1] / 'runtime/hle/hid_layout.h'
+    header = Path(__file__).resolve().parents[1] / 'src/nx/hle/services/hid_layout.h'
     actual = {
         name: int(value, 0)
         for name, value in re.findall(

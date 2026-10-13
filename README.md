@@ -8,6 +8,20 @@ Discord: https://discord.gg/tRTRXXbyjp (my god why don't we just use IRC like go
 
 A GPLv3 static ARM64 to x86 recompiler with a Nintendo Switch translation layer for Linux, Windows and FreeBSD. Forked from MZLab's SwitchRecomp.
 
+The shared ARM64 recompiler lives under `src/common/`. Nintendo Switch Horizon HLE
+and Maxwell graphics live under `src/nx/`. The CPU-only Linux AArch64 runtime lives
+under `src/gnuabi/` and builds without the Switch graphics or media dependencies:
+
+```sh
+cmake -S . -B build/gnuabi -DSNX_BUILD_NX=OFF
+cmake --build build/gnuabi
+build/gnuabi/scarletnx-gnuabi ./test_aarch64
+```
+
+See [Linux ABI execution and QEMU validation](docs/GNUABI.md) for supported syscalls,
+virtual filesystems, static ELF execution, and current limits. The NX executable also
+has `scarletnx-erista`, `scarletnx-mariko`, and `scarletnx-aula` aliases.
+
 Install the build tools first. On Debian/Ubuntu:
 ```bash
 sudo apt update

@@ -1,0 +1,146 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* Exercise the real runtime loader with synthetic files and a bounded guest mapping. */
+#include "runtime/loader.h"
+#include "runtime/main.h"
+#include "hle/filesystem/fs.h"
+#include "memory/mem.h"
+#include "runtime/platform/log.h"
+#include <stdlib.h>
+#include <string.h>
+
+static u8 file[0x3040], guest[0x5000];
+static size_t file_size;
+static int root_file, maps, unmaps, permissions;
+static unsigned checks;
+static SnxModInfo info;
+static SnxModule module;
+const SnxModule* g_mod = &module;
+u8* g_mem = guest;
+u64 g_code_memory;
+char g_datadir[1024];
+
+#define CHECK(v)                                                                                                       \
+    do {                                                                                                               \
+        ++checks;                                                                                                      \
+        if (!(v)) {                                                                                                    \
+            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #v);                                                    \
+            exit(1);                                                                                                   \
+        }                                                                                                              \
+    } while (0)
+
+void logf_(int level, const char* fmt, ...) {
+    (void)level;
+    (void)fmt;
+}
+int fs_map_file(const char* path, PFileMap* map) {
+    /* A stale NSO named main must not shadow main.nro. */
+    CHECK(strcmp(path, "exefs/main") && strcmp(path, "main"));
+    if (strcmp(path, root_file ? "main.nro" : "exefs/main.nro")) return -1;
+    u8* bytes = malloc(file_size ? file_size : 1);
+    CHECK(bytes != NULL);
+    memcpy(bytes, file, file_size);
+    map->data = bytes;
+    map->size = file_size;
+    ++maps;
+    return 0;
+}
+void plat_file_unmap(PFileMap* map) {
+    free((void*)map->data);
+    ++unmaps;
+}
+int mem_map(u64 addr, u64 size, u32 state, u32 perm) {
+    CHECK(addr == info.base && size == info.size && addr + size <= sizeof guest);
+    CHECK(state == MS_CODE && perm == PERM_RW);
+    memset(guest + addr, 0xcc, (size_t)size);
+    return 0;
+}
+int mem_set_state(u64 addr, u64 size, u32 state, u32 perm) {
+    static const u32 perms[] = {PERM_RX, PERM_R, PERM_RW};
+    CHECK(permissions < 3 && perm == perms[permissions]);
+    CHECK(addr == info.base + (u64)permissions * 0x1000);
+    CHECK(size == (permissions == 2 ? 0x2000 : 0x1000));
+    CHECK(state == (permissions == 2 ? MS_CODEDATA : MS_CODE));
+    ++permissions;
+    return 0;
+}
+static void put32(size_t off, u32 value) {
+    for (unsigned i = 0; i < 4; ++i) file[off + i] = (u8)(value >> (8 * i));
+}
+static void fixture(void) {
+    memset(file, 0, sizeof file);
+    memset(&info, 0, sizeof info);
+    memcpy(file + 0x10, "NRO0", 4);
+    put32(0x18, 0x3000);
+    put32(0x24, 0x1000);
+    put32(0x28, 0x1000);
+    put32(0x2c, 0x1000);
+    put32(0x30, 0x2000);
+    put32(0x34, 0x1000);
+    put32(0x38, 0x1000);
+    memset(file + 0x40, 0x42, 32);
+    file[0x100] = 0x71;
+    file[0x1000] = 0x72;
+    file[0x2000] = 0x73;
+    memset(file + 0x3000, 0xff, 0x40);
+    memcpy(file + 0x3000, "ASET", 4);
+    file_size = sizeof file;
+    info.name = "main";
+    info.base = 0x1000;
+    info.size = 0x4000;
+    memset(info.build_id, 0x42, 32);
+    info.text_size = info.ro_size = info.data_size = info.bss_size = 0x1000;
+    info.ro_off = 0x1000;
+    info.data_off = 0x2000;
+    info.is_nro = 1;
+    module.nmods = 1;
+    module.mods = &info;
+    maps = unmaps = permissions = 0;
+    g_code_memory = 0;
+}
+static void rejected(void) {
+    CHECK(loader_load() == -1);
+    CHECK(maps == 1 && unmaps == 1 && !permissions && !g_code_memory);
+    for (size_t i = info.base; i < info.base + info.size; ++i) CHECK(guest[i] == 0xcc);
+}
+int main(void) {
+    for (root_file = 0; root_file < 2; ++root_file) {
+        fixture();
+        if (root_file) {
+            file_size = 0x3000; /* optional assets */
+            put32(0x38, 0x40);
+            info.bss_size = 0x40; /* the rest of the last page is mapping padding */
+        }
+        CHECK(!loader_load());
+        CHECK(maps == 1 && unmaps == 1 && permissions == 3 && g_code_memory == info.size);
+        CHECK(!memcmp(guest + info.base, file, 0x3000));
+        for (size_t i = 0x3000; i < info.size; ++i) CHECK(guest[info.base + i] == 0);
+    }
+    root_file = 0;
+    for (size_t i = 0; i < 0x80; ++i) {
+        fixture();
+        file_size = i;
+        rejected();
+    }
+    static const u32 offsets[] = {0x10, 0x18, 0x18, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x30, 0x34, 0x38, 0x40};
+    static const u32 values[] = {0, 0x7f, 0x4000, 0xffffffff, 2, 4, 0x800, 0x1004, 0x2004, 0xffffffff, 0xffffffff, 0};
+    for (size_t i = 0; i < sizeof offsets / sizeof *offsets; ++i) {
+        fixture();
+        put32(offsets[i], values[i]);
+        rejected();
+    }
+    fixture();
+    file_size = 0x2fff;
+    rejected();
+    fixture();
+    info.size = 0x3000; /* no room for BSS */
+    rejected();
+    fixture();
+    info.ro_size -= 4; /* the recompiled descriptor must match the file */
+    rejected();
+    fixture();
+    info.bss_size = 0;
+    rejected();
+    printf("Runtime NRO: %u checks passed\n", checks);
+    return 0;
+}

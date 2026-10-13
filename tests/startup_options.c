@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "core/options.h"
+#include "runtime/options.h"
 #include <stdio.h>
 
 static int check(int argc, char** argv, int expected, int value) {

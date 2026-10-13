@@ -45,9 +45,9 @@ jobs:
         run: |
           cmake --preset default -B build/headless -DSNX_BACKEND=headless -DSNX_DEPLOY=OFF
           cmake --build build/headless
-      # The game modules compile runtime/abi/cpu_helpers.c, which no CMake target does
+      # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
-        run: clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I runtime/abi runtime/abi/cpu_helpers.c
+        run: clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src/common/cpu/aarch64 src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
         run: ctest --test-dir build/default --output-on-failure
       - name: Check optional Python diagnostics

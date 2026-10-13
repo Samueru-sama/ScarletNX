@@ -76,7 +76,18 @@ def main():
             '#endif\n',
             encoding='ascii',
         )
-        flags = ['-std=gnu11', '-O1', '-g', '-Wall', '-Wextra', '-Werror', '-I', str(repo / 'runtime')]
+        flags = [
+            '-std=gnu11',
+            '-O1',
+            '-g',
+            '-Wall',
+            '-Wextra',
+            '-Werror',
+            '-I',
+            str(repo / 'src/nx'),
+            '-I',
+            str(repo / 'src/common'),
+        ]
         if os.name == 'nt':
             flags += ['-D_CRT_SECURE_NO_WARNINGS', '-D_CRT_NONSTDC_NO_DEPRECATE']
         else:
@@ -90,7 +101,16 @@ def main():
             run_env['PATH'] = str(runtime_dir) + os.pathsep + run_env.get('PATH', '')
         tree_obj = scratch / ('fs_tree.obj' if os.name == 'nt' else 'fs_tree.o')
         subprocess.run(
-            [args.cc, *flags, '-include', str(probe), '-c', str(repo / 'runtime/hle/fs_tree.c'), '-o', str(tree_obj)],
+            [
+                args.cc,
+                *flags,
+                '-include',
+                str(probe),
+                '-c',
+                str(repo / 'src/nx/hle/filesystem/fs_tree.c'),
+                '-o',
+                str(tree_obj),
+            ],
             check=True,
             cwd=scratch,
         )

@@ -13,10 +13,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 scripts/format.sh --check
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
-clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I runtime/abi runtime/abi/cpu_helpers.c
+clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src/common/cpu/aarch64 src/common/cpu/aarch64/cpu_helpers.c
 ```
 
-Runtime relink deploys to `games/` by default. Recompiler/`runtime/abi/` edits require `--recompile`.
+Runtime relink deploys to `games/` by default. Recompiler/`src/common/cpu/aarch64/` edits require `--recompile`.
 Avoid builds during timing runs. Formatting: clang-format 23 + `uv`/pinned Ruff; omit `--check` to write.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 

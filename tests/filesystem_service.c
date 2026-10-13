@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Exercise the actual HLE dispatchers with synthetic IPC buffers and a small guest address space. */
-#include "hle/fs.h"
-#include "kernel/ipc.h"
-#include "kernel/mem.h"
-#include "platform/log.h"
+#include "hle/filesystem/fs.h"
+#include "hle/kernel/ipc.h"
+#include "memory/mem.h"
+#include "runtime/platform/log.h"
 #include <stdarg.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -20,7 +20,7 @@
 /* Including the production file exposes its service constructors without test hooks in the runtime. */
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
-#include "hle/fs.c"
+#include "hle/filesystem/fs.c"
 #pragma clang diagnostic pop
 
 u8* g_mem;

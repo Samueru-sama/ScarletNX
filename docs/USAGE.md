@@ -32,6 +32,21 @@ child also aborts that stage so it can be retried. Uncatchable termination of th
 Existing manually extracted directories are assumed complete. Remove stale checkpoints or use the
 explicit commands when changing a dump or rebuilding game code.
 
+### NRO applications
+
+Pass an uncompressed NRO directly to recompile and play, without keys or extraction:
+
+```sh
+./build/scarletnx "app.nro" --headless
+```
+
+The `.nro` extension is case-insensitive. NRO launches always recompile and restage the input,
+so a same-named cached executable or extraction directory cannot silently select an older program.
+Embedded RomFS assets are staged by the recompiler. Compressed NROs are not supported.
+This uses ScarletNX's existing guest runtime, not a complete homebrew-loader environment.
+Compatibility still depends on the application's runtime and service requirements.
+See [NRO implementation notes](NRO.md) for the reference and validation policy.
+
 To run the steps separately:
 
 ```sh
@@ -60,7 +75,7 @@ Remaining examples: POSIX.
 
 - **Keys:** flags → checkout → `~/.switch` (`%USERPROFILE%\.switch` on Windows). Common NSP tickets supplement title keys.
 - **Extraction:** defaults to `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing `exefs`;
-  builds missing hactool. [Temp cleanup/key filtering](../scarletnx/extract.c).
+  builds missing hactool. [Temp cleanup/key filtering](../src/nx/runtime/driver/extract.c).
 - **Recompile:** AOT → module compile/link → NVN prebuild → final runtime deployment. Cached objects;
   NVN prebuild failures defer compilation to runtime. `--native` = `-march=native`;
   `--cc CLANG` / `-O 0..3` also accepted.

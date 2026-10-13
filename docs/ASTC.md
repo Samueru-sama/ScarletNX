@@ -1,13 +1,13 @@
 # ASTC compute uploads
 
-`runtime/gpu/texture/astc.comp` ports the integer LDR decoder from `astc.c` to
+`src/nx/gpu/texture/astc.comp` ports the integer LDR decoder from `astc.c` to
 GLSL 450. Each invocation decodes one 128-bit block. Workgroups contain 32
 invocations. The shader requires only core storage buffers and 32-bit integers.
 HDR endpoint modes retain the reference decoder's magenta error behavior.
 This is a port, not a new ASTC conformance implementation.
 
-`runtime/gpu/vk/astc.c` creates a compute pipeline from the embedded SPIR-V in
-`runtime/gpu/texture/astc_spv.h`. Normal builds need no additional compiler or
+`src/nx/gpu/vk/astc.c` creates a compute pipeline from the embedded SPIR-V in
+`src/nx/gpu/texture/astc_spv.h`. Normal builds need no additional compiler or
 shader files installed alongside the executable. The CPU decoder is no longer
 linked into the runtime, but remains available to differential tests.
 

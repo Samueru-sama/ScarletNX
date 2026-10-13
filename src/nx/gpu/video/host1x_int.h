@@ -1,0 +1,41 @@
+/* SwitchRecomp - Copyright 2026 MZ Labs
+   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
+   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
+   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
+/* what the host1x files share: the IOVA mapping the video engines see, and the engines' entry points */
+#ifndef SNX_HOST1X_INT_H
+#define SNX_HOST1X_INT_H
+#include "gpu/video/host1x.h"
+#include "gpu/gpu.h"
+#include "hle/services/nvdrv.h"
+#include "memory/mem.h"
+#include "runtime/platform/log.h"
+#include "runtime/platform/plat.h"
+#include <stdlib.h>
+#include <string.h>
+
+/* little-endian u32 at p + off, unaligned */
+static inline u32 rd32(const u8* p, u32 off) {
+    u32 v;
+    memcpy(&v, p + off, 4);
+    return v;
+}
+static inline u64 rd64(const u8* p, u32 off) {
+    u64 v;
+    memcpy(&v, p + off, 8);
+    return v;
+}
+
+/* host1x.c */
+u8* iova_ptr(u64 iova, u64 len);
+
+/* nvdec.c: a decoder per NVDEC channel. The callers hold the host1x lock */
+typedef struct NvdecCtx NvdecCtx;
+NvdecCtx* nvdec_new(void); /* NULL when out of memory */
+void nvdec_free(NvdecCtx* d);
+void nvdec_execute(NvdecCtx* d, const u32* r);
+
+/* vic.c */
+void vic_execute(const u32* r);
+
+#endif

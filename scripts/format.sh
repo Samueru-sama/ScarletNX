@@ -7,7 +7,7 @@
 #   scripts/format.sh --check    list what is not formatted, exit 1 if anything is
 #   scripts/format.sh DIR        format another tree with this repository's settings (import-upstream.sh does this)
 #
-# Formatted: the C and C++ files under scarletnx/, runtime/, tools/ and tests/, and the Python files up to two folders deep plus the Claude
+# Formatted: the C and C++ files under src/, tools/ and tests/ (plus old upstream scarletnx/ and runtime/ trees), and the Python files up to two folders deep plus the Claude
 # Code hooks. Left alone: third-party code (.cache/cpm), and in upstream trees the font bitmap in overlay_font.h and
 # the GL function list in glfn.h, an X-macro list clang-format can't lay out stably.
 set -euo pipefail
@@ -39,7 +39,7 @@ fi
 cd "$root"
 # An upstream tree has no tools/ or .claude/hooks/
 c_dirs=()
-for d in scarletnx runtime tools tests; do [ -d "$d" ] && c_dirs+=("$d"); done
+for d in src scarletnx runtime tools tests; do [ -d "$d" ] && c_dirs+=("$d"); done
 py_extra=()
 [ -d .claude/hooks ] && py_extra+=(.claude/hooks)
 c_files=()

@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include "gpu/vk/vk.h"
 #include "gpu/texture/astc.h"
-#include "platform/log.h"
+#include "runtime/platform/log.h"
 
 VkState g_vk;
 VkSemaphore g_vk_csem;

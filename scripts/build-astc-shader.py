@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--spv', type=Path)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    source = root / 'runtime/gpu/texture/astc.comp'
+    source = root / 'src/nx/gpu/texture/astc.comp'
     header = source.with_name('astc_spv.h')
     version = (
         subprocess.check_output(['glslangValidator', '--version'], text=True).splitlines()[0].rsplit(':', 1)[-1].strip()

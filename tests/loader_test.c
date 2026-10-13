@@ -298,7 +298,9 @@ static void test_nro_npdm(void) {
     SnxNpdm npdm;
     unsigned char meta[0xa0];
     char error[256], *path;
-    size_t size;
+    size_t size, i;
+    static const unsigned offsets[] = {0x20, 0x24, 0x28, 0x30, 0x34, 0x1c};
+    static const unsigned values[] = {4, 0x80, 0x104, 0x384, 0x7c, 2};
     size = build_nro();
     path = fixture("sample.NRO", file_bytes, size);
     CHECK(!snx_load_program(path, &program, error, sizeof error));
@@ -308,6 +310,22 @@ static void test_nro_npdm(void) {
     CHECK(program.npdm.stack == 0x100000 && program.npdm.prio == 44 && program.npdm.is64);
     CHECK(program.npdm.title_id == (((SnxU64)0x01000000UL << 32) | 0x1000));
     snx_free_program(&program);
+    /* ASET is optional and never part of the executable mapping. */
+    CHECK(!snx_write_file(path, file_bytes, 0x400));
+    CHECK(!snx_load_nro(path, &m, error, sizeof error));
+    CHECK(!m.nro_asset_size && !m.romfs_size && m.image_size == 0x400 && m.size == 0x1000);
+    snx_free_module(&m);
+    for (i = 0; i < 0x80; ++i) {
+        CHECK(!snx_write_file(path, file_bytes, i));
+        CHECK(snx_load_nro(path, &m, error, sizeof error) == -1 && !m.image);
+    }
+    for (i = 0; i < sizeof offsets / sizeof *offsets; ++i) {
+        size = build_nro();
+        put32(file_bytes + offsets[i], values[i]);
+        CHECK(!snx_write_file(path, file_bytes, size));
+        CHECK(snx_load_nro(path, &m, error, sizeof error) == -1 && !m.image && strstr(error, "NRO"));
+    }
+    size = build_nro();
     put64(file_bytes + 0x430, (SnxU64)-1);
     CHECK(!snx_write_file(path, file_bytes, size));
     CHECK(snx_load_nro(path, &m, error, sizeof error) == -1 && strstr(error, "ASET"));

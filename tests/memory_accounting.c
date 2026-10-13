@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* Exercise the production memory SVCs and block list without game files. The POSIX backing is sparse, with
    injectable commit failures. Thread/handle/GPU services are stubs, not the code under test. */
-#include "kernel/kernel_int.h"
-#include "core/clock.h"
+#include "hle/kernel/kernel_int.h"
+#include "runtime/clock.h"
 #include "gpu/gpu.h"
 #include <pthread.h>
 #include <sched.h>
