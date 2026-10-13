@@ -198,6 +198,7 @@ static u64 draw_shader_module_ready, draw_shader_module_failed;
 static u64 draw_zero_bind_textureless, draw_zero_bind_textured;
 static u64 draw_zero_bind_all_bindless;
 static u64 draw_texture_unused;
+static u64 draw_texture_slots_mapped;
 static u64 draw_vertex_format_ready, draw_vertex_format_failed;
 static u64 draw_pipeline_ready, draw_pipeline_failed;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
@@ -1537,6 +1538,7 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_ZERO_BIND_ALL_BINDLESS)
             __atomic_fetch_add(&draw_zero_bind_all_bindless, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_TEXTURE_UNUSED) __atomic_fetch_add(&draw_texture_unused, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_TEXTURE_SLOTS_MAPPED) __atomic_fetch_add(&draw_texture_slots_mapped, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_VERTEX_FORMAT_READY) __atomic_fetch_add(&draw_vertex_format_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_VERTEX_FORMAT_FAILED) __atomic_fetch_add(&draw_vertex_format_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_PIPELINE_READY) __atomic_fetch_add(&draw_pipeline_ready, 1, __ATOMIC_RELAXED);
@@ -1810,6 +1812,9 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&draw_zero_bind_textureless, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_zero_bind_textured, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_zero_bind_all_bindless, __ATOMIC_RELAXED));
+        if (shader_materialize)
+            LOG("nvn-draw-texture-slots: mapped=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_texture_slots_mapped, __ATOMIC_RELAXED));
         if (shader_materialize)
             LOG("nvn-draw-vertex-format: ready=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_vertex_format_ready, __ATOMIC_RELAXED),

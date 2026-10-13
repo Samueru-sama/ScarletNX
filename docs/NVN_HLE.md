@@ -540,6 +540,18 @@ while the first four captured NVN fragment uniform slots were at `0x5157b5300`, 
 asynchronous paths, so they do not prove exact draw correspondence, but they disprove the proposed direct mapping
 between NVN uniform slot number and Maxwell texture-CBUF index in this trace. The SDK's internal texture-handle
 CBUF must be reconstructed from its state or captured from the generated command stream with submission ordering.
+An instrumented Catherine boot showed the same separation: the emulated fragment renderer used texture selector 2
+at `0x5ec637800`, while the first recorded NVN fragment draw had only uniform slot 0 bound at `0x50cf92400`.
+The exact addresses vary between runs; their role and the missing slot 2 are the relevant findings.
+That internal CBUF nevertheless has a usable binding layout: Catherine's fragment shader read words 8 and 10 as
+texture handles, matching the low 32 bits of recorded NVN binding slots 0 and 1. The resource preflight now maps
+translated non-bindless texture accesses at word `8 + 2*slot` to their captured NVN texture and sampler descriptors.
+It checks only shader-visible slots when every access fits that layout; bindless or unfamiliar offsets retain the
+conservative all-bound-slot check. In a 15-second Scarlet run, 6,438 ready textured draws fit the layout and 5,827
+texture images prepared successfully, versus none under the old all-bound-slots check. Catherine and TotK boot runs
+prepared 3,048 and 2,468 texture images respectively, with only two and one stale image snapshots. This validates
+the preflight's resource selection in those scenes; it does not yet bind descriptors for NVN host draws or prove
+that all future shaders use the same internal layout.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make

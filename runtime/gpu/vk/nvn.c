@@ -896,10 +896,32 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     int shader_ready =
         command->materialize_shaders && materialize_draw_shaders(command, &vertex_shader, &fragment_shader);
     int textureless_shader = shader_ready && !vertex_shader->si.ntex && !fragment_shader->si.ntex;
+    u32 texture_slots[NVN_DRAW_SHADER_STAGES];
+    memcpy(texture_slots, command->texture_bound, sizeof texture_slots);
+    int slots_mapped = shader_ready;
+    if (shader_ready) {
+        VkSh* shaders[2] = {vertex_shader, fragment_shader};
+        memset(texture_slots, 0, sizeof texture_slots);
+        /* NVN's generated texture CBUF places binding slot n at word 8 + 2*n. Check that every translated
+           texture access fits this layout before narrowing preflight to shader-visible bindings. Bindless and
+           unfamiliar offsets retain the conservative all-bound-slot path. This is resource preparation only;
+           host draws still need descriptor binding and command-stream ordering. */
+        for (u32 stage = 0; stage < 2 && slots_mapped; stage++)
+            for (int i = 0; i < shaders[stage]->si.ntex; i++) {
+                const ShTex* tex = &shaders[stage]->si.tex[i];
+                u32 word = tex->cbuf_off;
+                if (tex->bindless || word < 8 || ((word - 8) & 1) || (word - 8) / 2 >= NVN_DRAW_TEXTURE_SLOTS) {
+                    slots_mapped = 0;
+                    break;
+                }
+                texture_slots[stage] |= 1u << ((word - 8) / 2);
+            }
+        if (!slots_mapped) memcpy(texture_slots, command->texture_bound, sizeof texture_slots);
+    }
     int sampler_status = 0, has_sampler = 0;
     for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !sampler_status && !textureless_shader; stage++)
         for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
-            if (!(command->texture_bound[stage] & (1u << i))) continue;
+            if (!(texture_slots[stage] & (1u << i))) continue;
             has_sampler = 1;
             const NvnSamplerDescriptorSnapshot* sampler = &command->sampler_descriptor[stage][i];
             if (!(command->sampler_descriptor_valid[stage] & (1u << i)) || !sampler->tsc_valid) {
@@ -915,7 +937,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     int texture_status = 0, has_texture = 0;
     for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && !texture_status && !textureless_shader; stage++)
         for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
-            if (!(command->texture_bound[stage] & (1u << i))) continue;
+            if (!(texture_slots[stage] & (1u << i))) continue;
             has_texture = 1;
             const NvnDescriptorSnapshot* texture = &command->texture_descriptor[stage][i];
             if (!(command->texture_descriptor_valid[stage] & (1u << i)) || !texture->tic_valid) {
@@ -934,7 +956,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
            existing loader may land pending GPU writes, so it must run before draw setup rather than from it. */
         for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES && ready; stage++)
             for (u32 i = 0; i < NVN_DRAW_TEXTURE_SLOTS; i++) {
-                if (!(command->texture_bound[stage] & (1u << i))) continue;
+                if (!(texture_slots[stage] & (1u << i))) continue;
                 const NvnDescriptorSnapshot* descriptor = &command->texture_descriptor[stage][i];
                 NvnTextureSnapshot current = {0};
                 NvnPoolSnapshot backing = {0};
@@ -974,6 +996,7 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
     }
     int resource_status = sampler_status | texture_status;
     if (textureless_shader) resource_status |= NVN_DRAW_TEXTURE_UNUSED;
+    if (slots_mapped && !textureless_shader) resource_status |= NVN_DRAW_TEXTURE_SLOTS_MAPPED;
     if (command->materialize_shaders)
         resource_status |=
             prepare_vertex_formats(command) ? NVN_DRAW_VERTEX_FORMAT_READY : NVN_DRAW_VERTEX_FORMAT_FAILED;
