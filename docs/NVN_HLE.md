@@ -1133,7 +1133,7 @@ bytes; the first dispatch remains byte-exact. Saved buffers narrow the differenc
 storage-writing draws: the emulated path has value 1 in 240 consecutive 16-byte records, while the
 direct path sets only the first record. The 239 missing records are already absent immediately after
 the second draw, before the dispatch reads them. That draw derives the storage index from fragment
-coordinates and uses a depth-equality test, so its depth and coordinate inputs need direct comparison.
+coordinates and uses a depth-equality test, which made those inputs the focus of the probe.
 In a controlled TotK probe, submitting the first two 58,848-byte storage-writing draws separately
 made the second dispatch input and output byte-exact. Completion or memory barriers at only one of
 those draws did not help; barriers at both also left 239 differing bytes. The submit probe remains
@@ -1144,18 +1144,25 @@ test was disabled, its culling was disabled, both depth testing and culling were
 first writer was forced to write depth. A readback immediately after the first writer found zero
 of the 240 flags set. Reading back after only the first writer or only the second writer left just
 one flag set at the following dispatch. Reading back after both found all 240 flags set and made
-the dispatch input byte-exact. These readbacks submit the graphics queue, so the result isolates
-the required command boundaries but does not identify which draw dependency needs them.
+the dispatch input byte-exact. These readbacks submit the graphics queue; they masked the
+missing descriptor described below rather than proving a required command boundary.
 The direct shader's coordinate uniforms contained the expected 1/64 X/Y scales and stride 20.
 The two paths used the same vertex and index addresses, strides, offsets, and formats for both
 draws. At a later image-comparison point, their 1280×720 feedback target at 0x511cc0000 was
 byte-exact; that result does not yet prove its contents matched when the writer sampled it.
 The second writer's vertex shader also samples a 640×360 R32F image with a nonidentity TIC
 swizzle. A cached semantic view now carries that component mapping, but the 239-byte dispatch
-input difference remains. Its fragment shader samples a separate 320×180, two-level image;
+input difference remained at that point. Its fragment shader samples a separate 320×180, two-level image;
 at this draw, only mip 0 has direct-image coverage, so that source still uses the Maxwell
 texture path. The earlier unknown-write rejection seen while preparing the emulated texture
 was not the direct draw's reason for falling back.
+The shader dump then exposed the missing input: the fragment shader scales `gl_FragCoord` by
+`SNX_RS.x` before computing the storage index, but the direct NVN draw did not bind the
+`SNX_RS` descriptor. It now binds the same `1 / g_vk_scale` constant as the emulated draw.
+In a 65-second ABI-6 TotK run without writer-submit probes, both the first and second
+58,848-byte dispatch inputs and outputs matched Maxwell byte-for-byte. The separate-submit
+result is consistent with incidental descriptor contents; it is not needed for this chain.
+Later graphics and image parity remains unproven.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped

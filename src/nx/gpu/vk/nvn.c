@@ -2204,8 +2204,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     VkDescriptorBufferInfo uniforms[2][18] = {0};
     VkDescriptorBufferInfo storage_buffers[2][16] = {0};
     VkDescriptorBufferInfo storage_maps[2] = {0};
+    VkDescriptorBufferInfo resolution_scale = {0};
     VkDescriptorImageInfo textures[2][SH_MAXTEX] = {0};
-    VkWriteDescriptorSet writes[2 * (18 + 16 + 1 + SH_MAXTEX + NVN_DRAW_IMAGE_SLOTS)] = {0};
+    VkWriteDescriptorSet writes[2 * (18 + 16 + 1 + SH_MAXTEX + NVN_DRAW_IMAGE_SLOTS) + 1] = {0};
     u32 nwrites = 0;
     int semantic_sampled = 0;
     VkImageView color_feedback_view[8] = {0};
@@ -2214,6 +2215,21 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     for (u32 stage = 0; stage < 2; stage++) {
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
         if (!sets[stage]) return 0;
+        if (stage == 1) {
+            VkBuffer buffer;
+            u64 offset;
+            float* constants = (float*)vk_stage(16, vk_stage_align(), &buffer, &offset);
+            if (!constants) return 0;
+            constants[0] = constants[1] = 1.0f / g_vk_scale;
+            constants[2] = g_vk_scale;
+            constants[3] = 0.0f;
+            resolution_scale = (VkDescriptorBufferInfo){buffer, offset, 16};
+            writes[nwrites++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                      .dstSet = sets[stage], .dstBinding = SNX_VKB_RS,
+                                                      .descriptorCount = 1,
+                                                      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                      .pBufferInfo = &resolution_scale};
+        }
         const ShaderInfo* si = &shaders[stage]->si;
         u32 handle_words[NVN_HANDLE_BANK_WORDS];
         u8 handle_known[NVN_HANDLE_BANK_WORDS];
