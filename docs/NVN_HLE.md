@@ -665,7 +665,16 @@ draws used storage buffers, multiple color targets, instancing, and non-Catherin
 3,669 pipelines in a ten-second sample, while its early fullscreen triangle passes used generated CBUF 0 and
 formats or state outside the current executable slice. Odyssey prepared 2,501 pipelines in twelve seconds, but its
 early indexed passes used an sRGB target and different polygon state. These are executor and generated-resource
-gaps, not shader-module compilation failures; the three samples issued no shadow draws.
+gaps, not shader-module compilation failures.
+The Odyssey executor now admits its observed indexed sRGB pass and programs the same flipped viewport, face winding,
+and back-face culling as the corresponding Maxwell draw. The first pass samples an RGB10A2 texture at `0x53c910000`.
+NVN clears that address before the draw, but the clear's texture object and the sampler's texture object differ while
+sharing the same memory pool address, format, and shape. Host images now follow the compatible backing allocation
+instead of requiring identical object pointers, and semantic sampling accepts matching formats beyond RGBA8. NVN
+`UpdateUniformBuffer` no longer invalidates unrelated image provenance. A nine-second opt-in Odyssey run issued at
+least eight direct draws, each sampling the NVN-owned RGB10A2 image. The first diagnostic draw changed 921,600 of
+1,440,000 target pixels,
+so it did not certify full target coverage. This is an isolated shadow pass, not a complete or presented frame.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still

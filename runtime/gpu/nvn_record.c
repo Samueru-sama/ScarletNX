@@ -415,8 +415,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
         u64 prior_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
+        /* UpdateUniformBuffer writes buffer bytes, not a texture subresource. It must not invalidate
+           independent NVN-owned images while the shadow path tracks unknown image writes globally. */
         if (queue &&
-            (op->kind == OP_CLEAR || op->kind == OP_TRANSFER || op->kind == OP_DISPATCH || op->kind == OP_OTHER))
+            (op->kind == OP_CLEAR ||
+             (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) ||
+             op->kind == OP_DISPATCH || op->kind == OP_OTHER))
             queue->last_unmodeled_write = queue->next_sequence++;
         if (queue && op->kind != OP_MEMORY && strcmp(op->name, "nvnCommandBufferSetRenderTargets") &&
             strcmp(op->name, "nvnCommandBufferClearColor") && strcmp(op->name, "nvnCommandBufferClearTexture") &&

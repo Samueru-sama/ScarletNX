@@ -144,8 +144,9 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
             if (!empty) empty = image;
             continue;
         }
-        if (image->texture == target->texture && image->pool == target->pool && image->address == target->gpu_address &&
-            image->texture_generation == target->texture_generation &&
+        /* Distinct NVNtexture objects can alias the same pool bytes. Key the host image by the backing
+           allocation and compatible shape so a clear through one object is visible through another. */
+        if (image->pool == target->pool && image->address == target->gpu_address &&
             image->pool_generation == target->pool_generation && image->width == target->width &&
             image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
             image->target == target->storage_target && image->format == target->storage_format)
@@ -627,7 +628,6 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
                                      : image->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                                                           : VK_IMAGE_VIEW_TYPE_2D;
         if (!image->image || !image->sampled || image_type != view_type || image->layers != layers ||
-            image->texture != descriptor->texture || image->texture_generation != descriptor->texture_generation ||
             image->pool != descriptor->memory_pool || image->pool_generation != descriptor->memory_pool_generation ||
             image->address != address || image->width != width || image->height != height)
             continue;
@@ -1181,8 +1181,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         enabled = opt && !strcmp(opt, "1");
     }
     int indexed_triangles = command->primitive == 4 && command->indexed &&
-                            (command->index_type == 1 || command->index_type == 2) &&
-                            command->depth_target_bound;
+                            (command->index_type == 1 || command->index_type == 2);
     int strip = command->primitive == 5 && !command->indexed;
     u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
     if (!enabled || !pipeline || !vertex || !fragment ||
@@ -1191,11 +1190,13 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf ||
         command->color_target_mask != 1 || !command->target_complete ||
         (!strip && !indexed_triangles) || !command->count || !command->instance_count ||
-        command->polygon_state != 0x16 ||
+        (command->polygon_state != 0x16 && command->polygon_state != 0xa400476) ||
         command->color_state != (command->depth_target_bound ? 0x08030100u : 0x08030000u) ||
-        command->depth_stencil_state[0] != (indexed_triangles || !command->depth_target_bound ? 0x40u : 0x42u) ||
+        (command->depth_target_bound &&
+         command->depth_stencil_state[0] != (indexed_triangles ? 0x40u : 0x42u)) ||
         !(command->viewport_known & 1) ||
-        !(command->scissor_known & 1) || command->color_target[0].format != 0x25 ||
+        !(command->scissor_known & 1) ||
+        (command->color_target[0].format != 0x25 && command->color_target[0].format != 0x38) ||
         command->color_target[0].target != 1 || command->color_target[0].storage_target != 1 ||
         command->color_target[0].view.base_level || command->color_target[0].view.first_layer ||
         (command->depth_target_bound &&
@@ -1315,8 +1316,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                    ((descriptor->tic[0] >> 25) & 7) == 4 &&
                                    ((descriptor->tic[0] >> 28) & 7) == 5;
             if (semantic_shape && sampled_type == vk_tex_view_type(shader_texture) && num == 0 &&
-                identity_swizzle && (sampled_format == VK_FORMAT_R8G8B8A8_UNORM ||
-                                     sampled_format == VK_FORMAT_R8G8B8A8_SRGB))
+                identity_swizzle)
                 view = image_view_from_semantic(descriptor, effective_unknown);
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
@@ -1403,14 +1403,17 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_playout, 0, 2, sets, 0, NULL);
     if (key->nbind)
         vkCmdBindVertexBuffers2(cb, 0, key->nbind, vertex_buffers, vertex_offsets, NULL, vertex_strides);
-    VkViewport viewport = {vp_data[0], vp_data[1], vp_data[2], vp_data[3], 0.0f, 1.0f};
+    /* NVN's positive-height top-left viewport is programmed as a negative-height Maxwell transform.
+       Match that transform so face winding and screen-space texture coordinates agree with the guest. */
+    VkViewport viewport = {vp_data[0], vp_data[1] + vp_data[3], vp_data[2], -vp_data[3], 0.0f, 1.0f};
     if (command->depth_range_known & 1)
         memcpy(&viewport.minDepth, command->depth_range[0], sizeof(float) * 2);
     vkCmdSetViewportWithCount(cb, 1, &viewport);
     VkRect2D scissor = {{(i32)sc_data[0], (i32)sc_data[1]}, {sc_data[2], sc_data[3]}};
     vkCmdSetScissorWithCount(cb, 1, &scissor);
-    vkCmdSetCullMode(cb, VK_CULL_MODE_NONE);
-    vkCmdSetFrontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    vkCmdSetCullMode(cb, (VkCullModeFlags)(command->polygon_state & 3));
+    vkCmdSetFrontFace(cb, (command->polygon_state & 4) ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                                                     : VK_FRONT_FACE_CLOCKWISE);
     vkCmdSetPrimitiveTopology(cb, indexed_triangles ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
                                                    : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
     vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
@@ -1494,7 +1497,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     preserved_count += preserved;
     semantic_sample_count += semantic_sampled;
     embedded_bank1_count += !!(cbuf_mask & 2);
-    if (issued == 1 || !(issued % 100))
+    if (issued <= 8 || !(issued % 100))
         LOG("nvn-shadow-draw: issued=%llu preserved=%llu semantic-samples=%llu embedded-bank1=%llu target=%llx size=%ux%u\n",
             (unsigned long long)issued, (unsigned long long)preserved_count,
             (unsigned long long)semantic_sample_count, (unsigned long long)embedded_bank1_count,
