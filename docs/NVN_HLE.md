@@ -592,6 +592,11 @@ in fragment state after secondary-list execution, so that end-state comparison i
 Shader materialization now supplies only those known low words from the semantic NVN bindings to its CBUF reader;
 unknown words remain unavailable. This makes the shader translation input independent of the emulated GPU's later
 CBUF 2 state. A host draw still needs an uploaded buffer containing the full generated bank and descriptor bindings.
+The first Catherine boot draws had vertex/fragment CBUF masks `0/8`, `0/a`, or `8/0`: some need only application
+bank 3, while one fragment case also reads the first 16 bytes of generated bank 1. That bank's sampled prefix was
+zero, but it had substantial data later in the 64 KiB allocation, so zero-filling it generally would be wrong.
+This identifies a bank-3-only shader pair for a first shadow-draw experiment; vertex bindings, dynamic state, and
+target ordering still need to be implemented for that draw.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
