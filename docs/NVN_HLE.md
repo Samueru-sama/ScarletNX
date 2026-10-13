@@ -1140,7 +1140,12 @@ those draws did not help; barriers at both also left 239 differing bytes. The su
 diagnostic because its broader use changes results; it does not by itself establish a resource-lifetime
 cause for the missing draw writes.
 An ABI-6 repeat of the TotK writer pair kept all 239 differences when the second writer's depth
-test was disabled, its culling was disabled, or the first writer was forced to write depth.
+test was disabled, its culling was disabled, both depth testing and culling were disabled, or the
+first writer was forced to write depth. A readback immediately after the first writer found zero
+of the 240 flags set. Reading back after only the first writer or only the second writer left just
+one flag set at the following dispatch. Reading back after both found all 240 flags set and made
+the dispatch input byte-exact. These readbacks submit the graphics queue, so the result isolates
+the required command boundaries but does not identify which draw dependency needs them.
 The direct shader's coordinate uniforms contained the expected 1/64 X/Y scales and stride 20.
 The two paths used the same vertex and index addresses, strides, offsets, and formats for both
 draws. At a later image-comparison point, their 1280×720 feedback target at 0x511cc0000 was
