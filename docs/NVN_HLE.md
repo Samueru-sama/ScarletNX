@@ -279,9 +279,10 @@ vertex-B, and fragment SPH types, combines vertex-A/B where both exist, and maps
 while translating. It restores the Maxwell renderer's constant-buffer bindings afterward. It selects the vertex and
 fragment stage slots, so older bindings in the other four slots do not introduce unrelated shaders. Unknown references,
 duplicate stage candidates, unsupported instructions, and
-module creation failures leave the draw on the guest path. This is a preflight only: integer attribute and render
-target masks, pipeline state, descriptor sets, command recording, and image coherence are not yet supplied by the
-NVN draw. Successful module creation does not mean a Vulkan pipeline can render the draw correctly.
+module creation failures leave the draw on the guest path. The preflight keys vertex inputs and color outputs by the
+integer formats in the recorded NVN attribute and target state. This is a preflight only: integer texture types,
+clip-distance enables, pipeline state, descriptor sets, command recording, and image coherence are not yet supplied by
+the NVN draw. Successful module creation does not mean a Vulkan pipeline can render the draw correctly.
 In opt-in boots, both modules were available for all 3,827 prepared Catherine draws and all 2,858 prepared TotK
 draws, with no shader-module or attachment failures. Neither title's guest draws were replaced.
 

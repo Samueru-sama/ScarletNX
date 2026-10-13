@@ -461,6 +461,46 @@ static int shader_code_stage(u64 address, u32* type) {
     return -1;
 }
 
+/* The NVN attribute state stores NVNformat at bits 21-30. Only true integer formats
+   change the shader input type; the UI2F/I2F variants still feed floating-point inputs. */
+static int nvn_integer_format(u32 format) {
+    switch (format) {
+        case 0x04:
+        case 0x09:
+        case 0x0c:
+        case 0x10:
+        case 0x15:
+        case 0x18:
+        case 0x1c:
+        case 0x21:
+        case 0x24:
+        case 0x28:
+        case 0x2d:
+        case 0x30:
+        case 0x6a:
+        case 0x70:
+        case 0x75:
+        case 0x78: return -1;
+        case 0x03:
+        case 0x08:
+        case 0x0b:
+        case 0x0f:
+        case 0x14:
+        case 0x17:
+        case 0x1b:
+        case 0x20:
+        case 0x23:
+        case 0x27:
+        case 0x2c:
+        case 0x2f:
+        case 0x3e:
+        case 0x6f:
+        case 0x74:
+        case 0x77: return 1;
+        default: return 0;
+    }
+}
+
 static int materialize_draw_shaders(const NvnDrawCommand* command) {
     if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
     u64 vertex_a = 0, vertex_b = 0, fragment = 0;
@@ -502,6 +542,25 @@ static int materialize_draw_shaders(const NvnDrawCommand* command) {
                   command->program_bound);
         return 0;
     }
+    u32 attr_int = 0, attr_sint = 0;
+    for (u32 i = 0; i < command->vertex_attrib_count; i++) {
+        const NvnVertexAttrib* attrib = &command->vertex_attrib[i];
+        if (!attrib->enabled) continue;
+        int kind = nvn_integer_format(attrib->format);
+        if (kind) {
+            attr_int |= 1u << i;
+            if (kind < 0) attr_sint |= 1u << i;
+        }
+    }
+    u32 rt_int = 0, rt_sint = 0;
+    for (u32 i = 0; i < 8; i++) {
+        if (!(command->color_target_mask & (1u << i))) continue;
+        int kind = nvn_integer_format(command->color_target[i].format);
+        if (kind) {
+            rt_int |= 1u << i;
+            if (kind < 0) rt_sint |= 1u << i;
+        }
+    }
     for (u32 stage = 0; stage < 2; stage++) {
         u32 row = stage ? 4 : 0;
         u64 saved_cb[18];
@@ -516,7 +575,8 @@ static int materialize_draw_shaders(const NvnDrawCommand* command) {
                 g_vk_cbsize[row][i] = (u32)command->uniform[stage][i].size;
             }
         VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
-                                     stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, 0, 0, 0, 0, 0);
+                                     stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, stage ? 0 : attr_int,
+                                     stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0, 0);
         memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
         memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
         if (!shader || !shader->mod || shader->failed || shader->si.unsupported) {
