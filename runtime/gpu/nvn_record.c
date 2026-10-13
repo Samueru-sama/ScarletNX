@@ -125,6 +125,11 @@ typedef struct {
     u8 blend_color_known;
     u32 stencil_value_mask[2], stencil_write_mask[2], stencil_ref[2];
     u8 stencil_value_mask_known, stencil_write_mask_known, stencil_ref_known;
+    u32 line_width, point_size, alpha_ref;
+    u32 polygon_offset[3], depth_bounds[2], sample_mask;
+    u8 line_width_known, point_size_known, alpha_ref_known, polygon_offset_known, depth_bounds_known;
+    u8 depth_bounds_enabled, sample_mask_known, rasterizer_discard_known, rasterizer_discard;
+    u8 depth_clamp_known, depth_clamp;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
@@ -181,6 +186,8 @@ static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_ot
 static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_staged, draw_stage_full, draw_flushed;
 static u64 draw_viewport_known, draw_scissor_known, draw_depth_range_known;
 static u64 draw_blend_color_known, draw_stencil_value_mask_known, draw_stencil_write_mask_known, draw_stencil_ref_known;
+static u64 draw_line_width_known, draw_polygon_offset_known, draw_depth_bounds_known, draw_sample_mask_known;
+static u64 draw_rasterizer_discard_known, draw_depth_clamp_known;
 static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_target_no_surf, draw_target_format,
     draw_target_size, draw_target_view;
 static u64 draw_attachment_ready, draw_attachment_failed;
@@ -349,6 +356,11 @@ static void replay_stencil_faces(const NvnOp* op, u32 values[2], u8* known) {
     *known |= (u8)faces;
 }
 
+static void replay_float_args(const NvnOp* op, u32* values, u32 count, u8* known) {
+    *known = op->payload != NULL;
+    if (*known) memcpy(values, op->payload, (size_t)count * sizeof(u32));
+}
+
 /* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
 static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
@@ -419,6 +431,26 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             replay_stencil_faces(op, state->stencil_write_mask, &state->stencil_write_mask_known);
         } else if (!strcmp(op->name, "nvnCommandBufferSetStencilRef")) {
             replay_stencil_faces(op, state->stencil_ref, &state->stencil_ref_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetLineWidth")) {
+            replay_float_args(op, &state->line_width, 1, &state->line_width_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetPointSize")) {
+            replay_float_args(op, &state->point_size, 1, &state->point_size_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetAlphaRef")) {
+            replay_float_args(op, &state->alpha_ref, 1, &state->alpha_ref_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetPolygonOffsetClamp")) {
+            replay_float_args(op, state->polygon_offset, 3, &state->polygon_offset_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetDepthBounds")) {
+            replay_float_args(op, state->depth_bounds, 2, &state->depth_bounds_known);
+            state->depth_bounds_enabled = !!op->args[0];
+        } else if (!strcmp(op->name, "nvnCommandBufferSetSampleMask")) {
+            state->sample_mask = (u32)op->args[0];
+            state->sample_mask_known = 1;
+        } else if (!strcmp(op->name, "nvnCommandBufferSetRasterizerDiscard")) {
+            state->rasterizer_discard = !!op->args[0];
+            state->rasterizer_discard_known = 1;
+        } else if (!strcmp(op->name, "nvnCommandBufferSetDepthClamp")) {
+            state->depth_clamp = !!op->args[0];
+            state->depth_clamp_known = 1;
         } else if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
             const NvnCopyRegion* copy = op->payload;
             if (copy_execute && queue && copy && copy->valid) {
@@ -745,6 +777,29 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             draw_stencil_value_mask_known += draw.stencil_value_mask_known == 3;
             draw_stencil_write_mask_known += draw.stencil_write_mask_known == 3;
             draw_stencil_ref_known += draw.stencil_ref_known == 3;
+            draw.line_width = state->line_width;
+            draw.line_width_known = state->line_width_known;
+            draw.point_size = state->point_size;
+            draw.point_size_known = state->point_size_known;
+            draw.alpha_ref = state->alpha_ref;
+            draw.alpha_ref_known = state->alpha_ref_known;
+            memcpy(draw.polygon_offset, state->polygon_offset, sizeof draw.polygon_offset);
+            draw.polygon_offset_known = state->polygon_offset_known;
+            memcpy(draw.depth_bounds, state->depth_bounds, sizeof draw.depth_bounds);
+            draw.depth_bounds_known = state->depth_bounds_known;
+            draw.depth_bounds_enabled = state->depth_bounds_enabled;
+            draw.sample_mask = state->sample_mask;
+            draw.sample_mask_known = state->sample_mask_known;
+            draw.rasterizer_discard = state->rasterizer_discard;
+            draw.rasterizer_discard_known = state->rasterizer_discard_known;
+            draw.depth_clamp = state->depth_clamp;
+            draw.depth_clamp_known = state->depth_clamp_known;
+            draw_line_width_known += draw.line_width_known;
+            draw_polygon_offset_known += draw.polygon_offset_known;
+            draw_depth_bounds_known += draw.depth_bounds_known;
+            draw_sample_mask_known += draw.sample_mask_known;
+            draw_rasterizer_discard_known += draw.rasterizer_discard_known;
+            draw_depth_clamp_known += draw.depth_clamp_known;
             draw.blend_state_known = state->blend_state_known;
             memcpy(draw.blend_state, state->blend_state, sizeof draw.blend_state);
             memcpy(draw.vertex_attrib_raw, state->vertex_attrib_raw, sizeof draw.vertex_attrib_raw);
@@ -1015,6 +1070,20 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
         }
         for (u32 j = 0; j < 4; j++) color[j] = gr32(op->args[0] + (u64)j * 4);
         op->payload = color;
+    } else if (!strcmp(op->name, "nvnCommandBufferSetLineWidth") || !strcmp(op->name, "nvnCommandBufferSetPointSize") ||
+               !strcmp(op->name, "nvnCommandBufferSetAlphaRef") ||
+               !strcmp(op->name, "nvnCommandBufferSetPolygonOffsetClamp") ||
+               !strcmp(op->name, "nvnCommandBufferSetDepthBounds")) {
+        u32 count = !strcmp(op->name, "nvnCommandBufferSetPolygonOffsetClamp") ? 3
+                    : !strcmp(op->name, "nvnCommandBufferSetDepthBounds")      ? 2
+                                                                               : 1;
+        u32* values = malloc((size_t)count * sizeof *values);
+        if (!values) {
+            allocation_failures++;
+            return;
+        }
+        for (u32 j = 0; j < count; j++) values[j] = c->v[j].s[0];
+        op->payload = values;
     } else if (!strcmp(op->name, "nvnCommandBufferSetViewports") || !strcmp(op->name, "nvnCommandBufferSetScissors") ||
                !strcmp(op->name, "nvnCommandBufferSetDepthRanges") ||
                !strcmp(op->name, "nvnCommandBufferSetDepthRange")) {
@@ -1680,6 +1749,11 @@ void nvn_record_report(void) {
         LOG("nvn-draw-blend-stencil: blend-color=%llu value-mask=%llu write-mask=%llu ref=%llu\n",
             (unsigned long long)draw_blend_color_known, (unsigned long long)draw_stencil_value_mask_known,
             (unsigned long long)draw_stencil_write_mask_known, (unsigned long long)draw_stencil_ref_known);
+        LOG("nvn-draw-raster: line-width=%llu polygon-offset=%llu depth-bounds=%llu sample-mask=%llu discard=%llu "
+            "depth-clamp=%llu\n",
+            (unsigned long long)draw_line_width_known, (unsigned long long)draw_polygon_offset_known,
+            (unsigned long long)draw_depth_bounds_known, (unsigned long long)draw_sample_mask_known,
+            (unsigned long long)draw_rasterizer_discard_known, (unsigned long long)draw_depth_clamp_known);
         LOG("nvn-draw-stage: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)draw_staged,
             (unsigned long long)draw_flushed, (unsigned long long)draw_stage_full);
         if (draw_prepare)

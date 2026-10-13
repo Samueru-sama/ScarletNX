@@ -94,6 +94,11 @@ typedef struct {
     u8 blend_color_known;
     u32 stencil_value_mask[2], stencil_write_mask[2], stencil_ref[2];
     u8 stencil_value_mask_known, stencil_write_mask_known, stencil_ref_known;
+    u32 line_width, point_size, alpha_ref;
+    u32 polygon_offset[3], depth_bounds[2], sample_mask;
+    u8 line_width_known, point_size_known, alpha_ref_known, polygon_offset_known, depth_bounds_known;
+    u8 depth_bounds_enabled, sample_mask_known, rasterizer_discard_known, rasterizer_discard;
+    u8 depth_clamp_known, depth_clamp;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;
