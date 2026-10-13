@@ -912,8 +912,12 @@ uses a writable fragment SSBO whose address the direct recorder cannot yet prove
 image, so its global unknown-write marker remains. Resolving the SDK-generated constant-buffer data that names
 that SSBO, or modeling its write range directly, is the next required step.
 An instrumented TotK run scanned 198,135 complete SDK-call command spans plus the inter-call gaps and found no raw
-binds for Maxwell CBUF banks 0–2. The internal bank binding may come from MME expansion or earlier queue state;
-that source still needs to be established from the command stream before using it for direct draw descriptors.
+binds for Maxwell CBUF banks 0–2. The emulated GPU instead observed one ordinary, non-MME bank-0 bind for all five
+graphics stages before the first captured NVN submission: address `0x500390000`, size 28,672 bytes. The writable
+fragment SSBO descriptor at bank-0 offset `0x550` named `0x623130000` for 58,848 bytes in that run, separate in GPU
+virtual address from the blocked depth target. A diagnostic that borrowed this emulated binding still did not restore
+the third pass; other unknown writes remain. The direct path must recover the initialization binding and any needed
+physical-alias proof without depending on emulated render state.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
