@@ -3141,14 +3141,21 @@ void vk_nvn_shadow_compare(void) {
                         !filter_width || !filter_height))
         return;
     NvnImage* shadow = NULL;
+    /* An explicit address can inspect a modeled clear/copy before any direct draw touches it. Array images
+       compare their first layer against Maxwell's render target for that address. */
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++)
-        if (images[i].shadow_draw_stamp &&
+        if ((images[i].shadow_draw_stamp ||
+             (address_filter && ((images[i].color_layers[0] | images[i].depth_layers[0]) & 1) &&
+              images[i].subresource_sequence[0][0])) &&
             (!size_filter || (images[i].width == filter_width && images[i].height == filter_height)) &&
             (!format_filter || images[i].format == filter_format) &&
             (!address_filter || images[i].address == filter_address) &&
-            (!shadow || images[i].shadow_draw_stamp > shadow->shadow_draw_stamp))
+            (!shadow || (address_filter
+                            ? images[i].subresource_sequence[0][0] > shadow->subresource_sequence[0][0]
+                            : images[i].shadow_draw_stamp > shadow->shadow_draw_stamp)))
             shadow = &images[i];
-    if (!shadow || !shadow->transfer_src || shadow->levels != 1 || shadow->layers != 1 ||
+    if (!shadow || !shadow->transfer_src || shadow->levels != 1 ||
+        (shadow->layers != 1 && !address_filter) ||
         !shadow->width || !shadow->height) {
         LOG_LIMIT(8, "nvn-shadow-compare-skip: shadow=%d transfer=%d levels=%u layers=%u size=%ux%u\n",
                   !!shadow, shadow ? shadow->transfer_src : 0, shadow ? shadow->levels : 0,
@@ -3156,7 +3163,7 @@ void vk_nvn_shadow_compare(void) {
         return;
     }
     VkFmt format = nvn_format(shadow->format);
-    if (!format.vk || !format.bpp || format.depth || format.bw > 1 || format.bh > 1 ||
+    if (!format.vk || !format.bpp || (format.depth && !address_filter) || format.bw > 1 || format.bh > 1 ||
         (u64)shadow->width * shadow->height > (16ull << 20) / format.bpp) {
         LOG_LIMIT(8, "nvn-shadow-compare-skip: format=%x vk=%u bpp=%u block=%ux%u depth=%d\n",
                   shadow->format, format.vk, format.bpp, format.bw, format.bh, format.depth);
@@ -3193,14 +3200,16 @@ void vk_nvn_shadow_compare(void) {
     u8* pixels = vk_readback_buffer(bytes * 2, &readback);
     if (!pixels) return;
     VkCommandBuffer cb = vk_cmd();
-    vk_barrier(cb, shadow->image, VK_IMAGE_ASPECT_COLOR_BIT, shadow->stage, shadow->access, shadow->layout,
+    /* A combined depth/stencil image copies only its depth aspect, matching the native target's readback. */
+    VkImageAspectFlags read_aspect = format.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    vk_barrier(cb, shadow->image, vk_aspect(&format), shadow->stage, shadow->access, shadow->layout,
                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     shadow->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     shadow->access = VK_ACCESS_2_TRANSFER_READ_BIT;
     shadow->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     vk_surf_use(cb, emulated, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
-    VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+    VkBufferImageCopy copy = {.imageSubresource = {read_aspect, 0, 0, 1},
                               .imageExtent = {shadow->width, shadow->height, 1}};
     vkCmdCopyImageToBuffer(cb, shadow->image, shadow->layout, readback, 1, &copy);
     copy.bufferOffset = bytes;
@@ -3262,7 +3271,7 @@ void vk_nvn_shadow_compare(void) {
     u64 center = ((u64)(shadow->height / 2) * shadow->width + shadow->width / 2) * format.bpp;
     LOG("nvn-shadow-compare: eligible=%llu target=%llx format=%x bpp=%u covered=%d different=%llu/%llu bytes=%llu/%llu emulated-wgen=%u center=%02x%02x%02x%02x/%02x%02x%02x%02x\n",
         (unsigned long long)eligible_count, (unsigned long long)shadow->address, shadow->format, format.bpp,
-        !!(shadow->color_layers[0] & 1),
+        !!((format.depth ? shadow->depth_layers[0] : shadow->color_layers[0]) & 1),
         (unsigned long long)different, (unsigned long long)(bytes / format.bpp),
         (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],

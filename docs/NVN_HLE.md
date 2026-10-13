@@ -1260,6 +1260,14 @@ shadow image. It rechecks guest freshness on subsequent samples and drops that s
 upload fails. This lets Scarlet direct draws 48 and 50 execute. The first 1920×1080 comparison is now covered,
 but 921,600 of 2,073,600 pixels still differ, in the 1280×720 active region. The remaining difference needs an
 operation-aligned comparison of draw 50's inputs and output; coverage alone does not establish image parity.
+With an explicit `SNX_NVN_SHADOW_COMPARE_ADDRESS`, the readback can also select a clear-only image, a depth
+image, or the first layer of an array image. On Scarlet's first compared frame, the direct and Maxwell
+targets for draws 32 (`0x5459b4000`) and 48 (`0x54425a000`) match byte for byte. Draw 50's
+single-layer color inputs tested so far also match, as do the first layers of its D24S8 and D32F
+depth inputs and R8 UINT array input. Its output remains black across the active 1280×720 region,
+where Maxwell produces color. Draw 128 samples a black, alpha-one image and uses blend factors that
+preserve the existing target, so it does not explain the mismatch. Remaining candidates include
+the arrays' other layers, guest-loaded textures, uniform state, and shader execution.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
