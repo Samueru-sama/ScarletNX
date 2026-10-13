@@ -1241,9 +1241,13 @@ including both shader hashes. Its pipeline builds, but the shadow draw stops at 
 draw at sequence 32 invalidates it. Sequence 32 has an R16F color target, and sequence 48 has an R8 color target;
 both formats already map to supported Vulkan attachments but were omitted from the direct draw whitelist. The
 whitelist now includes them. Sequence 32 then executes and preserves the depth source, but sequence 48 remains
-ineligible later in the direct draw path and invalidates it again. The sequence-50 draw and the 1920×1080
-comparison therefore remain uncovered. This is a chained producer-coverage gap, not a channel-mask issue with
-the compared draw.
+ineligible later in the direct draw path and invalidates it again. Its seventh fragment texture is a 2D-array
+image at `0x543850000`. Maxwell has a fresh render target there, so the direct path cannot safely fall back
+to guest memory. NVN recorded a clear of an R8 UINT (`0x03`) target with two layers at that address, but the
+shadow image format table does not yet map R8 UINT, and the clear selects only one layer. Mapping the format
+alone would not certify both sampled layers; integer clear conversion and per-layer provenance need checking.
+The sequence-50 draw and the 1920×1080 comparison therefore remain uncovered. This is a chained
+producer-coverage gap, not a channel-mask issue with the compared draw.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
