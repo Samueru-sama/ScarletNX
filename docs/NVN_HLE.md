@@ -1329,6 +1329,11 @@ register during direct replay picks up the tail state from the same present and 
 one submission too late. A safe fix must retain the state at the command segment's
 position, including queue packets before and after it, rather than using the GPU
 register at the later replay callback.
+A diagnostic that flipped the facing of every later direct batch culled the sampled
+Catherine consumer but left its comparison image at the sentinel color (`0x336699cc`)
+instead of native transparent black (`0x00000000`). This does not establish parity:
+the direct path must also prove and reproduce the target's initial contents when a
+draw is culled. The diagnostic override was removed.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
