@@ -547,10 +547,103 @@ static void shadow_invalidate_backing(const NvnTextureTarget* target) {
     }
 }
 
+static int shadow_copy_region_valid(const NvnTextureTarget* target, const i32 region[6]) {
+    return target->target == 1 && target->storage_target == 1 && target->format == target->storage_format &&
+           target->depth == 1 && target->levels && target->samples <= 1 &&
+           !target->view.base_level && !target->view.first_layer &&
+           target->view.level_count <= 1 && target->view.layer_count <= 1 &&
+           !(target->view.flags & (8 | 16 | 4 | 32)) &&
+           region[0] >= 0 && region[1] >= 0 && region[2] == 0 &&
+           region[3] > 0 && region[4] > 0 && region[5] == 1 &&
+           (u32)region[0] <= target->width && (u32)region[1] <= target->height &&
+           (u32)region[3] <= target->width - (u32)region[0] &&
+           (u32)region[4] <= target->height - (u32)region[1];
+}
+
+static int shadow_blit_texture(const NvnCopyBufferTextureCommand* command) {
+    const NvnTextureTarget* source_target = &command->source_target;
+    const NvnTextureTarget* target = &command->target;
+    if (!shadow_range_known(source_target) || !shadow_copy_region_valid(source_target, command->source_region) ||
+        !shadow_copy_region_valid(target, command->target_region) ||
+        source_target->format != target->format)
+        return 0;
+    u64 source_end = source_target->gpu_address + source_target->storage_size;
+    u64 target_end = target->gpu_address + target->storage_size;
+    if (source_target->gpu_address < target_end && target->gpu_address < source_end) return 0;
+    VkFmt format = nvn_format(source_target->format);
+    if (!format.vk || format.conv || format.bw > 1 || format.bh > 1) return 0;
+    VkFormatProperties properties = {0};
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, format.vk, &properties);
+    if ((properties.optimalTilingFeatures & (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)) !=
+        (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT))
+        return 0;
+    VkImageAspectFlags aspect = vk_aspect(&format);
+    int full = 0;
+    NvnImage* source = image_for(source_target, format.vk, aspect, &full);
+    if (!source || !source->transfer_src ||
+        !((format.depth ? source->depth_layers[0] : source->color_layers[0]) & 1) ||
+        source->subresource_sequence[0][0] <= effective_unknown_write(command->prior_unmodeled_write))
+        return 0;
+    /* Keep the source resident while image_for allocates the destination. */
+    source->last_batch = batch_serial;
+    NvnImage* destination = image_for(target, format.vk, aspect, &full);
+    if (!destination || source == destination) return 0;
+    int destination_covered = ((format.depth ? destination->depth_layers[0] : destination->color_layers[0]) & 1) &&
+                              destination->subresource_sequence[0][0] >
+                                  effective_unknown_write(command->prior_unmodeled_write);
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_barrier(cb, source->image, aspect, source->stage, source->access, source->layout,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vk_barrier(cb, destination->image, aspect, destination->stage, destination->access, destination->layout,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    source->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    source->stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+    source->access = VK_ACCESS_2_TRANSFER_READ_BIT;
+    destination->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    destination->stage = VK_PIPELINE_STAGE_2_COPY_BIT;
+    destination->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkImageBlit blit = {.srcSubresource = {format.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                                         0, 0, 1},
+                        .dstSubresource = {format.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                                           0, 0, 1},
+                        .srcOffsets = {{command->source_region[0], command->source_region[1], 0},
+                                       {command->source_region[0] + command->source_region[3],
+                                        command->source_region[1] + command->source_region[4], 1}},
+                        .dstOffsets = {{command->target_region[0], command->target_region[1], 0},
+                                       {command->target_region[0] + command->target_region[3],
+                                        command->target_region[1] + command->target_region[4], 1}}};
+    vkCmdBlitImage(cb, source->image, source->layout, destination->image, destination->layout, 1, &blit,
+                   VK_FILTER_NEAREST);
+    if (format.stencil) {
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        vkCmdBlitImage(cb, source->image, source->layout, destination->image, destination->layout, 1, &blit,
+                       VK_FILTER_NEAREST);
+    }
+    shadow_invalidate_backing(target);
+    int full_target = !command->target_region[0] && !command->target_region[1] &&
+                      (u32)command->target_region[3] == target->width &&
+                      (u32)command->target_region[4] == target->height;
+    if (full_target || destination_covered) {
+        if (format.depth)
+            destination->depth_layers[0] |= 1;
+        else
+            destination->color_layers[0] |= 1;
+        destination->subresource_sequence[0][0] = command->sequence;
+    }
+    source->last_batch = destination->last_batch = batch_serial;
+    return 1;
+}
+
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     const NvnTextureTarget* target = &command->target;
     if (command->scoped_texture_write) {
         if (!shadow_range_known(target)) return 0;
+        if (command->texture_blit && shadow_blit_texture(command)) {
+            mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
+            return 2;
+        }
         shadow_invalidate_backing(target);
         mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
         return 1;
