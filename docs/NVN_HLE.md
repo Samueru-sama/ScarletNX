@@ -891,6 +891,16 @@ They still differed at 12,116 of those pixels, with small differences in all fou
 parity remains unproven. Without recovered vertex binds, the first three draws had no bound stream and did not
 issue. Without recovered state, the 640×360 shadow target had no eligible image to compare.
 
+A consecutive-present TotK probe narrowed the next coverage gap. The first comparison differed by roughly 12,000
+pixels, while the second matched all 230,400 pixels in one run; that first-pass difference is timing-sensitive and
+does not yet have a proven cause. Starting with the third pass, the same indexed draws still had prepared Vulkan
+pipelines, but the shadow renderer rejected them because their depth attachment at `0x52e160000` had lost coverage.
+The color clear still issued, then the rejected draws invalidated the color target. `vk_nvn_batch_begin` clears all
+shadow image coverage at every replay batch, and that pass did not reestablish the depth provenance before its first
+draw. The next implementation task is to track depth and color writes by resource across replay batches, including
+which unmodeled writes can actually alias an attachment; simply bypassing the depth check would let stale shadow
+contents pass as valid.
+
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
 2. Start with guest object and resource lifetimes. Translate memory pools, textures, samplers, shaders, command
