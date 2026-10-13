@@ -14,6 +14,7 @@
 #include <time.h>
 #include <process.h>
 #include <io.h> /* _get_osfhandle */
+#include <fcntl.h>
 typedef struct {
     char* out;
     size_t cap;
@@ -388,9 +389,52 @@ static int file_map(PFileMap* m, const char* path, const u64* indexed_size) {
 int plat_file_map(PFileMap* m, const char* path) { return file_map(m, path, NULL); }
 int plat_file_map_sized(PFileMap* m, const char* path, u64 size) { return file_map(m, path, &size); }
 void plat_file_unmap(PFileMap* m) {
-    if (m->data) UnmapViewOfFile(m->data);
+    if (m->data && !m->borrowed) UnmapViewOfFile(m->data);
     m->data = NULL;
     m->size = 0;
+    m->borrowed = 0;
+}
+/* The CRT's descriptor table holds 8192 (_NHANDLE_), and descriptors are handed out lowest first: leave room for
+   everything opened on demand */
+#define SHARE_FD_MAX     8192
+#define SHARE_FD_RESERVE 256
+int plat_file_share(const char* path, u64 size, int* fd, const u8** data) {
+    *fd = -1;
+    *data = NULL;
+    if (size > SIZE_MAX || size > INT64_MAX) return -1;
+    wchar_t* w = wpath(path);
+    if (!w) return -1;
+    HANDLE f = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    if (f == INVALID_HANDLE_VALUE) return -1;
+    void* p = NULL;
+    if (size) { /* a section is shared by every process that maps the file, and reads a page when it is touched */
+        HANDLE mp = CreateFileMappingW(f, NULL, PAGE_READONLY, (DWORD)(size >> 32), (DWORD)size, NULL);
+        p = mp ? MapViewOfFile(mp, FILE_MAP_READ, 0, 0, (SIZE_T)size) : NULL;
+        if (mp) CloseHandle(mp); /* the view keeps the mapping */
+        if (!p) {
+            CloseHandle(f);
+            return -1;
+        }
+    }
+    int d = _open_osfhandle((intptr_t)f, _O_RDONLY | _O_BINARY); /* owns f from here */
+    if (d < 0 || d + SHARE_FD_RESERVE >= SHARE_FD_MAX) {
+        if (p) UnmapViewOfFile(p);
+        if (d < 0)
+            CloseHandle(f);
+        else
+            _close(d);
+        return -1;
+    }
+    *fd = d;
+    *data = p;
+    return 0;
+}
+void plat_file_unshare(int fd, const u8* data, u64 size) {
+    (void)size;
+    if (data) UnmapViewOfFile(data);
+    if (fd >= 0) _close(fd);
 }
 /* rename fails on Windows when dst exists, and a remove first loses dst if the process dies in between */
 int plat_replace_file(const char* tmp, const char* dst) {

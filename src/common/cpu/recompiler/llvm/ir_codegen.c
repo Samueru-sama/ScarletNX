@@ -53,6 +53,13 @@ static void open_block(SnxIr* ir) {
 
 static void ret(SnxIr* ir) { LLVMBuildRetVoid(B); }
 
+/* A call the C follows with return: guaranteed to become a jump (-foptimize-sibling-calls only makes it likely), so
+   a chain of guest tail calls never grows the host stack, whatever the optimization level */
+static void must_tail(SnxIr* ir, LLVMValueRef site) {
+    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+    LLVMBuildRetVoid(ir->b);
+}
+
 /* CALLDYN(t): snx_lookup(c,t)(c,t) */
 static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
     LLVMValueRef args[2], function;
@@ -71,10 +78,7 @@ static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) 
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
     else
         site = call_dynamic(ir, args[1]);
-    if (tail) {
-        LLVMSetTailCall(site, 1); /* -foptimize-sibling-calls */
-        ret(ir);
-    }
+    if (tail) must_tail(ir, site);
 }
 
 static size_t index_of(const SnxFunction* function, SnxU64 address) {
@@ -101,7 +105,7 @@ static void branch(SnxIr* ir, const SnxCodegen* codegen, const SnxFunction* func
 /* if(UNLIKELY(c->pc!=pc+4)) return; */
 static void check_return(SnxIr* ir, SnxU64 next) {
     LLVMBasicBlockRef leave = ir_block(ir, "leave"), stay = ir_block(ir, "stay");
-    LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, ir_pc(ir), ir_i64(ir, next), ""), leave, stay);
+    ir_unlikely(ir, LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, ir_pc(ir), ir_i64(ir, next), ""), leave, stay));
     LLVMPositionBuilderAtEnd(B, leave);
     ret(ir);
     LLVMPositionBuilderAtEnd(B, stay);
@@ -163,14 +167,14 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
     /* if(UNLIKELY(e!=start)){ c->pc=e; goto D_; } or { CALLDYN(e); return; } */
     mismatch = ir_block(ir, "entry_mismatch");
     body = ir_block(ir, "body");
-    LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, e, ir_i64(ir, function->start), ""), mismatch, body);
+    ir_unlikely(ir,
+                LLVMBuildCondBr(B, LLVMBuildICmp(B, LLVMIntNE, e, ir_i64(ir, function->start), ""), mismatch, body));
     LLVMPositionBuilderAtEnd(B, mismatch);
     if (dispatch) {
         ir_set_pc(ir, e);
         LLVMBuildBr(B, dispatch_block);
     } else {
-        LLVMSetTailCall(call_dynamic(ir, e), 1);
-        ret(ir);
+        must_tail(ir, call_dynamic(ir, e));
     }
     LLVMPositionBuilderAtEnd(B, body);
     if (function->count && snx_function_address(function, 0) != function->start)
@@ -228,8 +232,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
                     ir_set_pc(ir, t);
                     LLVMBuildBr(B, dispatch_block);
                 } else {
-                    LLVMSetTailCall(call_dynamic(ir, t), 1);
-                    ret(ir);
+                    must_tail(ir, call_dynamic(ir, t));
                 }
                 terminal = 1;
                 break;
@@ -266,8 +269,7 @@ void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {
         for (i = 0; i < function->count; ++i)
             if (function->leaders[i]) LLVMAddCase(sw, ir_i64(ir, snx_function_address(function, i)), labels[i]);
         LLVMPositionBuilderAtEnd(B, other);
-        LLVMSetTailCall(call_dynamic(ir, ir_pc(ir)), 1);
-        ret(ir);
+        must_tail(ir, call_dynamic(ir, ir_pc(ir)));
     }
     free(labels);
 }

@@ -262,8 +262,9 @@ void kernel_dump_threads(void) {
         if (!t || t->state == 2) continue;
         int k = t->wait_kind;
         if (k < 0 || k > 5) k = 0;
-        LOG("thread %llu '%s' prio %d core %d: %s", (unsigned long long)t->id, t->name, t->prio, t->core,
-            t->state == 0 ? "not started" : kinds[k]);
+        LOG("thread %llu '%s' prio %d core %d", (unsigned long long)t->id, t->name, t->prio, t->core);
+        if (t->affinity != 1ull << t->core) LOG(" mask %llx", (unsigned long long)t->affinity); /* cores it may use */
+        LOG(": %s", t->state == 0 ? "not started" : kinds[k]);
         if (t->on_core == -2) LOG(" (waiting for its core)");
         if (t->suspended) LOG(" (paused by svcSetThreadActivity)");
         if (k == 1) LOG(" [%s%s]", t->wait_name ? t->wait_name : "?", t->wait_timeout < 0 ? "" : " with timeout");

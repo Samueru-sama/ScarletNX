@@ -114,21 +114,45 @@ static u64 special64(void) {
     return next_random();
 }
 
+/* floats at the edges of the LLVM backend's FP fast paths: exponents 0, 1, 2, precision+1..3, the top, and small
+   integers and products that round or not */
+static u32 edge32(void) {
+    static const u32 exponents[] = {0, 1, 2, 3, 24, 25, 26, 27, 100, 127, 128, 150, 200, 252, 253, 254, 255};
+    u64 r = next_random();
+    u32 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
+    u32 m =
+        (r >> 8) & 7 ? (u32)(r >> 20) & 0x7FFFFF : (u32)((r >> 20) & 7) << 20; /* sometimes few bits: exact results */
+    return (u32)((r >> 40) & 1) << 31 | e << 23 | m;
+}
+static u64 edge64(void) {
+    static const u64 exponents[] = {0, 1, 2, 3, 53, 54, 55, 56, 500, 1023, 1024, 1075, 1500, 2044, 2045, 2046, 2047};
+    u64 r = next_random(), r2 = next_random();
+    u64 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
+    u64 m = (r >> 8) & 7 ? r2 & 0xFFFFFFFFFFFFFull : (r2 & 7) << 49;
+    return ((r >> 40) & 1) << 63 | e << 52 | m;
+}
+static u64 fp_value(void) {
+    u64 r = next_random();
+    if (r % 4 == 0) return (u64)edge32() << 32 | edge32();
+    if (r % 4 == 1) return edge64();
+    return special64();
+}
+
 static void random_state(CPU* c, unsigned char* memory, const Word* w) {
     unsigned i;
     int addresses = memory_pattern(w->pattern->name);
     static const u32 fpcr[] = {0, 1u << 24, 1u << 25, 3u << 22, 1u << 22, 2u << 22, 1u << 26, 0x07C00000u};
     for (i = 0; i < 32; ++i) {
         c->x[i] = addresses ? 0x1000 + (next_random() % 0x7000 & ~(u64)15) : special64();
-        c->v[i].d[0] = special64();
-        c->v[i].d[1] = special64();
+        c->v[i].d[0] = fp_value();
+        c->v[i].d[1] = fp_value();
     }
     c->n = next_random() & 1;
     c->z = next_random() & 1;
     c->cf = next_random() & 1;
     c->vf = next_random() & 1;
     c->fpcr = fpcr[next_random() % 8] | (next_random() % 2 ? (u32)(next_random() & 0x07C00000u) : 0);
-    c->fpsr = next_random() % 4 ? 0 : (u32)(next_random() & 0xF800009Fu);
+    c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0xF800009Fu);
     c->tpidr = next_random();
     c->tpidrro = next_random();
     c->excl_addr = next_random();
@@ -243,7 +267,7 @@ static size_t directed(const char* match, size_t want, Word* out) {
     size_t got = 0, i;
     if (match && strncmp("SIMD", match, strlen(match) < 4 ? strlen(match) : 4)) return 0;
     for (i = 0; i < want; ++i) {
-        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[6];
+        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[17];
         unsigned k;
         words[0] = 0x2F00E400UL | (r & 31) | ((r >> 9) & 1) << 30;
         words[1] = 0x0EA01C00UL | ((r >> 10) & 1) << 30 | n << 16 | n << 5 | (r & 31);
@@ -252,7 +276,24 @@ static size_t directed(const char* match, size_t want, Word* out) {
                    element_ops[next_random() % 3] << 12;
         words[4] = ((r & ~0x9FE0FC00UL) | 0x0E000400UL) | copy_ops[next_random() % 4] << 11;
         words[5] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % 7] << 11 | 0x40000000UL;
-        for (k = 0; k < 6; ++k) {
+        /* snx_ir_more_simd: LD1/ST1 (1-4 registers), LD1R and lanes, CNT/NOT/RBIT, PMULL 1Q, MOVI family, UZP/TRN/ZIP,
+           EXT, AES */
+        words[6] = (r & 0x40C0001FUL) | 0x0C000000UL | (SnxU32)(next_random() % 2) << 23 |
+                   (SnxU32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16 |
+                   (SnxU32) "\x07\x0A\x06\x02"[next_random() % 4] << 12 | ((r >> 10) & 3) << 10 | ((r >> 5) & 31) << 5;
+        words[7] = (r & 0x40E0FFFFUL & ~0x00202000UL) | 0x0D000000UL;
+        words[8] = (r & 0x60C003FFUL) | 0x0E205800UL;
+        words[9] = (r & 0x401F03FFUL) | 0x0EE0E000UL;
+        words[10] = (r & 0x6007FBFFUL) | 0x0F000400UL;
+        words[11] = (r & 0x40DF73FFUL) | 0x0E000800UL;
+        words[12] = (r & 0x401F7BFFUL) | 0x2E000000UL;
+        words[13] = (r & 0x000033FFUL) | 0x4E284800UL;
+        /* three-same integer, shifts by immediate, FABS/FNEG */
+        words[14] = (r & 0x60DFFBFFUL) | 0x0E200400UL;
+        words[15] = (r & 0x607FFBFFUL & ~0x0000F800UL) | 0x0F000400UL |
+                    (SnxU32) "\x00\x02\x08\x0A\x14\x10"[next_random() % 6] << 11 | (1u << (19 + (r >> 30) % 4));
+        words[16] = (r & 0x60C003FFUL) | 0x0EA0F800UL;
+        for (k = 0; k < 17; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
             if (c->kind != SNX_FLOW_PLAIN) continue;
             out[got].word = words[k];
@@ -321,7 +362,7 @@ int main(int argc, char** argv) {
             count += generate(p, k, want, words + count);
         }
     }
-    words = (Word*)snx_realloc(words, (count + 6 * per_simd) * sizeof(*words));
+    words = (Word*)snx_realloc(words, (count + 17 * per_simd) * sizeof(*words));
     count += directed(match, per_simd, words + count);
     if (!count) return snx_error("no words to test");
     dir = snx_temp_dir(NULL);
@@ -386,6 +427,9 @@ int main(int argc, char** argv) {
         LLVMSetInitializer(table, LLVMConstArray(ir->t_ptr, fns, (unsigned)count));
         getter = LLVMAddFunction(ir->mod, "snx_test_steps", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
         LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, getter, "entry"));
+        /* the LLVM side detects the host's extensions as snx_module does; the portable side doesn't, so its helpers
+           are the plain C reference for the CPUID-gated ones */
+        ir_call(ir, ir_extern(ir, "snx_cpu_detect", ir->t_void, NULL, 0), NULL, 0);
         LLVMBuildRet(ir->b, table);
         free(fns);
     }

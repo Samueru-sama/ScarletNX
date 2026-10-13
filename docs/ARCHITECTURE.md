@@ -52,7 +52,16 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
   `link_coff.c`) with `rtlib.c`, the helpers and interpreter compiled when the recompiler is built, into a module
   with no imports, for the host it runs on. `tests/llvm_differential.c` runs both backends' step functions on random
   states (every pattern, failing if any instruction falls back to the interpreter's `snx_step`), `tests/llvm_module.c`
-  a whole program built by both. `gcc` (libgccjit, `module_gccjit.c`) is reserved.
+  a whole program built by both, `tests/llvm_bench.c` times both on assembly kernels. `gcc` (libgccjit,
+  `module_gccjit.c`) is reserved.
+- The LLVM backend's speed: guest memory and the CPU structure are separate alias scopes (registers stay in host
+  registers) and guest accesses are volatile (each happens, as on the hardware); logical immediates and SIMD
+  immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result
+  is provably the soft-float helper's, flags included (`ir_fp_fast`); common SIMD (loads/stores, permutes, shifts,
+  compares, byte ops) is inline instead of `snx_simd`. Host extensions gate x86 intrinsics: `snx_ir_host` (read
+  once from LLVM's CPUID detection) for the generated code, `snx_cpu_features` (CPUID once in `snx_cpu_detect`,
+  called by `snx_module`) for the helpers, under `__x86_64__`: AES-NI, PCLMULQDQ, SSE4.2 CRC32C, and GFNI and
+  AVX512-BITALG through `llvm.bitreverse`/`llvm.ctpop`.
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
   NX extraction retains its isolated key environment.
 
@@ -87,8 +96,11 @@ bump `SNX_ABI` for ABI changes. Version mismatches reject loading.
 ### Guest exec
 
 Guest thread = host thread + `CPU` + TLS. `hle/kernel/thread.c`: one owner/core, four cores; release on kernel block,
-sleep/yield, IPC, WFE. Waiters: priority then FIFO; higher-priority preemption at the next SVC.
-SVC/WFE-free spins retain their core.
+sleep/yield, IPC, WFE. Waiters: priority then FIFO; a waiter of higher priority takes the core at the holder's next SVC
+or backward branch, any taken branch in the interpreter (`CPU.poll`, `RtAPI.poll`). A ready thread that would wait
+behind its core's holder runs on an idle core of its mask, and an idle core takes such a waiter (only
+`svcSleepThread(0)` keeps a yielding thread on its core). A mutex owner runs at its best waiter's priority
+(`hle/kernel/sync.c`).
 
 `memory/mem.c`: one guest VA reservation; `GP(addr) = g_mem + addr`, accessed directly by generated code.
 

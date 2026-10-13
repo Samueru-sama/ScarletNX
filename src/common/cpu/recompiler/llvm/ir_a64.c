@@ -59,15 +59,28 @@ static V subs(SnxIr* ir, int wide, V a, V b) { return call3(ir, wide ? SNX_IR_SU
 static V cond_ok(SnxIr* ir, unsigned cond) { return call2(ir, SNX_IR_COND_OK, ir->c, i32c(ir, cond)); }
 static V truth(SnxIr* ir, V v) { return LLVMBuildICmp(B, LLVMIntNE, v, LLVMConstInt(LLVMTypeOf(v), 0, 0), ""); }
 
+/* snx_decode_bitmask (helpers/integer.c), evaluated here: its arguments are fields of the constant word, so the
+   immediate is a constant of the generated code instead of a call at run time */
 static V decode_bitmask(SnxIr* ir, unsigned n, unsigned imms, unsigned immr, unsigned ds) {
-    LLVMTypeRef p[4];
-    V args[4];
-    p[0] = p[1] = p[2] = p[3] = ir->t_i32;
-    args[0] = i32c(ir, n);
-    args[1] = i32c(ir, imms);
-    args[2] = i32c(ir, immr);
-    args[3] = i32c(ir, ds);
-    return ir_call(ir, ir_extern(ir, "snx_decode_bitmask", ir->t_i64, p, 4), args, 4);
+    unsigned v = (n << 6) | (~imms & 0x3F), esize, levels, s, r;
+    int len = -1, i;
+    SnxU64 welem, result = 0, mask;
+    for (i = 6; i >= 0; i--)
+        if (v & (1u << i)) {
+            len = i;
+            break;
+        }
+    if (len < 1) return i64c(ir, 0);
+    esize = 1u << len;
+    levels = esize - 1;
+    s = imms & levels;
+    r = immr & levels;
+    if (s == levels) return i64c(ir, 0);
+    welem = s + 1 >= 64 ? ~(SnxU64)0 : ((SnxU64)1 << (s + 1)) - 1;
+    mask = esize >= 64 ? ~(SnxU64)0 : ((SnxU64)1 << esize) - 1;
+    if (r) welem = ((welem >> r) | (welem << (esize - r))) & mask;
+    for (v = 0; v < ds; v += esize) result |= welem << v;
+    return i64c(ir, ds == 32 ? (SnxU32)result : result);
 }
 
 /* ---- data processing, immediate ---- */
@@ -534,17 +547,53 @@ static int dp1(SnxIr* ir, SnxU32 w, size_t index) {
     return 1;
 }
 
+/* snx_crc32's byte-at-a-time recurrence as a 256-entry table per polynomial, built here once per module */
+static V crc_table(SnxIr* ir, unsigned castagnoli) {
+    const char* name = castagnoli ? "snx_crc32c_table" : "snx_crc32_table";
+    V table = LLVMGetNamedGlobal(ir->mod, name), entries[256];
+    SnxU32 poly = castagnoli ? 0x82F63B78UL : 0xEDB88320UL, v;
+    unsigned i, k;
+    if (table) return table;
+    for (i = 0; i < 256; ++i) {
+        for (v = i, k = 0; k < 8; ++k) v = (v >> 1) ^ ((v & 1) ? poly : 0);
+        entries[i] = i32c(ir, v);
+    }
+    table = LLVMAddGlobal(ir->mod, LLVMArrayType(ir->t_i32, 256), name);
+    LLVMSetLinkage(table, LLVMInternalLinkage);
+    LLVMSetGlobalConstant(table, 1);
+    LLVMSetInitializer(table, LLVMConstArray(ir->t_i32, entries, 256));
+    return table;
+}
+
+/* CRC32[BHWX] and CRC32C*: snx_crc32(acc, value, bytes, castagnoli). CRC32C is the SSE4.2 CRC32 instruction on x86
+   (CPUID crc32); otherwise a table lookup per byte */
 static V crc32(SnxIr* ir, V acc, V value, unsigned bytes, unsigned castagnoli) {
-    LLVMTypeRef p[4];
-    V args[4];
-    p[0] = ir->t_i32;
-    p[1] = ir->t_i64;
-    p[2] = p[3] = ir->t_i32;
-    args[0] = acc;
-    args[1] = ir_u64(ir, value);
-    args[2] = i32c(ir, bytes);
-    args[3] = i32c(ir, castagnoli);
-    return ir_call(ir, ir_extern(ir, "snx_crc32", ir->t_i32, p, 4), args, 4);
+    V table, x;
+    unsigned i;
+    if (castagnoli && ir->features->x86 && ir->features->crc32) {
+        static const char* const names[4] = {"llvm.x86.sse42.crc32.32.8", "llvm.x86.sse42.crc32.32.16", NULL,
+                                             "llvm.x86.sse42.crc32.32.32"};
+        V args[2];
+        if (bytes == 8) {
+            args[0] = ir_u64(ir, acc);
+            args[1] = ir_u64(ir, value);
+            return ir_u32(ir, ir_intrinsic(ir, "llvm.x86.sse42.crc32.64.64", NULL, args, 2));
+        }
+        args[0] = acc;
+        args[1] = ir_cast(ir, value, LLVMIntTypeInContext(ir->ctx, 8 * bytes), 0);
+        return ir_intrinsic(ir, names[bytes - 1], NULL, args, 2);
+    }
+    table = crc_table(ir, castagnoli);
+    x = ir_u64(ir, value);
+    for (i = 0; i < bytes; ++i) {
+        V byte = ir_u32(ir, LLVMBuildAnd(B, LLVMBuildLShr(B, x, i64c(ir, 8 * i), ""), i64c(ir, 0xFF), ""));
+        V index[2], entry;
+        index[0] = i64c(ir, 0);
+        index[1] = ir_u64(ir, LLVMBuildAnd(B, LLVMBuildXor(B, acc, byte, ""), i32c(ir, 0xFF), ""));
+        entry = ir_load(ir, ir->t_i32, LLVMBuildInBoundsGEP2(B, LLVMArrayType(ir->t_i32, 256), table, index, 2, ""));
+        acc = LLVMBuildXor(B, entry, LLVMBuildLShr(B, acc, i32c(ir, 8), ""), "");
+    }
+    return acc;
 }
 
 static int dp2(SnxIr* ir, SnxU32 w, size_t index) {
@@ -684,7 +733,7 @@ int snx_ir_plain(SnxIr* ir, SnxU32 w, SnxU64 pc, const SnxA64Case* instruction) 
     else if (!strcmp(name, "DP3"))
         return dp3(ir, w, index);
     else if (!strncmp(name, "SIMD", 4))
-        return snx_ir_simd_plain(ir, w, pc, pattern, index);
+        return snx_ir_more_simd(ir, w) || snx_ir_simd_plain(ir, w, pc, pattern, index);
     else
         return snx_ir_fp_plain(ir, w, pc, pattern, index);
     return 1;

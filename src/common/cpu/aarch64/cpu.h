@@ -28,8 +28,8 @@ typedef double f64;
 
 /* the version of the contract between a game module and the runtime (this header, cpu_helpers.c, RtAPI and the
    module descriptor). The recompiler stamps it into each module, the runtime refuses a module with another one */
-/* Stateful FP arithmetic changes generated semantics: rebuild runtime and modules. */
-#define SNX_ABI 6
+/* 7: CPU.poll and RtAPI.poll, checked on the backward branches of generated code. */
+#define SNX_ABI 7
 
 #if defined(_WIN32)
 #define SNX_EXPORT __declspec(dllexport)
@@ -68,6 +68,10 @@ typedef struct CPU {
     u64 code_lo, code_hi;
     const RtAPI* rt;
     void* thread; /* owning runtime thread or process */
+    /* set by another host thread when the runtime wants this one back (a thread of higher priority waits for its
+       core): generated code reads it on every backward branch, the interpreter on every taken branch, and then
+       they call rt->poll */
+    u32 poll;
 } CPU;
 
 /* ---- memory: base + addr, no page tables ---- */
@@ -289,6 +293,16 @@ SNX_INLINE u64 bfm_(u64 dst, u64 src, u32 immr, u32 imms, u32 ds) {
     return ds == 32 ? (u32)r : r;
 }
 u64 snx_decode_bitmask(u32 N, u32 imms, u32 immr, u32 ds); /* cpu_helpers.c */
+
+/* ---- host instruction set extensions (cpu_helpers.c) ----
+   Read with CPUID once, when the module is loaded (snx_module calls snx_cpu_detect first), and never again: the
+   helpers test the bits directly. The bits are per architecture; without detection (another architecture, or a
+   test that never calls it) they stay 0 and every helper takes its portable C path. */
+#if defined(__x86_64__)
+enum { SNX_CPU_SSE42 = 1u << 0, SNX_CPU_PCLMUL = 1u << 1, SNX_CPU_AES = 1u << 2, SNX_CPU_GFNI = 1u << 3 };
+#endif
+extern u32 snx_cpu_features;
+void snx_cpu_detect(void);
 
 /* ---- CRC32 ---- */
 u32 snx_crc32(u32 acc, u64 val, int bytes, int castagnoli);

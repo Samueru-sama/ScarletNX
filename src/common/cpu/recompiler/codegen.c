@@ -454,11 +454,23 @@ static void call(FILE* out, const SnxCodegen* codegen, SnxU64 target, int tail) 
     if (tail) fputs(" return; }", out);
 }
 
-static void branch(FILE* out, const SnxCodegen* codegen, const SnxFunction* function, SnxU64 target) {
+/* a backward branch is how a loop goes round: there a thread that makes no SVC can still be taken off its core */
+static void poll(FILE* out, SnxU64 resume) {
+    fputs("if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ c->pc=", out);
+    snx_a64_literal(out, resume);
+    fputs("; c->rt->poll(c); } ", out);
+}
+
+static void branch(FILE* out, const SnxCodegen* codegen, const SnxFunction* function, SnxU64 address, SnxU64 target) {
     if (snx_function_contains(function, target)) {
+        if (target <= address) {
+            fputs("{ ", out);
+            poll(out, target);
+        }
         fputs("goto ", out);
         label(out, target);
         fputc(';', out);
+        if (target <= address) fputs(" }", out);
     } else
         call(out, codegen, target, 1);
 }
@@ -515,12 +527,12 @@ void snx_codegen_emit(FILE* out, SnxCodegen* codegen, const SnxFunction* functio
                 if (!snx_a64_fast_simd(out, word)) snx_a64_body(out, c->first, "c->rt->undef(c,pc,w)");
                 break;
             case SNX_FLOW_B:
-                branch(out, codegen, function, snx_a64_target(word, address));
+                branch(out, codegen, function, address, snx_a64_target(word, address));
                 terminal = 1;
                 break;
             case SNX_FLOW_BC:
                 fprintf(out, "if(%s) ", c->first);
-                branch(out, codegen, function, snx_a64_target(word, address));
+                branch(out, codegen, function, address, snx_a64_target(word, address));
                 break;
             case SNX_FLOW_BL:
                 target = snx_a64_target(word, address);
@@ -558,7 +570,7 @@ void snx_codegen_emit(FILE* out, SnxCodegen* codegen, const SnxFunction* functio
         }
     }
     if (dispatch) {
-        fputs(" D_: switch(c->pc){\n", out);
+        fputs(" D_: if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))) c->rt->poll(c);\n switch(c->pc){\n", out);
         for (i = 0; i < function->count; ++i)
             if (function->leaders[i]) {
                 address = snx_function_address(function, i);

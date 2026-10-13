@@ -18,6 +18,8 @@ typedef struct RtAPI {
     void (*fpcr_changed)(struct CPU* c);
     void (*sev)(void);
     void (*wfe)(struct CPU* c);
+    /* CPU.poll was set: a loop that makes no SVC lets the runtime take the thread off its core here */
+    void (*poll)(struct CPU* c);
 } RtAPI;
 
 #endif

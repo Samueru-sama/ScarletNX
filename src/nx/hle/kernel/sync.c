@@ -45,6 +45,31 @@ static int wl_count(int kind, u64 key) {
     return n;
 }
 
+/* priority inheritance, as the console's kernel does it: a mutex's owner runs at the best priority among the threads
+   waiting for it, and so on up while the owner itself waits on a mutex. Without it a waiter of high priority sits
+   behind any thread of middling priority on the owner's core */
+static void prio_update_nl(KThread* t) {
+    for (int depth = 0; t && depth < 64; depth++) {
+        int p = t->base_prio;
+        for (KThread* w = g_mwait; w; w = w->next_waiter)
+            if (w->wait_kind == 2 && w->lock_owner == t && w->prio < p) p = w->prio;
+        if (p == t->prio) return;
+        core_set_prio(t, p);
+        t = t->wait_kind == 2 ? t->lock_owner : NULL;
+    }
+}
+void prio_set_base_nl(KThread* t, int prio) {
+    t->base_prio = prio;
+    prio_update_nl(t);
+}
+/* w waits on the mutex at w->wait_addr, which owner holds */
+static void mutex_wait_nl(KThread* w, KThread* owner) {
+    w->wait_kind = 2;
+    w->lock_owner = owner;
+    wl_add(w);
+    prio_update_nl(owner);
+}
+
 static u32* U32(u64 a) { return (u32*)GP(a); }
 static void unlock_nl(u64 addr) {
     KThread* n = wl_best(2, addr);
@@ -52,11 +77,20 @@ static void unlock_nl(u64 addr) {
         __atomic_store_n(U32(addr), 0, __ATOMIC_SEQ_CST);
         return;
     }
+    KThread* old = n->lock_owner;
     wl_del(n);
     n->wait_kind = 0;
-    int more = wl_count(2, addr) > 0;
+    n->lock_owner = NULL;
+    int more = 0;
+    for (KThread* w = g_mwait; w; w = w->next_waiter)
+        if (w->wait_kind == 2 && w->wait_addr == addr) { /* the others now wait for n */
+            w->lock_owner = n;
+            more = 1;
+        }
     __atomic_store_n(U32(addr), n->wait_tag | (more ? HANDLE_WAIT : 0), __ATOMIC_SEQ_CST);
     wake(n, 0);
+    prio_update_nl(old);
+    prio_update_nl(n);
 }
 /* the thread a mutex tag names. Like the console's handle table lookup without pseudo handles: the tag holds a real
    thread handle, so the current-thread pseudo handle, a closed handle or another object's handle name no owner */
@@ -78,11 +112,10 @@ u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag) {
         pm_unlock(&g_klock);
         return R_BADHANDLE;
     }
-    t->wait_kind = 2;
     t->wait_addr = addr;
     t->wait_tag = tag;
     t->woken = 0;
-    wl_add(t);
+    mutex_wait_nl(t, tag_owner_nl(owner));
     sleep_nl(t, -1);
     u32 r = t->wait_result;
     pm_unlock(&g_klock);
@@ -143,9 +176,9 @@ u32 svc_signal_cv(u64 key, i32 count) {
                 }
             } else {
                 if (__atomic_compare_exchange_n(U32(ma), &v, v | HANDLE_WAIT, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-                    if (tag_owner_nl(v)) {
-                        w->wait_kind = 2;
-                        wl_add(w);
+                    KThread* owner = tag_owner_nl(v);
+                    if (owner) {
+                        mutex_wait_nl(w, owner);
                     } else { /* the mutex names no thread, so nobody would hand it over: InvalidState, as on console */
                         w->wait_kind = 0;
                         wake(w, R_BADSTATE);

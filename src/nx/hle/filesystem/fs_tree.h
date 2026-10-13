@@ -27,6 +27,10 @@ typedef struct FsNode {
     u64 size;
     int is_dir, is_virtual, readonly, attached;
     u8* virtual_data;
+    /* fd >= 0: a RomFS/ExeFS file opened at startup and mapped read-only and shared (plat_file_share) for the
+       whole run, its contents at map (NULL when empty). Such nodes are readonly, so fd, map and size never change */
+    int fd;
+    const u8* map;
     unsigned refs; /* open handles; attached nodes are additionally owned by the tree */
 } FsNode;
 
@@ -52,6 +56,9 @@ FsTreeResult fs_tree_remove(FsTree* tree, FsNode* scope, const char* path, int i
 FsTreeResult fs_tree_rename(FsTree* tree, FsNode* scope, const char* src, const char* dst, int is_dir);
 /* Copies the contents. Missing parent directories are virtual, writable placeholders. Injected files are readonly. */
 FsTreeResult fs_tree_add_virtual(FsTree* tree, const char* relative_path, const void* data, u64 size, FsNode** out);
+/* Startup only: opens and maps every regular file under node (plat_file_share) and makes the subtree readonly, so no
+   mapped file is ever truncated, replaced or renamed. A file that can't be mapped keeps fd -1 and is read on demand. */
+FsTreeResult fs_tree_share(FsTree* tree, FsNode* node, unsigned* shared, unsigned* failed);
 void fs_tree_retain(FsNode* node);
 void fs_tree_release(FsNode* node);
 

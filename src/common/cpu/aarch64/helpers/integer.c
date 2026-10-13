@@ -23,7 +23,21 @@ u64 snx_decode_bitmask(u32 N, u32 imms, u32 immr, u32 ds) {
     return ds == 32 ? (u32)r : r;
 }
 
+#if defined(__x86_64__)
+/* CRC32C is SSE4.2's CRC32 instruction */
+__attribute__((target("sse4.2"))) static u32 crc32c_sse42(u32 acc, u64 val, int bytes) {
+    switch (bytes) {
+        case 1: return _mm_crc32_u8(acc, (u8)val);
+        case 2: return _mm_crc32_u16(acc, (u16)val);
+        case 4: return _mm_crc32_u32(acc, (u32)val);
+        default: return (u32)_mm_crc32_u64(acc, val);
+    }
+}
+#endif
 u32 snx_crc32(u32 acc, u64 val, int bytes, int castagnoli) {
+#if defined(__x86_64__)
+    if (castagnoli && (snx_cpu_features & SNX_CPU_SSE42)) return crc32c_sse42(acc, val, bytes);
+#endif
     u32 poly = castagnoli ? 0x82F63B78u : 0xEDB88320u;
     for (int i = 0; i < bytes; i++) {
         acc ^= (u8)(val >> (i * 8));

@@ -92,11 +92,18 @@ i64 plat_pread(FILE* f, void* buf, u64 size, u64 off); /* bytes read (fewer at t
 typedef struct {
     const u8* data;
     u64 size;
+    int borrowed; /* a view of a file shared for the whole run (fs_map_file): plat_file_unmap only clears it */
 } PFileMap;
 int plat_file_map(PFileMap* m, const char* path); /* 0, or -1 when the file can't be opened or mapped */
 /* An indexed regular file: use the recorded length without querying host metadata. */
 int plat_file_map_sized(PFileMap* m, const char* path, u64 size);
 void plat_file_unmap(PFileMap* m);
+/* A read-only file kept for the whole run: its fd stays open and it is mapped MAP_SHARED (on Windows a PAGE_READONLY
+   section, shared by nature), so its pages are the host's page cache, shared by every running instance and read only
+   when touched. size is the indexed length; an empty file keeps its fd with data NULL. 0, or -1 with *fd -1 when it
+   can't be opened or mapped, or when keeping it open would leave too few descriptors for the files opened on demand */
+int plat_file_share(const char* path, u64 size, int* fd, const u8** data);
+void plat_file_unshare(int fd, const u8* data, u64 size);
 /* replaces dst with tmp in one step (rename), so a reader never sees dst missing or half written. On failure dst is
    kept and tmp removed */
 int plat_replace_file(const char* tmp, const char* dst);

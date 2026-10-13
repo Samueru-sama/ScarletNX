@@ -33,10 +33,12 @@ static FsNode* node_new(const char* name, int is_dir) {
         return NULL;
     }
     n->is_dir = is_dir;
+    n->fd = -1;
     return n;
 }
 
 static void node_free(FsNode* n) {
+    if (n->fd >= 0) plat_file_unshare(n->fd, n->map, n->size);
     free(n->virtual_data);
     free(n->name);
     free(n);
@@ -613,6 +615,27 @@ FsTreeResult fs_tree_add_virtual(FsTree* tree, const char* relative_path, const 
         parent = n;
         p = slash + 1;
     }
+}
+
+FsTreeResult fs_tree_share(FsTree* tree, FsNode* node, unsigned* shared, unsigned* failed) {
+    if (!belongs_to(tree, node)) return FS_TREE_NOTFOUND;
+    node->readonly = 1;
+    if (node->is_dir) {
+        for (FsNode* child = node->children; child; child = child->next) {
+            FsTreeResult rc = fs_tree_share(tree, child, shared, failed);
+            if (rc) return rc;
+        }
+        return FS_TREE_OK;
+    }
+    if (node->is_virtual || node->fd >= 0) return FS_TREE_OK;
+    char path[FS_TREE_PATH_MAX];
+    FsTreeResult rc = fs_tree_path(tree, node, path, sizeof path);
+    if (rc) return rc;
+    if (plat_file_share(path, node->size, &node->fd, &node->map))
+        (*failed)++;
+    else
+        (*shared)++;
+    return FS_TREE_OK;
 }
 
 /* The initial scan uses native directory APIs because PDir cannot distinguish end-of-directory from failures,

@@ -113,4 +113,5 @@ static void rt_wfe(CPU* c) { /* a spin wait: let another thread on this core run
     plat_yield();
     if (t) core_enter(t);
 }
-const RtAPI g_rtapi = {snx_svc, rt_undef, rt_note_hint, rt_ticks, rt_brk, rt_fpcr, rt_sev, rt_wfe};
+static void rt_poll(CPU* c) { core_poll((KThread*)c->thread); }
+const RtAPI g_rtapi = {snx_svc, rt_undef, rt_note_hint, rt_ticks, rt_brk, rt_fpcr, rt_sev, rt_wfe, rt_poll};

@@ -27,7 +27,7 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
     t->entry = entry;
     t->arg = arg;
     t->stack_top = stack_top;
-    t->prio = prio;
+    t->prio = t->base_prio = prio;
     t->core = core < 0 ? 0 : core;
     t->ideal_core = t->core;
     t->on_core = -1;
@@ -69,9 +69,12 @@ KThread* kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core) {
    runs and lets go only where a console thread is off the CPU too: when it blocks in the kernel, sleeps or yields,
    makes an IPC call, or waits in WFE. A thread letting go hands the core to its waiting thread of highest priority, the
    earliest among equals. The console also preempts a running thread as soon as one of higher priority becomes ready:
-   here the holder can only be stopped at its next SVC (core_preempt), so a thread spinning without SVCs or WFE keeps its
-   core until it blocks. A yield hands the core to any waiting thread, even one of lower priority: the console would run
-   that one on an idle core, and threads don't move between cores here */
+   here the holder is stopped at its next SVC, or at its next backward branch (a taken one in the interpreter: CPU.poll,
+   core_poll), so a thread spinning in a loop lets go of its core within one round of it. A ready thread that would wait
+   behind its core's holder runs on an idle core its mask allows instead, and a core that falls idle takes a thread
+   waiting for another one, as the console's scheduler moves threads to idle cores (Ender Magnolia's threads all take
+   cores 0 to 2, and boot only when one runs beside a spinning one). A yield hands the core to any waiting thread, even
+   one of lower priority; only svcSleepThread(0) keeps the yielding thread on its core */
 static PMutex g_core_lk;
 static PCond g_core_cv[NCORES];
 static KThread* g_core_owner[NCORES];
@@ -80,11 +83,20 @@ static int
     g_core_best[NCORES]; /* the best (lowest) priority waiting, 64 when none: core_preempt and core_yield read it
                                    unlocked */
 static u64 g_core_ticket;
+/* the holder of core k is asked to let go (CPU.poll, which generated code checks on every backward branch and the
+   interpreter on every taken one) while a thread of higher priority waits for the core: the console would have
+   preempted it already */
+static void core_flag_nl(int k) {
+    KThread* o = g_core_owner[k];
+    if (o)
+        __atomic_store_n(&o->cpu.poll, __atomic_load_n(&g_core_best[k], __ATOMIC_RELAXED) < o->prio, __ATOMIC_RELAXED);
+}
 static KThread* core_first_nl(int k) {
     KThread* b = NULL;
     for (KThread* w = g_core_wait[k]; w; w = w->core_next)
         if (!b || w->prio < b->prio || (w->prio == b->prio && w->core_ticket < b->core_ticket)) b = w;
     __atomic_store_n(&g_core_best[k], b ? b->prio : 64, __ATOMIC_RELAXED);
+    core_flag_nl(k);
     return b;
 }
 /* core k to w, a thread waiting for it */
@@ -95,29 +107,65 @@ static void core_grant_nl(KThread* w, int k) {
     core_first_nl(k);
     g_core_owner[k] = w;
     w->on_core = k;
+    core_flag_nl(k);
     pc_broadcast(&g_core_cv[k]);
+}
+/* the best thread waiting for another core that k may take: k is idle, and the console runs a thread on an idle core of
+   its mask rather than behind a busy one. A waiter of better priority than its core's holder stays, it takes that core
+   at the holder's next poll */
+static KThread* core_steal_nl(int k) {
+    KThread* b = NULL;
+    int from = -1;
+    for (int i = 0; i < NCORES; i++)
+        for (KThread* w = i == k ? NULL : g_core_wait[i]; w; w = w->core_next)
+            if (((w->affinity >> k) & 1) && !(g_core_owner[i] && w->prio < g_core_owner[i]->prio) &&
+                (!b || w->prio < b->prio || (w->prio == b->prio && w->core_ticket < b->core_ticket))) {
+                b = w;
+                from = i;
+            }
+    if (!b) return NULL;
+    KThread** pp = &g_core_wait[from];
+    while (*pp != b) pp = &(*pp)->core_next;
+    *pp = b->core_next;
+    core_first_nl(from);
+    b->core = k;
+    b->core_next = g_core_wait[k];
+    g_core_wait[k] = b;
+    pc_broadcast(&g_core_cv[from]); /* it waits there: core_grant_nl's on_core lets it go */
+    return b;
 }
 static void core_release_nl(KThread* t) {
     int k = t->on_core;
     g_core_owner[k] = NULL;
     t->on_core = -1;
+    __atomic_store_n(&t->cpu.poll, 0, __ATOMIC_RELAXED);
     KThread* w = core_first_nl(k);
+    if (!w) w = core_steal_nl(k);
     if (w) core_grant_nl(w, k);
 }
-static void core_wait_nl(KThread* t) {
+/* migrate 1: when its core is held by a thread it wouldn't preempt, t runs on an idle core of its mask instead; 2: when
+   its core is held at all (a yield, which just handed it over) */
+static void core_wait_nl(KThread* t, int migrate) {
     int k = t->core;
+    KThread* o = g_core_owner[k];
+    if (o && (migrate == 2 || (migrate == 1 && o->prio <= t->prio)))
+        for (int j = 0; j < NCORES; j++)
+            if (j != k && ((t->affinity >> j) & 1) && !g_core_owner[j] && !g_core_wait[j]) {
+                t->core = k = j;
+                break;
+            }
     t->core_ticket = g_core_ticket++;
     t->on_core = -2;
     t->core_next = g_core_wait[k];
     g_core_wait[k] = t;
     KThread* w = core_first_nl(k); /* core_preempt sees the new waiter while the core is held */
     if (!g_core_owner[k]) core_grant_nl(w, k);
-    while (t->on_core != k) pc_wait(&g_core_cv[k], &g_core_lk, -1);
+    while (t->on_core < 0) pc_wait(&g_core_cv[k], &g_core_lk, -1); /* k, or a core that took it (core_steal_nl) */
 }
 void core_enter(KThread* t) {
     if (!t || t->on_core >= 0) return;
     pm_lock(&g_core_lk);
-    core_wait_nl(t);
+    core_wait_nl(t, 1);
     pm_unlock(&g_core_lk);
 }
 void core_leave(KThread* t) {
@@ -131,16 +179,19 @@ void core_preempt(KThread* t) {
     if (k < 0 || __atomic_load_n(&g_core_best[k], __ATOMIC_RELAXED) >= t->prio) return;
     pm_lock(&g_core_lk);
     core_release_nl(t);
-    core_wait_nl(t);
+    core_wait_nl(t, 1);
     pm_unlock(&g_core_lk);
 }
-void core_yield(KThread* t) {
+void core_poll(KThread* t) {
+    if (t) core_preempt(t);
+}
+void core_yield(KThread* t, int migrate) {
     int k = t->on_core;
     /* nobody waits, and svcSetThreadCoreMask didn't move it meanwhile */
     if (k < 0 || (__atomic_load_n(&g_core_best[k], __ATOMIC_RELAXED) == 64 && t->core == k)) return;
     pm_lock(&g_core_lk);
     core_release_nl(t);
-    core_wait_nl(t);
+    core_wait_nl(t, migrate);
     pm_unlock(&g_core_lk);
 }
 void core_set_prio(KThread* t, int prio) {

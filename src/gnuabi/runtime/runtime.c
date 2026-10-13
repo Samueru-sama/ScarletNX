@@ -33,4 +33,5 @@ static u64 ticks(void) {
 static void fpcr(CPU* c) { (void)c; }
 static void event(void) {}
 static void wait_event(CPU* c) { (void)c; }
-const RtAPI gnu_rtapi = {syscall_entry, undefined, hint, ticks, breakpoint, fpcr, event, wait_event};
+static void poll(CPU* c) { (void)c; } /* one thread at a time here: nothing asks for the core back */
+const RtAPI gnu_rtapi = {syscall_entry, undefined, hint, ticks, breakpoint, fpcr, event, wait_event, poll};

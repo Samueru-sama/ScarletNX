@@ -120,9 +120,36 @@ int plat_file_map_sized(PFileMap* map, const char* path, u64 size) {
     return 0;
 }
 void plat_file_unmap(PFileMap* map) {
-    free((void*)map->data);
+    if (!map->borrowed) free((void*)map->data);
     map->data = NULL;
     map->size = 0;
+    map->borrowed = 0;
+}
+static int test_shared; /* files shared and not yet unshared */
+int plat_file_share(const char* path, u64 size, int* fd, const u8** data) {
+    *fd = -1;
+    *data = NULL;
+    /* zulu.bin stays unmapped so RomFS reads also cover the on-demand fallback */
+    size_t length = strlen(path);
+    if (length >= 8 && !strcmp(path + length - 8, "zulu.bin")) return -1;
+    u8* bytes = NULL;
+    if (size) {
+        FILE* f = fopen(path, "rb");
+        CHECK(f != NULL);
+        bytes = malloc((size_t)size);
+        CHECK(bytes != NULL);
+        CHECK(fread(bytes, 1, (size_t)size, f) == (size_t)size);
+        CHECK(!fclose(f));
+    }
+    *fd = ++test_shared;
+    *data = bytes;
+    return 0;
+}
+void plat_file_unshare(int fd, const u8* data, u64 size) {
+    (void)size;
+    CHECK(fd > 0 && test_shared > 0);
+    test_shared--;
+    free((void*)data);
 }
 void logf_(int level, const char* format, ...) {
     (void)level;
@@ -680,6 +707,23 @@ static void test_extracted_romfs(SvcObj* proxy) {
     const u8 spanning[13] = {'e', 's', 't', 0, 0, 0, 0, 0, 0, 't', 'a', 'i', 'l'};
     CHECK(!memcmp(GP(0x5000), spanning, sizeof spanning));
     svcobj_unref(storage);
+    /* RomFS files are mapped from startup and readonly; zulu.bin was refused and is read on demand */
+    FsNode *asset, *zulu;
+    pm_lock(&fsp.tree.lock);
+    CHECK(!fs_tree_lookup(&fsp.tree, NULL, "romfs/asset.bin", &asset) && asset->fd >= 0 && asset->readonly);
+    CHECK(!fs_tree_lookup(&fsp.tree, NULL, "romfs/zulu.bin", &zulu) && zulu->fd < 0 && zulu->readonly);
+    CHECK(fs_tree_remove(&fsp.tree, NULL, "romfs/asset.bin", 0, 0, 0) == FS_TREE_READONLY);
+    CHECK(fs_tree_rename(&fsp.tree, NULL, "romfs/asset.bin", "romfs/moved.bin", 0) == FS_TREE_READONLY);
+    CHECK(fs_tree_create(&fsp.tree, NULL, "romfs/new.bin", 0, 0, NULL) == FS_TREE_READONLY);
+    pm_unlock(&fsp.tree.lock);
+    PFileMap map;
+    CHECK(!fs_map_file("romfs/asset.bin", &map) && map.borrowed && map.data == asset->map && map.size == 10);
+    plat_file_unmap(&map);
+    CHECK(!map.data && !map.borrowed && asset->map != NULL);
+    u64 size = 0;
+    u8* bytes = fs_read_file("romfs/asset.bin", &size);
+    CHECK(bytes != NULL && size == 10 && !memcmp(bytes, "romfs test", 10));
+    free(bytes);
     puts("PASS extracted RomFS metadata, padding, cross-file reads and zero-length shared offsets");
 }
 
@@ -690,6 +734,7 @@ static void test_raw_romfs(SvcObj* proxy) {
     dispatch(proxy, &r, 0);
     CHECK(r.c.nout_objs == 1);
     SvcObj* storage = r.c.out_objs[0];
+    CHECK(fsp.rimage != NULL && fsp.rraw == NULL); /* the image is mapped, not read through a FILE */
     CHECK(get_size(storage) == sizeof expected);
     test_storage_contracts(storage, sizeof expected);
     request(&r, 0);
@@ -719,6 +764,7 @@ static void cleanup_service(void) {
     free(fsp.fn);
     fs_tree_destroy(&fsp.tree);
     pm_unlock(&fsp.tree.lock);
+    CHECK(test_shared == 0);
 }
 
 int main(int argc, char** argv) {

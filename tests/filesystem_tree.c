@@ -63,6 +63,20 @@ void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
 void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
 int plat_mkdir(const char* path) { return mkdir(path, 0777); }
 #endif
+int plat_file_share(const char* path, u64 size, int* fd, const u8** data) {
+    (void)path;
+    (void)size;
+    (void)fd;
+    (void)data;
+    CHECK(!"the tree suite never shares files");
+    return -1;
+}
+void plat_file_unshare(int fd, const u8* data, u64 size) {
+    (void)fd;
+    (void)data;
+    (void)size;
+    CHECK(!"the tree suite never shares files");
+}
 
 static void host_path(const char* relative, char* out) {
     CHECK(snprintf(out, FS_TREE_PATH_MAX, "%s/%s", original_base, relative) < FS_TREE_PATH_MAX);

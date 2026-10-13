@@ -10,6 +10,17 @@
 
 /* ---- setup ---- */
 
+SnxIrFeatures snx_ir_host;
+static const SnxIrFeatures generic_features;
+
+static int has_feature(const char* features, const char* name) {
+    size_t n = strlen(name);
+    const char* p;
+    for (p = features; (p = strstr(p, name)) != NULL; p += n)
+        if (p > features && p[-1] == '+' && (p[n] == ',' || !p[n])) return 1;
+    return 0;
+}
+
 int snx_ir_init(char* error, size_t error_size) {
     char* triple;
     int x86;
@@ -23,6 +34,21 @@ int snx_ir_init(char* error, size_t error_size) {
     x86 = !strncmp(triple, "x86_64", 6);
     if (!x86) snprintf(error, error_size, "the LLVM backend targets x86-64 hosts, this one is %s", triple);
     LLVMDisposeMessage(triple);
+    if (x86 && !snx_ir_host.x86) {
+        char* f = LLVMGetHostCPUFeatures();
+        snx_ir_host.sse42 = has_feature(f, "sse4.2");
+        snx_ir_host.crc32 = snx_ir_host.sse42 && has_feature(f, "crc32");
+        snx_ir_host.pclmul = has_feature(f, "pclmul");
+        snx_ir_host.aes = has_feature(f, "aes");
+        snx_ir_host.gfni = has_feature(f, "gfni");
+        snx_ir_host.fma = has_feature(f, "fma");
+        snx_ir_host.avx2 = has_feature(f, "avx2");
+        snx_ir_host.avx512bw = has_feature(f, "avx512bw");
+        snx_ir_host.avx512vl = has_feature(f, "avx512vl");
+        snx_ir_host.avx512bitalg = has_feature(f, "avx512bitalg");
+        LLVMDisposeMessage(f);
+        snx_ir_host.x86 = 1; /* last: snx_ir_init may run again, the features stay as read */
+    }
     return x86 ? 0 : -1;
 }
 
@@ -61,6 +87,7 @@ SnxIr* snx_ir_new_target(const char* name, char opt, const char* target_triple, 
     ir->tm =
         LLVMCreateTargetMachine(target, triple, cpu, features, codegen_level(opt), LLVMRelocPIC, LLVMCodeModelDefault);
     ir->windows = strstr(triple, "windows") != NULL || strstr(triple, "mingw") != NULL;
+    ir->features = target_triple ? &generic_features : &snx_ir_host;
     ir->ctx = LLVMContextCreate();
     ir->mod = LLVMModuleCreateWithNameInContext(name, ir->ctx);
     LLVMSetTarget(ir->mod, triple);
@@ -84,6 +111,22 @@ SnxIr* snx_ir_new_target(const char* name, char opt, const char* target_triple, 
     params[0] = ir->t_ptr;
     params[1] = ir->t_i64;
     ir->t_guest = LLVMFunctionType(ir->t_void, params, 2, 0);
+    {
+        /* !alias.scope/!noalias: one domain, two scopes, uniqued by name */
+        LLVMMetadataRef domain, cpu[2], guest[2], list;
+        LLVMMetadataRef name = LLVMMDStringInContext2(ir->ctx, "snx.domain", 10);
+        domain = LLVMMDNodeInContext2(ir->ctx, &name, 1);
+        cpu[0] = LLVMMDStringInContext2(ir->ctx, "snx.cpu", 7);
+        cpu[1] = domain;
+        guest[0] = LLVMMDStringInContext2(ir->ctx, "snx.guest", 9);
+        guest[1] = domain;
+        list = LLVMMDNodeInContext2(ir->ctx, cpu, 2);
+        ir->scope_cpu = LLVMMetadataAsValue(ir->ctx, LLVMMDNodeInContext2(ir->ctx, &list, 1));
+        list = LLVMMDNodeInContext2(ir->ctx, guest, 2);
+        ir->scope_guest = LLVMMetadataAsValue(ir->ctx, LLVMMDNodeInContext2(ir->ctx, &list, 1));
+        ir->kind_scope = LLVMGetMDKindIDInContext(ir->ctx, "alias.scope", 11);
+        ir->kind_noalias = LLVMGetMDKindIDInContext(ir->ctx, "noalias", 7);
+    }
     return ir;
 }
 
@@ -167,8 +210,25 @@ LLVMValueRef ir_load(SnxIr* ir, LLVMTypeRef type, LLVMValueRef pointer) {
     return LLVMBuildLoad2(ir->b, type, pointer, "");
 }
 void ir_store(SnxIr* ir, LLVMValueRef value, LLVMValueRef pointer) { LLVMBuildStore(ir->b, value, pointer); }
-LLVMValueRef ir_cpu_load(SnxIr* ir, LLVMTypeRef type, size_t offset) { return ir_load(ir, type, ir_cpu(ir, offset)); }
-void ir_cpu_store(SnxIr* ir, LLVMValueRef value, size_t offset) { ir_store(ir, value, ir_cpu(ir, offset)); }
+/* The guest's memory is its own allocation, never the CPU structure: telling LLVM lets it keep guest registers in
+   host registers across guest loads and stores (and loops), which it can't prove from CPU* noalias alone once c is
+   passed to a call */
+LLVMValueRef ir_tag_cpu(SnxIr* ir, LLVMValueRef access) {
+    LLVMSetMetadata(access, ir->kind_scope, ir->scope_cpu);
+    LLVMSetMetadata(access, ir->kind_noalias, ir->scope_guest);
+    return access;
+}
+LLVMValueRef ir_tag_guest(SnxIr* ir, LLVMValueRef access) {
+    LLVMSetMetadata(access, ir->kind_scope, ir->scope_guest);
+    LLVMSetMetadata(access, ir->kind_noalias, ir->scope_cpu);
+    return access;
+}
+LLVMValueRef ir_cpu_load(SnxIr* ir, LLVMTypeRef type, size_t offset) {
+    return ir_tag_cpu(ir, ir_load(ir, type, ir_cpu(ir, offset)));
+}
+void ir_cpu_store(SnxIr* ir, LLVMValueRef value, size_t offset) {
+    ir_tag_cpu(ir, LLVMBuildStore(ir->b, value, ir_cpu(ir, offset)));
+}
 
 size_t ir_off_x(unsigned n) { return offsetof(CPU, x) + 8 * (size_t)n; }
 size_t ir_off_v(unsigned n) { return offsetof(CPU, v) + 16 * (size_t)n; }
@@ -212,34 +272,56 @@ LLVMValueRef ir_mp(SnxIr* ir, LLVMValueRef address) {
 static LLVMTypeRef int_type(SnxIr* ir, unsigned bits) { return LLVMIntTypeInContext(ir->ctx, bits); }
 /* Guest addresses carry no alignment the host may rely on: the C dereferences of RDn/WRn compile to the same plain
    x86 moves as these align-1 accesses */
+/* Every guest access is volatile: it happens exactly as the guest wrote it, as on the hardware. LLVM may otherwise
+   hoist a load out of a loop that polls memory another thread writes (a relaxed atomic is a plain LDR), or sink a
+   store out of one, now that the alias scopes let it move everything else */
 LLVMValueRef ir_rd(SnxIr* ir, LLVMValueRef address, unsigned bits) {
     LLVMValueRef load = LLVMBuildLoad2(ir->b, int_type(ir, bits), ir_mp(ir, address), "");
     LLVMSetAlignment(load, 1);
-    return load;
+    LLVMSetVolatile(load, 1);
+    return ir_tag_guest(ir, load);
+}
+LLVMValueRef ir_rd_bytes(SnxIr* ir, LLVMValueRef address, unsigned bytes) {
+    LLVMValueRef load = LLVMBuildLoad2(ir->b, LLVMVectorType(ir->t_i8, bytes), ir_mp(ir, address), "");
+    LLVMSetAlignment(load, 1);
+    LLVMSetVolatile(load, 1);
+    return ir_tag_guest(ir, load);
+}
+void ir_wr_bytes(SnxIr* ir, LLVMValueRef address, LLVMValueRef value) {
+    LLVMValueRef store = LLVMBuildStore(ir->b, value, ir_mp(ir, address));
+    LLVMSetAlignment(store, 1);
+    LLVMSetVolatile(store, 1);
+    ir_tag_guest(ir, store);
 }
 void ir_wr(SnxIr* ir, LLVMValueRef address, unsigned bits, LLVMValueRef value) {
     LLVMValueRef pointer = ir_mp(ir, address);
     LLVMValueRef store = LLVMBuildStore(ir->b, ir_cast(ir, value, int_type(ir, bits), 0), pointer);
     LLVMSetAlignment(store, 1);
+    LLVMSetVolatile(store, 1);
+    ir_tag_guest(ir, store);
 }
 void ir_rdq(SnxIr* ir, LLVMValueRef destination, LLVMValueRef address) {
-    LLVMBuildMemCpy(ir->b, destination, 1, ir_mp(ir, address), 1, ir_i64(ir, 16));
+    LLVMValueRef store = LLVMBuildStore(ir->b, ir_rd_bytes(ir, address, 16), destination);
+    LLVMSetAlignment(store, 1);
 }
 void ir_wrq(SnxIr* ir, LLVMValueRef address, LLVMValueRef source) {
-    LLVMBuildMemCpy(ir->b, ir_mp(ir, address), 1, source, 1, ir_i64(ir, 16));
+    LLVMValueRef load = LLVMBuildLoad2(ir->b, LLVMVectorType(ir->t_i8, 16), source, "");
+    LLVMSetAlignment(load, 1);
+    ir_wr_bytes(ir, address, load);
 }
 /* __atomic_load_n/__atomic_store_n on T* (cpu.h LDACQ/STREL): seq_cst, naturally aligned as the C type says */
 LLVMValueRef ir_ldacq(SnxIr* ir, LLVMValueRef address, unsigned bits) {
     LLVMValueRef load = LLVMBuildLoad2(ir->b, int_type(ir, bits), ir_mp(ir, address), "");
     LLVMSetOrdering(load, LLVMAtomicOrderingSequentiallyConsistent);
     LLVMSetAlignment(load, bits / 8);
-    return load;
+    return ir_tag_guest(ir, load);
 }
 void ir_strel(SnxIr* ir, LLVMValueRef address, unsigned bits, LLVMValueRef value) {
     LLVMValueRef pointer = ir_mp(ir, address);
     LLVMValueRef store = LLVMBuildStore(ir->b, ir_cast(ir, value, int_type(ir, bits), 0), pointer);
     LLVMSetOrdering(store, LLVMAtomicOrderingSequentiallyConsistent);
     LLVMSetAlignment(store, bits / 8);
+    ir_tag_guest(ir, store);
 }
 
 /* ---- functions and calls ---- */
@@ -300,12 +382,41 @@ static void compiler_barrier(SnxIr* ir) {
     LLVMBuildCall2(ir->b, type, barrier, NULL, 0, "");
 }
 void ir_yield(SnxIr* ir) {
-    static const char pause[] = "llvm.x86.sse2.pause";
-    unsigned id = LLVMLookupIntrinsicID(pause, strlen(pause));
-    LLVMValueRef function = LLVMGetIntrinsicDeclaration(ir->mod, id, NULL, 0);
-    LLVMBuildCall2(ir->b, LLVMIntrinsicGetType(ir->ctx, id, NULL, 0), function, NULL, 0, "");
+    /* cpu.h: __builtin_ia32_pause() under __x86_64__, the compiler barrier alone elsewhere */
+    if (!strncmp(LLVMGetTarget(ir->mod), "x86_64", 6)) { /* PAUSE is baseline x86-64: no CPUID gate */
+        static const char pause[] = "llvm.x86.sse2.pause";
+        unsigned id = LLVMLookupIntrinsicID(pause, strlen(pause));
+        LLVMValueRef function = LLVMGetIntrinsicDeclaration(ir->mod, id, NULL, 0);
+        LLVMBuildCall2(ir->b, LLVMIntrinsicGetType(ir->ctx, id, NULL, 0), function, NULL, 0, "");
+    }
     compiler_barrier(ir);
 }
+
+void ir_unlikely(SnxIr* ir, LLVMValueRef branch) {
+    LLVMMetadataRef md[3];
+    unsigned kind = LLVMGetMDKindIDInContext(ir->ctx, "prof", 4);
+    md[0] = LLVMMDStringInContext2(ir->ctx, "branch_weights", 14);
+    md[1] = LLVMValueAsMetadata(ir_i32(ir, 1));
+    md[2] = LLVMValueAsMetadata(ir_i32(ir, 2000));
+    LLVMSetMetadata(branch, kind, LLVMMetadataAsValue(ir->ctx, LLVMMDNodeInContext2(ir->ctx, md, 3)));
+}
+
+LLVMValueRef ir_intrinsic(SnxIr* ir, const char* name, LLVMTypeRef type, LLVMValueRef* args, unsigned count) {
+    unsigned id = LLVMLookupIntrinsicID(name, strlen(name));
+    LLVMValueRef function = LLVMGetIntrinsicDeclaration(ir->mod, id, type ? &type : NULL, type ? 1 : 0);
+    return LLVMBuildCall2(ir->b, LLVMIntrinsicGetType(ir->ctx, id, type ? &type : NULL, type ? 1 : 0), function, args,
+                          count, "");
+}
+
+/* the "memory" attribute: 2 bits per location (argument memory, inaccessible memory, other), each none/read/write */
+static void memory_effects(SnxIr* ir, LLVMValueRef function, unsigned value) {
+    unsigned kind = LLVMGetEnumAttributeKindForName("memory", 6);
+    LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ir->ctx, kind, value));
+    kind = LLVMGetEnumAttributeKindForName("willreturn", 10);
+    LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ir->ctx, kind, 0));
+}
+void ir_pure(SnxIr* ir, LLVMValueRef function) { memory_effects(ir, function, 0); }
+void ir_argmem(SnxIr* ir, LLVMValueRef function) { memory_effects(ir, function, 3); }
 
 LLVMBasicBlockRef ir_block(SnxIr* ir, const char* name) { return LLVMAppendBasicBlockInContext(ir->ctx, ir->fn, name); }
 
@@ -489,13 +600,11 @@ static LLVMValueRef swap_pairs(SnxIr* ir, LLVMValueRef x, unsigned shift, SnxU64
     return LLVMBuildOr(B, LLVMBuildAnd(B, LLVMBuildLShr(B, x, s, ""), m, ""),
                        LLVMBuildShl(B, LLVMBuildAnd(B, x, m, ""), s, ""), "");
 }
-/* rbit64(x): swap bits, pairs and nibbles, then bswap64 */
+/* rbit64(x): cpu.h swaps bits, pairs and nibbles, then bswap64 - a bit reversal, which LLVM lowers to the host's
+   best sequence (GF2P8AFFINEQB and BSWAP on x86 with GFNI, RBIT on AArch64) */
 static void build_rbit64(SnxIr* ir, LLVMValueRef function) {
     LLVMValueRef x = P(0);
-    x = swap_pairs(ir, x, 1, ((SnxU64)0x55555555UL << 32) | 0x55555555UL);
-    x = swap_pairs(ir, x, 2, ((SnxU64)0x33333333UL << 32) | 0x33333333UL);
-    x = swap_pairs(ir, x, 4, ((SnxU64)0x0F0F0F0FUL << 32) | 0x0F0F0F0FUL);
-    LLVMBuildRet(B, ir_call(ir, ir_helper(ir, SNX_IR_BSWAP64), &x, 1));
+    LLVMBuildRet(B, intrinsic(ir, "llvm.bitreverse", ir->t_i64, &x, 1));
 }
 /* rbit32(x): (u32)(rbit64(x) >> 32) */
 static void build_rbit32(SnxIr* ir, LLVMValueRef function) {
@@ -835,7 +944,12 @@ static void build_lookup(SnxIr* ir, LLVMValueRef function) {
 /* dc_zva(M,a): memset(MP(a & ~63), 0, 64) */
 static void build_dc_zva(SnxIr* ir, LLVMValueRef function) {
     ir->M = P(0);
-    LLVMBuildMemSet(B, ir_mp(ir, LLVMBuildAnd(B, P(1), ir_i64(ir, ~(SnxU64)63), "")), ir_i8(ir, 0), ir_i64(ir, 64), 1);
+    {
+        LLVMValueRef a = LLVMBuildAnd(B, P(1), ir_i64(ir, ~(SnxU64)63), ""),
+                     zero = LLVMConstNull(LLVMVectorType(ir->t_i8, 16));
+        unsigned i;
+        for (i = 0; i < 4; ++i) ir_wr_bytes(ir, LLVMBuildAdd(B, a, ir_i64(ir, 16 * i), ""), zero);
+    }
     LLVMBuildRetVoid(B);
 }
 /* vfp_imm32(i) / vfp_imm64(i) */

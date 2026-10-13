@@ -65,7 +65,8 @@ static struct {
     u8* rmeta;
     u64 rmeta_size; /* header + tables sit at the start of the image */
     u64 rdata_off, rtotal;
-    FILE* rraw; /* plain romfs.bin */
+    FILE* rraw;     /* plain romfs.bin, when it couldn't be mapped */
+    FsNode* rimage; /* plain romfs.bin, mapped */
     DNode* dn;
     int ndn, capdn;
     FNode* fn;
@@ -103,7 +104,25 @@ void fs_init(void) {
     memcpy(g_datadir, fsp.tree.base, n);
     if (n && g_datadir[n - 1] != '/' && g_datadir[n - 1] != '\\') g_datadir[n++] = '/';
     g_datadir[n] = 0;
+    /* RomFS and ExeFS are what games read most and never change: open and map them once, for the whole run, instead
+       of opening them on demand like the save and SD card files */
+    static const char* const shared_paths[] = {"romfs", "exefs", "romfs.bin"};
+    unsigned shared = 0, failed = 0;
+    pm_lock(&fsp.tree.lock);
+    for (size_t i = 0; i < sizeof shared_paths / sizeof shared_paths[0]; i++) {
+        FsNode* node;
+        if (fs_tree_lookup(&fsp.tree, NULL, shared_paths[i], &node)) continue;
+        r = fs_tree_share(&fsp.tree, node, &shared, &failed);
+        if (r != FS_TREE_OK) fatal("Could not map %s%s (error %d)", g_datadir, shared_paths[i], r);
+    }
+    pm_unlock(&fsp.tree.lock);
+    LOG("fs: %u RomFS/ExeFS files mapped for the whole run\n", shared);
+    if (failed) WARN("fs: %u RomFS/ExeFS files could not be mapped, they are read on demand\n", failed);
 }
+
+/* Contents held in memory, read without the host: an injected file, or one mapped at startup */
+static int node_in_memory(const FsNode* node) { return node->is_virtual || node->fd >= 0; }
+static const u8* node_memory(const FsNode* node) { return node->is_virtual ? node->virtual_data : node->map; }
 
 /* Callers hold tree.lock: content I/O is permitted only after resolving an indexed node. */
 static FILE* node_open(FsNode* node, const char* mode) {
@@ -133,9 +152,15 @@ int fs_map_file(const char* path, PFileMap* map) {
     int r = -1;
     memset(map, 0, sizeof *map);
     pm_lock(&fsp.tree.lock);
-    if (!fs_tree_lookup(&fsp.tree, NULL, path, &node) && !node->is_dir && !node->is_virtual &&
-        !fs_tree_path(&fsp.tree, node, host, sizeof host))
-        r = plat_file_map_sized(map, host, node->size);
+    if (!fs_tree_lookup(&fsp.tree, NULL, path, &node) && !node->is_dir) {
+        if (node->fd >= 0) { /* already mapped for the whole run: lend that view */
+            map->data = node->map;
+            map->size = node->size;
+            map->borrowed = 1;
+            r = 0;
+        } else if (!node->is_virtual && !fs_tree_path(&fsp.tree, node, host, sizeof host))
+            r = plat_file_map_sized(map, host, node->size);
+    }
     pm_unlock(&fsp.tree.lock);
     return r;
 }
@@ -149,8 +174,8 @@ u8* fs_read_file(const char* path, u64* size) {
         data = malloc(node->size ? (size_t)node->size : 1);
         if (data) {
             int ok = 1;
-            if (node->is_virtual) {
-                if (node->size) memcpy(data, node->virtual_data, (size_t)node->size);
+            if (node_in_memory(node)) {
+                if (node->size) memcpy(data, node_memory(node), (size_t)node->size);
             } else {
                 FILE* f = node_open(node, "rb");
                 ok = f && fread(data, 1, (size_t)node->size, f) == node->size;
@@ -329,8 +354,10 @@ void romfs_init(void) {
     pm_lock(&fsp.tree.lock);
     FsNode* node;
     if (!fs_tree_lookup(&fsp.tree, NULL, "romfs.bin", &node) && !node->is_dir) {
-        fsp.rraw = node_open(node, "rb");
-        if (!fsp.rraw) fatal("Could not open indexed romfs.bin");
+        if (node->fd >= 0)
+            fsp.rimage = node;
+        else if (!(fsp.rraw = node_open(node, "rb")))
+            fatal("Could not open indexed romfs.bin");
         fsp.rtotal = node->size;
         LOG("RomFS: image (%.1f MB)\n", (double)fsp.rtotal / 1048576.0);
     } else if (!fs_tree_lookup(&fsp.tree, NULL, "romfs:/", &node) && node->is_dir) {
@@ -362,6 +389,10 @@ static FILE* rf_open(FsNode* node) { /* tree.lock held */
 /* -1 when a host file couldn't be read (that part is zeros) */
 static int romfs_read(u64 off, void* dst, u64 size) {
     u8* d = dst;
+    if (fsp.rimage) { /* romstorage keeps off and size within rtotal, the mapping's length */
+        memcpy(d, fsp.rimage->map + off, (size_t)size);
+        return 0;
+    }
     if (fsp.rraw) {
         pm_lock(&fsp.tree.lock);
         i64 r = plat_pread(fsp.rraw, d, size, off);
@@ -376,8 +407,8 @@ static int romfs_read(u64 off, void* dst, u64 size) {
         off += n;
         size -= n;
     }
+    /* rfiles doesn't change after romfs_build, and its nodes are readonly: only a file that isn't mapped needs the lock */
     int rc = 0;
-    pm_lock(&fsp.tree.lock);
     while (size) {
         int lo = 0, hi = fsp.nrfiles - 1, k = -1;
         while (lo <= hi) {
@@ -406,21 +437,27 @@ static int romfs_read(u64 off, void* dst, u64 size) {
         }
         u64 n = f->off + f->size - off;
         if (n > size) n = size;
-        if (!f->logged) {
-            f->logged = 1;
+        int unlogged = 0;
+        if (__atomic_compare_exchange_n(&f->logged, &unlogged, 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
             LOG("romfs: %s (%.1f KB)\n", f->node->name, (double)f->size / 1024.0);
-        }
         i64 got;
-        if (f->node->is_virtual && f->node->attached) {
-            memcpy(d, f->node->virtual_data + off - f->off, n);
+        if (f->node->fd >= 0) {
+            memcpy(d, f->node->map + (off - f->off), (size_t)n);
             got = (i64)n;
         } else {
-            FILE* fp = rf_open(f->node);
-            got = fp ? plat_pread(fp, d, n, off - f->off) : -1;
+            pm_lock(&fsp.tree.lock);
+            if (f->node->is_virtual && f->node->attached) {
+                memcpy(d, f->node->virtual_data + off - f->off, n);
+                got = (i64)n;
+            } else {
+                FILE* fp = rf_open(f->node);
+                got = fp ? plat_pread(fp, d, n, off - f->off) : -1;
+            }
+            pm_unlock(&fsp.tree.lock);
         }
         if (got < 0 || (u64)got < n) {
-            if (f->logged < 2) {
-                f->logged = 2;
+            if (__atomic_load_n(&f->logged, __ATOMIC_RELAXED) < 2) {
+                __atomic_store_n(&f->logged, 2, __ATOMIC_RELAXED);
                 WARN("romfs: could not read %s (at %llu, %llu bytes), the game gets zeros\n", f->node->name,
                      (unsigned long long)(off - f->off), (unsigned long long)n);
             }
@@ -431,7 +468,6 @@ static int romfs_read(u64 off, void* dst, u64 size) {
         off += n;
         size -= n;
     }
-    pm_unlock(&fsp.tree.lock);
     return rc;
 }
 /* QueryRange (OperateRange): an all-zero QueryRangeInfo */
@@ -561,8 +597,8 @@ static int file_dispatch_locked(SvcObj* o, IpcCtx* c) {
             if (sz > f->node->size - off) sz = f->node->size - off;
             if (!buffer_valid(a, sz)) return FS_OUT_OF_RANGE;
             u64 n = sz;
-            if (f->node->is_virtual) {
-                if (sz) memcpy(GP(a), f->node->virtual_data + off, (size_t)sz);
+            if (node_in_memory(f->node)) {
+                if (sz) memcpy(GP(a), node_memory(f->node) + off, (size_t)sz);
             } else {
                 if (file_seek(f->f, off)) return FS_OUT_OF_RANGE;
                 clearerr(f->f);
@@ -629,8 +665,9 @@ static SvcObj* file_new(FsNode* node, u32 mode, u32* rc) {
         *rc = FS_WRITE_NOT_PERMITTED;
         return NULL;
     }
-    FILE* host = node->is_virtual ? NULL : node_open(node, (mode & 2) ? "rb+" : "rb");
-    if (!node->is_virtual && !host) {
+    /* a mapped node is readonly, so this handle only reads, from the mapping */
+    FILE* host = node_in_memory(node) ? NULL : node_open(node, (mode & 2) ? "rb+" : "rb");
+    if (!node_in_memory(node) && !host) {
         *rc = FS_NOTFOUND;
         return NULL;
     }
@@ -831,8 +868,8 @@ static int systemstorage(SvcObj* o, IpcCtx* c) {
     int rc = 0;
     if (off > data->node->size || sz > data->node->size - off)
         rc = FS_OUT_OF_RANGE;
-    else if (data->node->is_virtual) {
-        if (sz) memcpy(GP(a), data->node->virtual_data + off, (size_t)sz);
+    else if (node_in_memory(data->node)) {
+        if (sz) memcpy(GP(a), node_memory(data->node) + off, (size_t)sz);
     } else if (file_seek(data->f, off) || fread(GP(a), 1, (size_t)sz, data->f) != sz) {
         rc = FS_OUT_OF_RANGE;
     }

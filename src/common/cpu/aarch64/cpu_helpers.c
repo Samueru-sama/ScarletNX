@@ -5,6 +5,26 @@
 /* Helpers compiled into the game module: stateful integer-only ARM FP,
    AdvSIMD operations, crypto and system registers. Builds with Clang. */
 #include "cpu.h"
+#if defined(__x86_64__)
+#include <cpuid.h>
+#include <immintrin.h>
+#endif
+
+u32 snx_cpu_features;
+void snx_cpu_detect(void) {
+#if defined(__x86_64__)
+    unsigned a, b, c, d;
+    u32 f = 0;
+    /* only extensions with SSE encodings: they need no OS support for wider register state (XSAVE) */
+    if (__get_cpuid(1, &a, &b, &c, &d)) {
+        if (c & bit_SSE4_2) f |= SNX_CPU_SSE42;
+        if (c & bit_PCLMUL) f |= SNX_CPU_PCLMUL;
+        if (c & bit_AES) f |= SNX_CPU_AES;
+    }
+    if (__get_cpuid_count(7, 0, &a, &b, &c, &d) && (c & bit_GFNI)) f |= SNX_CPU_GFNI;
+    snx_cpu_features = f;
+#endif
+}
 
 /* The helpers by topic, in the order they depend on each other (the module compiles this as one file) */
 #include "helpers/fp.c"

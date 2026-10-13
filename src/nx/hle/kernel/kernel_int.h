@@ -68,12 +68,14 @@ extern KThread* g_main;
 void process_exit(int code);
 extern int g_default_core; /* the main thread's core, which core -2 means in svcCreateThread and svcSetThreadCoreMask */
 void core_preempt(KThread* t); /* gives the core to a waiting thread of higher priority, then waits for it again */
-void core_yield(KThread* t);   /* gives the core to a waiting thread of any priority, then waits for it again */
-void core_set_prio(KThread* t, int prio); /* svcSetThreadPriority: the core waiting lists pick by it */
+void core_yield(KThread* t, int migrate); /* gives the core to a waiting thread of any priority, then waits for it
+                                             again (migrate 2: or runs on an idle core of its mask) */
+void core_set_prio(KThread* t, int prio); /* the effective priority, which the core waiting lists pick by */
 
 /* sync.c */
 u32 svc_arbitrate_lock(KThread* t, u32 owner, u64 addr, u32 tag);
 u32 svc_arbitrate_unlock(u64 addr);
+void prio_set_base_nl(KThread* t, int prio); /* svcSetThreadPriority, under g_klock */
 u32 svc_wait_cv(KThread* t, u64 maddr, u64 key, u32 tag, i64 timeout);
 u32 svc_signal_cv(u64 key, i32 count);
 u32 svc_wait_addr(KThread* t, u64 addr, u32 type, i32 value, i64 timeout);

@@ -44,7 +44,33 @@ static u8 gm(u8 a, u8 b) {
     }
     return p;
 }
+#if defined(__x86_64__)
+/* AES-NI: Arm's AESE is ShiftRows(SubBytes(d^k)), AESENCLAST(d^k, 0); AESD likewise with AESDECLAST. MixColumns
+   alone is AESENC(AESDECLAST(x, 0), 0); InvMixColumns is AESIMC */
+__attribute__((target("aes"))) static void aes_ni(V128* d, const V128* k, int dec) {
+    __m128i x = _mm_xor_si128(_mm_loadu_si128((const __m128i*)d), _mm_loadu_si128((const __m128i*)k));
+    x = dec ? _mm_aesdeclast_si128(x, _mm_setzero_si128()) : _mm_aesenclast_si128(x, _mm_setzero_si128());
+    _mm_storeu_si128((__m128i*)d, x);
+}
+__attribute__((target("aes"))) static void aesmc_ni(V128* d, const V128* s, int inv) {
+    __m128i x = _mm_loadu_si128((const __m128i*)s);
+    x = inv ? _mm_aesimc_si128(x) : _mm_aesenc_si128(_mm_aesdeclast_si128(x, _mm_setzero_si128()), _mm_setzero_si128());
+    _mm_storeu_si128((__m128i*)d, x);
+}
+__attribute__((target("pclmul"))) static void pmull_clmul(V128* d, const V128* a, const V128* b, int hi) {
+    __m128i r = hi ? _mm_clmulepi64_si128(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b), 0x11)
+                   : _mm_clmulepi64_si128(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b), 0x00);
+    _mm_storeu_si128((__m128i*)d, r);
+}
+#endif
+
 void v_aes(V128* d, const V128* k, int dec) {
+#if defined(__x86_64__)
+    if (snx_cpu_features & SNX_CPU_AES) {
+        aes_ni(d, k, dec);
+        return;
+    }
+#endif
     V128 s = *d;
     for (int i = 0; i < 16; i++) s.b[i] ^= k->b[i];
     V128 t;
@@ -62,6 +88,12 @@ void v_aes(V128* d, const V128* k, int dec) {
     *d = t;
 }
 void v_aesmc(V128* d, const V128* s, int inv) {
+#if defined(__x86_64__)
+    if (snx_cpu_features & SNX_CPU_AES) {
+        aesmc_ni(d, s, inv);
+        return;
+    }
+#endif
     V128 r;
     for (int col = 0; col < 4; col++) {
         const u8* a = &s->b[col * 4];
@@ -181,6 +213,12 @@ void v_sha256(CPU* c, u32 op, u32 d, u32 n, u32 m) {
     }
 }
 void v_pmull(V128* d, const V128* a, const V128* b, int hi) {
+#if defined(__x86_64__)
+    if (snx_cpu_features & SNX_CPU_PCLMUL) {
+        pmull_clmul(d, a, b, hi);
+        return;
+    }
+#endif
     u64 x = a->d[hi], y = b->d[hi], lo = 0, h = 0;
     for (int k = 0; k < 64; k++)
         if ((x >> k) & 1) {
