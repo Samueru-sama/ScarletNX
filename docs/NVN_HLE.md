@@ -840,6 +840,11 @@ its top 36 rows (23,040 pixels). The direct NVN path issued all 31 recorded draw
 renderer had issued three earlier draws on the same target with one vertex attribute and index counts 1,656, 3,384,
 and 3,384. All three used GPU channel 20, the same channel as the subsequent recorded draw, and occupied one GPFIFO
 entry immediately before the first recorded draw's entry. None appeared among those 31 recorded NVN draws.
+At the first transition to this workload, TotK reused the same outer submitted list, expanding it from five to
+eight secondary-list calls. The outer list had no draws. Its new secondary list immediately before the one with
+39 recorded draws contained about 9,920 captured state and memory operations, zero captured draws, and was marked
+opaque because its begin was inlined. This places the missing GPU entry near an opaque secondary-list boundary;
+the captured operation counts alone do not prove which secondary list emitted its three draws.
 Temporarily omitting only those three Maxwell draws
 made the two targets match byte-for-byte (0/230,400 different pixels); that omission was removed after diagnosis.
 The direct draw itself left a forced magenta target unchanged, including with depth testing, culling, and blending
