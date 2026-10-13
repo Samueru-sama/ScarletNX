@@ -104,7 +104,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
             image->texture_generation == target->texture_generation &&
             image->pool_generation == target->pool_generation && image->width == target->width &&
             image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
-            image->target == target->target && image->format == target->format)
+            image->target == target->storage_target && image->format == target->format)
             return image;
     }
     VkFmt guest_format = nvn_format(target->format);
@@ -112,7 +112,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     if (!guest_format.bpp || !target->levels || !target->depth || target->depth > limits->maxImageArrayLayers ||
         target->width > limits->maxImageDimension2D || target->height > limits->maxImageDimension2D)
         return NULL;
-    if (target->target == 8 &&
+    if (target->storage_target == 8 &&
         (target->width != target->height || target->width > limits->maxImageDimensionCube || target->depth != 6))
         return NULL;
     u32 max_dimension = target->width > target->height ? target->width : target->height;
@@ -159,7 +159,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
                    : 0;
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .imageType = VK_IMAGE_TYPE_2D,
-                              .flags = target->target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                              .flags = target->storage_target == 8 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
                               .format = format,
                               .extent = {target->width, target->height, 1},
                               .mipLevels = target->levels,
@@ -183,7 +183,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->height = target->height;
     empty->levels = target->levels;
     empty->layers = target->depth;
-    empty->target = target->target;
+    empty->target = target->storage_target;
     empty->format = target->format;
     empty->bytes = bytes;
     image_bytes += bytes;
@@ -194,9 +194,9 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     if (sampled) {
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                       .image = image,
-                                      .viewType = target->target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
-                                                  : target->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
-                                                                        : VK_IMAGE_VIEW_TYPE_2D,
+                                      .viewType = target->storage_target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
+                                                  : target->storage_target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                                                : VK_IMAGE_VIEW_TYPE_2D,
                                       .format = format,
                                       .subresourceRange = {aspect & VK_IMAGE_ASPECT_DEPTH_BIT
                                                                ? VK_IMAGE_ASPECT_DEPTH_BIT
@@ -215,9 +215,10 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
    actually executes on the host path. */
 static int prepare_attachment(const NvnTextureTarget* target, int depth) {
     u32 mip = target->view.base_level, layer = target->view.first_layer;
-    if ((target->target != 1 && target->target != 4 && target->target != 8) || !target->width || !target->height ||
-        !target->depth || (target->target == 1 && target->depth != 1) || !target->levels || target->samples > 1 ||
-        mip >= target->levels || layer >= target->depth || target->view.level_count > 1 ||
+    if ((target->storage_target != 1 && target->storage_target != 4 && target->storage_target != 8) ||
+        (target->target != target->storage_target && target->target != 1) || !target->width || !target->height ||
+        !target->depth || (target->storage_target == 1 && target->depth != 1) || !target->levels ||
+        target->samples > 1 || mip >= target->levels || layer >= target->depth || target->view.level_count > 1 ||
         target->view.layer_count > 1 || (target->view.flags & (8 | 16)))
         return 0;
     VkFmt format = nvn_format(target->format);
@@ -254,13 +255,14 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     const NvnTextureTarget* target = &command->target;
     u32 mip = target->view.base_level;
     u32 layer = target->view.first_layer;
-    if ((target->target != 1 && target->target != 4 && target->target != 8) || !target->width || !target->height ||
-        !target->depth || (target->target == 1 && target->depth != 1) || !target->levels || target->samples > 1 ||
-        mip >= target->levels || mip >= 16 || layer >= target->depth || target->view.level_count > 1 ||
-        target->view.layer_count > 1 || (target->view.flags & (8 | 16))) {
-        LOG_LIMIT(12, "nvn-clear-shape: target=%u %ux%ux%u levels=%u samples=%u view=%x/%u/%u/%u/%u\n", target->target,
-                  target->width, target->height, target->depth, target->levels, target->samples, target->view.flags,
-                  mip, layer, target->view.level_count, target->view.layer_count);
+    if ((target->storage_target != 1 && target->storage_target != 4 && target->storage_target != 8) ||
+        (target->target != target->storage_target && target->target != 1) || !target->width || !target->height ||
+        !target->depth || (target->storage_target == 1 && target->depth != 1) || !target->levels ||
+        target->samples > 1 || mip >= target->levels || mip >= 16 || layer >= target->depth ||
+        target->view.level_count > 1 || target->view.layer_count > 1 || (target->view.flags & (8 | 16))) {
+        LOG_LIMIT(12, "nvn-clear-shape: target=%u backing=%u %ux%ux%u levels=%u samples=%u view=%x/%u/%u/%u/%u\n",
+                  target->target, target->storage_target, target->width, target->height, target->depth, target->levels,
+                  target->samples, target->view.flags, mip, layer, target->view.level_count, target->view.layer_count);
         return 0;
     }
     VkFmt format = nvn_format(target->format);

@@ -566,6 +566,12 @@ format to Vulkan RG16 SNORM. A twelve-second Scarlet clear probe no longer repor
 648 clear packets still failed because their target shapes were outside the current 2D/array/cubemap shadow-image
 model, including 3D textures and 2D targets whose captured depth was greater than one. The format mapping alone
 does not make those clear packets executable.
+The target packet now preserves both the texture's storage target and its selected view target. Scarlet's `target=1`
+case is a 2D view of a two-layer backing array (`storage_target=4`), so allocating it as a one-layer 2D image would
+lose the second layer and break aliasing. The probe now keys and allocates the backing array while selecting the
+view's layer for attachment and clear operations. Scarlet's observed view also sets swizzle and depth-mode flags
+whose effects are not decoded, so those clears remain rejected. Separate Catherine and TotK boots retained ready
+attachments for all 3,818 and 2,655 observed draws after this change.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.

@@ -313,6 +313,7 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
                               .levels = t.levels,
                               .format = (selection.flags & 4) ? selection.format : t.format,
                               .target = (selection.flags & 32) ? selection.target : t.target,
+                              .storage_target = t.target,
                               .samples = t.samples,
                               .flags = t.flags,
                               .storage_class = t.storage_class,
