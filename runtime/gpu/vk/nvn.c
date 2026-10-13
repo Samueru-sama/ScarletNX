@@ -737,10 +737,13 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
         memcpy(saved_size, g_vk_cbsize[row], sizeof saved_size);
         memset(g_vk_cb[row], 0, sizeof saved_cb);
         memset(g_vk_cbsize[row], 0, sizeof saved_size);
-        for (u32 i = 0; i < NVN_DRAW_UNIFORM_SLOTS; i++)
+        /* NVN uniform slot 0 starts at Maxwell CBUF bank 3. Banks 0-2 are SDK-generated and cannot be
+           populated from application BindUniformBuffer calls. Leave them unbound until their contents can be
+           reconstructed from the command list; assigning slots 0-2 to those banks miskeys translation. */
+        for (u32 i = 0; i < NVN_DRAW_UNIFORM_SLOTS && i + 3 < 18; i++)
             if (command->uniform_bound[stage] & (1u << i)) {
-                g_vk_cb[row][i] = command->uniform[stage][i].address;
-                g_vk_cbsize[row][i] = (u32)command->uniform[stage][i].size;
+                g_vk_cb[row][i + 3] = command->uniform[stage][i].address;
+                g_vk_cbsize[row][i + 3] = (u32)command->uniform[stage][i].size;
             }
         VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
                                      stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, stage ? 0 : attr_int,

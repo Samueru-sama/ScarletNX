@@ -579,6 +579,11 @@ fragment uniform slot 0 was `0x5157b5300`. Thus one application uniform slot mat
 were populated internally. Even textureless shaders in that scene read CBUF banks 0 and 1 or 3. Host descriptor
 binding therefore needs the SDK's internal constant-buffer contents and bank assignment; binding NVN uniform slots
 directly to identically numbered shader banks would be wrong.
+An additional Scarlet draw probe observed application fragment slots 0 and 1 at the same addresses as Maxwell banks
+3 and 4 while banks 0–2 held different SDK-generated data. NVN shader materialization now places application slots
+at bank `slot + 3` and leaves the first three banks unbound rather than supplying unrelated application data. This
+corrects the known application-buffer mapping for shader translation, but the generated bank contents still need to
+be reconstructed before a direct draw can bind complete descriptor sets.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. It does not make
