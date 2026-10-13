@@ -290,6 +290,15 @@ observed in those boots against Vulkan vertex-buffer format support. Unknown or 
 separately. In later boots, Catherine passed this format check for all 3,773 prepared draws and TotK for all 2,946,
 with zero format failures. Vertex stream bindings, offsets, and divisors still need a complete pipeline layout.
 
+`SNX_NVN_PIPELINE_PREPARE=1` enables the shader and attachment preflights, then creates a cached Vulkan graphics
+pipeline from the observed vertex/fragment modules, primitive class, used vertex attributes and stream divisors, and
+color/depth attachment formats. This checks whether those interfaces can form a host pipeline. Vertex attributes each
+use a rebased binding in the probe; blend and raster state still have placeholders. Integer texture typing,
+clip-distance enables, full descriptor binding, exact vertex offsets, image coherence, and command recording remain
+unmodeled, so the pipeline cannot replace the guest draw. In opt-in boots, Catherine reported no pipeline failures.
+TotK reported one rejection among roughly 2,900 prepared draws because a used attribute's stream had no bound vertex
+buffer; its other sampled pipelines were created. The guest produced both displayed frames.
+
 `SNX_NVN_PROGRAM=1` records program initialization, finalization, and successful shader setup through either
 `nvnProgramSetShaders` or `nvnProgramSetShadersExt`. Descriptor replay enables this observer and checks each
 `nvnCommandBufferBindProgram` in submitted lists against a live, configured program. The check uses the exported

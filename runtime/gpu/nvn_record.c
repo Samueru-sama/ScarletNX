@@ -132,6 +132,7 @@ static int draw_prepare;
 static int texture_load;
 static int attachment_prepare;
 static int shader_materialize;
+static int pipeline_prepare;
 static u64 shader_staged, shader_flushed, shader_stage_full;
 static u64 replay_roots, replay_lists, replay_opaque, replay_missing_lists, replay_truncated_refs, replay_depth_limit;
 static u64 replay_binds, replay_resolved, replay_missing_pool, replay_missing_descriptor, replay_stale;
@@ -160,6 +161,7 @@ static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_tar
 static u64 draw_attachment_ready, draw_attachment_failed;
 static u64 draw_shader_module_ready, draw_shader_module_failed;
 static u64 draw_vertex_format_ready, draw_vertex_format_failed;
+static u64 draw_pipeline_ready, draw_pipeline_failed;
 static u64 draw_sampler_ready, draw_sampler_missing, draw_sampler_failed;
 static u64 draw_texture_header_ready, draw_texture_header_missing, draw_texture_header_unsupported;
 static u64 draw_texture_image_ready, draw_texture_image_failed, draw_texture_image_semantic;
@@ -231,6 +233,12 @@ void nvn_record_enable_attachment_prepare(void) {
 void nvn_record_enable_shader_materialize(void) {
     draw_prepare = 1;
     shader_materialize = 1;
+}
+void nvn_record_enable_pipeline_prepare(void) {
+    draw_prepare = 1;
+    attachment_prepare = 1;
+    shader_materialize = 1;
+    pipeline_prepare = 1;
 }
 
 static ReplayQueue* replay_queue_slot(u64 key) {
@@ -575,6 +583,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             draw.load_textures = texture_load;
             draw.prepare_attachments = attachment_prepare;
             draw.materialize_shaders = shader_materialize;
+            draw.prepare_pipeline = pipeline_prepare;
             draw.program_bound = state->program_bound;
             memcpy(draw.program, state->program, sizeof draw.program);
             draw.program_known = !!state->program_bound;
@@ -1234,6 +1243,8 @@ static void execute_nvn_batch(void* arg) {
         if (result & NVN_DRAW_SHADER_MODULE_FAILED) __atomic_fetch_add(&draw_shader_module_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_VERTEX_FORMAT_READY) __atomic_fetch_add(&draw_vertex_format_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_VERTEX_FORMAT_FAILED) __atomic_fetch_add(&draw_vertex_format_failed, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_PIPELINE_READY) __atomic_fetch_add(&draw_pipeline_ready, 1, __ATOMIC_RELAXED);
+        if (result & NVN_DRAW_PIPELINE_FAILED) __atomic_fetch_add(&draw_pipeline_failed, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_READY) __atomic_fetch_add(&draw_sampler_ready, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_MISSING) __atomic_fetch_add(&draw_sampler_missing, 1, __ATOMIC_RELAXED);
         if (result & NVN_DRAW_SAMPLER_FAILED) __atomic_fetch_add(&draw_sampler_failed, 1, __ATOMIC_RELAXED);
@@ -1489,6 +1500,10 @@ void nvn_record_report(void) {
             LOG("nvn-draw-vertex-format: ready=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_vertex_format_ready, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&draw_vertex_format_failed, __ATOMIC_RELAXED));
+        if (pipeline_prepare)
+            LOG("nvn-draw-pipeline: ready=%llu failed=%llu\n",
+                (unsigned long long)__atomic_load_n(&draw_pipeline_ready, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&draw_pipeline_failed, __ATOMIC_RELAXED));
         if (draw_prepare)
             LOG("nvn-draw-sampler: ready=%llu missing=%llu failed=%llu\n",
                 (unsigned long long)__atomic_load_n(&draw_sampler_ready, __ATOMIC_RELAXED),

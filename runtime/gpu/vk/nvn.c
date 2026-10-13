@@ -535,7 +535,7 @@ static int prepare_vertex_formats(const NvnDrawCommand* command) {
     return 1;
 }
 
-static int materialize_draw_shaders(const NvnDrawCommand* command) {
+static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex, VkSh** fragment_shader) {
     if ((command->program_bound & 3) != 3 || !command->shader_refs_known) return 0;
     u64 vertex_a = 0, vertex_b = 0, fragment = 0;
     /* BindProgram may leave older bindings in the other four stage slots. Select the
@@ -619,8 +619,87 @@ static int materialize_draw_shaders(const NvnDrawCommand* command) {
                       shader ? shader->failed : -1, shader ? shader->si.unsupported : -1);
             return 0;
         }
+        if (stage)
+            *fragment_shader = shader;
+        else
+            *vertex = shader;
     }
     return 1;
+}
+
+/* This key checks that the observed shader, vertex, and attachment interface can form
+   a Vulkan pipeline. Blend and raster state are placeholders until their NVN binds are recorded. */
+static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
+    if (!vertex || !fragment_shader) return 0;
+    PipeKey key = {0};
+    key.vs = vertex->mod;
+    key.fs = fragment_shader->mod;
+    key.polygon = VK_POLYGON_MODE_FILL;
+    switch (command->primitive) {
+        case 0: key.topo_class = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
+        case 1: key.topo_class = VK_PRIMITIVE_TOPOLOGY_LINE_LIST; break;
+        case 3: key.topo_class = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP; break;
+        case 4: key.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; break;
+        case 5: key.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP; break;
+        case 6: key.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN; break;
+        default: LOG_LIMIT(8, "nvn-pipeline: unsupported primitive=%u\n", command->primitive); return 0;
+    }
+    const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
+    for (u32 location = 0; location < 32; location++) {
+        if (!(vertex->si.in_mask & (1u << location))) continue;
+        if (location >= command->vertex_attrib_count || key.nattr >= limits->maxVertexInputAttributes ||
+            key.nbind >= limits->maxVertexInputBindings) {
+            LOG_LIMIT(8, "nvn-pipeline: missing attribute location=%u count=%u bind=%u\n", location,
+                      command->vertex_attrib_count, key.nbind);
+            return 0;
+        }
+        const NvnVertexAttrib* attrib = &command->vertex_attrib[location];
+        if (!attrib->enabled || attrib->stream >= command->vertex_stream_count ||
+            !(command->vertex_bound & (1u << attrib->stream))) {
+            LOG_LIMIT(8, "nvn-pipeline: missing stream location=%u stream=%u count=%u bound=%x\n", location,
+                      attrib->stream, command->vertex_stream_count, command->vertex_bound);
+            return 0;
+        }
+        VkFormat format = nvn_vertex_format(attrib->format);
+        if (!format || command->vertex_stream[attrib->stream].stride > limits->maxVertexInputBindingStride) {
+            LOG_LIMIT(8, "nvn-pipeline: invalid format or stride location=%u format=%x stride=%u\n", location,
+                      attrib->format, command->vertex_stream[attrib->stream].stride);
+            return 0;
+        }
+        u32 divisor = command->vertex_stream[attrib->stream].divisor;
+        if (divisor > 1 && !g_vk.has_divisor) {
+            LOG_LIMIT(8, "nvn-pipeline: unsupported divisor=%u\n", divisor);
+            return 0;
+        }
+        u32 binding = key.nbind++;
+        key.bind[binding].divisor = divisor;
+        key.attr[key.nattr].loc = location;
+        key.attr[key.nattr].binding = binding;
+        key.attr[key.nattr].format = format;
+        key.nattr++;
+    }
+    for (u32 i = 0; i < 8; i++) {
+        if (!(command->color_target_mask & (1u << i))) continue;
+        VkFmt format = nvn_format(command->color_target[i].format);
+        if (!format.vk || format.depth) {
+            LOG_LIMIT(8, "nvn-pipeline: unsupported color format=%x\n", command->color_target[i].format);
+            return 0;
+        }
+        key.color[i] = format.vk;
+        key.blend[i].mask = 0xf;
+        key.ncolor = i + 1;
+    }
+    if (command->depth_target_bound) {
+        VkFmt format = nvn_format(command->depth_target.format);
+        if (!format.vk || !format.depth) {
+            LOG_LIMIT(8, "nvn-pipeline: unsupported depth format=%x\n", command->depth_target.format);
+            return 0;
+        }
+        key.depth = format.vk;
+        if (format.stencil) key.stencil = format.vk;
+    }
+    if (!key.ncolor && !key.depth) return 0;
+    return vk_pipeline_get(&key) != VK_NULL_HANDLE;
 }
 
 /* Prepare exact guest buffer snapshots on the GPU thread. These are inputs for a future
@@ -724,14 +803,20 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                                 : NVN_DRAW_TEXTURE_IMAGE_FAILED | failure;
     }
     int resource_status = sampler_status | texture_status;
+    VkSh* vertex_shader = NULL;
+    VkSh* fragment_shader = NULL;
     if (command->materialize_shaders)
         resource_status |=
             prepare_vertex_formats(command) ? NVN_DRAW_VERTEX_FORMAT_READY : NVN_DRAW_VERTEX_FORMAT_FAILED;
     if (command->materialize_shaders)
-        resource_status |=
-            materialize_draw_shaders(command) ? NVN_DRAW_SHADER_MODULE_READY : NVN_DRAW_SHADER_MODULE_FAILED;
+        resource_status |= materialize_draw_shaders(command, &vertex_shader, &fragment_shader)
+                               ? NVN_DRAW_SHADER_MODULE_READY
+                               : NVN_DRAW_SHADER_MODULE_FAILED;
     int has_target = command->color_target_mask || command->depth_target_bound;
-    if (!has_target || !command->target_complete) return NVN_DRAW_PREPARED | resource_status;
+    if (!has_target || !command->target_complete) {
+        if (command->prepare_pipeline) resource_status |= NVN_DRAW_PIPELINE_FAILED;
+        return NVN_DRAW_PREPARED | resource_status;
+    }
     if (command->prepare_attachments) {
         int ready = 1;
         for (u32 i = 0; i < 8; i++)
@@ -740,6 +825,13 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
         if (command->depth_target_bound && !prepare_attachment(&command->depth_target, 1)) ready = 0;
         resource_status |= ready ? NVN_DRAW_ATTACHMENT_READY : NVN_DRAW_ATTACHMENT_FAILED;
     }
+    if (command->prepare_pipeline)
+        resource_status |= (resource_status & NVN_DRAW_SHADER_MODULE_READY) &&
+                                   (resource_status & NVN_DRAW_VERTEX_FORMAT_READY) &&
+                                   (resource_status & NVN_DRAW_ATTACHMENT_READY) &&
+                                   prepare_draw_pipeline(command, vertex_shader, fragment_shader)
+                               ? NVN_DRAW_PIPELINE_READY
+                               : NVN_DRAW_PIPELINE_FAILED;
     for (u32 i = 0; i < 8; i++) {
         if (!(command->color_target_mask & (1u << i))) continue;
         const NvnTextureTarget* target = &command->color_target[i];
