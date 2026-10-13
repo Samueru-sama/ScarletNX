@@ -959,6 +959,10 @@ ignored. The third 640×360 comparison still had zero nonblack HLE pixels versus
 pixels. `SNX_NVN_SHADOW_COMPARE_PRESENT=N` selects the Nth present where both versions of the filtered target exist,
 so later-pass comparisons can be reproduced without assuming startup presents contain that target. Writable graphics
 SSBO execution and ordered shadow buffer contents are required to close this gap.
+In the captured TotK chain, the three-index writer binds the same 48,544-byte SSBO at `0x623010000` to vertex and
+fragment stages. The following six-index reader binds a 58,848-byte SSBO at `0x622f20000`. These GPU virtual ranges
+do not overlap; physical aliasing and later consumers still need checking. The writable draw must use shadow-owned
+storage with ordered reads and writes so the direct path does not modify guest memory while GPFIFO is authoritative.
 An ABI-matched Catherine rebuild ran headless for 25 seconds with the cross-batch probe. It issued at least 16,300
 direct shadow draws; its 1,374 replayed lists had no missing or truncated entries. This is execution coverage, not
 an image-parity result.
