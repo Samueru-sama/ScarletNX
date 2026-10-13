@@ -1205,6 +1205,17 @@ comparison still differed in 518,400 of 1,440,000 pixels, all outside the 1280×
 the inside-scissor comparison was byte-exact. The ABI-7 zero-backed diagnostic matched the entire target
 byte-for-byte. The ordered and scoped probe described above subsequently certified coverage for that target.
 
+An ABI-7 Catherine run traced its first 1280×720 mismatch through a chain of 640×360 and 320×180 fullscreen
+passes. Draw preflight had checked sampled-image coverage against the raw unmodeled-write marker, although draw
+execution had already resolved that marker through scoped writes. Preflight now uses the effective marker too.
+`SNX_NVN_SHADOW_CAPTURE_CHAIN=1` extends the opt-in sentinel readback to the first draw into each of up to eight
+distinct targets; it marks a target covered only if every pixel overwrites the sentinel. All five producer targets
+in Catherine's first chain passed that check. The resulting direct image still had alpha zero because the program
+snapshot named only Vertex A, while Maxwell executed a paired Vertex B at the next 0x200-byte code slot. The direct
+path now uses that pair only when the candidate has a mapped, valid Vertex B SPH. Its translated vertex shader then
+matched Maxwell's hash, and the compared 1280×720 target was byte-exact: 0/921,600 differing pixels and
+0/3,686,400 differing bytes. This diagnostic verifies one intermediate chain, not a presented HLE frame.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

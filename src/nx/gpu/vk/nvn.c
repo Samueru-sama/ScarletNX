@@ -1183,6 +1183,21 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
             }
         }
     }
+    /* Some NVN programs name only Vertex A; the SDK places Vertex B's raw SPH
+       0x200 bytes after A's code. Validate that SPH before pairing the stages. */
+    int paired_vertex_b = 0;
+    if (vertex_a && !vertex_b && vertex_a <= UINT64_MAX - 0x200) {
+        u64 candidate = vertex_a + 0x200;
+        if (candidate <= UINT64_MAX - sizeof(u32) &&
+            gmmu_translate(candidate) && gmmu_translate(candidate + sizeof(u32) - 1)) {
+            u32 sph = 0;
+            gmem_read_code(candidate, &sph, sizeof sph);
+            if ((sph & 31) == 1 && ((sph >> 10) & 15) == 1) {
+                vertex_b = candidate;
+                paired_vertex_b = 1;
+            }
+        }
+    }
     if ((!vertex_a && !vertex_b) || !fragment) {
         LOG_LIMIT(8, "nvn-shader-module: missing stage vertex-a=%llx vertex-b=%llx fragment=%llx bound=%x\n",
                   (unsigned long long)vertex_a, (unsigned long long)vertex_b, (unsigned long long)fragment,
@@ -1210,7 +1225,8 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
     }
     for (u32 stage = 0; stage < 2; stage++) {
         u32 row = stage ? 4 : 0;
-        u64 selected_code = stage ? fragment - 0x30 : (vertex_b ? vertex_b : vertex_a) - 0x30;
+        u64 selected_code = stage ? fragment - 0x30
+                                   : (paired_vertex_b ? vertex_a : (vertex_b ? vertex_b : vertex_a)) - 0x30;
         embedded_bank1[stage] = shader_embedded_bank1(selected_code);
         u64 saved_cb[18];
         u32 saved_size[18];
@@ -2590,6 +2606,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                     !color_mip && !color_layer && command->color_target_mask == 1 &&
                     (color_target->format == 0x25 || color_target->format == 0x38);
     static int sample_first = 1;
+    static u64 captured_targets[8];
+    static u32 captured_target_count;
+    static int capture_chain = -1;
     static int force_capture = -1;
     static int compare_enabled = -1;
     if (compare_enabled < 0) {
@@ -2600,7 +2619,15 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         const char* opt = getenv("SNX_NVN_SHADOW_FORCE_CAPTURE");
         force_capture = opt && !strcmp(opt, "1");
     }
-    int capture = compare_enabled && sample_first && !color_mip && command->color_target_mask == 1 && color_written &&
+    if (capture_chain < 0) {
+        const char* opt = getenv("SNX_NVN_SHADOW_CAPTURE_CHAIN");
+        capture_chain = opt && !strcmp(opt, "1");
+    }
+    int new_target = captured_target_count < 8;
+    for (u32 i = 0; i < captured_target_count; i++)
+        if (captured_targets[i] == color_target->gpu_address) new_target = 0;
+    int capture = compare_enabled && (capture_chain ? new_target : sample_first) &&
+                  !color_mip && command->color_target_mask == 1 && color_written &&
                   (!prior_covered || force_capture) &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||
                    color_target->format == 0x29 || color_target->format == 0x3f);
@@ -2616,6 +2643,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     int capture_full = 0;
     if (capture) {
+        if (capture_chain) captured_targets[captured_target_count++] = color_target->gpu_address;
         shadow_capture_target = color->address;
         memcpy(shadow_capture_scissor, sc_data, sizeof shadow_capture_scissor);
         LOG("nvn-shadow-capture-draw: sequence=%llu zero=%u count=%u indexed=%d type=%u index=%llx primitive=%u vs=%llx fs=%llx attrs=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
@@ -3306,7 +3334,9 @@ int vk_nvn_draw_prepare(const NvnDrawCommand* command) {
                     break;
                 }
                 int pending = 0;
-                VkImageView view = image_view_from_semantic(descriptor, command->last_unmodeled_write, &pending);
+                VkImageView view = image_view_from_semantic(descriptor,
+                                                            effective_unknown_write(command->last_unmodeled_write),
+                                                            &pending);
                 if (view) {
                     from_clear = 1;
                     continue;
