@@ -8,10 +8,11 @@
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_texture.h"
 
-#define NVN_DRAW_VERTEX_SLOTS  16
-#define NVN_DRAW_SHADER_STAGES 6
-#define NVN_DRAW_UNIFORM_SLOTS 16
-#define NVN_DRAW_TEXTURE_SLOTS 32
+#define NVN_DRAW_VERTEX_SLOTS   16
+#define NVN_DRAW_SHADER_STAGES  6
+#define NVN_DRAW_UNIFORM_SLOTS  16
+#define NVN_DRAW_TEXTURE_SLOTS  32
+#define NVN_DRAW_VIEWPORT_SLOTS 16
 enum {
     NVN_DRAW_PREPARED = 1,
     NVN_DRAW_SHARED_TARGET = 2,
@@ -85,6 +86,10 @@ typedef struct {
     u8 depth_stencil_state_known;
     u32 multisample_state[6];
     u8 multisample_state_known;
+    u32 viewport[NVN_DRAW_VIEWPORT_SLOTS][4];
+    u32 scissor[NVN_DRAW_VIEWPORT_SLOTS][4];
+    u32 depth_range[NVN_DRAW_VIEWPORT_SLOTS][2];
+    u16 viewport_known, scissor_known, depth_range_known;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;

@@ -77,6 +77,10 @@ typedef struct {
     u8 count;
 } NvnVertexState;
 typedef struct {
+    u8 first, count, words;
+    u32 values[];
+} NvnDynamicArray;
+typedef struct {
     u64 key;
     NvnOp* ops;
     u16 count, capacity;
@@ -113,6 +117,10 @@ typedef struct {
     u8 depth_stencil_state_known;
     u32 multisample_state[6];
     u8 multisample_state_known;
+    u32 viewport[NVN_DRAW_VIEWPORT_SLOTS][4];
+    u32 scissor[NVN_DRAW_VIEWPORT_SLOTS][4];
+    u32 depth_range[NVN_DRAW_VIEWPORT_SLOTS][2];
+    u16 viewport_known, scissor_known, depth_range_known;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
@@ -167,6 +175,7 @@ static u64 vertex_range_snapshots, vertex_range_snapshot_failures, vertex_bind_i
 static u64 draw_arrays, draw_elements, draw_base_vertex, draw_instanced, draw_other, draw_with_program,
     draw_with_shader_refs;
 static u64 draw_with_vertex, draw_without_vertex, draw_index_invalid, draw_staged, draw_stage_full, draw_flushed;
+static u64 draw_viewport_known, draw_scissor_known, draw_depth_range_known;
 static u64 draw_prepared, draw_prepare_unsupported, draw_shared_target, draw_target_no_surf, draw_target_format,
     draw_target_size, draw_target_view;
 static u64 draw_attachment_ready, draw_attachment_failed;
@@ -308,6 +317,21 @@ static void stage_copy(ReplayQueue* queue, NvnCopyBufferTextureCommand command) 
     copy_staged++;
 }
 
+static void replay_dynamic_array(const NvnOp* op, u32 first, u32 count, u32* dst, u32 words, u16* known) {
+    if (first > NVN_DRAW_VIEWPORT_SLOTS || count > NVN_DRAW_VIEWPORT_SLOTS - first) {
+        *known = 0;
+        return;
+    }
+    u16 mask = (u16)(((1u << count) - 1) << first);
+    const NvnDynamicArray* array = op->payload;
+    if (!array || array->first != first || array->count != count || array->words != words) {
+        *known &= ~mask;
+        return;
+    }
+    memcpy(dst + first * words, array->values, (size_t)count * words * sizeof(u32));
+    *known |= mask;
+}
+
 /* Walk a diagnostic list in GPU command order. Secondary lists inherit both descriptor-pool selections. */
 static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 depth) {
     if (depth == 32) {
@@ -346,6 +370,26 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             state->copy_row_stride = (i64)op->args[0];
         } else if (!strcmp(op->name, "nvnCommandBufferSetCopyImageStride")) {
             state->copy_image_stride = (i64)op->args[0];
+        } else if (!strcmp(op->name, "nvnCommandBufferSetViewport")) {
+            for (u32 j = 0; j < 4; j++) {
+                float value = (float)(i32)op->args[j];
+                memcpy(&state->viewport[0][j], &value, sizeof value);
+            }
+            state->viewport_known |= 1;
+        } else if (!strcmp(op->name, "nvnCommandBufferSetViewports")) {
+            replay_dynamic_array(op, (u32)op->args[0], (u32)op->args[1], &state->viewport[0][0], 4,
+                                 &state->viewport_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetScissor")) {
+            for (u32 j = 0; j < 4; j++) state->scissor[0][j] = (u32)op->args[j];
+            state->scissor_known |= 1;
+        } else if (!strcmp(op->name, "nvnCommandBufferSetScissors")) {
+            replay_dynamic_array(op, (u32)op->args[0], (u32)op->args[1], &state->scissor[0][0], 4,
+                                 &state->scissor_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetDepthRange")) {
+            replay_dynamic_array(op, 0, 1, &state->depth_range[0][0], 2, &state->depth_range_known);
+        } else if (!strcmp(op->name, "nvnCommandBufferSetDepthRanges")) {
+            replay_dynamic_array(op, (u32)op->args[0], (u32)op->args[1], &state->depth_range[0][0], 2,
+                                 &state->depth_range_known);
         } else if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
             const NvnCopyRegion* copy = op->payload;
             if (copy_execute && queue && copy && copy->valid) {
@@ -651,6 +695,15 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.depth_stencil_state, state->depth_stencil_state, sizeof draw.depth_stencil_state);
             draw.multisample_state_known = state->multisample_state_known;
             memcpy(draw.multisample_state, state->multisample_state, sizeof draw.multisample_state);
+            draw.viewport_known = state->viewport_known;
+            draw.scissor_known = state->scissor_known;
+            draw.depth_range_known = state->depth_range_known;
+            memcpy(draw.viewport, state->viewport, sizeof draw.viewport);
+            memcpy(draw.scissor, state->scissor, sizeof draw.scissor);
+            memcpy(draw.depth_range, state->depth_range, sizeof draw.depth_range);
+            draw_viewport_known += !!(draw.viewport_known & 1);
+            draw_scissor_known += !!(draw.scissor_known & 1);
+            draw_depth_range_known += !!(draw.depth_range_known & 1);
             draw.blend_state_known = state->blend_state_known;
             memcpy(draw.blend_state, state->blend_state, sizeof draw.blend_state);
             memcpy(draw.vertex_attrib_raw, state->vertex_attrib_raw, sizeof draw.vertex_attrib_raw);
@@ -909,11 +962,39 @@ static void snapshot_view(u64 ptr, NvnView* view) {
 
 /* The SDK consumes these pointers immediately. Copy them before the caller can reuse its stack. */
 static void snapshot_semantic(NvnOp* op, const CPU* c) {
-    if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState") ||
-        !strcmp(op->name, "nvnCommandBufferBindColorState") || !strcmp(op->name, "nvnCommandBufferBindPolygonState") ||
-        !strcmp(op->name, "nvnCommandBufferBindBlendState") ||
-        !strcmp(op->name, "nvnCommandBufferBindDepthStencilState") ||
-        !strcmp(op->name, "nvnCommandBufferBindMultisampleState")) {
+    if (!strcmp(op->name, "nvnCommandBufferSetViewports") || !strcmp(op->name, "nvnCommandBufferSetScissors") ||
+        !strcmp(op->name, "nvnCommandBufferSetDepthRanges") || !strcmp(op->name, "nvnCommandBufferSetDepthRange")) {
+        int scalar_depth = !strcmp(op->name, "nvnCommandBufferSetDepthRange");
+        u32 first = scalar_depth ? 0 : (u32)op->args[0];
+        u32 count = scalar_depth ? 1 : (u32)op->args[1];
+        u32 words =
+            !strcmp(op->name, "nvnCommandBufferSetViewports") || !strcmp(op->name, "nvnCommandBufferSetScissors") ? 4
+                                                                                                                  : 2;
+        if (first > NVN_DRAW_VIEWPORT_SLOTS || count > NVN_DRAW_VIEWPORT_SLOTS - first ||
+            (!scalar_depth && count && !readable_range(op->args[2], (u64)count * words * sizeof(u32)))) {
+            invalid_arrays++;
+            return;
+        }
+        NvnDynamicArray* array = malloc(sizeof *array + (size_t)count * words * sizeof(u32));
+        if (!array) {
+            allocation_failures++;
+            return;
+        }
+        array->first = (u8)first;
+        array->count = (u8)count;
+        array->words = (u8)words;
+        if (scalar_depth) {
+            array->values[0] = c->v[0].s[0];
+            array->values[1] = c->v[1].s[0];
+        } else
+            for (u32 j = 0; j < count * words; j++) array->values[j] = gr32(op->args[2] + (u64)j * 4);
+        op->payload = array;
+    } else if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState") ||
+               !strcmp(op->name, "nvnCommandBufferBindColorState") ||
+               !strcmp(op->name, "nvnCommandBufferBindPolygonState") ||
+               !strcmp(op->name, "nvnCommandBufferBindBlendState") ||
+               !strcmp(op->name, "nvnCommandBufferBindDepthStencilState") ||
+               !strcmp(op->name, "nvnCommandBufferBindMultisampleState")) {
         u32 count = !strcmp(op->name, "nvnCommandBufferBindMultisampleState") ? 6
                     : !strcmp(op->name, "nvnCommandBufferBindBlendState") ||
                             !strcmp(op->name, "nvnCommandBufferBindDepthStencilState")
@@ -1540,6 +1621,8 @@ void nvn_record_report(void) {
             (unsigned long long)draw_instanced, (unsigned long long)draw_other, (unsigned long long)draw_with_program,
             (unsigned long long)draw_with_shader_refs, (unsigned long long)draw_with_vertex,
             (unsigned long long)draw_without_vertex, (unsigned long long)draw_index_invalid);
+        LOG("nvn-draw-dynamic: viewport=%llu scissor=%llu depth-range=%llu\n", (unsigned long long)draw_viewport_known,
+            (unsigned long long)draw_scissor_known, (unsigned long long)draw_depth_range_known);
         LOG("nvn-draw-stage: staged=%llu flushed=%llu stage-full=%llu\n", (unsigned long long)draw_staged,
             (unsigned long long)draw_flushed, (unsigned long long)draw_stage_full);
         if (draw_prepare)
