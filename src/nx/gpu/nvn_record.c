@@ -186,7 +186,7 @@ typedef struct {
 } ReplayState;
 typedef struct {
     u64 address, value;
-    u8 known, fake_report;
+    u8 known, fake_report, real_report;
 } ReplayQueryValue;
 typedef struct {
     u64 key;
@@ -385,11 +385,18 @@ static void replay_query_write(ReplayQueue* queue, u64 address, u32 size, u8 kin
     if (!queue || !address || !size) return;
     for (u32 i = 0; i < queue->query_value_count; i++) {
         ReplayQueryValue* entry = &queue->query_values[i];
-        if (address < entry->address + 8 && entry->address < address + size) entry->known = 0;
+        if (address < entry->address + 8 && entry->address < address + size) {
+            entry->known = 0;
+            if (kind != NVN_GAP_WRITE_PULLER || size != 16 || address != entry->address)
+                entry->real_report = 0;
+        }
     }
     if (kind == NVN_GAP_WRITE_QUERY && fake_known) {
         ReplayQueryValue* value = replay_query_value(queue, address, 0);
-        if (value) value->fake_report = !!fake_report;
+        if (value) {
+            value->fake_report = !!fake_report;
+            value->real_report = !fake_report && size == 16 && payload_known;
+        }
     }
     if ((kind == NVN_GAP_WRITE_PULLER || kind == NVN_GAP_WRITE_QUERY) &&
         size == 16 && payload_known) {
@@ -401,7 +408,15 @@ static void replay_query_write(ReplayQueue* queue, u64 address, u32 size, u8 kin
     }
 }
 
-static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue) {
+static void replay_query_forget_reports(ReplayQueue* queue) {
+    if (!queue) return;
+    for (u32 i = 0; i < queue->query_value_count; i++) {
+        queue->query_values[i].known = 0;
+        queue->query_values[i].real_report = 0;
+    }
+}
+
+static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue, int require_real_reports) {
     if (state->render_condition_active == 1) return state->render_enabled;
     if (state->render_condition_active != 2 || !queue ||
         state->render_condition_address > UINT64_MAX - 24) return 1;
@@ -409,6 +424,7 @@ static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue) {
     ReplayQueryValue* rhs = replay_query_value(queue, state->render_condition_address + 16, 1);
     if ((lhs && lhs->fake_report) || (rhs && rhs->fake_report)) return 1;
     if (!lhs || !rhs || !lhs->known || !rhs->known) return 1; /* unknown: retain the draw */
+    if (require_real_reports && (!lhs->real_report || !rhs->real_report)) return 1;
     return state->render_condition_mode ? lhs->value != rhs->value : lhs->value == rhs->value;
 }
 
@@ -569,6 +585,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         if (queue) {
             queue->observed_clear_only = 0;
             queue->last_unmodeled_write = queue->next_sequence++;
+            replay_query_forget_reports(queue);
         }
         return;
     }
@@ -578,6 +595,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         if (queue) {
             queue->observed_clear_only = 0;
             queue->last_unmodeled_write = queue->next_sequence++;
+            replay_query_forget_reports(queue);
         }
         return;
     }
@@ -588,14 +606,20 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     if (queue && (list->truncated || (list->opaque && !complete_opaque))) {
         queue->observed_clear_only = 0;
         queue->last_unmodeled_write = queue->next_sequence++;
+        replay_query_forget_reports(queue);
     }
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
+        if (queue &&
+            (op->kind == OP_DISPATCH || op->kind == OP_OTHER ||
+             (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
+              strcmp(op->name, "nvnInlinedMemoryWrite"))))
+            replay_query_forget_reports(queue);
         u64 prior_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
         int render_clear_disabled = queue &&
             (!strcmp(op->name, "nvnCommandBufferClearColor") ||
              !strcmp(op->name, "nvnCommandBufferClearDepthStencil")) &&
-            !replay_render_enabled(state, queue);
+            !replay_render_enabled(state, queue, 0);
         if (!strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer")) {
             const char* dispatch_trace = getenv("SNX_NVN_DISPATCH_TRACE");
             if (dispatch_trace && !strcmp(dispatch_trace, "1"))
@@ -611,12 +635,14 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     address > UINT64_MAX - offset || address + offset > UINT64_MAX - size) {
                     queue->uniform_update_failed = 1;
                     queue->last_unmodeled_write = queue->next_sequence++;
+                    replay_query_forget_reports(queue);
                 } else {
                     NvnUniformUpdate* update = malloc(sizeof *update + (size_t)size);
                     if (!update) {
                         allocation_failures++;
                         queue->uniform_update_failed = 1;
                         queue->last_unmodeled_write = queue->next_sequence++;
+                        replay_query_forget_reports(queue);
                     } else {
                         update->address = address + offset;
                         update->size = (u32)size;
@@ -627,6 +653,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                         if (!stage_memory_write(queue, update->address, update->size,
                                                 NVN_GAP_WRITE_UNIFORM))
                             queue->uniform_update_failed = 1;
+                        replay_query_write(queue, update->address, update->size,
+                                           NVN_GAP_WRITE_UNIFORM, 0, 0, 0, 0);
                     }
                 }
             }
@@ -800,7 +828,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_color_target_resolved++;
                     if (queue) queue->pending_clears++;
-                    if (clear_execute && queue && replay_render_enabled(state, queue)) {
+                    if (clear_execute && queue && replay_render_enabled(state, queue, 0)) {
                         NvnClearCommand packet = {.kind = NVN_CLEAR_COLOR, .target = target, .mask = clear->mask};
                         packet.unknown_marker = queue->last_unmodeled_write;
                         packet.prior_unmodeled_write = prior_unmodeled_write;
@@ -833,7 +861,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (result == NVN_TARGET_RESOLVED) {
                     replay_depth_target_resolved++;
                     if (queue) queue->pending_clears++;
-                    if (clear_execute && queue && replay_render_enabled(state, queue)) {
+                    if (clear_execute && queue && replay_render_enabled(state, queue, 0)) {
                         const NvnClearDepth* clear = op->payload;
                         NvnClearCommand packet = {.kind = NVN_CLEAR_DEPTH_STENCIL,
                                                   .target = target,
@@ -1106,9 +1134,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                    !strcmp(op->name, "nvnCommandBufferDrawElements") ||
                    !strcmp(op->name, "nvnCommandBufferDrawElementsBaseVertex") ||
                    !strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
-            /* A direct draw must obey an explicit disable. Conditional draws also need the
-               GPU's fake-counter provenance before their absence can be trusted. */
-            if (queue && state->render_condition_active == 1 && !state->render_enabled) continue;
+            /* Only real, fully observed query reports can prove a conditional draw disabled.
+               An estimated counter or a value seeded from later guest memory cannot. */
+            if (queue && !replay_render_enabled(state, queue, 1)) continue;
             NvnDrawCommand draw = {0};
             draw.last_unmodeled_write = queue ? queue->last_unmodeled_write : 0;
             draw.load_textures = texture_load;
@@ -1592,11 +1620,14 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 if (queue) {
                     queue->observed_clear_only = 0;
                     queue->last_unmodeled_write = queue->next_sequence++;
+                    replay_query_forget_reports(queue);
                 }
             }
             const u64* refs = op->ref_count > 8 ? op->payload : op->refs;
             for (u32 j = 0; j < op->ref_count; j++) replay_list(refs[j], state, queue, depth + 1);
         }
+        if (queue && (op->kind == OP_DRAW || (op->kind == OP_CLEAR && !render_clear_disabled)))
+            replay_query_forget_reports(queue);
     }
 }
 

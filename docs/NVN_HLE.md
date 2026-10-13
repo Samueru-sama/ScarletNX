@@ -1123,7 +1123,10 @@ The inlined command-gap scanner now tags Maxwell counter reports whose values ar
 tracks release sequence values in command order. The clear replay retains a conditional clear if
 either compared report was tagged as estimated. Report tags are currently scoped to one queue
 submission. A clear whose comparison relies on an older estimated report may still be evaluated
-from guest memory without that tag. Conditional draws remain ungated.
+from guest memory without that tag. Conditional draws now skip only when both compared 64-bit
+values came from fully observed, real reports in the current submission. Estimated reports and
+values seeded from guest memory keep the draw enabled. A later draw, clear, dispatch, or unmodeled
+transfer invalidates that proof before another conditional draw can be skipped.
 
 After that fix, the second dispatch still has 239 differing input bytes and the same 239 output
 bytes; the first dispatch remains byte-exact. In a controlled TotK probe, submitting the first two
