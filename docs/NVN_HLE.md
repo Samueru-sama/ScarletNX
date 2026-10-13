@@ -680,6 +680,16 @@ front face, and no culling; higher bits varied across six observed values while 
 depth bias disabled. With zero captured polygon offset, depth clamp, and rasterizer discard, the executor now uses
 the prepared blend pipeline for this state family. A ten-second boot issued more than 800 shadow draws and retained
 full-image provenance after 165 of them. It still needs a pixel comparison on the actual presented image.
+Scarlet's first fullscreen vertex shaders read generated CBUF 0 only at offsets `0x640` and `0x644`, the
+base-vertex and base-instance words. An instrumented Maxwell boot found both words zero in those draws. The
+translator now identifies shaders whose bank-0 reads are limited to those words, and the direct executor binds a
+zeroed generated bank only when the recorded draw also has zero first vertex, base vertex, and base instance. Other
+bank-0 users remain ineligible. The executor also accepts observed non-indexed triangle draws and color-only fill
+state. In an eight-second Scarlet boot this passed the executor's initial state gate for repeated sRGB passes, but
+issued no shadow draw; descriptor, sampled-image provenance, and later resource checks still need investigation. Catherine
+continued to issue 1,300 shadow draws in its eight-second check; TotK and Scarlet booted without direct draws.
+Odyssey remained at zero frames even in a twelve-second control run with shadow drawing disabled, before any NVN
+draw was recorded, so that boot did not test the new executor behavior.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still

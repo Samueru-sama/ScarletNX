@@ -87,11 +87,13 @@ char* PN(Ctx* c, u32 p, int neg) {
 }
 char* CB(Ctx* c, u32 idx, u32 off) {
     c->si->cbuf_mask |= 1u << idx;
+    if (idx == 0 && off != 0x640 && off != 0x644) c->si->cbuf0_draw_params_only = 0;
     if (idx < 18 && off + 16 > c->si->cbuf_max[idx]) c->si->cbuf_max[idx] = (off | 15) + 1;
     return T("floatBitsToUint(cb%u.d[%u].%c)", idx, off >> 4, "xyzw"[(off >> 2) & 3]);
 }
 char* CBF(Ctx* c, u32 idx, u32 off) {
     c->si->cbuf_mask |= 1u << idx;
+    if (idx == 0 && off != 0x640 && off != 0x644) c->si->cbuf0_draw_params_only = 0;
     if (idx < 18 && off + 16 > c->si->cbuf_max[idx]) c->si->cbuf_max[idx] = (off | 15) + 1;
     return T("cb%u.d[%u].%c", idx, off >> 4, "xyzw"[(off >> 2) & 3]);
 }
@@ -556,6 +558,7 @@ char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
     int ksh = si->shared_size;
     memset(si, 0, sizeof *si);
     si->stage = stage;
+    si->cbuf0_draw_params_only = 1;
     memcpy(si->cs_local, kcl, sizeof kcl);
     si->shared_size = ksh;
     si->attr_int_mask = attr_int;

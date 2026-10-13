@@ -112,6 +112,7 @@ static int tex_slot2(Ctx* c, u32 cbuf_off_words, int type, int array, int shadow
     t->bl_cbuf = (u8)bank;
     if (bl && bank < 18) {
         si->cbuf_mask |= 1u << bank;
+        if (bank == 0) si->cbuf0_draw_params_only = 0;
         if (cbuf_off_words * 4 + 16 > si->cbuf_max[bank]) si->cbuf_max[bank] = ((cbuf_off_words * 4) | 15) + 1;
     }
     if (b2) {
@@ -121,6 +122,7 @@ static int tex_slot2(Ctx* c, u32 cbuf_off_words, int type, int array, int shadow
         u32 b = c->bl2_bank;
         if (b < 18) {
             si->cbuf_mask |= 1u << b;
+            if (b == 0) si->cbuf0_draw_params_only = 0;
             if (c->bl2_off * 4 + 16 > si->cbuf_max[b]) si->cbuf_max[b] = ((c->bl2_off * 4) | 15) + 1;
         }
     }
@@ -1557,6 +1559,8 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
             u32 sz = B(w, 48, 3);
             u32 ar = a;
             c->si->cbuf_mask |= 1u << idx;
+            if (idx == 0 && (ar != 255 || (off != 0x640 && (off != 0x644 || sz == 5))))
+                c->si->cbuf0_draw_params_only = 0;
             if (idx < 18) { /* a register base can reach the whole buffer, a constant address only what it reads */
                 u32 end = sz == 5 ? 8 : 4;
                 if (ar != 255 || off < 0 || (u32)off + end > 65536)

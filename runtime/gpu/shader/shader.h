@@ -23,6 +23,7 @@ typedef struct {
     u32 sph[20];
     u32 cbuf_mask;    /* cbufs used */
     u32 cbuf_max[18]; /* bytes used per cbuf, so we upload less */
+    u8 cbuf0_draw_params_only; /* bank 0 reads only the SDK's base-vertex/instance words at 0x640 */
     ShTex tex[SH_MAXTEX];
     int ntex;
     u32 in_mask;       /* generic attribs 0..31 read */

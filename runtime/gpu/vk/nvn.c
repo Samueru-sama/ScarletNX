@@ -1182,22 +1182,27 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     int indexed_triangles = command->primitive == 4 && command->indexed &&
                             (command->index_type == 1 || command->index_type == 2);
+    int triangles = command->primitive == 4 && !command->indexed;
     int strip = command->primitive == 5 && !command->indexed;
     u32 cbuf_mask = vertex && fragment ? vertex->si.cbuf_mask | fragment->si.cbuf_mask : 0;
-    /* The observed packed-color triangle passes all use fill, CCW front face and no culling.
+    /* The observed color-only triangle passes use fill, CCW front face and no culling.
        Their higher polygon-state bits vary, but have no effect while bias, depth clamp and
        rasterizer discard are explicitly disabled. */
-    int packed_fill = command->color_target[0].format == 0x3d && !command->depth_target_bound &&
+    int simple_fill = !command->depth_target_bound &&
                       (command->polygon_state & 0x1f) == 0x14 &&
                       !command->polygon_offset[0] && !command->polygon_offset[1] &&
                       !command->polygon_offset[2] && !command->depth_clamp && !command->rasterizer_discard;
     if (!enabled || !pipeline || !vertex || !fragment ||
-        (cbuf_mask & ~(((1u << 18) - 1) & ~5u)) || vertex->si.ntex < 0 ||
+        (cbuf_mask & ~(((1u << 18) - 1) & ~4u)) ||
+        ((vertex->si.cbuf_mask & 1) && !vertex->si.cbuf0_draw_params_only) ||
+        ((fragment->si.cbuf_mask & 1) && !fragment->si.cbuf0_draw_params_only) ||
+        ((cbuf_mask & 1) && (command->first || command->base_vertex || command->base_instance)) ||
+        vertex->si.ntex < 0 ||
         vertex->si.ntex > SH_MAXTEX || fragment->si.ntex < 0 || fragment->si.ntex > SH_MAXTEX ||
         vertex->si.nimg || fragment->si.nimg || vertex->si.ngbuf || fragment->si.ngbuf ||
         command->color_target_mask != 1 || !command->target_complete ||
-        (!strip && !indexed_triangles) || !command->count || !command->instance_count ||
-        (command->polygon_state != 0x16 && command->polygon_state != 0xa400476 && !packed_fill) ||
+        (!strip && !triangles && !indexed_triangles) || !command->count || !command->instance_count ||
+        (command->polygon_state != 0x16 && command->polygon_state != 0xa400476 && !simple_fill) ||
         (command->color_state != 0x08030000u && command->color_state != 0x08030100u) ||
         (key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
@@ -1257,7 +1262,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     VkDescriptorSet sets[2];
     VkDescriptorBufferInfo uniforms[2][18] = {0};
     VkDescriptorImageInfo textures[2][SH_MAXTEX] = {0};
-    VkWriteDescriptorSet writes[2 * (NVN_DRAW_UNIFORM_SLOTS + SH_MAXTEX)] = {0};
+    VkWriteDescriptorSet writes[2 * (18 + SH_MAXTEX)] = {0};
     u32 nwrites = 0;
     int semantic_sampled = 0;
     const VkSh* shaders[2] = {vertex, fragment};
@@ -1265,12 +1270,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         sets[stage] = vk_desc_alloc(g_vk_dslayout[stage]);
         if (!sets[stage]) return 0;
         const ShaderInfo* si = &shaders[stage]->si;
-        for (u32 bank = 1; bank < 18; bank++) {
+        for (u32 bank = 0; bank < 18; bank++) {
             if (!(si->cbuf_mask & (1u << bank))) continue;
             if (bank == 2) return 0;
             u32 slot = bank >= 3 ? bank - 3 : 0;
-            if (bank == 1 ? !embedded_bank1[stage]
-                          : !(command->uniform_bound[stage] & (1u << slot))) return 0;
+            if ((bank == 1 && !embedded_bank1[stage]) ||
+                (bank >= 3 && !(command->uniform_bound[stage] & (1u << slot)))) return 0;
             u32 size = si->cbuf_max[bank];
             if (size < 16) size = 16;
             if (size > g_vk.props.limits.maxUniformBufferRange || size > 65536) return 0;
@@ -1280,7 +1285,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             u8* staged = vk_stage(size, vk_stage_align(), &buffer, &offset);
             if (!staged) return 0;
             memset(staged, 0, size);
-            u64 read_size = bank == 1 ? size : command->uniform[stage][slot].size;
+            /* The observed SDK draw-parameter words are zero when the recorded draw has zero bases.
+               Other bank-0 reads remain ineligible until their source is reconstructed. */
+            u64 read_size = bank == 0 ? 0 : bank == 1 ? size : command->uniform[stage][slot].size;
             if (read_size > size) read_size = size;
             if (read_size)
                 gmem_read(bank == 1 ? embedded_bank1[stage] : command->uniform[stage][slot].address,
@@ -1423,7 +1430,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     vkCmdSetCullMode(cb, (VkCullModeFlags)(command->polygon_state & 3));
     vkCmdSetFrontFace(cb, (command->polygon_state & 4) ? VK_FRONT_FACE_COUNTER_CLOCKWISE
                                                      : VK_FRONT_FACE_CLOCKWISE);
-    vkCmdSetPrimitiveTopology(cb, indexed_triangles ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    vkCmdSetPrimitiveTopology(cb, (indexed_triangles || triangles) ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
                                                    : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP);
     vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
