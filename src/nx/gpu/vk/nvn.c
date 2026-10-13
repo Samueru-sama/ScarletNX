@@ -1804,7 +1804,7 @@ static int shadow_cbuf0_fill(const NvnDrawCommand* command, const ShaderInfo* si
 /* Execute textureless NVN compute on the graphics queue so its SSBO writes precede later
    semantic draws in the same batch. The guest QMD still runs for comparison and guest-visible
    memory; this path owns only the shadow copies consumed by direct NVN drawing. */
-int vk_nvn_dispatch(const NvnDispatchCommand* command) {
+static int shadow_dispatch_simple(const NvnDispatchCommand* command) {
     if (!command->control_known || !command->groups[0] || !command->groups[1] || !command->groups[2] ||
         !command->local[0] || !command->local[1] || !command->local[2]) return 0;
     const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
@@ -2016,6 +2016,32 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
               command->groups[0], command->groups[1], command->groups[2],
               command->local[0], command->local[1], command->local[2], si->ngbuf);
     return 1;
+}
+
+/* A skipped dispatch may have changed any bound storage range in the guest execution.
+   Retire aliases even when the direct dispatch stopped after allocating its shadow buffer. */
+int vk_nvn_dispatch(const NvnDispatchCommand* command) {
+    int result = shadow_dispatch_simple(command);
+    if (result) return result;
+    u32 retired = 0;
+    for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+        if (!(command->storage_bound & (1u << slot))) continue;
+        const NvnBufferRange* range = &command->storage[slot];
+        const u8* host = range->address && range->size && range->size <= (16u << 20)
+                             ? gmem_ptr_untracked(range->address, range->size) : NULL;
+        for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++) {
+            NvnShadowStorage* entry = &shadow_storage[i];
+            if (entry->buffer && !entry->invalid &&
+                shadow_host_overlap(host, range->size, entry->guest_host, entry->size)) {
+                entry->invalid = 1;
+                retired++;
+            }
+        }
+    }
+    if (retired)
+        LOG_LIMIT(12, "nvn-shadow-dispatch-retire: code=%llx buffers=%u\n",
+                  (unsigned long long)command->program.snapshot.refs[0].code_candidate, retired);
+    return 0;
 }
 
 /* First executable NVN slice: an isolated draw with application constant buffers and sampled textures.

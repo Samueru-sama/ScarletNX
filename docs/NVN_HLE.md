@@ -1177,6 +1177,9 @@ run that kept the shadow buffer despite that failed check, a later `0x403936c00`
 following `0x403938c00` dispatch then matched at both input and output. This override cannot
 be used for normal execution because an unrelated guest write could change a shader's result.
 The verifier needs operation-aligned snapshots before these later batches can certify parity.
+If a direct dispatch is skipped, its bound storage ranges now invalidate overlapping shadow
+buffers, including ones allocated while preparing that dispatch. Later draws cannot reuse those
+buffers as if the skipped guest write had been replayed.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
