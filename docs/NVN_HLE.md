@@ -695,6 +695,19 @@ at `0x55bb70000` and `0x55c3e0000`. Maxwell owns their current contents, so the 
 them rather than importing a dependent image. The direct draw format gate now admits the already mapped NVN `0x3f`
 R11G11B10F target used by earlier passes, but an eight-second boot still issued no direct draw. Replaying its producer
 chain requires storage-image descriptors and write ordering in addition to this target format.
+The first Scarlet producer uses a color-only R11G11B10F target and a separate R32_UINT storage image at
+`0x54461c000`. Its fragment shader reads image handle word 74 from generated CBUF 2, then stores or atomically
+updates that image. Shader translation now records static direct bank-2 reads and rejects dynamic or unknown words;
+the executor stages verified low texture and image handles from the NVN draw bindings. It binds single-layer
+R32_UINT storage views, orders prior writes before fragment storage access, and retains the storage image's layout
+and write state for later draws. The observed producer also enables depth clamp, now represented in the Vulkan
+pipeline key. No draw yet certified a complete color target, so later sRGB passes still cannot use their outputs as
+NVN-owned sampled images. The first
+storage-writing shaders have no color output, so their draws preserve existing color provenance instead of
+invalidating it. A later eight-second boot issued at least 1,100 shadow draws, including 212 storage-image draws.
+The first color-writing pass changed 921,600 of 2,073,600 pixels in its sRGB target, leaving full-image provenance
+unproven. The sentinel readback now compares packed pixels in RGBA8, sRGB RGBA8, and R11G11B10F correctly. Storage
+image writes likewise remain incomplete until their coverage or later consumers are established.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still

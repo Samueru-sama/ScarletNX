@@ -88,12 +88,24 @@ char* PN(Ctx* c, u32 p, int neg) {
 char* CB(Ctx* c, u32 idx, u32 off) {
     c->si->cbuf_mask |= 1u << idx;
     if (idx == 0 && off != 0x640 && off != 0x644) c->si->cbuf0_draw_params_only = 0;
+    if (idx == 2) {
+        if ((off & 3) || off / 4 >= 96)
+            c->si->cbuf2_untracked_read = 1;
+        else
+            c->si->cbuf2_read_words[off / 128] |= 1u << ((off / 4) & 31);
+    }
     if (idx < 18 && off + 16 > c->si->cbuf_max[idx]) c->si->cbuf_max[idx] = (off | 15) + 1;
     return T("floatBitsToUint(cb%u.d[%u].%c)", idx, off >> 4, "xyzw"[(off >> 2) & 3]);
 }
 char* CBF(Ctx* c, u32 idx, u32 off) {
     c->si->cbuf_mask |= 1u << idx;
     if (idx == 0 && off != 0x640 && off != 0x644) c->si->cbuf0_draw_params_only = 0;
+    if (idx == 2) {
+        if ((off & 3) || off / 4 >= 96)
+            c->si->cbuf2_untracked_read = 1;
+        else
+            c->si->cbuf2_read_words[off / 128] |= 1u << ((off / 4) & 31);
+    }
     if (idx < 18 && off + 16 > c->si->cbuf_max[idx]) c->si->cbuf_max[idx] = (off | 15) + 1;
     return T("cb%u.d[%u].%c", idx, off >> 4, "xyzw"[(off >> 2) & 3]);
 }

@@ -1561,6 +1561,16 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
             c->si->cbuf_mask |= 1u << idx;
             if (idx == 0 && (ar != 255 || (off != 0x640 && (off != 0x644 || sz == 5))))
                 c->si->cbuf0_draw_params_only = 0;
+            if (idx == 2) {
+                u32 words = sz == 5 ? 2 : 1;
+                if (ar != 255 || off < 0 || (off & 3) || (u32)off / 4 + words > 96)
+                    c->si->cbuf2_untracked_read = 1;
+                else
+                    for (u32 read = 0; read < words; read++) {
+                        u32 word = (u32)off / 4 + read;
+                        c->si->cbuf2_read_words[word / 32] |= 1u << (word & 31);
+                    }
+            }
             if (idx < 18) { /* a register base can reach the whole buffer, a constant address only what it reads */
                 u32 end = sz == 5 ? 8 : 4;
                 if (ar != 255 || off < 0 || (u32)off + end > 65536)

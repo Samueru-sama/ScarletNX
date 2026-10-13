@@ -323,6 +323,7 @@ typedef struct {
     VkShaderModule vs, fs;
     u32 topo_class; /* POINT_LIST, LINE_LIST or TRIANGLE_LIST: the topology is dynamic within its class */
     u32 polygon;
+    u32 depth_clamp;
     u32 nattr, nbind;
     struct {
         u32 loc, binding, format, offset;
