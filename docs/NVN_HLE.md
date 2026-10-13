@@ -1402,6 +1402,17 @@ operation advances the command-buffer cursor by 48 bytes. A safe fix therefore
 needs to decode the effective GPU render-target and condition state at those
 packets, rather than dropping clears based on their call count.
 
+The conditional counter trace identifies why later clears remain enabled in direct
+replay. The first clear sees a known `1 != 0` comparison. A following inlined
+16-byte puller release sets the left counter to a known zero, but the recorder
+forgets all query values after intervening clears and draws. At the next conditional
+clear, both values are unknown, so the conservative rule executes it. The next
+implementation step is a bounded write-set proof for those intervening operations:
+only when their attachment, storage, image, and guest-memory writes are known not to
+alias the counter may the released value survive to the next condition. The native
+GPU's skipped clears provide a regression target, not a license to skip unknown
+conditions globally.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
