@@ -2528,11 +2528,16 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                         color->subresource_sequence[color_mip][color_layer] > effective_unknown;
     static int sample_first = 1;
     static int force_capture = -1;
+    static int compare_enabled = -1;
+    if (compare_enabled < 0) {
+        const char* opt = getenv("SNX_NVN_SHADOW_COMPARE");
+        compare_enabled = opt && !strcmp(opt, "1");
+    }
     if (force_capture < 0) {
         const char* opt = getenv("SNX_NVN_SHADOW_FORCE_CAPTURE");
         force_capture = opt && !strcmp(opt, "1");
     }
-    int capture = sample_first && !color_mip && command->color_target_mask == 1 && color_written &&
+    int capture = compare_enabled && sample_first && !color_mip && command->color_target_mask == 1 && color_written &&
                   (!prior_covered || force_capture) &&
                   (color_target->format == 0x25 || color_target->format == 0x38 ||
                    color_target->format == 0x29 || color_target->format == 0x3f);

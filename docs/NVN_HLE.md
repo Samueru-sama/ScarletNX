@@ -654,6 +654,8 @@ With `SNX_NVN_SHADOW_DRAW=1 SNX_NVN_SHADOW_COMPARE=1`, the first eligible NVN co
 alongside the Maxwell render target at the next present. Catherine's first 1280x720 comparison found identical RGB
 in all 921,600 pixels but different alpha in all of them: the shadow target was `(0,0,0,0)` and the Maxwell target
 was `(0,0,0,255)` at the center. This target is an intermediate image, not the VI-presented framebuffer.
+The first-draw sentinel clear and readback run only with `SNX_NVN_SHADOW_COMPARE=1`; ordinary shadow draws retain
+their existing attachment contents. A first draw that does not cover every pixel remains uncertified for presentation.
 The three-draw chain's first presented-target comparison also had identical RGB and a full-image alpha mismatch
 (`0` against `255`). One later boot run matched all 921,600 RGBA pixels on that black frame, but a repeat with the
 same bank-1 mapping again showed the full alpha mismatch; no bank-1 shadow draw executed in that repeat. The
