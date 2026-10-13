@@ -307,6 +307,15 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
         size_t nw = 0;
         char err[2048] = "";
         u32* spv = src ? vk_spirv_cached(src, stage, g_vk_spirv_dir, &nw, err, sizeof err) : NULL;
+        if (src && getenv("SNX_DUMP_SHADERS")) {
+            char pth[1200];
+            snprintf(pth, sizeof pth, "%s/vkshader_%016llx_%d.glsl", g_cache_dir, (unsigned long long)h, stage);
+            FILE* f = fopen(pth, "w");
+            if (f) {
+                fputs(src, f);
+                fclose(f);
+            }
+        }
         if (spv) {
             VkShaderModuleCreateInfo mi = {
                 .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = spv};
@@ -315,15 +324,6 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
         } else {
             s->failed = 1;
             WARN("vulkan: shader %016llx (stage %d) didn't compile: %s\n", (unsigned long long)h, stage, err);
-            if (src && getenv("SNX_DUMP_SHADERS")) { /* next to the caches, not in the current directory */
-                char pth[1200];
-                snprintf(pth, sizeof pth, "%s/vkshader_%016llx_%d.glsl", g_cache_dir, (unsigned long long)h, stage);
-                FILE* f = fopen(pth, "w");
-                if (f) {
-                    fputs(src, f);
-                    fclose(f);
-                }
-            }
         }
         free(src);
         s->next = g_shh[h & 1023];
