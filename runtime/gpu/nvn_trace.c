@@ -276,7 +276,7 @@ void nvn_trace_init(void) {
     int shader_translate = shader_translate_env && !strcmp(shader_translate_env, "1");
     int shadow_draw = shadow_draw_env && !strcmp(shadow_draw_env, "1");
     int clear_execute = shadow_draw || (clear_execute_env && !strcmp(clear_execute_env, "1"));
-    int copy_execute = copy_execute_env && !strcmp(copy_execute_env, "1");
+    int copy_execute = shadow_draw || (copy_execute_env && !strcmp(copy_execute_env, "1"));
     int texture_load = shadow_draw || (texture_load_env && !strcmp(texture_load_env, "1"));
     int attachment_prepare = shadow_draw || (attachment_prepare_env && !strcmp(attachment_prepare_env, "1"));
     int shader_materialize = shadow_draw || (shader_materialize_env && !strcmp(shader_materialize_env, "1"));

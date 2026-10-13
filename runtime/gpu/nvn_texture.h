@@ -38,6 +38,7 @@ typedef struct {
     u64 texture, pool, gpu_address, texture_generation, pool_generation;
     i64 stride;
     u32 width, height, depth, levels, format, storage_format, target, storage_target, samples, flags;
+    u32 storage_size;
     u32 storage_class;
     u8 stride_known, storage_class_known;
     NvnTextureViewSelection view;

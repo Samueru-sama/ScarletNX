@@ -338,6 +338,7 @@ static NvnTargetResult resolve_target_snapshot(u64 texture, const NvnTextureSnap
                               .levels = t.levels,
                               .format = (selection.flags & 4) ? selection.format : t.format,
                               .storage_format = t.format,
+                              .storage_size = t.storage_size,
                               .target = (selection.flags & 32) ? selection.target : t.target,
                               .storage_target = t.target,
                               .samples = t.samples,

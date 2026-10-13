@@ -24,6 +24,7 @@ typedef struct {
     u64 subresource_sequence[16][64];
     u32 width, height, levels, layers, target, format;
     u64 bytes;
+    u32 storage_size;
     u64 last_batch;
     u64 shadow_draw_stamp;
     VkImage image;
@@ -149,8 +150,10 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         if (image->pool == target->pool && image->address == target->gpu_address &&
             image->pool_generation == target->pool_generation && image->width == target->width &&
             image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
-            image->target == target->storage_target && image->format == target->storage_format)
+            image->target == target->storage_target && image->format == target->storage_format) {
+            if (target->storage_size > image->storage_size) image->storage_size = target->storage_size;
             return image;
+        }
     }
     VkFmt guest_format = backing_format;
     const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
@@ -252,6 +255,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->target = target->storage_target;
     empty->format = target->storage_format;
     empty->bytes = bytes;
+    empty->storage_size = target->storage_size;
     image_bytes += bytes;
     empty->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     empty->stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -527,6 +531,23 @@ int vk_nvn_clear(const NvnClearCommand* command) {
 
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
     const NvnTextureTarget* target = &command->target;
+    if (command->scoped_texture_write) {
+        if (!target->gpu_address || !target->storage_size ||
+            target->gpu_address > UINT64_MAX - target->storage_size)
+            return 0;
+        u64 end = target->gpu_address + target->storage_size;
+        for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+            NvnImage* image = &images[i];
+            if (!image->image) continue;
+            if (image->storage_size && image->address <= UINT64_MAX - image->storage_size &&
+                (image->address >= end || target->gpu_address >= image->address + image->storage_size))
+                continue;
+            memset(image->color_layers, 0, sizeof image->color_layers);
+            memset(image->depth_layers, 0, sizeof image->depth_layers);
+        }
+        mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
+        return 1;
+    }
     u32 mip = target->view.base_level;
     u32 mip_width = mip < 16 ? target->width >> mip : 0;
     u32 mip_height = mip < 16 ? target->height >> mip : 0;

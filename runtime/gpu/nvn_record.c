@@ -212,6 +212,7 @@ static u64 draw_texture_image_ready, draw_texture_image_failed, draw_texture_ima
 static u64 draw_texture_image_depth, draw_texture_image_missing, draw_texture_image_stale;
 static u64 copy_snapshots, copy_snapshot_failures, copy_staged, copy_stage_full, copy_flushed, copy_issued,
     copy_unsupported;
+static u64 scoped_copy_staged, scoped_copy_issued, scoped_copy_unsupported;
 static u64 uniform_range_snapshots, uniform_range_snapshot_failures, uniform_bind_invalid;
 static u64 draw_with_uniform, draw_without_uniform;
 static u64 texture_handle_snapshots, texture_handle_snapshot_failures, texture_bind_invalid;
@@ -322,7 +323,7 @@ static void stage_clear(ReplayQueue* queue, NvnClearCommand command) {
     clear_staged++;
 }
 
-static void stage_copy(ReplayQueue* queue, NvnCopyBufferTextureCommand command) {
+static int stage_copy(ReplayQueue* queue, NvnCopyBufferTextureCommand command) {
     NvnCopyBatch* batch = queue->copies;
     if (!batch || batch->count == batch->capacity) {
         u32 capacity = batch ? batch->capacity * 2 : 8;
@@ -338,11 +339,12 @@ static void stage_copy(ReplayQueue* queue, NvnCopyBufferTextureCommand command) 
     }
     if (!batch || batch->count == batch->capacity) {
         copy_stage_full++;
-        return;
+        return 0;
     }
     command.sequence = queue->next_sequence++;
     batch->commands[batch->count++] = command;
     copy_staged++;
+    return 1;
 }
 
 static void replay_dynamic_array(const NvnOp* op, u32 first, u32 count, u32* dst, u32 words, u16* known) {
@@ -483,6 +485,19 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         } else if (!strcmp(op->name, "nvnCommandBufferSetDepthClamp")) {
             state->depth_clamp = !!op->args[0];
             state->depth_clamp_known = 1;
+        } else if (!strcmp(op->name, "nvnCommandBufferCopyTextureToTexture")) {
+            const NvnTextureTarget* captured = op->payload;
+            NvnPoolSnapshot pool = {0};
+            if (copy_execute && queue && captured && captured->storage_size &&
+                nvn_pool_snapshot(captured->pool, &pool) && pool.generation == captured->pool_generation) {
+                /* The copy is not reproduced in the shadow image. Its destination loses provenance;
+                   independent images remain valid across this otherwise unknown guest write. */
+                NvnCopyBufferTextureCommand packet = {.target = *captured,
+                                                      .unknown_marker = queue->last_unmodeled_write,
+                                                      .prior_unmodeled_write = prior_unmodeled_write,
+                                                      .scoped_texture_write = 1};
+                scoped_copy_staged += stage_copy(queue, packet);
+            }
         } else if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
             const NvnCopyRegion* copy = op->payload;
             if (copy_execute && queue && copy && copy->valid) {
@@ -1250,6 +1265,16 @@ static void snapshot_semantic(NvnOp* op, const CPU* c) {
         }
         for (u32 i = 0; i < count; i++) words[i] = gr32(op->args[0] + (u64)i * 4);
         op->payload = words;
+    } else if (!strcmp(op->name, "nvnCommandBufferCopyTextureToTexture")) {
+        NvnTextureTarget target = {0};
+        if (!snapshot_target(op->args[3], NULL, &target) || !target.storage_size) return;
+        NvnTextureTarget* captured = malloc(sizeof *captured);
+        if (!captured) {
+            allocation_failures++;
+            return;
+        }
+        *captured = target;
+        op->payload = captured;
     } else if (!strcmp(op->name, "nvnCommandBufferCopyBufferToTexture")) {
         if (!readable_range(op->args[3], 24)) {
             copy_snapshot_failures++;
@@ -1665,11 +1690,12 @@ static void execute_nvn_batch(void* arg) {
             continue;
         }
         if (copy_seq < draw_seq) {
-            int result = g_renderer->nvn_copy_buffer_texture(&batch->copies->commands[copy++]);
-            if (result > 0)
-                __atomic_fetch_add(&copy_issued, 1, __ATOMIC_RELAXED);
-            else
-                __atomic_fetch_add(&copy_unsupported, 1, __ATOMIC_RELAXED);
+            const NvnCopyBufferTextureCommand* packet = &batch->copies->commands[copy++];
+            int result = g_renderer->nvn_copy_buffer_texture(packet);
+            u64* counter = packet->scoped_texture_write
+                               ? (result > 0 ? &scoped_copy_issued : &scoped_copy_unsupported)
+                               : (result > 0 ? &copy_issued : &copy_unsupported);
+            __atomic_fetch_add(counter, 1, __ATOMIC_RELAXED);
             continue;
         }
         int result = g_renderer->nvn_draw_prepare(&batch->draws->commands[draw++]);
@@ -1922,6 +1948,11 @@ void nvn_record_report(void) {
                 (unsigned long long)__atomic_load_n(&copy_issued, __ATOMIC_RELAXED),
                 (unsigned long long)__atomic_load_n(&copy_unsupported, __ATOMIC_RELAXED),
                 (unsigned long long)copy_stage_full);
+        if (copy_execute)
+            LOG("nvn-copy-texture-scoped: staged=%llu issued=%llu unsupported=%llu\n",
+                (unsigned long long)scoped_copy_staged,
+                (unsigned long long)__atomic_load_n(&scoped_copy_issued, __ATOMIC_RELAXED),
+                (unsigned long long)__atomic_load_n(&scoped_copy_unsupported, __ATOMIC_RELAXED));
         LOG("nvn-preflight: batches=%llu observed-clear-only=%llu mixed=%llu no-clears=%llu clear-commands=%llu\n",
             (unsigned long long)preflight_batches, (unsigned long long)preflight_clear_only,
             (unsigned long long)preflight_mixed, (unsigned long long)preflight_no_clears,

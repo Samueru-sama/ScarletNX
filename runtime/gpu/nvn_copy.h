@@ -6,10 +6,12 @@
 
 typedef struct {
     u64 sequence;
+    u64 unknown_marker, prior_unmodeled_write;
     NvnTextureTarget target;
     u64 source;
     i64 row_stride, image_stride;
     i32 x, y, z, width, height, depth;
     u32 flags;
+    u8 scoped_texture_write;
 } NvnCopyBufferTextureCommand;
 #endif
