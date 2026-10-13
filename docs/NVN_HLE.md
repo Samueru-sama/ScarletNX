@@ -664,6 +664,9 @@ mapping rather than requiring the short-lived wrapper to survive replay. In a lo
 registrations resolved; 82,544 textured draws prepared with no missing headers or stale bindings. Catherine and
 TotK retained complete texture-descriptor coverage in boot probes. Scarlet still has separate missing descriptor
 IDs and unsupported texture formats. These checks do not establish descriptor writes or host draw execution.
+Scarlet also uses NVN RGBA32F (`0x2e`) render targets. Mapping them to the renderer's existing
+`VK_FORMAT_R32G32B32A32_SFLOAT` support removed 306 target-format rejections in a fifteen-second scene;
+the remaining target failures were size mismatches, and 624 attachments still failed.
 
 1. Keep GPFIFO execution as the fallback until an entire command-list submission path is implemented. Mixing HLE
    recording with guest NVN pushbuffers for one list could duplicate draws or omit state changes.
