@@ -1129,12 +1129,16 @@ values seeded from guest memory keep the draw enabled. A later draw, clear, disp
 transfer invalidates that proof before another conditional draw can be skipped.
 
 After that fix, the second dispatch still has 239 differing input bytes and the same 239 output
-bytes; the first dispatch remains byte-exact. In a controlled TotK probe, submitting the first two
-58,848-byte storage-writing draws separately before later draws made the second dispatch input
-and output byte-exact too. Completion or memory barriers at only one of those draws did not help;
-barriers at both also left 239 differing bytes. A broader submit after an unrelated earlier writer
-did not reproduce the match. This points to command-buffer lifetime or resource reuse around
-those two draws, and the submit probe remains diagnostic because its broader use changes results.
+bytes; the first dispatch remains byte-exact. Saved buffers narrow the difference to the preceding
+storage-writing draws: the emulated path has value 1 in 240 consecutive 16-byte records, while the
+direct path sets only the first record. The 239 missing records are already absent immediately after
+the second draw, before the dispatch reads them. That draw derives the storage index from fragment
+coordinates and uses a depth-equality test, so its depth and coordinate inputs need direct comparison.
+In a controlled TotK probe, submitting the first two 58,848-byte storage-writing draws separately
+made the second dispatch input and output byte-exact. Completion or memory barriers at only one of
+those draws did not help; barriers at both also left 239 differing bytes. The submit probe remains
+diagnostic because its broader use changes results; it does not by itself establish a resource-lifetime
+cause for the missing draw writes.
 
 An ABI-matched Scarlet rebuild initially crashed in the SDK's audio config initializer even with NVN HLE
 disabled. The audio service's 4 MiB work-buffer floor made the SDK's write land outside Scarlet's mapped
