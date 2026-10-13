@@ -393,15 +393,20 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     if (target->format != target->storage_format) return 0;
     u32 mip = target->view.base_level;
     u32 layer = target->view.first_layer;
+    u32 mip_width = mip < 32 ? target->width >> mip : 0;
+    u32 mip_height = mip < 32 ? target->height >> mip : 0;
+    if (!mip_width) mip_width = 1;
+    if (!mip_height) mip_height = 1;
+    int partial = 0;
     if (command->region_known) {
-        u32 width = mip < 32 ? target->width >> mip : 0;
-        u32 height = mip < 32 ? target->height >> mip : 0;
-        if (!width) width = 1;
-        if (!height) height = 1;
-        if (command->region[0] || command->region[1] || command->region[2] ||
-            command->region[3] != (i32)width || command->region[4] != (i32)height ||
-            command->region[5] != 1)
-            return 0; /* only a full subresource can establish sampled-image provenance */
+        if (command->region[0] < 0 || command->region[1] < 0 || command->region[2] ||
+            command->region[3] <= 0 || command->region[4] <= 0 || command->region[5] != 1 ||
+            (u32)command->region[0] > mip_width || (u32)command->region[1] > mip_height ||
+            (u32)command->region[3] > mip_width - (u32)command->region[0] ||
+            (u32)command->region[4] > mip_height - (u32)command->region[1])
+            return 0;
+        partial = command->region[0] || command->region[1] ||
+                  command->region[3] != (i32)mip_width || command->region[4] != (i32)mip_height;
     }
     if ((target->storage_target != 1 && target->storage_target != 4 && target->storage_target != 8) ||
         (target->target != target->storage_target && target->target != 1) || !target->width || !target->height ||
@@ -427,6 +432,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
             return 0;
         }
     } else if (command->kind == NVN_CLEAR_DEPTH_STENCIL) {
+        if (partial) return 0;
         if (!format.depth ||
             (command->stencil_mask && command->stencil_mask != 0xff && command->stencil_mask != 0xffffffffu) ||
             (!command->depth_mask && !command->stencil_mask) || (command->stencil_mask && !format.stencil))
@@ -436,6 +442,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     }
     VkImageAspectFlags aspect = vk_aspect(&format);
     int full = 0;
+    if (partial && !prepare_attachment(target, 0)) return 0;
     NvnImage* image = image_for(target, format.vk, aspect, &full);
     if (!image) {
         LOG_LIMIT(12, "nvn-clear-image-reject: format=%x %ux%ux%u levels=%u cache-full=%d\n", target->format,
@@ -444,6 +451,52 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     }
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
+    if (partial) {
+        VkImageView view = VK_NULL_HANDLE;
+        for (u32 i = 0; i < 16; i++)
+            if (image->attachments[i].view && image->attachments[i].format == format.vk &&
+                image->attachments[i].mip == mip && image->attachments[i].layer == layer) {
+                view = image->attachments[i].view;
+                break;
+            }
+        if (!view) return 0;
+        u64 prior = effective_unknown_write(command->prior_unmodeled_write);
+        int covered = layer < 64 && (image->color_layers[mip] & (1ull << layer)) &&
+                      image->subresource_sequence[mip][layer] > prior;
+        vk_barrier(cb, image->image, aspect, image->stage, image->access, image->layout,
+                   VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        image->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        image->stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        image->access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                                .imageView = view,
+                                                .imageLayout = image->layout,
+                                                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+                                     .renderArea = {{0, 0}, {mip_width, mip_height}},
+                                     .layerCount = 1,
+                                     .colorAttachmentCount = 1,
+                                     .pColorAttachments = &attachment};
+        VkClearAttachment clear = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = 0};
+        memcpy(clear.clearValue.color.float32, command->color, sizeof command->color);
+        VkClearRect rect = {.rect = {{command->region[0], command->region[1]},
+                                     {(u32)command->region[3], (u32)command->region[4]}},
+                            .layerCount = 1};
+        vkCmdBeginRendering(cb, &rendering);
+        vkCmdClearAttachments(cb, 1, &clear, 1, &rect);
+        vkCmdEndRendering(cb);
+        if (covered) image->subresource_sequence[mip][layer] = command->sequence;
+        image->last_batch = batch_serial;
+        mark_modeled_unknown(command->unknown_marker, command->prior_unmodeled_write);
+        static u64 partial_clears;
+        partial_clears++;
+        if (partial_clears == 1 || !(partial_clears % 100))
+            LOG("nvn-clear-partial: issued=%llu target=%llx mip=%u layer=%u covered=%d\n",
+                (unsigned long long)partial_clears, (unsigned long long)target->gpu_address, mip, layer, covered);
+        return 1;
+    }
     vk_barrier(cb, image->image, aspect, image->stage, image->access, image->layout, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     image->layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;

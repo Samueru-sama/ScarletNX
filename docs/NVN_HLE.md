@@ -638,9 +638,12 @@ blocker, but an earlier probe issued zero bank-1 shadow draws because the first 
 producer. The sampled texture is render target `0x5acba2c00`; Maxwell clears it to black each frame without drawing
 to it. The producer is `nvnCommandBufferClearTexture`, which the recorder had classified as a clear without
 snapshotting its texture, view, region, or color. The shadow path now snapshots that command and executes full
-subresource clears against an NVN-owned image. Partial regions remain unsupported because they cannot establish
-complete sampled-image coverage. In an eight-second Catherine run, all 766 texture clear targets resolved, 1,900
+subresource clears against an NVN-owned image. Rectangular color clears now use an attachment clear and preserve
+full-image provenance only if the untouched pixels were already initialized by modeled operations. In an
+eight-second Catherine run, all 766 texture clear targets resolved, 1,900
 of 1,915 staged clears executed, and the shadow path issued 1,300 draws, including 364 that used embedded bank 1.
+The sampled Catherine, TotK, Scarlet, and Odyssey boots did not issue a rectangular texture clear, so that branch
+still needs a title-level visual check when such a command is observed.
 These counts establish direct draw execution, not visual parity or guest-memory coherence. The Maxwell surface's
 write generation advanced from 2 to 9 over the first eight presented frames while its last guest-memory generation
 remained 1, so importing those pixels would reintroduce a dependency on GPU emulation.
@@ -657,6 +660,12 @@ same bank-1 mapping again showed the full alpha mismatch; no bank-1 shadow draw 
 comparison samples after the guest submission, so later Maxwell operations may affect its contents. Neither result
 proves gameplay parity. Texture-clear replay now certifies the sampled producer in later batches too, but the alpha
 mismatch and other unmodeled rendering behavior remain to be resolved.
+The next draw-eligibility limits differ by title. In an eight-second TotK sample, 831 pipelines prepared, but early
+draws used storage buffers, multiple color targets, instancing, and non-Catherine render state. Scarlet prepared
+3,669 pipelines in a ten-second sample, while its early fullscreen triangle passes used generated CBUF 0 and
+formats or state outside the current executable slice. Odyssey prepared 2,501 pipelines in twelve seconds, but its
+early indexed passes used an sRGB target and different polygon state. These are executor and generated-resource
+gaps, not shader-module compilation failures; the three samples issued no shadow draws.
 With all current pipeline probes enabled, an eight-second Catherine boot prepared 3,787 draw pipelines and
 attachments with zero failures; 2,907 draws retained ready texture headers and 880 used no textures in their ready
 shaders. This establishes that shader translation and pipeline creation cover that boot sequence. Most draws still
