@@ -1230,14 +1230,20 @@ producer comparisons do not establish full source parity at the consumer draw. `
 selects an intermediate GPU address for these opt-in comparisons.
 
 An ABI-7 Scarlet replay issues direct shadow draws, but its first 1920×1080 R11G11B10F comparison is still
-uncovered and differs from Maxwell. The earliest **recorded** draw lacking a channel-mask binding targets a
-different address (`0x54af60000`), with format `0x05`, texture target `2`, and six instances. A diagnostic
-replay that assumed a full mask still rejected that draw because the direct slice does not support its texture
-target and format. That assumption was removed. The first native draw into the compared 1920×1080 target uses
-a different shader pair from the first direct draw recorded for that target; the direct draw matches the native
-second draw. This is a command coverage gap, not evidence that a channel-mask default would fix the compared
-image. Missing depth/stencil state now stops a pipeline only when a depth attachment is bound, since a
-color-only draw cannot use that state.
+uncovered and differs from Maxwell. The earliest recorded draw lacking a channel-mask binding targets a different
+address (`0x54af60000`), with a six-instance texture target `2`; assuming a full mask in a diagnostic run did
+not make that draw eligible, so no default was committed. Missing depth/stencil state now stops a pipeline only
+when a depth attachment is bound, since a color-only draw cannot use that state.
+
+The first native draw into the compared 1920×1080 target **does** match a recorded NVN draw at sequence 50,
+including both shader hashes. Its pipeline builds, but the shadow draw stops at fragment texture slot 2: a
+960×540 depth image at `0x557580000`. A full depth clear at sequence 31 certifies that image; an unsupported
+draw at sequence 32 invalidates it. Sequence 32 has an R16F color target, and sequence 48 has an R8 color target;
+both formats already map to supported Vulkan attachments but were omitted from the direct draw whitelist. The
+whitelist now includes them. Sequence 32 then executes and preserves the depth source, but sequence 48 remains
+ineligible later in the direct draw path and invalidates it again. The sequence-50 draw and the 1920×1080
+comparison therefore remain uncovered. This is a chained producer-coverage gap, not a channel-mask issue with
+the compared draw.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
