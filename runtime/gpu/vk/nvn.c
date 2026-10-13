@@ -664,10 +664,10 @@ static VkBlendOp nvn_blend_op(u32 equation) {
 }
 
 /* This key checks that the observed shader, vertex, blend, polygon, and attachment interface
-   can form a Vulkan pipeline. Dynamic raster state is set when the host draw is implemented. */
+   can form a Vulkan pipeline. Dynamic raster and depth state is set by a future host draw. */
 static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vertex, const VkSh* fragment_shader) {
     if (!vertex || !fragment_shader || !command->channel_mask_known || !command->color_state_known ||
-        !command->polygon_state_known)
+        !command->polygon_state_known || !command->depth_stencil_state_known)
         return 0;
     /* The existing pipeline key does not represent logic operations or alpha testing. */
     if (((command->color_state >> 16) & 0xff) != 3 || ((command->color_state >> 24) & 0xf) != 8) {
@@ -773,6 +773,29 @@ static int prepare_draw_pipeline(const NvnDrawCommand* command, const VkSh* vert
         }
         key.depth = format.vk;
         if (format.stencil) key.stencil = format.vk;
+    }
+    u32 depth_state = command->depth_stencil_state[0];
+    if ((depth_state & 3) && !key.depth) {
+        LOG_LIMIT(8, "nvn-pipeline: depth enabled without depth target state=%08x\n", depth_state);
+        return 0;
+    }
+    if ((depth_state & 1) && (!((depth_state >> 4) & 0xf) || ((depth_state >> 4) & 0xf) > 8)) {
+        LOG_LIMIT(8, "nvn-pipeline: unsupported depth compare state=%08x\n", depth_state);
+        return 0;
+    }
+    if (depth_state & 4) {
+        if (!key.stencil) {
+            LOG_LIMIT(8, "nvn-pipeline: stencil enabled without stencil target state=%08x\n", depth_state);
+            return 0;
+        }
+        u32 stencil_state = command->depth_stencil_state[1];
+        for (u32 shift = 0; shift < 32; shift += 4) {
+            u32 value = (stencil_state >> shift) & 0xf;
+            if (!value || value > 8) {
+                LOG_LIMIT(8, "nvn-pipeline: unsupported stencil state=%08x\n", stencil_state);
+                return 0;
+            }
+        }
     }
     if (!key.ncolor && !key.depth) return 0;
     return vk_pipeline_get(&key) != VK_NULL_HANDLE;

@@ -81,6 +81,8 @@ typedef struct {
     u32 blend_state[8][2];
     u32 polygon_state;
     u8 polygon_state_known;
+    u32 depth_stencil_state[2];
+    u8 depth_stencil_state_known;
     u64 index_address;
     u32 primitive, first, count, index_type, instance_count, base_instance;
     i32 base_vertex;

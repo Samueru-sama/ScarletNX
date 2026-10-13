@@ -109,6 +109,8 @@ typedef struct {
     u32 blend_state[8][2];
     u32 polygon_state;
     u8 polygon_state_known;
+    u32 depth_stencil_state[2];
+    u8 depth_stencil_state_known;
     NvnBufferRange uniform[NVN_DRAW_SHADER_STAGES][NVN_DRAW_UNIFORM_SLOTS];
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
@@ -568,6 +570,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         } else if (!strcmp(op->name, "nvnCommandBufferBindPolygonState")) {
             state->polygon_state_known = !!op->payload;
             if (op->payload) state->polygon_state = *(const u32*)op->payload;
+        } else if (!strcmp(op->name, "nvnCommandBufferBindDepthStencilState")) {
+            state->depth_stencil_state_known = !!op->payload;
+            if (op->payload) memcpy(state->depth_stencil_state, op->payload, sizeof state->depth_stencil_state);
         } else if (!strcmp(op->name, "nvnCommandBufferBindBlendState")) {
             if (!op->payload) {
                 state->blend_state_known = 0;
@@ -637,6 +642,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             draw.color_state_known = state->color_state_known;
             draw.polygon_state = state->polygon_state;
             draw.polygon_state_known = state->polygon_state_known;
+            draw.depth_stencil_state_known = state->depth_stencil_state_known;
+            memcpy(draw.depth_stencil_state, state->depth_stencil_state, sizeof draw.depth_stencil_state);
             draw.blend_state_known = state->blend_state_known;
             memcpy(draw.blend_state, state->blend_state, sizeof draw.blend_state);
             memcpy(draw.vertex_attrib_raw, state->vertex_attrib_raw, sizeof draw.vertex_attrib_raw);
@@ -897,8 +904,12 @@ static void snapshot_view(u64 ptr, NvnView* view) {
 static void snapshot_semantic(NvnOp* op, const CPU* c) {
     if (!strcmp(op->name, "nvnCommandBufferBindChannelMaskState") ||
         !strcmp(op->name, "nvnCommandBufferBindColorState") || !strcmp(op->name, "nvnCommandBufferBindPolygonState") ||
-        !strcmp(op->name, "nvnCommandBufferBindBlendState")) {
-        u32 count = !strcmp(op->name, "nvnCommandBufferBindBlendState") ? 2 : 1;
+        !strcmp(op->name, "nvnCommandBufferBindBlendState") ||
+        !strcmp(op->name, "nvnCommandBufferBindDepthStencilState")) {
+        u32 count = !strcmp(op->name, "nvnCommandBufferBindBlendState") ||
+                            !strcmp(op->name, "nvnCommandBufferBindDepthStencilState")
+                        ? 2
+                        : 1;
         if (!readable_range(op->args[0], (u64)count * sizeof(u32))) return;
         u32* words = malloc(count * sizeof *words);
         if (!words) {
