@@ -8,7 +8,15 @@
 #define GNU_VFS_FD_MAX   256
 #define GNU_VFS_FILE_MAX (64u * 1024u * 1024u)
 
-enum GnuNodeKind { GNU_NODE_DIR, GNU_NODE_FILE, GNU_NODE_DEVICE, GNU_NODE_PROC, GNU_NODE_LINK, GNU_NODE_STDIO };
+enum GnuNodeKind {
+    GNU_NODE_DIR,
+    GNU_NODE_FILE,
+    GNU_NODE_DEVICE,
+    GNU_NODE_PROC,
+    GNU_NODE_LINK,
+    GNU_NODE_STDIO,
+    GNU_NODE_OBJECT /* the node every object descriptor shares (vfs.h's GnuObjectOps) */
+};
 enum GnuDeviceKind { GNU_DEV_NULL, GNU_DEV_ZERO, GNU_DEV_RANDOM };
 enum GnuProcKind { GNU_PROC_MAPS, GNU_PROC_CMDLINE, GNU_PROC_STATUS, GNU_PROC_CPUINFO };
 enum {
@@ -47,13 +55,16 @@ typedef struct GnuOpen {
     int fdlink; /* O_PATH|O_NOFOLLOW descriptor for a /dev/fd or proc fd symlink. */
     unsigned char* snapshot;
     size_t snapshot_size;
+    const GnuObjectOps* ops; /* an object's descriptor */
+    void* object;
+    uint64_t inode;
 } GnuOpen;
 typedef struct GnuDescriptor {
     GnuOpen* file;
     unsigned flags;
 } GnuDescriptor;
 typedef struct GnuVfsState {
-    GnuNode *root, *allocated, *cwd, *executable;
+    GnuNode *root, *allocated, *cwd, *executable, *objects;
     GnuDescriptor descriptors[GNU_VFS_FD_MAX];
     uint64_t next_inode;
     uint32_t pid;

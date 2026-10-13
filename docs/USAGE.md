@@ -200,6 +200,7 @@ Restart for `docked`, `language`, `fullscreen`, `resolution`, `memory_gb`, `heap
 | `fps_limit=1` | 60 FPS; `0` uncapped; `60..240` explicit cap |
 | `shadows=0` | Skip shadow maps |
 | `language=1` | English (US); other IDs in INI |
+| `network=1` | Online through the computer's connection (bsd, sfdnsres, nifm); `0` offline, loopback only |
 | `log=2` | Verbose, adds runtime overhead |
 
 `audout` PCM playback and the audio renderer's device sink (`audren`) use SDL3's system-default output on

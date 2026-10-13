@@ -2,7 +2,7 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* the smaller services, most of which answer success: apm, lm, pctl, nifm, friend, ns, bsd, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin */
+/* the smaller services, most of which answer success: apm, lm, pctl, friend, ns, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin */
 #include "hle/services/services_int.h"
 /* ================================================================ apm and misc */
 static int apm_session(SvcObj* o, IpcCtx* c) {
@@ -93,71 +93,6 @@ static int pctl_disp(SvcObj* o, IpcCtx* c) {
 }
 SvcObj* new_pctl(void) { return svcobj_new("pctl", pctl_disp, 0); }
 
-static int nifm_req(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: out32(c, 1); return 0;
-        case 1: return RC(110, 300);
-        case 2: {
-            KEvent* a = kevent_new("nifm0");
-            KEvent* b = kevent_new("nifm1");
-            a->signaled = 1;
-            out_copy_h(c, ev_handle(a));
-            out_copy_h(c, ev_handle(b));
-            return 0;
-        }
-        case 3:
-        case 4:
-        case 5:
-        case 6:
-        case 11:
-        case 21: return 0;
-    }
-    return stub_ok(o, c);
-}
-/* IScanRequest: a scan that is over at once and found nothing */
-static int nifm_scan(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: return 0;             /* Submit */
-        case 1: out8(c, 0); return 0; /* IsProcessing */
-        case 2: return 0;             /* GetResult */
-        case 3: {                     /* GetSystemEventReadableHandle */
-            KEvent* e = kevent_new("nifm scan");
-            e->signaled = 1;
-            out_copy_h(c, ev_handle(e));
-            return 0;
-        }
-    }
-    return stub_ok(o, c);
-}
-static int nifm_gen(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 4: out_obj(c, svcobj_new("IRequest", nifm_req, 0)); return 0;
-        case 2: out_obj(c, svcobj_new("IScanRequest", nifm_scan, 0)); return 0;
-        /* no network: the queries about the connection fail like 12 GetCurrentIpAddress does */
-        case 5:
-        case 12:
-        case 15:
-        case 18: return RC(110, 300);
-        case 21: out8(c, 0); return 0;
-        case 22: out8(c, 0); return 0;
-        case 1: { /* GetClientId: a u32 in a C buffer */
-            u64 a, s;
-            buf_out(c, 0, &a, &s);
-            if (a && s >= 4) gw32(a, 1);
-            return 0;
-        }
-    }
-    return stub_ok(o, c);
-}
-static int nifm_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 4 || c->cmd == 5) {
-        out_obj(c, svcobj_new("IGeneralService", nifm_gen, 0));
-        return 0;
-    }
-    return quiet_ok(o, c);
-}
-SvcObj* new_nifm(void) { return svcobj_new("nifm", nifm_disp, 0); }
-
 static int friend_svc(SvcObj* o, IpcCtx* c) {
     if (c->cmd == 0) {
         out_copy_h(c, ev_handle(kevent_new("friend")));
@@ -209,21 +144,6 @@ static int ns_disp(SvcObj* o, IpcCtx* c) {
 }
 SvcObj* new_ns(void) { return svcobj_new("ns", ns_disp, 0); }
 
-static int bsd_disp(SvcObj* o, IpcCtx* c) {
-    (void)o;
-    switch (c->cmd) {
-        case 0: out32(c, 0); return 0;
-        case 1: return 0;
-        case 2:
-            out32(c, (u32)-1);
-            out32(c, 106);
-            return 0;
-    }
-    out32(c, (u32)-1);
-    out32(c, 106);
-    return 0;
-}
-SvcObj* new_bsd(void) { return svcobj_new("bsd", bsd_disp, 0); }
 static int ssl_disp(SvcObj* o, IpcCtx* c) {
     if (c->cmd == 0) {
         out_obj(c, quiet("ISslContext"));

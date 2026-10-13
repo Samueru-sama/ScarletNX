@@ -66,7 +66,10 @@ I/O, `openat`, `close`, `lseek`, `dup`, `fcntl`), metadata and directory operati
 (`fstat`, `newfstatat`, `readlinkat`, `getdents64`, `mkdirat`, `unlinkat`,
 `ftruncate`, `chdir`, `getcwd`), memory (`brk`, `mmap`, `munmap`, `mprotect`),
 process exit and identification, `uname`, clocks, random bytes, signal action and
-mask storage, and basic single-thread futex operations. Guest structures and
+mask storage, and basic single-thread futex operations. Networking adds host-backed
+sockets, socketpair, poll/select, epoll and eventfd through the shared stack;
+read-only virtual `/etc` files support guest libc DNS. See [NETWORKING.md](NETWORKING.md)
+for configuration, tests, and current semantic limitations. Guest structures and
 constants are encoded for AArch64 rather than copied from the host ABI.
 
 The initial runtime executes one guest thread. `clone`, signal delivery and

@@ -63,6 +63,26 @@ if(SNX_TEST_A64_FP_DIFF)
     set_tests_properties(a64_fp_differential PROPERTIES TIMEOUT 900)
 endif()
 
+# The emulated network stack over the host's loopback (src/common/network)
+add_executable(snx-test-network-stack network_stack.c)
+snx_test_target(snx-test-network-stack 23)
+target_link_libraries(snx-test-network-stack PRIVATE scarletnx-net)
+add_test(NAME network_stack COMMAND snx-test-network-stack)
+set_tests_properties(network_stack PROPERTIES TIMEOUT 60)
+
+add_executable(snx-test-network-icmp network_icmp.c)
+snx_test_target(snx-test-network-icmp 23)
+target_link_libraries(snx-test-network-icmp PRIVATE scarletnx-net)
+add_test(NAME network_icmp COMMAND snx-test-network-icmp)
+set_tests_properties(network_icmp PROPERTIES TIMEOUT 30)
+
+# This IPC fixture stubs the kernel and needs no NX graphics/media dependencies.
+add_executable(snx-test-bsd-service bsd_service.c)
+snx_test_target(snx-test-bsd-service 23)
+target_link_libraries(snx-test-bsd-service PRIVATE scarletnx-net)
+add_test(NAME bsd_service COMMAND snx-test-bsd-service)
+set_tests_properties(bsd_service PROPERTIES TIMEOUT 60)
+
 if(SNX_BUILD_NX)
 foreach(backend windowed headless)
     add_executable(snx-test-startup-${backend} startup_options.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/startup.c")

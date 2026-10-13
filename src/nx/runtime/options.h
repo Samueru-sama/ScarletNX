@@ -16,6 +16,7 @@ void ini_open(const char* path); /* watch the file: ini_poll reloads it when it 
 void ini_poll(void);
 extern int g_opt_docked, g_opt_lang, g_opt_fps;
 extern int g_opt_diag, g_opt_shadows, g_opt_prof;
+extern int g_opt_network; /* network: 1 = the game is online through the host (hle/services/network) */
 extern float g_opt_resf;
 
 #endif

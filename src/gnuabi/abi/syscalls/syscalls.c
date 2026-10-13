@@ -5,6 +5,7 @@
 #include "../../process/process.h"
 #include "../../signals/signals.h"
 #include "../../threading/futex.h"
+#include "network/network.h"
 #include <string.h>
 #include <stdio.h>
 static int64_t file_mmap(GnuProcess* p, const uint64_t a[6]) {
@@ -29,6 +30,7 @@ int64_t gnu_syscall(GnuProcess* p, uint64_t number, const uint64_t a[6]) {
     /* arm64 el0_svc_common takes an int syscall number from x8. */
     number = (uint32_t)number;
     if (gnu_vfs_syscall(&p->vfs, &p->memory, number, a, &result)) return result;
+    if (gnu_net_syscall(p, number, a, &result)) return result;
     switch (number) {
         case GNU_NR_exit:
         case GNU_NR_exit_group: gnu_process_exit(p, (int)a[0]); return 0;

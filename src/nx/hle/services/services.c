@@ -3,8 +3,9 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* the events the services share, and the registration of the services in sm.c, am.c, set.c, time.c, acc.c,
-   audio.c and misc.c */
+   audio.c, misc.c and network/ */
 #include "hle/services/services_int.h"
+#include "hle/services/network/network.h"
 
 /* ================================================================ shared events */
 u32 ev_handle(KEvent* e) { return h_new(&e->o); }
@@ -24,6 +25,7 @@ void svc_core_init(void) {
     am_init();
     audio_init();
     time_init();
+    network_init();
     plat_thread(audio_clock, NULL, 64 * 1024);
     svc_register("sm:", new_sm);
     svc_register("appletOE", new_appletoe);
@@ -60,8 +62,13 @@ void svc_core_init(void) {
     svc_register("audout:u", new_audout);
     svc_register("audin:u", new_audin);
     svc_register("hwopus", new_hwopus);
-    svc_register("bsd:u", new_bsd);
-    svc_register("bsd:s", new_bsd);
+    svc_register("bsd:u", new_bsd_u);
+    svc_register("bsd:a", new_bsd_u);
+    svc_register("bsd:s", new_bsd_s);
+    svc_register("bsdcfg", new_bsdcfg);
+    svc_register("sfdnsres", new_sfdnsres);
+    svc_register("nsd:u", new_nsd);
+    svc_register("nsd:a", new_nsd);
     svc_register("ssl", new_ssl);
     svc_register("prepo:u", new_prepo);
     svc_register("prepo:a", new_prepo);

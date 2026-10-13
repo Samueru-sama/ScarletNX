@@ -4,6 +4,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "process.h"
+#include "network/network.h"
 #include "../abi/errno/errno.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -172,6 +173,7 @@ int gnu_process_init(GnuProcess* p, const char* path, int argc, const char* cons
     }
     if (!r) r = gnu_vfs_set_process(&p->vfs, p->pid, "/program", argc, argv);
     if (!r) r = gnu_vfs_set_executable(&p->vfs, p->elf.image, p->elf.size);
+    if (!r) r = gnu_net_process_init(p);
     if (r) {
         if (cap && !error[0]) snprintf(error, cap, "Guest process initialization failed (%d)", r);
         gnu_process_destroy(p);

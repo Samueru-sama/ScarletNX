@@ -82,6 +82,7 @@ static GnuDescriptor* descriptor(GnuVfsState* s, int fd) {
 }
 static void drop_descriptor(GnuDescriptor* d) {
     if (d->file && --d->file->references == 0) {
+        if (d->file->ops && d->file->ops->release) d->file->ops->release(d->file->object);
         free(d->file->snapshot);
         free(d->file);
     }
@@ -366,6 +367,7 @@ static int open_file(GnuVfsState* s, GnuMemory* memory, int dirfd, const char* p
     else if ((flags & (GNU_O_CREAT | GNU_O_EXCL)) == (GNU_O_CREAT | GNU_O_EXCL))
         return -GNU_EEXIST;
     if (node->kind == GNU_NODE_LINK && !(flags & GNU_O_PATH)) return -GNU_ELOOP;
+    if (node->kind == GNU_NODE_OBJECT) return -GNU_ENXIO; /* Linux: a socket's /proc/self/fd entry can't be opened */
     if (fdlink >= 0 && (flags & GNU_O_NOFOLLOW) && !(flags & GNU_O_PATH)) return -GNU_ELOOP;
     if ((flags & GNU_O_DIRECTORY) && node->kind != GNU_NODE_DIR) return -GNU_ENOTDIR;
     if (node->kind == GNU_NODE_DIR && ((flags & GNU_O_ACCMODE) || (flags & GNU_O_TRUNC))) return -GNU_EISDIR;
@@ -402,6 +404,7 @@ static int open_file(GnuVfsState* s, GnuMemory* memory, int dirfd, const char* p
 static int64_t file_read(GnuOpen* file, void* data, size_t length, uint64_t position) {
     GnuNode* node = file->node;
     if ((file->flags & GNU_O_PATH) || (file->flags & GNU_O_ACCMODE) == GNU_O_WRONLY) return -GNU_EBADF;
+    if (file->ops) return file->ops->read ? file->ops->read(file->object, file->flags, data, length) : -GNU_EINVAL;
     if (node->kind == GNU_NODE_DIR) return -GNU_EISDIR;
     if (node->kind == GNU_NODE_DEVICE) return gnu_devfs_read(node->subtype, data, length);
     if (node->kind == GNU_NODE_STDIO) {
@@ -419,12 +422,13 @@ static int64_t file_read(GnuOpen* file, void* data, size_t length, uint64_t posi
 int64_t gnu_vfs_pread(GnuVfs* vfs, int fd, void* destination, size_t length, uint64_t offset) {
     GnuDescriptor* d = descriptor(vfs->state, fd);
     if (!d) return -GNU_EBADF;
-    if (d->file->node->kind == GNU_NODE_STDIO) return -GNU_ESPIPE;
+    if (d->file->node->kind == GNU_NODE_STDIO || d->file->ops) return -GNU_ESPIPE;
     return file_read(d->file, destination, length, offset);
 }
 static int64_t file_write(GnuOpen* file, const void* data, size_t length, uint64_t position, int positional) {
     GnuNode* node = file->node;
     if ((file->flags & GNU_O_PATH) || !(file->flags & GNU_O_ACCMODE)) return -GNU_EBADF;
+    if (file->ops) return file->ops->write ? file->ops->write(file->object, file->flags, data, length) : -GNU_EINVAL;
     if (node->kind == GNU_NODE_DIR) return -GNU_EISDIR;
     if (node->kind == GNU_NODE_DEVICE) return (int64_t)length;
     if (node->kind == GNU_NODE_STDIO) {
@@ -450,7 +454,7 @@ static int64_t io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t address, u
     GnuDescriptor* d = descriptor(s, fd);
     if (!d) return -GNU_EBADF;
     if (length > INT64_MAX || length > SIZE_MAX) return -GNU_EINVAL;
-    if (positional && d->file->node->kind == GNU_NODE_STDIO) return -GNU_ESPIPE;
+    if (positional && (d->file->node->kind == GNU_NODE_STDIO || d->file->ops)) return -GNU_ESPIPE;
     if (positional && (int64_t)position < 0) return -GNU_EINVAL;
     unsigned char dummy = 0;
     /* Linux null/zero discard writes, and null reads do not touch the buffer. */
@@ -464,7 +468,7 @@ static int64_t io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t address, u
     int64_t result = write ? file_write(d->file, data, (size_t)length, offset, positional)
                            : file_read(d->file, data, (size_t)length, offset);
     if (result > 0 && !positional && !write && d->file->node->kind != GNU_NODE_DEVICE &&
-        d->file->node->kind != GNU_NODE_STDIO)
+        d->file->node->kind != GNU_NODE_STDIO && !d->file->ops)
         d->file->offset += (uint64_t)result;
     return result;
 }
@@ -479,6 +483,38 @@ static int64_t vectored_io(GnuVfsState* s, GnuMemory* memory, int fd, uint64_t v
         uint64_t n = get64(entries + (size_t)i * 16 + 8);
         if (n > INT64_MAX - total_length) return -GNU_EINVAL;
         total_length += n;
+    }
+    GnuOpen* file = descriptor(s, fd)->file;
+    if (file->ops) {
+        /* one call for all the vectors: a datagram socket sends them as one datagram, and receives one into them */
+        if (total_length > GNU_VFS_FILE_MAX) total_length = GNU_VFS_FILE_MAX;
+        unsigned char* bounce = (unsigned char*)malloc(total_length ? (size_t)total_length : 1);
+        if (!bounce) return -GNU_ENOMEM;
+        size_t used = 0;
+        for (uint64_t i = 0; write && i < count && used < total_length; ++i) {
+            uint64_t address = get64(entries + (size_t)i * 16), length = get64(entries + (size_t)i * 16 + 8);
+            if (length > total_length - used) length = total_length - used;
+            if (length && (error = gnu_memory_read(memory, address, bounce + used, (size_t)length))) {
+                free(bounce);
+                return error;
+            }
+            used += (size_t)length;
+        }
+        int64_t result =
+            write ? file_write(file, bounce, used, 0, 0) : file_read(file, bounce, (size_t)total_length, 0);
+        size_t left = result > 0 && !write ? (size_t)result : 0, at = 0;
+        for (uint64_t i = 0; i < count && left; ++i) {
+            uint64_t address = get64(entries + (size_t)i * 16), length = get64(entries + (size_t)i * 16 + 8);
+            if (length > left) length = left;
+            if (length && (error = gnu_memory_write(memory, address, bounce + at, (size_t)length))) {
+                free(bounce);
+                return error;
+            }
+            at += (size_t)length;
+            left -= (size_t)length;
+        }
+        free(bounce);
+        return result;
     }
     int64_t total = 0;
     for (uint64_t i = 0; i < count; ++i) {
@@ -496,7 +532,7 @@ static int64_t seek(GnuVfsState* s, int fd, int64_t offset, unsigned whence) {
     GnuOpen* f = d->file;
     GnuNode* n = f->node;
     if (f->flags & GNU_O_PATH) return -GNU_EBADF;
-    if (n->kind == GNU_NODE_STDIO) return -GNU_ESPIPE;
+    if (n->kind == GNU_NODE_STDIO || f->ops) return -GNU_ESPIPE;
     if (whence > 2) return -GNU_EINVAL;
     if (n->kind == GNU_NODE_DEVICE) return 0;
     uint64_t base = whence == 0 ? 0 : whence == 1 ? f->offset : n->kind == GNU_NODE_PROC ? f->snapshot_size : n->size;
@@ -574,6 +610,12 @@ static int readlink_path(GnuVfsState* s, int dirfd, const char* path, char outpu
         }
         if (node->kind == GNU_NODE_STDIO) {
             snprintf(output, GNU_VFS_PATH_MAX, "pipe:[%d]", 10000 + node->host_fd);
+            return 0;
+        }
+        if (node->kind == GNU_NODE_OBJECT && s->descriptors[fdlink].file && s->descriptors[fdlink].file->ops) {
+            const GnuOpen* f = s->descriptors[fdlink].file;
+            snprintf(output, GNU_VFS_PATH_MAX, f->ops->file_type ? "%s:[%llu]" : "%s", f->ops->link,
+                     (unsigned long long)f->inode);
             return 0;
         }
         error = node_path(node, output, GNU_VFS_PATH_MAX);
@@ -672,6 +714,123 @@ static int64_t fcntl_file(GnuVfsState* s, int fd, int command, uint64_t argument
         default: return -GNU_EINVAL;
     }
 }
+/* the ioctls every descriptor has. FIONBIO is O_NONBLOCK, which object descriptors (sockets) read on each call */
+static int64_t ioctl_file(GnuVfsState* s, GnuMemory* memory, int fd, uint32_t request, uint64_t argument) {
+    GnuDescriptor* d = descriptor(s, fd);
+    if (!d) return -GNU_EBADF;
+    unsigned char word[4];
+    int error;
+    switch (request) {
+        case 0x5421: /* FIONBIO */
+            if ((error = gnu_memory_read(memory, argument, word, 4))) return error;
+            if (word[0] | word[1] | word[2] | word[3])
+                d->file->flags |= GNU_O_NONBLOCK;
+            else
+                d->file->flags &= ~(unsigned)GNU_O_NONBLOCK;
+            return 0;
+        case 0x5451: d->flags = 1; return 0; /* FIOCLEX */
+        case 0x5450: d->flags = 0; return 0; /* FIONCLEX */
+        case 0x541B: {                       /* FIONREAD */
+            int bytes = 0;
+            GnuOpen* f = d->file;
+            if (f->ops) {
+                if (!f->ops->readable_bytes) return -GNU_ENOTTY;
+                if ((error = f->ops->readable_bytes(f->object, &bytes))) return error;
+            } else if (f->node->kind == GNU_NODE_FILE)
+                bytes = f->offset < f->node->size ? (int)(f->node->size - f->offset) : 0;
+            else
+                return -GNU_ENOTTY;
+            gnu_vfs_put32(word, (uint32_t)bytes);
+            return gnu_memory_write(memory, argument, word, 4);
+        }
+    }
+    return -GNU_ENOTTY;
+}
+static int object_stat(GnuMemory* memory, const GnuOpen* f, uint64_t address) {
+    unsigned char bytes[128] = {0};
+    gnu_vfs_put64(bytes, 8); /* sockfs and anon_inodefs live on devices of their own */
+    gnu_vfs_put64(bytes + 8, f->inode);
+    gnu_vfs_put32(bytes + 16, f->ops->file_type | (f->ops->file_type ? 0777 : 0600));
+    gnu_vfs_put32(bytes + 20, 1);
+    gnu_vfs_put32(bytes + 24, 1000);
+    gnu_vfs_put32(bytes + 28, 1000);
+    gnu_vfs_put32(bytes + 56, 4096);
+    return gnu_memory_write(memory, address, bytes, sizeof bytes);
+}
+int gnu_vfs_install_object(GnuVfs* vfs, const GnuObjectOps* ops, void* object, unsigned flags, int cloexec) {
+    GnuVfsState* s = vfs->state;
+    if (!s->objects && !(s->objects = gnu_vfs_node(s, NULL, "object", GNU_NODE_OBJECT, 0777, 0))) {
+        if (ops->release) ops->release(object);
+        return -GNU_ENOMEM;
+    }
+    GnuOpen* file = (GnuOpen*)calloc(1, sizeof *file);
+    if (!file) {
+        if (ops->release) ops->release(object);
+        return -GNU_ENOMEM;
+    }
+    file->node = s->objects;
+    file->flags = GNU_O_RDWR | (flags & GNU_O_NONBLOCK);
+    file->fdlink = -1;
+    file->ops = ops;
+    file->object = object;
+    file->inode = ++s->next_inode;
+    int fd = install(s, file, cloexec ? 1 : 0, 0);
+    if (fd < 0) {
+        if (ops->release) ops->release(object);
+        free(file);
+    }
+    return fd;
+}
+void* gnu_vfs_object(GnuVfs* vfs, int fd, const GnuObjectOps* ops, unsigned* flags) {
+    GnuDescriptor* d = descriptor(vfs->state, fd);
+    if (!d || !d->file->ops || (ops && d->file->ops != ops)) return NULL;
+    if (flags) *flags = d->file->flags;
+    return d->file->object;
+}
+int gnu_vfs_fd_info(GnuVfs* vfs, int fd, GnuFdInfo* out) {
+    GnuDescriptor* d = descriptor(vfs->state, fd);
+    memset(out, 0, sizeof *out);
+    out->host_fd = -1;
+    if (!d) return -GNU_EBADF;
+    out->ops = d->file->ops;
+    out->object = d->file->object;
+    out->flags = d->file->flags;
+    out->identity = d->file;
+    if (d->file->node->kind == GNU_NODE_STDIO)
+        out->host_fd = d->file->node->host_fd;
+    else if (!d->file->ops)
+        out->regular = 1;
+    return 0;
+}
+int gnu_vfs_add_file(GnuVfs* vfs, const char* path, const void* data, size_t size) {
+    GnuVfsState* s = vfs->state;
+    GnuNode* parent = s->root;
+    const char* p = path;
+    for (;;) {
+        while (*p == '/') ++p;
+        const char* start = p;
+        while (*p && *p != '/') ++p;
+        size_t n = (size_t)(p - start);
+        if (!n || n > 255) return -GNU_EINVAL;
+        char name[256];
+        memcpy(name, start, n);
+        name[n] = 0;
+        while (*p == '/') ++p;
+        int final = !*p;
+        GnuNode* node = child(parent, name);
+        if (!node) node = gnu_vfs_node(s, parent, name, final ? GNU_NODE_FILE : GNU_NODE_DIR, final ? 0444 : 0755, 1);
+        if (!node) return -GNU_ENOMEM;
+        if (final) {
+            if (node->kind != GNU_NODE_FILE) return -GNU_EISDIR;
+            int error = gnu_tmpfs_resize(node, size);
+            if (error) return error;
+            if (size) memcpy(node->bytes, data, size);
+            return 0;
+        }
+        if (node->kind != GNU_NODE_DIR) return -GNU_ENOTDIR;
+        parent = node;
+    }
+}
 bool gnu_vfs_syscall(GnuVfs* vfs, GnuMemory* memory, uint64_t number, const uint64_t a[6], int64_t* result) {
     GnuVfsState* s = vfs->state;
     char path[GNU_VFS_PATH_MAX];
@@ -717,7 +876,7 @@ bool gnu_vfs_syscall(GnuVfs* vfs, GnuMemory* memory, uint64_t number, const uint
             *result = (int64_t)a[1];
             return true;
         case 25: *result = fcntl_file(s, (int)a[0], (int)a[1], a[2]); return true;
-        case 29: *result = descriptor(s, (int)a[0]) ? -GNU_ENOTTY : -GNU_EBADF; return true;
+        case 29: *result = ioctl_file(s, memory, (int)a[0], (uint32_t)a[1], a[2]); return true;
         case 34:
         case 35:
         case 48:
@@ -781,7 +940,9 @@ bool gnu_vfs_syscall(GnuVfs* vfs, GnuMemory* memory, uint64_t number, const uint
         case 66: *result = vectored_io(s, memory, (int)a[0], a[1], a[2], number == 66); return true;
         case 80:
             d = descriptor(s, (int)a[0]);
-            *result = d ? stat_write(s, memory, d->file->node, a[1], d->file->fdlink) : -GNU_EBADF;
+            *result = !d             ? -GNU_EBADF
+                      : d->file->ops ? object_stat(memory, d->file, a[1])
+                                     : stat_write(s, memory, d->file->node, a[1], d->file->fdlink);
             return true;
         default: return false;
     }

@@ -11,7 +11,7 @@
 
 add_library(snx_nx_flags INTERFACE)
 target_include_directories(snx_nx_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx_nx_flags INTERFACE scarletnx-common)
+target_link_libraries(snx_nx_flags INTERFACE scarletnx-common scarletnx-net)
 # Every function and global used across files is declared once, in the header of the file that defines it, and
 # everything else is static: a declaration that disagrees with the definition is then a compile error instead of a
 # miscompile. Third-party sources keep their own warnings off.
@@ -41,7 +41,8 @@ target_link_libraries(snx_core PRIVATE snx_driver)
 snx_component(kernel hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c hle/kernel/ipc.c)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/sm.c hle/services/am.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/audio.c
-              hle/services/misc.c hle/filesystem/fs.c hle/filesystem/fs_tree.c hle/services/hid.c hle/services/vi.c hle/services/nvdrv.c)
+              hle/services/misc.c hle/services/network/bsd.c hle/services/network/dns.c
+              hle/services/network/nifm.c hle/filesystem/fs.c hle/filesystem/fs_tree.c hle/services/hid.c hle/services/vi.c hle/services/nvdrv.c)
 snx_component(video gpu/video/host1x.c gpu/video/nvdec.c gpu/video/vic.c)
 if(SNX_H264)
     target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)

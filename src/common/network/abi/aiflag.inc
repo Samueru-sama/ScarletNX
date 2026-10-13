@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* SNX_NET_AIFLAG(NAME, value, host): getaddrinfo's flags (SNX_AI_##NAME), FreeBSD's values like SNX_EAI_*. net.c
+   defines the host flags a host lacks as 0 */
+SNX_NET_AIFLAG(PASSIVE, 0x1, AI_PASSIVE)
+SNX_NET_AIFLAG(CANONNAME, 0x2, AI_CANONNAME)
+SNX_NET_AIFLAG(NUMERICHOST, 0x4, AI_NUMERICHOST)
+SNX_NET_AIFLAG(NUMERICSERV, 0x8, AI_NUMERICSERV)
+SNX_NET_AIFLAG(ALL, 0x100, AI_ALL)
+SNX_NET_AIFLAG(ADDRCONFIG, 0x400, AI_ADDRCONFIG)
+SNX_NET_AIFLAG(V4MAPPED, 0x800, AI_V4MAPPED)
+#undef SNX_NET_AIFLAG

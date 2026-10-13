@@ -21,6 +21,7 @@ int g_opt_docked = 0, g_opt_lang = 1, g_opt_fps = 1;
 float g_opt_resf = 1.0f;
 int g_opt_shadows = 1;
 int g_opt_prof = 0;
+int g_opt_network = 0;
 /* legacy (spanish) key names -> current ones */
 static const char* const INI_ALIAS[][2] = {{"modo_tv", "docked"},  {"idioma", "language"}, {"resolucion", "resolution"},
                                            {"sombras", "shadows"}, {"perfil", "profile"},  {NULL, NULL}};
@@ -142,6 +143,8 @@ static void ini_apply(const char* k, const char* v) {
         g_opt_shadows = atoi(v);
     else if (!strcmp(k, "profile"))
         g_opt_prof = atoi(v);
+    else if (!strcmp(k, "network"))
+        g_opt_network = atoi(v);
     else if (!strcmp(k, "memory_gb")) {
         g_opt_mem_gb = atoi(v);
     } else if (!strcmp(k, "heap_max_mb")) { /* 0 or less: no cap but the heap region's */
@@ -176,13 +179,17 @@ static const IniOpt INI_PERF[] = {
     {"memory_gb", "0",
      "Memory the game sees: 0 or 4 = 3.2 GB like the console, 6 or 8 = more (like yuzu's extended memory layout).\n;   Games that run out of memory on 3.2 GB, like Tears of the Kingdom, need 6"},
     {NULL, NULL, NULL}};
+static const IniOpt INI_NETWORK[] = {
+    {"network", "0",
+     "1 = host networking; known Nintendo service domains are blocked by the resolver, not by an IP firewall.\n;   0 = report offline and restrict outbound destinations to loopback. This is not a network sandbox"},
+    {NULL, NULL, NULL}};
 static const IniOpt INI_DBG[] = {
     {"log", "1", "Log detail: 1 = normal, 2 = everything (slow)"},
     {"diag", "0", "1 = save the data of each new compute shader to captures/compute, for debugging"},
     {"profile", "0", "1 = write profile.txt every 10 seconds (CPU profiler, Windows only)"},
     {NULL, NULL, NULL}};
-static const IniSec INI_SECS[] = {
-    {"Display", INI_DISPLAY}, {"Graphics", INI_GRAPHICS}, {"Performance", INI_PERF}, {"Debug", INI_DBG}, {NULL, NULL}};
+static const IniSec INI_SECS[] = {{"Display", INI_DISPLAY}, {"Graphics", INI_GRAPHICS}, {"Performance", INI_PERF},
+                                  {"Network", INI_NETWORK}, {"Debug", INI_DBG},         {NULL, NULL}};
 static void ini_load(const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) return;
