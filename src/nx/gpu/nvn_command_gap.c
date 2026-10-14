@@ -36,7 +36,8 @@ static int method_no_write(u32 subchannel, u32 method, u32 value) {
                            (method == 0x7 && ((value & 0x1f) == 1 || (value & 0x1f) == 4)) ||
                            (method >= 0x8e0 && method <= 0x8e3) ||
                            (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0) ||
-                           method == 0x701 || method == 0x702 || method == 0x7c0 || method == 0x7c1 ||
+                           method == 0x544 || method == 0x701 || method == 0x702 ||
+                           method == 0x7c0 || method == 0x7c1 ||
                            /* Zero-valued tiled-cache flush and PIPE_NOP change no logical backing bytes.
                               Other values remain unclassified. */
                            ((method == 0x3e0 || method == 0x68b) && !value) ||

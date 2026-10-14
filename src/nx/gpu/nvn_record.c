@@ -164,6 +164,7 @@ typedef struct {
     u8 polygon_state_known;
     u32 depth_stencil_state[2];
     u8 depth_stencil_state_known;
+    u8 clip_enable, clip_enable_known;
     u32 multisample_state[6];
     u8 multisample_state_known;
     u32 viewport[NVN_DRAW_VIEWPORT_SLOTS][4];
@@ -423,6 +424,8 @@ typedef struct {
     u32 channel, classes[8];
     u32 mode, sub, method, count, index;
     u32 origin, origin_writes;
+    u32 clip_writes;
+    u8 clip_enable, clip_known;
     u8 active, known;
 } NvnOriginStream;
 static NvnOriginStream origin_streams[128];
@@ -457,6 +460,11 @@ void nvn_record_forget_gpu_channel(u32 channel) {
 
 static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 value) {
     if (method == 0) stream->classes[sub] = value & 0xffff;
+    if (method == 0x544 && (stream->classes[sub] == 0xb197 || (sub == 0 && !stream->classes[sub]))) {
+        stream->clip_enable = value & 0xff;
+        stream->clip_known = 1;
+        stream->clip_writes++;
+    }
     if (method == 0x4eb && (stream->classes[sub] == 0xb197 || (sub == 0 && !stream->classes[sub]))) {
         stream->origin = value;
         stream->known = 1;
@@ -488,7 +496,10 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
             stream->method = method;
             stream->count = count;
             stream->index = 0;
-        } else if (header) stream->known = 0;
+        } else if (header) {
+            stream->known = 0;
+            stream->clip_known = 0;
+        }
     }
 }
 
@@ -537,9 +548,13 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
                 matched_list = draw->source_list;
             }
         u32 writes_before = stream->origin_writes;
+        u32 clip_writes_before = stream->clip_writes;
         const u32* data = (const u32*)gmem_ptr_untracked(va, bytes);
         if (data) origin_pushbuffer(stream, data, words);
-        else stream->known = 0;
+        else {
+            stream->known = 0;
+            stream->clip_known = 0;
+        }
         if (queue && queue->draws && matched_visit)
             for (u32 i = 0; i < queue->draws->count; i++) {
                 NvnDrawCommand* draw = &queue->draws->commands[i];
@@ -549,6 +564,16 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
                                : (stream->origin & 0x10) ? 2 : 1;
                 if (draw->window_flip_state && draw->window_flip_state != state) state = 3;
                 draw->window_flip_state = state;
+                if (!data || matched_visit == UINT64_MAX || stream->clip_writes != clip_writes_before) {
+                    draw->clip_enable_known = 2; /* in-entry state changes have unknown order relative to this draw */
+                } else if (stream->clip_known && draw->clip_enable_known != 2) {
+                    if (draw->clip_enable_known && draw->clip_enable != stream->clip_enable)
+                        draw->clip_enable_known = 2;
+                    else {
+                        draw->clip_enable = stream->clip_enable;
+                        draw->clip_enable_known = 1;
+                    }
+                }
             }
     }
     pm_unlock(&lock);
@@ -1069,6 +1094,9 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         } else if (!strcmp(op->name, "nvnCommandBufferSetDepthClamp")) {
             state->depth_clamp = !!op->args[0];
             state->depth_clamp_known = 1;
+        } else if (!strcmp(op->name, "nvnInlinedClipEnable")) {
+            state->clip_enable = (u8)op->args[0];
+            state->clip_enable_known = 1;
         } else if (!strcmp(op->name, "nvnCommandBufferCopyTextureToTexture")) {
             const NvnTextureCopy* captured = op->payload;
             NvnPoolSnapshot pool = {0};
@@ -1547,6 +1575,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             memcpy(draw.depth_stencil_state, state->depth_stencil_state, sizeof draw.depth_stencil_state);
             draw.depth_mode = op->depth_mode;
             draw.depth_mode_known = op->depth_mode_known;
+            draw.clip_enable = state->clip_enable;
+            draw.clip_enable_known = state->clip_enable_known;
             draw.multisample_state_known = state->multisample_state_known;
             memcpy(draw.multisample_state, state->multisample_state, sizeof draw.multisample_state);
             draw.viewport_known = state->viewport_known;
@@ -2092,6 +2122,11 @@ static void append_inlined_draw(NvnList* list, const u64 args[7]) {
 static void capture_gap_method(u32 subchannel, u32 method, u32 value, void* context) {
     NvnList* list = context;
     if (subchannel) return;
+    if (method == 0x544) {
+        u64 args[7] = {value & 0xff};
+        append_inlined_op(list, OP_STATE, "nvnInlinedClipEnable", args);
+        return;
+    }
     if (method >= 0x700 && method < 0x740) {
         u32 stream = (method - 0x700) / 4;
         switch ((method - 0x700) & 3) {

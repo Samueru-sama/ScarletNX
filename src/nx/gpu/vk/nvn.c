@@ -1463,7 +1463,8 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
         vk_shader_set_nvn_handle_bank(handle_words, handle_known, NVN_HANDLE_BANK_WORDS);
         VkSh* shader = vk_shader_get(stage ? fragment : (vertex_b ? vertex_b : vertex_a),
                                      stage || !vertex_b ? 0 : vertex_a, stage ? ST_FS : ST_VS, stage ? 0 : attr_int,
-                                     stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0, 0, 0, 0);
+                                     stage ? 0 : attr_sint, stage ? rt_int : 0, stage ? rt_sint : 0,
+                                     stage ? 0 : (command->clip_enable_known == 1 ? command->clip_enable : 0), 0, 0);
         u32 texture_int = 0, texture_sint = 0;
         if (stage && shader && shader->mod && !shader->failed && !shader->si.unsupported) {
             int textures_known = shader->si.ntex <= SH_MAXTEX;
@@ -2420,6 +2421,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int has_color = !!(command->color_target_mask & 1);
     int depth_only = !command->color_target_mask && command->depth_target_bound;
     if (!enabled || !pipeline || !vertex || !fragment || !command->uniform_updates_complete ||
+        command->clip_enable_known != 1 ||
         (cbuf_mask & ~((1u << 18) - 1)) ||
         ((cbuf_mask & 1) && (command->first || command->base_vertex || command->base_instance)) ||
         vertex->si.ntex < 0 ||

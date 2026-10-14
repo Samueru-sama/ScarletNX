@@ -53,6 +53,11 @@ int main(void) {
     const u32 other_stage_bindings[] = {0x6001090c, 0x31, 0x60010914, 0x41, 0x6001091c, 0x51};
     assert(nvn_command_gap_no_writes(other_stage_bindings, 6));
     assert(nvn_command_gap_no_writes(state_packets, 7)); /* CBUF offset is register state. */
+    const u32 clip_packet[] = {0x60010544, 0xff};
+    methods.count = 0;
+    assert(nvn_command_gap_methods(clip_packet, 2, capture, &methods));
+    assert(methods.count == 1 && methods.methods[0] == 0x544 && methods.values[0] == 0xff);
+    assert(nvn_command_gap_no_writes(clip_packet, 2));
     const u32 vertex_range[] = {0x20020701, 6, 0x22ad0000, 0x200207c0, 6, 0x22ad0d8b};
     assert(nvn_command_gap_no_writes(vertex_range, 6));
     assert(!nvn_command_gap_no_writes(packet, 12)); /* Indexed draw writes attachments. */

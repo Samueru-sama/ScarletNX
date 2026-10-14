@@ -1663,6 +1663,18 @@ pixel-exact 256×256 `RGBA16F` shadow target; later draws also sample guest
 `BC4` textures. The center pixel matches, but cubemap pixel parity is not yet
 reached.
 
+The first cubemap draw exposed a shader-key gap: Maxwell enabled all eight
+clip distances while direct NVN replay compiled the same vertex code with
+none enabled. Direct replay now records the `SetUserClipEnable` register from
+parsed command gaps and observed GPU submissions, uses the captured mask in
+vertex shader translation, and declines a shadow draw when the mask is
+unknown or changes within an unorderable submission entry. TotK confirms both
+paths use mask `0xff` for this draw. The 305-pixel difference remains, so this
+fix closes a state gap without establishing cube-face parity. The current
+comparison also confirms the complete first-draw uniform bytes, TIC/TSC,
+vertex stream, indices, viewport, and 256×256 sampled source match; disabling
+depth testing in either path alone does not remove the difference.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

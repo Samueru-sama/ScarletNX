@@ -123,6 +123,7 @@ typedef struct {
     u32 depth_stencil_state[2];
     u8 depth_stencil_state_known;
     u8 depth_mode, depth_mode_known;
+    u8 clip_enable, clip_enable_known;
     u32 multisample_state[6];
     u8 multisample_state_known;
     u32 viewport[NVN_DRAW_VIEWPORT_SLOTS][4];
