@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gpu/nvn_record.h"
 #include "gpu/nvn_command_gap.h"
+#include "gpu/nvn_control.h"
 #include "gpu/nvn_descriptor.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
@@ -196,6 +197,12 @@ typedef struct {
     u64 address, value;
     u8 known, fake_report, real_report;
 } ReplayQueryValue;
+typedef struct NvnControlRange {
+    struct NvnControlRange* next;
+    u64 list, visit, after_sequence;
+    u32 qwords;
+    u64 words[];
+} NvnControlRange;
 typedef struct {
     u64 key;
     u64 next_sequence;
@@ -204,6 +211,10 @@ typedef struct {
     u64 last_unmodeled_write;
     u64 gpu_entries, gpu_entries_in_draw_span;
     u64 gpu_macro_packets_outside_draw_span, gpu_macro38_packets_outside_draw_span;
+    u64 gpu_macro38_control_matched;
+    u64 gpu_macro38_hazards_applied;
+    NvnControlRange* control_ranges;
+    u16 control_range_count;
     u64 color_probe_seen[128];
     u16 color_probe_seen_count;
     ReplayState state;
@@ -228,8 +239,38 @@ typedef struct {
 } ReplayQueue;
 #define REPLAY_QUEUE_SLOTS 1024
 static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
+static u64 control_snapshot_bytes;
 static int descriptor_replay;
 static int readable_range(u64 addr, u64 size);
+static void record_control_range(ReplayQueue* queue, const NvnOp* op, u64 list, u64 visit) {
+    const char* coverage = getenv("SNX_NVN_CONTROL_COVERAGE");
+    const char* hazards = getenv("SNX_NVN_CONTROL_HAZARDS");
+    if (!queue || ((!coverage || strcmp(coverage, "1")) && (!hazards || strcmp(hazards, "1"))) ||
+        queue->control_range_count == 128)
+        return;
+    u64 address = op->args[0], size = op->args[1];
+    if (size < 32 || size > (16u << 20)) return;
+    if (size > 4096) size = 4096;
+    size &= ~7ull;
+    if (control_snapshot_bytes + sizeof(NvnControlRange) + size > (32u << 20)) return;
+    if (!readable_range(address, size)) return;
+    const u64* source = (const u64*)GP(address);
+    if (source[0] != NVN_CONTROL_SENTINEL) return;
+    NvnControlRange* range = malloc(sizeof *range + (size_t)size);
+    if (!range) return;
+    range->list = list;
+    range->visit = visit;
+    range->after_sequence = 0;
+    range->qwords = (u32)(size / 8);
+    memcpy(range->words, source, (size_t)size);
+    range->next = queue->control_ranges;
+    queue->control_ranges = range;
+    queue->control_range_count++;
+    control_snapshot_bytes += sizeof *range + size;
+    LOG_LIMIT(8, "nvn-control-range: list=%llx visit=%llu bytes=%llu sentinel=%llx\n",
+        (unsigned long long)list, (unsigned long long)visit,
+        (unsigned long long)size, (unsigned long long)source[0]);
+}
 static int shader_transport;
 static int clear_execute;
 static int copy_execute;
@@ -570,6 +611,30 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             if (!matched_visit || matched_visit == UINT64_MAX) {
                 queue->gpu_macro_packets_outside_draw_span += stream->macro_packets - macros_before;
                 queue->gpu_macro38_packets_outside_draw_span += stream->macro38_packets - macro38_before;
+                if (stream->macro38_packets != macro38_before && cpu)
+                    for (const NvnControlRange* range = queue->control_ranges; range; range = range->next) {
+                        u32 offset = 0, record_value = 0;
+                        if (!nvn_control_find_gpu_entry(range->words, range->qwords,
+                                                        va, cpu, &offset, &record_value)) continue;
+                        queue->gpu_macro38_control_matched += stream->macro38_packets - macro38_before;
+                        if (range->after_sequence && queue->draws) {
+                            for (u32 i = 0; i < queue->draws->count; i++) {
+                                NvnDrawCommand* draw = &queue->draws->commands[i];
+                                if (draw->sequence >= range->after_sequence &&
+                                    draw->last_unmodeled_write < range->after_sequence)
+                                    draw->last_unmodeled_write = range->after_sequence;
+                            }
+                            if (queue->last_unmodeled_write < range->after_sequence)
+                                queue->last_unmodeled_write = range->after_sequence;
+                            queue->gpu_macro38_hazards_applied += stream->macro38_packets - macro38_before;
+                        }
+                        LOG_LIMIT(8, "nvn-control-entry: queue=%llx list=%llx visit=%llu offset=%u gpu=%llx words=%u record=%u\n",
+                            (unsigned long long)queue->key,
+                            (unsigned long long)range->list,
+                            (unsigned long long)range->visit,
+                            offset, (unsigned long long)va, words, record_value);
+                        break;
+                    }
             }
         }
         if (queue && queue->draws && matched_visit)
@@ -979,6 +1044,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     }
     for (u32 i = 0; i < list->count; i++) {
         const NvnOp* op = &list->ops[i];
+        if (!strcmp(op->name, "nvnCommandBufferAddControlMemory"))
+            record_control_range(queue, op, handle, visit);
         NvnTextureTarget query_clear_target = {0};
         int query_clear_scoped = 0, query_draw_scoped = 0;
         int query_dispatch_scoped = queue && op->kind == OP_DISPATCH &&
@@ -2071,6 +2138,17 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                 replay_query_forget_reports(queue);
         }
     }
+    if (queue) {
+        const char* hazards = getenv("SNX_NVN_CONTROL_HAZARDS");
+        if (hazards && !strcmp(hazards, "1")) {
+            u64 marker = 0;
+            for (NvnControlRange* range = queue->control_ranges; range; range = range->next)
+                if (range->visit == visit) {
+                    if (!marker) marker = queue->next_sequence++;
+                    range->after_sequence = marker;
+                }
+        }
+    }
 }
 
 static void reset(NvnList* r) {
@@ -3118,15 +3196,27 @@ static void flush_replay_queue(u64 command_buffer) {
     if (queue && queue->key == command_buffer) {
         const char* coverage = getenv("SNX_NVN_GPU_COVERAGE");
         if (coverage && !strcmp(coverage, "1") && queue->gpu_entries)
-            LOG("nvn-gpu-coverage: queue=%llx entries=%llu draw-span=%llu outside-macros=%llu outside-macro38=%llu draws=%u\n",
+            LOG("nvn-gpu-coverage: queue=%llx entries=%llu draw-span=%llu outside-macros=%llu outside-macro38=%llu control-owned-macro38=%llu control-hazards=%llu control-ranges=%u draws=%u\n",
                 (unsigned long long)command_buffer,
                 (unsigned long long)queue->gpu_entries,
                 (unsigned long long)queue->gpu_entries_in_draw_span,
                 (unsigned long long)queue->gpu_macro_packets_outside_draw_span,
                 (unsigned long long)queue->gpu_macro38_packets_outside_draw_span,
+                (unsigned long long)queue->gpu_macro38_control_matched,
+                (unsigned long long)queue->gpu_macro38_hazards_applied,
+                queue->control_range_count,
                 queue->draws ? queue->draws->count : 0);
         queue->gpu_entries = queue->gpu_entries_in_draw_span = 0;
         queue->gpu_macro_packets_outside_draw_span = queue->gpu_macro38_packets_outside_draw_span = 0;
+        queue->gpu_macro38_control_matched = 0;
+        queue->gpu_macro38_hazards_applied = 0;
+        while (queue->control_ranges) {
+            NvnControlRange* next = queue->control_ranges->next;
+            control_snapshot_bytes -= sizeof(NvnControlRange) + (u64)queue->control_ranges->qwords * 8;
+            free(queue->control_ranges);
+            queue->control_ranges = next;
+        }
+        queue->control_range_count = 0;
         if (queue->pending_roots) {
             preflight_batches++;
             if (!queue->pending_clears)

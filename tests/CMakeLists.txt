@@ -194,6 +194,10 @@ add_executable(snx-test-nvn-command-gap nvn_command_gap.c "${PROJECT_SOURCE_DIR}
 snx_test_target(snx-test-nvn-command-gap 23)
 add_test(NAME nvn_command_gap COMMAND snx-test-nvn-command-gap)
 
+add_executable(snx-test-nvn-control nvn_control.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_control.c")
+snx_test_target(snx-test-nvn-control 11)
+add_test(NAME nvn_control COMMAND snx-test-nvn-control)
+
 add_executable(snx-test-nvn-uniform nvn_uniform.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_uniform.c")
 snx_test_target(snx-test-nvn-uniform 23)
 add_test(NAME nvn_uniform COMMAND snx-test-nvn-uniform)

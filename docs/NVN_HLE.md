@@ -1697,6 +1697,22 @@ classifying draws in every title. One TotK submit reports 65 outside-span
 macro 38 packets alongside 121 semantic draws. This diagnostic is opt-in and
 does not alter rendering.
 
+`SNX_NVN_CONTROL_COVERAGE=1` additionally snapshots bounded NVN control
+records supplied through `AddControlMemory` and matches submitted entries by
+both their GPU and CPU addresses. The record's small header value is a
+control field, not the GPFIFO word count. In the observed cubemap submit, all
+65 outside-span macro 38 packets match a secondary list's control record.
+The bounded snapshot can miss entries beyond its first 4 KiB, so this is an
+ownership diagnostic, not yet a complete decoder or a direct draw path.
+
+`SNX_NVN_CONTROL_HAZARDS=1` uses those confirmed control-record matches to
+place an unknown-write marker after the owning secondary list. Later direct
+draws retain their existing depth and sampled-image coverage requirements;
+draws that depended on an unmodeled macro write decline instead of comparing
+against a cleared shadow depth image. This opt-in conservative mode suppresses
+the first TotK cube-face comparison and reduces direct draw coverage. It does
+not execute the raw macro draws, and it is not a parity result.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
