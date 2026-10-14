@@ -1531,6 +1531,16 @@ subsequent draws still encounter pending shadow images. The first 256×256
 remain pixel exact in opt-in comparisons. This is a step toward whole-list
 parity, not a whole-frame parity result.
 
+The pre-submit initial-color probe now accounts for compute dispatches whose
+shader write slots and bound storage ranges are known and disjoint from the
+candidate target. It continues to reject unknown dispatches or overlapping
+writes. TotK's first 256×256 `RGBA16F` target then passes the zero-backing
+probe, receives a zero load, and becomes a complete shadow image without a
+diagnostic capture. Its later texture lookups see that image. With comparison
+enabled, this production coverage path matches the emulated target byte for
+byte across all 65,536 pixels. Later pending sources and presented-frame parity
+remain open.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

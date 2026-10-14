@@ -1870,6 +1870,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                            .program = state->program[5],
                                            .uniform_bound = state->uniform_bound[5],
                                            .storage_bound = state->storage_known[5]};
+            if (query_dispatch_scoped) {
+                dispatch.write_slots_known = nvn_program_compute_write_slots(
+                    dispatch.program.snapshot.refs[0].code_candidate,
+                    dispatch.program.snapshot.refs[0].control_candidate,
+                    &dispatch.write_slots);
+            }
             for (u32 axis = 0; axis < 3; axis++) dispatch.groups[axis] = (u32)op->args[axis];
             memcpy(dispatch.uniform, state->uniform[5], sizeof dispatch.uniform);
             dispatch.uniform_updates = queue ? queue->uniform_updates : NULL;
@@ -2570,6 +2576,20 @@ static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawComm
                 if (prior->image_bound[stage]) return 0;
             accounted[prior->sequence - start] = 1;
             accounted[prior->sequence + 1 - start] = 1; /* draw's following unknown-write marker */
+        }
+    if (queue->dispatches)
+        for (u32 i = 0; i < queue->dispatches->count; i++) {
+            const NvnDispatchCommand* dispatch = &queue->dispatches->commands[i];
+            if (dispatch->sequence < start || dispatch->sequence >= draw->sequence) continue;
+            if (!dispatch->write_slots_known) return 0;
+            for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+                if (!(dispatch->write_slots & (1u << slot))) continue;
+                const NvnBufferRange* range = &dispatch->storage[slot];
+                if (!range->address || !range->size ||
+                    probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                         range->address, range->size)) return 0;
+            }
+            accounted[dispatch->sequence - start] = 1;
         }
     if (queue->clears)
         for (u32 i = 0; i < queue->clears->count; i++) {
