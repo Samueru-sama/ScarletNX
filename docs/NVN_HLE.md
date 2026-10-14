@@ -1547,6 +1547,14 @@ its 36,864 pixels and 73,728 bytes match Maxwell exactly in the readback. The
 next blocked texture in this run is a 64×64 depth image, followed by cubemap
 views whose layers or mip levels are not yet complete.
 
+The depth image was cleared in the shadow path and then lost coverage because
+later fallback draws merely bound it for depth testing. Their captured state
+had depth and stencil writes disabled. Scoped fallback now preserves a depth
+attachment in that read-only case, while still invalidating it for unknown
+state, enabled writes, or any overlapping color or storage write. The 64×64
+depth sample is no longer the first pending texture in the TotK trace; cubemap
+subresource coverage is next.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

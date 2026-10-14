@@ -3228,7 +3228,11 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
     if (storage_writes && !scope_storage_writes(command, vertex, fragment)) return;
     for (u32 i = 0; i < 8; i++)
         if (command->color_target_mask & (1u << i)) shadow_invalidate_backing(&command->color_target[i]);
-    if (command->depth_target_bound) shadow_invalidate_backing(&command->depth_target);
+    /* A bound depth attachment is read-only when both write enables are off. Keep a prior full clear
+       available to later texture reads; any overlapping color or storage write still invalidates it. */
+    if (command->depth_target_bound &&
+        (!command->depth_stencil_state_known || (command->depth_stencil_state[0] & (2 | 4))))
+        shadow_invalidate_backing(&command->depth_target);
     mark_modeled_unknown(command->sequence + 1, command->last_unmodeled_write);
     static u64 scoped_draws, scoped_storage_draws;
     scoped_draws++;
