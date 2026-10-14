@@ -285,7 +285,7 @@ static int is_tgt(Ctx* c, u32 i) { return i < 65536 && (c->tgt[i >> 3] >> (i & 7
 int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
 static int brx_targets(const u64* w, u32 i, u32 n, u32* out, int max);
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
-    if (!ops_ready) ops_init();
+    if (__atomic_load_n(&ops_ready, __ATOMIC_ACQUIRE) != 2) ops_init();
     const u64* w = (const u64*)code;
     u32 n = max_bytes / 8;
     u32 i = 11, last = 11;
@@ -325,7 +325,7 @@ u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len) {
    A's bundles go first and its EXITs become branches to B's first bundle; branches are relative so both keep working.
    B's header is used (declarations come from what the code touches). 0 if it doesn't fit in max_bytes */
 int shader_merge_dual(const u8* a, const u8* b, u8* out, u32 max_bytes) {
-    if (!ops_ready) ops_init();
+    if (__atomic_load_n(&ops_ready, __ATOMIC_ACQUIRE) != 2) ops_init();
     u32 la, lb;
     shader_hash(a, max_bytes, &la);
     shader_hash(b, max_bytes, &lb);
@@ -512,6 +512,8 @@ static u32 st_jump(Ctx* c, u32 i, const Op* op) {
     int id = op->id;
     if (id != O_BRA && id != O_SYNC && id != O_BRK) return 0;
     if (B(w, 16, 3) == 7 && B(w, 19, 1)) return 0; /* never runs */
+    /* A pop without a matching stack setup uses the dynamic CRS path. */
+    if (id != O_BRA && !c->pop_tgt) return ~0u;
     u32 t = id == O_BRA ? bra_target(w, i) : c->pop_tgt[i];
     if (t <= i) return ~0u; /* backward branch or unreachable pop */
     u32 nx = i + 1;
@@ -570,7 +572,7 @@ static int st_check(Ctx* c, u32 n, u32* jt) {
 }
 
 char* shader_to_glsl(const u8* code, u32 max_bytes, int stage, ShaderInfo* si) {
-    if (!ops_ready) ops_init();
+    if (__atomic_load_n(&ops_ready, __ATOMIC_ACQUIRE) != 2) ops_init();
     Ctx* c = calloc(1, sizeof(Ctx));
     c->w = (const u64*)code;
     c->stage = stage;

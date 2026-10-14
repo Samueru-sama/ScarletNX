@@ -13,6 +13,7 @@
 #define EXIT     0xE30000000007000Full
 #define FMUL     0x5C68000000070000ull /* FMUL R0, R0, R0 */
 #define FMUL_IMM 0x3868003F00070000ull /* FMUL R0, R0, 0.5 (the immediate's top 19 bits, 0x3F000) */
+#define SYNC     0xF0F800000000000Full /* a pop without an earlier SSY */
 
 static int failures;
 static void check(int ok, const char* what) {
@@ -57,10 +58,22 @@ static void stage_keeps_order(int stage, const char* name) {
     free(glsl);
 }
 
+static void unmatched_sync_falls_back(void) {
+    u64 code[64] = {0};
+    code[10] = SCHED;
+    code[11] = SYNC;
+    code[12] = EXIT;
+    ShaderInfo si = {0};
+    char* glsl = shader_to_glsl((const u8*)code, sizeof code, ST_CS, &si);
+    check(glsl != NULL, "compute SYNC without SSY uses dynamic stack translation");
+    free(glsl);
+}
+
 int main(void) {
     stage_keeps_order(ST_VS, "a vertex shader's float math keeps its order");
     stage_keeps_order(ST_FS, "a fragment shader's float math keeps its order");
     stage_keeps_order(ST_CS, "a compute shader's float math keeps its order");
+    unmatched_sync_falls_back();
     if (failures) return 1;
     puts("float math is precise (NoContraction) in vertex, fragment and compute shaders");
     return 0;
