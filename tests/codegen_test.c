@@ -174,7 +174,11 @@ static void emit_semantic_fixture(FILE* out) {
         0x1E63C020UL, /* FCVT H0,D1: alternative half infinity conversion. */
         0x9E580020UL, /* FCVTZS X0,D1,#64: scaling before integer saturation. */
         0x1E61C020UL, /* FSQRT D0,D1: directed rounding and IXC. */
-        0x1E228820UL  /* FNMUL S0,S1,S2: negate the architectural NaN result. */
+        0x1E228820UL, /* FNMUL S0,S1,S2: negate the architectural NaN result. */
+        0x1E23C020UL, /* FCVT H0,S1: rounds in the FPCR mode, here toward plus infinity. */
+        0x1E63C020UL, /* FCVT H0,D1: a negative overflow toward plus infinity is the largest finite. */
+        0x0E216820UL, /* FCVTN V0.4H,V1.4S toward zero: truncates, overflows finite, keeps -0. */
+        0x1E23C020UL  /* FCVT H0,S1: FZ flushes a denormal operand before rounding, and sets IDC. */
     };
     size_t i;
     char function[32];
@@ -216,7 +220,15 @@ static void emit_semantic_fixture(FILE* out) {
     fputs(
         " case 25:c.v[1].d[0]=0x3FE0000000000000ULL;break;case 26:c.fpcr=3u<<22;c.v[1].d[0]=0x4000000000000000ULL;break;\n",
         out);
-    fputs(" case 27:c.v[2].s[0]=0x7F800000;break;default:break;}\n", out);
+    fputs(" case 27:c.v[2].s[0]=0x7F800000;break;\n", out);
+    /* FCVT and FCVTN to half: the FPCR mode, overflow and FZ */
+    fputs(" case 28:c.fpcr=0x400000;c.v[1].s[0]=0x3F800001u;break;\n", out);
+    fputs(" case 29:c.fpcr=0x400000;c.v[1].d[0]=0xC202A05F20000000ULL;break;\n", out);
+    fputs(" case 30:c.fpcr=0xC00000;c.v[0].d[0]=c.v[0].d[1]=~0ULL;c.v[1].s[0]=0x3F801FFFu;c.v[1].s[1]=0x477FF000u;\n",
+          out);
+    fputs(" c.v[1].s[2]=0x33000001u;c.v[1].s[3]=0x80000000u;break;case 31:c.fpcr=0x1400000;c.v[1].s[0]=1;break;\n",
+          out);
+    fputs(" default:break;}\n", out);
     fputs(" pc=mode?snx_step(&c,words[i],0x1000):steps[i](&c);ok=pc==(i==16?0xFFC:i==17?0x1000:0x1004);\n switch(i){\n",
           out);
     fputs(" case 0:ok&=c.x[0]==0&&c.z==1&&c.cf==1&&!c.n&&!c.vf;break;case 1:ok&=c.x[0]==1;break;\n", out);
@@ -247,8 +259,13 @@ static void emit_semantic_fixture(FILE* out) {
         " case 24:ok&=c.v[0].d[0]==0x7FFF&&!c.v[0].d[1]&&c.fpsr==1;break;case 25:ok&=c.x[0]==0x7FFFFFFFFFFFFFFFULL&&c.fpsr==1;break;\n",
         out);
     fputs(
-        " case 26:ok&=c.v[0].d[0]==0x3FF6A09E667F3BCCULL&&c.fpsr==0x10;break;case 27:ok&=c.v[0].s[0]==0xFFC00000&&c.fpsr==1;break;default:break;}\n",
+        " case 26:ok&=c.v[0].d[0]==0x3FF6A09E667F3BCCULL&&c.fpsr==0x10;break;case 27:ok&=c.v[0].s[0]==0xFFC00000&&c.fpsr==1;break;\n",
         out);
+    fputs(" case 28:ok&=c.v[0].d[0]==0x3C01&&!c.v[0].d[1];break;case 29:ok&=c.v[0].d[0]==0xFBFF&&!c.v[0].d[1];break;\n",
+          out);
+    fputs(" case 30:ok&=c.v[0].d[0]==0x800000007BFF3C00ULL&&!c.v[0].d[1];break;\n", out);
+    fputs(" case 31:ok&=!c.v[0].d[0]&&!c.v[0].d[1]&&(c.fpsr&0x80);break;\n", out);
+    fputs(" default:break;}\n", out);
     fputs(" if(!ok||(i!=17&&traps)){fprintf(stderr,\"semantic case %u mode %u failed\\n\",i,mode);return 1;}}\n", out);
     fputs(" puts(\"Static/interpreted scalar, FP, SIMD, memory and trap semantics passed\");return 0;}\n", out);
 }
