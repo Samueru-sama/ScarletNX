@@ -27,6 +27,7 @@ def main():
         nro_ms = Path(directory) / 'nro_ms.spv'
         nro_ms_array = Path(directory) / 'nro_ms_array.spv'
         nro_exchange = Path(directory) / 'nro_exchange.spv'
+        dc_color = Path(directory) / 'dc_color.spv'
         subprocess.run(
             [args.generator, str(path), str(vertex), str(abs_fragment), str(stack_fragment), str(subgroup)], check=True
         )
@@ -35,7 +36,7 @@ def main():
         subprocess.run([args.validator, '--target-env', 'vulkan1.3', str(abs_fragment)], check=True)
         subprocess.run([args.validator, '--target-env', 'vulkan1.3', str(stack_fragment)], check=True)
         subprocess.run([args.validator, '--target-env', 'vulkan1.3', str(subgroup)], check=True)
-        fixtures = (storage_write, storage_atomic, nro_raw, nro_ms, nro_ms_array, nro_exchange)
+        fixtures = (storage_write, storage_atomic, nro_raw, nro_ms, nro_ms_array, nro_exchange, dc_color)
         subprocess.run([args.regressions, *(str(path) for path in fixtures)], check=True)
         for fixture in fixtures:
             subprocess.run([args.validator, '--target-env', 'vulkan1.3', str(fixture)], check=True)
@@ -55,6 +56,9 @@ def main():
         ).stdout
         if exchange_code.count('OpAccessChain %_ptr_Workgroup_uint') < 4 or exchange_code.count('OpLoad %uint') < 4:
             raise AssertionError('64-bit shared exchange must access both words')
+        dc_code = subprocess.run([args.disassembler, str(dc_color)], check=True, capture_output=True, text=True).stdout
+        if 'Dref' in dc_code or 'OpFOrdGreaterThan' not in dc_code or 'OpSelect %float' not in dc_code:
+            raise AssertionError('a depth compare of a color texture must sample it and compare in the shader')
         result = subprocess.run([args.disassembler, str(path)], check=True, capture_output=True, text=True)
         for expected in (
             'OpEntryPoint Fragment',

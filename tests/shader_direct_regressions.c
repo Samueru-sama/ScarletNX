@@ -18,6 +18,7 @@
 static int failures;
 static const char* storage_paths[2];
 static const char* nro_paths[4];
+static const char* dc_color_path;
 static void check(int condition, const char* what) {
     if (!condition) {
         fprintf(stderr, "FAIL: %s\n", what);
@@ -332,13 +333,43 @@ static void unsupported_names_word(void) {
     free(code);
 }
 
+/* a depth-compare sample (TEXS, shadow) of a color texture: the image is declared as color and sampled without a
+   reference, and the shader compares its first component (ShaderInfo.tex_dc_color_mask); a depth texture keeps the
+   compare sample */
+static void dc_color_compare(void) {
+    const u64 texs = 0xD800000000000000ull | (4ull << 53) | (1ull << 36) | (255ull << 28) | (1ull << 20) | 3;
+    u64 code[64] = {0};
+    code[10] = SCHED;
+    code[11] = texs;
+    code[12] = EXIT;
+    for (int color = 0; color < 2; color++) {
+        ShaderInfo info = {0};
+        info.tex_dc_color_mask = (u32)color;
+        info.tex_dc_color_funcs = 4; /* GREATER */
+        size_t words = 0;
+        u32* spv = shader_to_spirv((const u8*)code, sizeof code, ST_FS, &info, &words, 1, 1, 1);
+        check(spv && info.ntex == 1 && info.tex[0].shadow, "a TEXS shadow sample translates");
+        if (!spv) continue;
+        /* OpImageSampleDrefImplicitLod 89, OpImageSampleImplicitLod 87, OpSelect 169 */
+        int dref = count_opcode(spv, words, 89, 0xffffffffu), plain = count_opcode(spv, words, 87, 0xffffffffu),
+            select = count_opcode(spv, words, 169, 0xffffffffu);
+        check(color ? !dref && plain == 1 && select >= 1 : dref == 1 && !plain,
+              color ? "a color texture is sampled plainly and compared in the shader" : "a depth texture keeps Dref");
+        check(!color || info.tex_dc_color_mask == 1, "the translated info keeps the depth-compare key");
+        if (color) save_fixture(dc_color_path, spv, words);
+        free(spv);
+    }
+}
+
 int main(int argc, char** argv) {
-    if (argc != 1 && argc != 7) return 2;
-    if (argc == 7) {
+    if (argc != 1 && argc != 8) return 2;
+    if (argc == 8) {
         storage_paths[0] = argv[1];
         storage_paths[1] = argv[2];
         for (int i = 0; i < 4; i++) nro_paths[i] = argv[i + 3];
+        dc_color_path = argv[7];
     }
+    dc_color_compare();
     brx_length();
     invalid_ldc_bank();
     unsupported_names_word();

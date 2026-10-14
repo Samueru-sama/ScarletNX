@@ -552,14 +552,26 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
             if (f.sint) rs |= 1u << i;
         }
     }
-    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0);
+    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0);
     if (!s0) return s0;
-    u32 tm = 0, ts = 0;
+    u32 tm = 0, ts = 0, dm = 0, df = 0, nd = 0;
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s0->si.tex[i];
-        if (st->shadow) continue;
         tex_resolve(ch, tex_handle(4, r[0x982], st), &res[i]);
+        if (st->shadow) {
+            /* a depth compare of a color texture compares its first component, which Vulkan's compare samplers
+               can't do on a color image: the shader samples it and compares (the TSC's function, LEQUAL when the
+               TSC has none, as vk_tex_bind_sampler sets) */
+            Surf* t = res[i].t;
+            if (t && !t->f.depth && !t->f.is_int) {
+                u32 func = (res[i].tsc[0] >> 9) & 1 ? (res[i].tsc[0] >> 10) & 7 : 3;
+                dm |= 1u << i;
+                if (nd < SH_DC_COLOR_MAX) df |= func << (3 * nd);
+                nd++;
+            }
+            continue;
+        }
         Surf* t = res[i].t;
         u32 ty = (res[i].tic[0] >> 7) & 7;
         if (t ? t->f.is_int : (ty == 3 || ty == 4)) {
@@ -578,8 +590,8 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
         Surf* image = vk_tex_from_tic(tic);
         if (image && !!image->f.is_int != !!s0->si.img[i].bindless) rm |= 1u << (8 + i);
     }
-    if (!tm && !rm) return s0;
-    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0);
+    if (!tm && !rm && !dm) return s0;
+    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0, dm, df);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -885,6 +897,12 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
     int nt = s->si.ntex > SH_MAXTEX ? SH_MAXTEX : s->si.ntex;
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
+        ShTex plain;
+        if (st->shadow && (s->si.tex_dc_color_mask >> i & 1)) { /* compared in the shader: a plain sampler and view */
+            plain = *st;
+            plain.shadow = 0;
+            st = &plain;
+        }
         u32 handle = tex_handle(stage, tcb, st);
         /* what fs_get_keyed resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
@@ -1063,7 +1081,7 @@ retry:
     }
     /* SetUserClipEnable (0x544): a clip distance the program writes clips only when its bit is set */
     VkSh* vs = vk_shader_get(code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                             r[0x544] & 0xFF);
+                             r[0x544] & 0xFF, 0, 0);
     TexRes fres[SH_MAXTEX];
     for (int i = 0; i < SH_MAXTEX; i++) fres[i].have = 0;
     VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres) : NULL;

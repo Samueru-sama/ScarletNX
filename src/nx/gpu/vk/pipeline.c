@@ -202,7 +202,7 @@ static VkSh* g_shh[1024];
    by write tracking since then, or else by the hash of its code */
 typedef struct {
     u64 gva, gva_a, gw;
-    u32 mask[5], epoch, wseen;
+    u32 mask[7], epoch, wseen;
     int stage;
     VkSh* s;
 } ShA;
@@ -222,11 +222,12 @@ static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
     return code_hash(gva, len) == qh;
 }
 
-VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip) {
+VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip,
+                    u32 dc_color, u32 dc_funcs) {
     g_sh_bind = stage == ST_VS ? 0 : 4;
-    u32 mask[5] = {int_mask, sint_mask, rt_int, rt_sint, clip};
+    u32 mask[7] = {int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs};
     u32 mix = int_mask * 0x9E3779B1u ^ sint_mask * 0x85EBCA6Bu ^ rt_int * 0x27D4EB2Fu ^ rt_sint * 0x165667B1u ^
-              clip * 0x61C88647u;
+              clip * 0x61C88647u ^ dc_color * 0x2545F491u ^ dc_funcs * 0x9E3779B9u;
     ShA* set = &g_sha[(u32)((gva >> 6) ^ (gva >> 18) ^ (gva_a >> 4) ^ mix ^ ((u32)stage << 11)) & 4094];
     ShA* ca = NULL;
     for (int w = 0; w < 2 && !ca; w++)
@@ -295,6 +296,8 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
             s->si.tex_sint_mask = sint_mask;
             s->si.rt_int_mask = rt_int;
             s->si.rt_sint_mask = rt_sint;
+            s->si.tex_dc_color_mask = dc_color;
+            s->si.tex_dc_color_funcs = dc_funcs;
         } else {
             s->si.attr_int_mask = int_mask;
             s->si.attr_sint_mask = sint_mask;

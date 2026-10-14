@@ -48,7 +48,11 @@ typedef struct {
     } img[8];
     int nimg;                                                   /* storage image stores and atomics */
     u32 tex_int_mask, tex_sint_mask, rt_int_mask, rt_sint_mask; /* FS key: integer textures / outputs */
+    /* FS key: depth-compare samples of a color texture (TEX.DC on a color format compares its first component, which
+       Vulkan's compare samplers don't do): the slots, and their compare functions 3 bits each in slot order */
+    u32 tex_dc_color_mask, tex_dc_color_funcs;
 } ShaderInfo;
+#define SH_DC_COLOR_MAX 10 /* slots tex_dc_color_funcs holds */
 /* the shader flushes FP32 denormals everywhere: every FADD, FMUL and FFMA it has asks for it, as the console's
    compiler emits them (Eden declares DenormFlushToZero on the same condition) */
 /* One descriptor set per stage, with bindings grouped by resource kind. */

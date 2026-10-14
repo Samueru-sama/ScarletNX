@@ -32,6 +32,35 @@ static u32 texture_component(DirectCtx* c, u32 sampled, u32 scalar_type, u32 com
     return scalar_type == c->u32_type ? value : spv_emit_bitcast(&c->emit, c->u32_type, value);
 }
 
+/* A depth-compare sample of a color texture (ShaderInfo.tex_dc_color_mask): its compare function (TSC's, 0 NEVER to
+   7 ALWAYS), or -1 for a slot that samples a depth texture */
+static int dc_color_func(const ShaderInfo* si, int slot) {
+    if (!(si->tex_dc_color_mask >> slot & 1)) return -1;
+    u32 index = (u32)__builtin_popcount(si->tex_dc_color_mask & ((1u << slot) - 1));
+    return index < SH_DC_COLOR_MAX ? (int)(si->tex_dc_color_funcs >> (3 * index) & 7) : 3;
+}
+/* 1.0 when reference <func> texel passes, as a compare sampler returns (GL's order: the reference on the left) */
+static u32 dc_compare(DirectCtx* c, int func, u32 reference, u32 texel) {
+    static const u32 condition[8] = {0, 1, 2, 3, 4, 5, 6, 15}; /* spv_emit_fcompare's codes for NEVER..ALWAYS */
+    u32 pass = spv_emit_fcompare(&c->emit, c->bool_type, condition[func], reference, texel);
+    return spv_emit_select(&c->emit, c->f32_type, pass, spv_emit_constant_f32(&c->emit, c->f32_type, 1.0f),
+                           spv_emit_constant_f32(&c->emit, c->f32_type, 0.0f));
+}
+/* a sample with a depth reference (dref 0: none), implicit lod or lod: compared in the shader on a color texture */
+static u32 sample_dref(DirectCtx* c, const ShaderInfo* si, int slot, u32 vec4_type, u32 coords, u32 dref, int use_lod,
+                       u32 lod) {
+    int func = dref ? dc_color_func(si, slot) : -1;
+    if (func < 0)
+        return use_lod ? spv_emit_sample2d_lod(&c->emit, dref ? c->f32_type : vec4_type, c->sampled_type[slot],
+                                               c->sampler[slot], coords, dref, lod)
+                       : spv_emit_sample2d(&c->emit, dref ? c->f32_type : vec4_type, c->sampled_type[slot],
+                                           c->sampler[slot], coords, dref);
+    u32 texel = use_lod ? spv_emit_sample2d_lod(&c->emit, vec4_type, c->sampled_type[slot], c->sampler[slot], coords, 0,
+                                                lod)
+                        : spv_emit_sample2d(&c->emit, vec4_type, c->sampled_type[slot], c->sampler[slot], coords, 0);
+    return dc_compare(c, func, dref, spv_emit_vec4_extract(&c->emit, c->f32_type, texel, 0));
+}
+
 static u32 vm_select(DirectCtx* c, u32 i32_type, u32 value, u32 select) {
     u32 lane = select & 7;
     if (lane >= 6) return value;
@@ -1956,7 +1985,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
         texture_vec4[i] = scalar == i32_type ? vec4_i32 : scalar == c->u32_type ? vec4_u32 : vec4;
         c->sampler[i] = spv_emit_sampler_image(&c->emit, scalar, shader_vk_set(stage), 34 + (u32)i,
                                                textures[i].type == 0 ? 1 : textures[i].type, textures[i].array,
-                                               textures[i].shadow, !!(textures[i].flags & 2), &c->sampled_type[i]);
+                                               textures[i].shadow && dc_color_func(si, i) < 0,
+                                               !!(textures[i].flags & 2), &c->sampled_type[i]);
         interfaces[count++] = c->sampler[i];
     }
     for (int i = 0; i < image_info.nimg; i++) {
@@ -3958,13 +3988,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                                           : zero_f;
                 sample = spv_emit_sample2d_lod(&c->emit, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot],
                                                uv, 0, lod);
-            } else if (stage != ST_FS) {
-                sample = spv_emit_sample2d_lod(&c->emit, shadow ? c->f32_type : texture_vec4[slot],
-                                               c->sampled_type[slot], c->sampler[slot], uv, dref, zero_f);
-            } else {
-                sample = spv_emit_sample2d(&c->emit, shadow ? c->f32_type : texture_vec4[slot], c->sampled_type[slot],
-                                           c->sampler[slot], uv, dref);
-            }
+            } else
+                sample = sample_dref(c, si, slot, texture_vec4[slot], uv, dref, stage != ST_FS, zero_f);
             u32 regs[4], comps[4];
             int outputs = texs_outputs(w, regs, comps);
             if (B(w, 59, 1)) {
@@ -4079,8 +4104,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                     ? spv_emit_sample_lod_offset(&c->emit, texture_vec4[slot], c->sampled_type[slot], c->sampler[slot],
                                                  coords, level, offset, dynamic_offset)
                 : type >= 2 || array || mode == 1
-                    ? spv_emit_sample2d_lod(&c->emit, shadow ? c->f32_type : texture_vec4[slot], c->sampled_type[slot],
-                                            c->sampler[slot], coords, dref, level)
+                    ? sample_dref(c, si, slot, texture_vec4[slot], coords, dref, 1, level)
                 : offset ? spv_emit_sample2d_offset(&c->emit, texture_vec4[slot], c->sampled_type[slot],
                                                     c->sampler[slot], coords, offset, dynamic_offset)
                 : level  ? stage == ST_CS ? spv_emit_sample2d_lod(&c->emit, texture_vec4[slot], c->sampled_type[slot],
@@ -4204,6 +4228,9 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                 }
                 if (shadow) dref = spv_emit_bitcast(&c->emit, c->f32_type, reg_read(c, b + B(w, 51, 1)));
             }
+            /* a compare gather of a color texture gathers its first components and compares them in the shader */
+            int dc_func = dref ? dc_color_func(si, slot) : -1;
+            if (dc_func >= 0) component = c->zero;
             u32 gathered;
             if (per_tap_offset) {
                 u32 taps[4];
@@ -4216,13 +4243,23 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                     u32 yoff = spv_emit_bitfield_sextract(&c->emit, i32_type, yraw, shift, width);
                     u32 tap_offset = spv_emit_vec2_construct(&c->emit, vec2_i32, xoff, yoff);
                     u32 sampled = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->sampled_type[slot],
-                                                            c->sampler[slot], coords, component, dref, tap_offset);
+                                                            c->sampler[slot], coords, component,
+                                                            dc_func < 0 ? dref : 0, tap_offset);
                     taps[tap] = spv_emit_vec4_extract(&c->emit, texture_scalar[slot], sampled, tap);
+                    if (dc_func >= 0) taps[tap] = dc_compare(c, dc_func, dref, taps[tap]);
                 }
                 gathered = spv_emit_vec4_construct(&c->emit, texture_vec4[slot], taps);
             } else {
                 gathered = spv_emit_image_gather_ex(&c->emit, texture_vec4[slot], c->sampled_type[slot],
-                                                     c->sampler[slot], coords, component, dref, offset);
+                                                     c->sampler[slot], coords, component, dc_func < 0 ? dref : 0,
+                                                     offset);
+                if (dc_func >= 0) { /* each gathered first component against the reference */
+                    u32 lanes[4];
+                    for (u32 lane = 0; lane < 4; lane++)
+                        lanes[lane] = dc_compare(c, dc_func, dref,
+                                                 spv_emit_vec4_extract(&c->emit, c->f32_type, gathered, lane));
+                    gathered = spv_emit_vec4_construct(&c->emit, texture_vec4[slot], lanes);
+                }
             }
             if (op == O_TLD4S) {
                 u32 db = B(w, 28, 8);
@@ -4329,6 +4366,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     next.rt_sint_mask = si->rt_sint_mask;
     next.tex_int_mask = si->tex_int_mask;
     next.tex_sint_mask = si->tex_sint_mask;
+    next.tex_dc_color_mask = si->tex_dc_color_mask;
+    next.tex_dc_color_funcs = si->tex_dc_color_funcs;
     next.ntex = texture_count;
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
