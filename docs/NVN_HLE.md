@@ -1582,10 +1582,13 @@ known storage slot. The analyzer now supplies the recorded workgroup and shared
 memory sizes. Skipped dispatches with certified write slots retire only those
 physical ranges, and GPU-thread replay can complete an analysis still queued at
 record time. The cubemap pending trace no longer recurs at that submission in
-the sampled TotK run. A later five-mip cube still loses coverage before a
-subsequent sample; that invalidation and cubemap pixel parity remain open. The
-face probe synchronously reads back each candidate and remains diagnostic
-until its cost is measured.
+the sampled TotK run. A later five-mip cube lost coverage because an earlier
+sampled cube was evicted: semantic texture reads did not refresh the image
+cache's last-use batch. Refreshing it on a successful sample lets the later
+draws retain their source. In a subsequent headless TotK run, no cube-pending
+or guest-texture-wait traces appeared through sequence 51,663. Cubemap pixel
+parity remains unproven. The face probe synchronously reads back each candidate
+and remains diagnostic until its cost is measured.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

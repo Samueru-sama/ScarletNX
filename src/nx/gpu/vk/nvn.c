@@ -1085,6 +1085,7 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
         image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         image->stage = VK_SAMPLED_STAGES;
         image->access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        image->last_batch = batch_serial;
         return sampled_view;
     }
     return VK_NULL_HANDLE;
