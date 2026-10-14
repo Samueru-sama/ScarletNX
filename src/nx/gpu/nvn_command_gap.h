@@ -40,6 +40,10 @@ int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState
 /* Recognize one complete indexed draw packet at the end of a command-buffer cursor gap. */
 int nvn_command_gap_indexed_draw(const u32* words, u32 count, NvnGapIndexedDraw* out);
 
+/* True when the only attachment write in a complete gap is its recognized final indexed draw.
+   The caller must stage that draw separately before treating the gap as modeled. */
+int nvn_command_gap_modeled_indexed_draw(const u32* words, u32 count);
+
 /* Locate one syntactically complete MME call followed immediately by a three-word constant-buffer upload.
    The caller must separately prove what the uploaded macro does to the constant-buffer offset. */
 int nvn_command_gap_macro_data3(const u32* words, u32 count, u32 macro_method, NvnGapMacroData3* out);

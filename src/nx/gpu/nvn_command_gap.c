@@ -175,6 +175,15 @@ int nvn_command_gap_indexed_draw(const u32* words, u32 length, NvnGapIndexedDraw
     return 0;
 }
 
+int nvn_command_gap_modeled_indexed_draw(const u32* words, u32 count) {
+    NvnGapIndexedDraw draw;
+    if (!nvn_command_gap_indexed_draw(words, count, &draw)) return 0;
+    /* The recognized final MME packet is one header plus five words. Every
+       earlier packet must be provably read-only; a decoded write in the prefix
+       still needs its own ordered scope and cannot be hidden by the draw. */
+    return count == 6 || nvn_command_gap_no_writes(words, count - 6);
+}
+
 typedef struct {
     u32 macro_method;
     NvnGapMacroData3 packet;

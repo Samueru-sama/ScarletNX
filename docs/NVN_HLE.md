@@ -1490,6 +1490,12 @@ unmodeled-write marker has advanced beyond its draw sequence. Logged writes
 around the marker include draws to other targets and updates to disjoint
 buffer addresses. Per-resource write ownership, with unknown operations
 remaining conservative, is the next prerequisite for this chain.
+The blocking marker was traced to an opaque list with one observed command
+allocation, known prefix and tail, and unsafe cursor gaps. The gap classifier
+now treats a validated indexed-draw packet after read-only state packets as
+modeled when that draw is staged separately. Uploads, report writes, other
+subchannels, and malformed packets still fail this proof. TotK's observed
+list has other unsafe gaps, so its boundary marker remains.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

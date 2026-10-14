@@ -2712,15 +2712,22 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         u64 cursor = command_buffer_cursor(c->x[0], r->command_low, r->command_high);
         if (r->command_cursor >= r->command_low && cursor <= r->command_high && cursor > r->command_cursor) {
             u64 gap_size = cursor - r->command_cursor;
-            if (gap_size > 65536 || (gap_size & 3) || !readable_range(r->command_cursor, gap_size) ||
-                !nvn_command_gap_no_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4)))
+            int readable_gap = gap_size <= 65536 && !(gap_size & 3) &&
+                               readable_range(r->command_cursor, gap_size);
+            const u32* gap_words = readable_gap ? (const u32*)GP(r->command_cursor) : NULL;
+            u32 gap_count = (u32)(gap_size / 4);
+            u64 draw_args[7] = {0};
+            int modeled_draw = readable_gap && inlined_indexed_draw(r->command_cursor, gap_size, draw_args);
+            if (!readable_gap ||
+                (!nvn_command_gap_no_writes(gap_words, gap_count) &&
+                 !(modeled_draw && nvn_command_gap_modeled_indexed_draw(gap_words, gap_count))))
                 r->command_gaps_safe = 0;
             int parsed_writes = 0;
-            if (gap_size <= 65536 && !(gap_size & 3) && readable_range(r->command_cursor, gap_size)) {
+            if (readable_gap) {
                 NvnGapMemoryWrite writes[32];
                 u32 write_count = 0;
-                if (nvn_command_gap_memory_writes((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
-                                                  &r->memory_state, writes, 32, &write_count)) {
+                if (nvn_command_gap_memory_writes(gap_words, gap_count, &r->memory_state,
+                                                  writes, 32, &write_count)) {
                     parsed_writes = 1;
                     for (u32 i = 0; i < write_count; i++) {
                         u64 args[7] = {writes[i].address, writes[i].size, writes[i].kind,
@@ -2732,15 +2739,12 @@ u64 nvn_record_before(const CPU* c, const char* name) {
             }
             if (!parsed_writes) memset(&r->memory_state, 0, sizeof r->memory_state);
             const char* state_opt = getenv("SNX_NVN_INLINED_STATE");
-            if ((!state_opt || strcmp(state_opt, "0")) && gap_size <= 65536 && !(gap_size & 3) &&
-                readable_range(r->command_cursor, gap_size) &&
-                nvn_command_gap_methods((const u32*)GP(r->command_cursor), (u32)(gap_size / 4),
-                                        capture_gap_method, r))
+            if ((!state_opt || strcmp(state_opt, "0")) && readable_gap &&
+                nvn_command_gap_methods(gap_words, gap_count, capture_gap_method, r))
                 flush_gap_vertex_binds(r);
-            u64 args[7] = {0};
             inlined_gaps++;
-            if (inlined_indexed_draw(r->command_cursor, cursor - r->command_cursor, args))
-                append_inlined_draw(r, args);
+            if (modeled_draw)
+                append_inlined_draw(r, draw_args);
             else
                 inlined_unparsed++;
         } else if (cursor != r->command_cursor) {

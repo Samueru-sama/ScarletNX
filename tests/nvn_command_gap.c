@@ -23,6 +23,8 @@ int main(void) {
     assert(nvn_command_gap_indexed_draw(packet, 12, &draw));
     assert(draw.primitive == 4 && draw.index_type == 1 && draw.count == 1656);
     assert(draw.index_address == 0x622ad0d90ull);
+    assert(nvn_command_gap_modeled_indexed_draw(packet, 12));
+    assert(nvn_command_gap_modeled_indexed_draw(packet + 6, 6));
 
     CapturedMethods methods = {0};
     assert(nvn_command_gap_methods(packet, 12, capture, &methods));
@@ -62,6 +64,13 @@ int main(void) {
     const u32 puller_acquire[] = {0x20040004, 6, 0x22ad0000, 1, 1};
     const u32 puller_release[] = {0x20040004, 6, 0x22ad0000, 1, 2};
     const u32 other_subchannel[] = {0x60012904, 0x31};
+    const u32 upload_before_draw[] = {0x200408e1, 6, 0x22ad0000, 0, 0x12345678,
+                                      0xa0050e38, 4, 6, 0x22ad0d90, 1, 1656};
+    const u32 other_subchannel_before_draw[] = {0x60012904, 0x31,
+                                                 0xa0050e38, 4, 6, 0x22ad0d90, 1, 1656};
+    assert(!nvn_command_gap_modeled_indexed_draw(upload_before_draw, 11));
+    assert(!nvn_command_gap_modeled_indexed_draw(other_subchannel_before_draw, 8));
+    assert(!nvn_command_gap_modeled_indexed_draw(packet, 11));
     assert(!nvn_command_gap_no_writes(clear_packet, 2));
     assert(!nvn_command_gap_no_writes(upload_packet, 5)); /* CBUF data method writes guest memory. */
     assert(!nvn_command_gap_no_writes(report_packet, 5)); /* Query release writes guest memory. */
