@@ -2607,6 +2607,8 @@ static void execute_pre_submit_color_probe(void* arg) {
     free(probe);
 }
 
+static void flush_replay_queue(u64 command_buffer);
+
 u64 nvn_record_before(const CPU* c, const char* name) {
     u64 token = 0;
     if (!strcmp(name, "nvnDeviceInitialize") || !strcmp(name, "nvnDeviceFinalize") ||
@@ -2699,6 +2701,12 @@ u64 nvn_record_before(const CPU* c, const char* name) {
         }
         pm_unlock(&lock);
         for (u32 i = 0; i < color_probe_count; i++) gpu_call(execute_pre_submit_color_probe, color_probes[i]);
+        /* Diagnostic ordering mode: enqueue the modeled list before the guest SDK emits its GPFIFO work.
+           The ordinary path waits for QueueFlush/Present and may observe a later Maxwell target at an
+           address that was a different sampled image when this list was submitted. */
+        const char* pre_submit = getenv("SNX_NVN_PRE_SUBMIT_REPLAY");
+        if (pre_submit && !strcmp(pre_submit, "1"))
+            flush_replay_queue(c->x[0]);
         return 0;
     }
     pm_lock(&lock);
@@ -3005,6 +3013,116 @@ static void execute_nvn_batch(void* arg) {
     free(batch);
 }
 
+static void flush_replay_queue(u64 command_buffer) {
+    if (!descriptor_replay) return;
+    u64 codes[8];
+    u32 count = 0;
+    NvnClearBatch* clear_batch = NULL;
+    NvnCopyBatch* copy_batch = NULL;
+    NvnDrawBatch* draw_batch = NULL;
+    NvnDispatchBatch* dispatch_batch = NULL;
+    NvnMemoryWriteBatch* memory_write_batch = NULL;
+    NvnStorageSeed* storage_seeds = NULL;
+    NvnUniformUpdate* uniform_updates = NULL;
+    pm_lock(&lock);
+    ReplayQueue* queue = replay_queue_slot(command_buffer);
+    if (queue && queue->key == command_buffer) {
+        if (queue->pending_roots) {
+            preflight_batches++;
+            if (!queue->pending_clears)
+                preflight_no_clears++;
+            else if (queue->observed_clear_only) {
+                preflight_clear_only++;
+                preflight_clear_commands += queue->pending_clears;
+            } else
+                preflight_mixed++;
+            queue->pending_roots = queue->pending_clears = 0;
+            queue->observed_clear_only = 1;
+        }
+        if (shader_transport) {
+            count = queue->vertex_probe_count;
+            memcpy(codes, queue->vertex_probe_code, (size_t)count * sizeof(u64));
+            for (u32 i = 0; i < queue->shader_count && count < 8; i++) {
+                u64 code = queue->shader_code[i];
+                int seen = 0;
+                for (u32 j = 0; j < count; j++) seen |= codes[j] == code;
+                if (!seen) codes[count++] = code;
+            }
+            queue->shader_count = 0;
+            queue->vertex_probe_count = 0;
+            shader_flushed += count;
+        }
+        if (queue->clears) {
+            clear_flushed += queue->clears->count;
+            if (clear_execute && queue->clears->count)
+                clear_batch = queue->clears;
+            else
+                free(queue->clears);
+            queue->clears = NULL;
+        }
+        if (queue->copies) {
+            copy_flushed += queue->copies->count;
+            if (copy_execute && queue->copies->count)
+                copy_batch = queue->copies;
+            else
+                free(queue->copies);
+            queue->copies = NULL;
+        }
+        if (queue->draws) {
+            draw_flushed += queue->draws->count;
+            if (draw_prepare && queue->draws->count)
+                draw_batch = queue->draws;
+            else
+                free(queue->draws);
+            queue->draws = NULL;
+        }
+        if (queue->dispatches) {
+            if (dispatch_execute && queue->dispatches->count)
+                dispatch_batch = queue->dispatches;
+            else
+                free(queue->dispatches);
+            queue->dispatches = NULL;
+        }
+        memory_write_batch = queue->memory_writes;
+        queue->memory_writes = NULL;
+        storage_seeds = queue->storage_seeds;
+        queue->storage_seeds = NULL;
+        queue->storage_seed_bytes = 0;
+        uniform_updates = queue->uniform_updates;
+        queue->uniform_updates = NULL;
+        queue->uniform_update_bytes = 0;
+        queue->uniform_update_failed = 0;
+        queue->batch_start_sequence = queue->next_sequence;
+    }
+    pm_unlock(&lock);
+    for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
+    if (clear_batch || copy_batch || draw_batch || dispatch_batch || memory_write_batch) {
+        NvnGpuBatch* owned = malloc(sizeof *owned);
+        if (owned) {
+            owned->clears = clear_batch;
+            owned->copies = copy_batch;
+            owned->draws = draw_batch;
+            owned->dispatches = dispatch_batch;
+            owned->memory_writes = memory_write_batch;
+            owned->storage_seeds = storage_seeds;
+            owned->uniform_updates = uniform_updates;
+            gpu_call(execute_nvn_batch, owned);
+        } else {
+            free(clear_batch);
+            free(copy_batch);
+            free(draw_batch);
+            free(dispatch_batch);
+            free(memory_write_batch);
+            free_storage_seeds(storage_seeds);
+            free_uniform_updates(uniform_updates);
+            __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
+        }
+    } else {
+        free_storage_seeds(storage_seeds);
+        free_uniform_updates(uniform_updates);
+    }
+}
+
 void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 arg1, u64 record_token) {
     if (!strcmp(name, "nvnDeviceInitialize") || !strcmp(name, "nvnDeviceFinalize") ||
         !strcmp(name, "nvnDeviceGetDepthMode") ||
@@ -3068,113 +3186,7 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 ar
         pm_unlock(&lock);
     }
     if (!strcmp(name, "nvnQueueFlush") || !strcmp(name, "nvnQueuePresentTexture")) {
-        if (!descriptor_replay) return;
-        u64 codes[8];
-        u32 count = 0;
-        NvnClearBatch* clear_batch = NULL;
-        NvnCopyBatch* copy_batch = NULL;
-        NvnDrawBatch* draw_batch = NULL;
-        NvnDispatchBatch* dispatch_batch = NULL;
-        NvnMemoryWriteBatch* memory_write_batch = NULL;
-        NvnStorageSeed* storage_seeds = NULL;
-        NvnUniformUpdate* uniform_updates = NULL;
-        pm_lock(&lock);
-        ReplayQueue* queue = replay_queue_slot(command_buffer);
-        if (queue && queue->key == command_buffer) {
-            if (queue->pending_roots) {
-                preflight_batches++;
-                if (!queue->pending_clears)
-                    preflight_no_clears++;
-                else if (queue->observed_clear_only) {
-                    preflight_clear_only++;
-                    preflight_clear_commands += queue->pending_clears;
-                } else
-                    preflight_mixed++;
-                queue->pending_roots = queue->pending_clears = 0;
-                queue->observed_clear_only = 1;
-            }
-            if (shader_transport) {
-                count = queue->vertex_probe_count;
-                memcpy(codes, queue->vertex_probe_code, (size_t)count * sizeof(u64));
-                for (u32 i = 0; i < queue->shader_count && count < 8; i++) {
-                    u64 code = queue->shader_code[i];
-                    int seen = 0;
-                    for (u32 j = 0; j < count; j++) seen |= codes[j] == code;
-                    if (!seen) codes[count++] = code;
-                }
-                queue->shader_count = 0;
-                queue->vertex_probe_count = 0;
-                shader_flushed += count;
-            }
-            if (queue->clears) {
-                clear_flushed += queue->clears->count;
-                if (clear_execute && queue->clears->count)
-                    clear_batch = queue->clears;
-                else
-                    free(queue->clears);
-                queue->clears = NULL;
-            }
-            if (queue->copies) {
-                copy_flushed += queue->copies->count;
-                if (copy_execute && queue->copies->count)
-                    copy_batch = queue->copies;
-                else
-                    free(queue->copies);
-                queue->copies = NULL;
-            }
-            if (queue->draws) {
-                draw_flushed += queue->draws->count;
-                if (draw_prepare && queue->draws->count)
-                    draw_batch = queue->draws;
-                else
-                    free(queue->draws);
-                queue->draws = NULL;
-            }
-            if (queue->dispatches) {
-                if (dispatch_execute && queue->dispatches->count)
-                    dispatch_batch = queue->dispatches;
-                else
-                    free(queue->dispatches);
-                queue->dispatches = NULL;
-            }
-            memory_write_batch = queue->memory_writes;
-            queue->memory_writes = NULL;
-            storage_seeds = queue->storage_seeds;
-            queue->storage_seeds = NULL;
-            queue->storage_seed_bytes = 0;
-            uniform_updates = queue->uniform_updates;
-            queue->uniform_updates = NULL;
-            queue->uniform_update_bytes = 0;
-            queue->uniform_update_failed = 0;
-            queue->batch_start_sequence = queue->next_sequence;
-        }
-        pm_unlock(&lock);
-        for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
-        if (clear_batch || copy_batch || draw_batch || dispatch_batch || memory_write_batch) {
-            NvnGpuBatch* owned = malloc(sizeof *owned);
-            if (owned) {
-                owned->clears = clear_batch;
-                owned->copies = copy_batch;
-                owned->draws = draw_batch;
-                owned->dispatches = dispatch_batch;
-                owned->memory_writes = memory_write_batch;
-                owned->storage_seeds = storage_seeds;
-                owned->uniform_updates = uniform_updates;
-                gpu_call(execute_nvn_batch, owned);
-            } else {
-                free(clear_batch);
-                free(copy_batch);
-                free(draw_batch);
-                free(dispatch_batch);
-                free(memory_write_batch);
-                free_storage_seeds(storage_seeds);
-                free_uniform_updates(uniform_updates);
-                __atomic_fetch_add(&allocation_failures, 1, __ATOMIC_RELAXED);
-            }
-        } else {
-            free_storage_seeds(storage_seeds);
-            free_uniform_updates(uniform_updates);
-        }
+        flush_replay_queue(command_buffer);
         return;
     }
     if (strcmp(name, "nvnCommandBufferEndRecording")) return;

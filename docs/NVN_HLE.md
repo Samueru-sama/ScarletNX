@@ -1520,6 +1520,17 @@ bypassing the fresh-target guard would use stale guest bytes. Later 320×180
 passes also stop on pending shadow sources, consistent with a dependency
 chain from earlier unmodeled writes.
 
+An opt-in `SNX_NVN_PRE_SUBMIT_REPLAY=1` diagnostic now queues each recorded NVN
+batch on the GPU thread immediately before the corresponding guest SDK submit.
+The default replay order is unchanged. This preserves GPU queue order while
+preventing a later GPFIFO render target in the same submission from masking an
+earlier guest-backed texture during shadow replay. In TotK, the 120×67 source
+loads under this order and the first 320×180 multi-attachment draw issues;
+subsequent draws still encounter pending shadow images. The first 256×256
+`RGBA16F` TotK target, Scarlet's sampled target, and Odyssey's sampled target
+remain pixel exact in opt-in comparisons. This is a step toward whole-list
+parity, not a whole-frame parity result.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
