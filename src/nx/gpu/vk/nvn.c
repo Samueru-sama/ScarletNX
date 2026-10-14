@@ -2979,8 +2979,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     const char* full_probe_opt = getenv("SNX_NVN_SHADOW_FULL_PROBE");
     int full_probe = has_color && full_probe_opt && !strcmp(full_probe_opt, "1") && !capture && !zero_seed &&
                     (color->target == 1 || color->target == 4) &&
-                    (color_target->format == 0x11 || color_target->format == 0x29 ||
-                     color_target->format == 0x3f) &&
+                    (color_target->format == 0x11 || color_target->format == 0x25 ||
+                     color_target->format == 0x29 || color_target->format == 0x3f) &&
                     color->transfer_src && color_width <= 512 && color_height <= 512 &&
                     !prior_covered && command->color_target_mask == 1 &&
                     !color_feedback_view[0] && !fragment->si.nimg &&
@@ -3069,7 +3069,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     if (full_probe) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachments[0].clearValue.color = color_target->format == 0x11
+        color_attachments[0].clearValue.color = color_target->format == 0x25
+            ? (VkClearColorValue){{0.2f, 0.4f, 0.6f, 0.8f}}
+            : color_target->format == 0x11
             ? (VkClearColorValue){{-0.333251953125f, -0.66650390625f, 0.0f, 0.0f}}
             : color_target->format == 0x29
             ? (VkClearColorValue){{-0.333251953125f, -0.66650390625f,
@@ -3195,7 +3197,15 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             vk_finish();
             vk_readback_ready();
             int complete = 1;
-            if (color_target->format == 0x11 || color_target->format == 0x29) {
+            if (color_target->format == 0x25) {
+                const u8 sentinel[4] = {51, 102, 153, 204};
+                for (u64 i = 0; i < bytes && complete; i += 4)
+                    for (u32 component = 0; component < 4; component++)
+                        if (pixels[i + component] == sentinel[component]) {
+                            complete = 0;
+                            break;
+                        }
+            } else if (color_target->format == 0x11 || color_target->format == 0x29) {
                 const u8 sentinel[8] = {0x55, 0xb5, 0x55, 0xb9, 0x38, 0xba, 0x1c, 0xb3};
                 u32 components = color_target->format == 0x11 ? 2 : 4;
                 for (u64 i = 0; i < bytes && complete; i += color_format.bpp)

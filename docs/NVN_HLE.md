@@ -1604,7 +1604,7 @@ source; a write in the current batch remains pending until replay can safely
 use it.
 
 `SNX_NVN_SHADOW_FULL_PROBE=1` tests an otherwise uncovered, unblended
-`RG16F`, `RGBA16F`, or `R11G11B10F` color draw up to 512×512 pixels. It clears only the
+`RGBA8`, `RG16F`, `RGBA16F`, or `R11G11B10F` color draw up to 512×512 pixels. It clears only the
 shadow color attachment to a distinct per-component sentinel, reads it back
 after the draw, and certifies coverage only if every component at every pixel
 changed. Feedback, writable shader storage, and partial color masks are
@@ -1617,6 +1617,18 @@ source compared pixel-exact with Maxwell (0/65,536 differing pixels), and the
 formerly blocked 1280×720 draw issued. A later covered 1280×720 `RGBA8`
 target also compared pixel-exact (0/921,600 differing pixels). These are
 intermediate targets, not presented-frame parity.
+
+The same per-component probe now certifies a TotK 80×45 `RGBA8` draw. That
+allows the following six draws, which alternate between two 80×45 targets, to
+issue directly in the sampled boot. The next 320×180 pass still waits on an
+uncovered 64×64 `R11G11B10F` texture. The 80×45 result has not yet been
+compared pixel-for-pixel with Maxwell, and the probe remains opt-in.
+
+The direct path can also issue a depth-only draw with a bound depth target and
+no color attachments. It uses the depth target's extent for viewport and
+scissor validation, then retains depth coverage only when the existing depth
+provenance rule permits it. The first observed TotK 160×90 depth-only pass
+issued; later repetitions still depend on an upstream 320×180 depth source.
 
 The direct color-attachment path also accepts `RG16F`, which TotK uses later
 in its postprocess chain. Its first observed 160×90 draw still waits on a
