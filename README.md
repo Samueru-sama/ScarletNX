@@ -22,7 +22,9 @@ build/gnuabi/scarletnx-gnuabi ./test_aarch64
 
 See [Linux ABI execution and QEMU validation](docs/GNUABI.md) for supported syscalls,
 virtual filesystems, static ELF execution, and current limits. The NX executable also
-has `scarletnx-erista`, `scarletnx-mariko`, and `scarletnx-aula` aliases.
+has `scarletnx-erista`, `scarletnx-mariko`, and `scarletnx-aula` aliases. Game Boy
+Advance ROMs run under the `scarletnx-agb` system type, on the emulated AGB board
+being built under `src/agb/`, see [AGB board](docs/AGB.md).
 
 Install the build tools first. On Debian/Ubuntu:
 ```bash
