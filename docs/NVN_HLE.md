@@ -1720,6 +1720,17 @@ list visit. The GPFIFO submission order and multiplicity, rather than a set
 of unique control descriptors, must drive a future direct decoder. The
 coverage report also counts these offset repeats and rewinds.
 
+`SNX_NVN_CONTROL_PACKETS=1` retains a bounded copy of each matched,
+control-owned GPFIFO entry in submission order and passes that packet stream
+to the GPU batch. Disjoint GPU pages are copied through their translations,
+and packet bytes remain stable if the guest reuses its command memory. The
+per-queue limit is 8 MiB, with a 32 MiB global limit; dropped entries are
+reported. The first TotK cubemap batch contains all 65 control-owned macro
+38 packets. Its observed 12-word indexed-draw form now decodes index address,
+format, topology, count, and instance count; its six macro arguments are
+retained until their exact effects are established. This is an ordered input
+for a future direct renderer, not executable NVN draw state yet.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

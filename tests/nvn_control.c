@@ -25,5 +25,17 @@ int main(void) {
     assert(!nvn_control_find_gpu_entry(control + 1, 14, 0x658991b74ull, 0x359bcab74ull, NULL, NULL));
     assert(!nvn_control_find_gpu_entry(control, 3, 0x658991b74ull, 0x359bcab74ull, NULL, NULL));
     assert(!nvn_control_find_gpu_entry(control, 15, 0x658991b75ull, 0x359bcab74ull, NULL, NULL));
+    const u32 packet[] = {0x81900e20, 0x800205f6, 0x200205f2, 6, 0x56bd6ce8,
+                          0xa0060e4c, 4, 0x5af3, 1, 0, 0x13703, 0};
+    NvnControlMacro38Draw draw;
+    assert(nvn_control_macro38_draw(packet, 12, &draw));
+    assert(draw.index_address == 0x656bd6ce8ull);
+    assert(draw.index_type == 2 && draw.primitive == 4 && draw.count == 0x5af3 && draw.instances == 1);
+    assert(draw.macro_args[4] == 0x13703);
+    u32 malformed[12];
+    for (u32 i = 0; i < 12; i++) malformed[i] = packet[i];
+    malformed[5] = 0xa0050e4c; /* truncated macro parameter count */
+    assert(!nvn_control_macro38_draw(malformed, 12, &draw));
+    assert(!nvn_control_macro38_draw(packet, 11, &draw));
     return 0;
 }
