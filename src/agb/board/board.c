@@ -18,3 +18,13 @@ void agb_board_destroy(AgbBoard* board) {
     agb_cartridge_unload(&board->cartridge);
     memset(board, 0, sizeof(*board));
 }
+
+uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
+    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1);
+    return board->io[offset];
+}
+
+void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value) {
+    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1);
+    board->io[offset] = value;
+}

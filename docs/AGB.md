@@ -23,13 +23,40 @@ The board is under construction, piece by piece:
 | Part | State |
 | --- | --- |
 | Cartridge and ROM header | done: header parsing and validation |
-| HLE BIOS interface | not yet |
+| Memory map | done: every region and mirror, the I/O window as plain storage |
+| HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
 | PPU and display | not yet |
 | APU (audio) | not yet |
 | Keypad (HID) | not yet |
-| CPU, memory map, DMA, timers, interrupts | not yet |
+| CPU, DMA, timers, interrupts | not yet |
 
-This build recognizes a ROM and reports its header. Nothing is emulated yet.
+This build recognizes a ROM, reports its header and runs the BIOS as HLE. No
+code runs on the board yet.
+
+## The memory map
+
+`board/memory.c` owns the address space the CPU will run on: work RAM (256 KiB
+at 0x02000000 and 32 KiB at 0x03000000), the palette, VRAM and OAM, the save
+memory at 0x0E000000 and the cartridge window at 0x08000000, each with the
+mirrors the console decodes. The I/O window at 0x04000000 is plain register
+storage so far. The devices replace their registers with real behaviour as they
+land.
+
+## The HLE BIOS
+
+The console's BIOS is not shipped with the emulator. The software interrupts run
+as board routines (`bios/bios.c`), the way the Switch runtime turns SVC calls
+into HLE and the GNU ABI runtime turns `SVC #0` into Linux system calls. Div,
+Sqrt, ArcTan and ArcTan2 compute in fixed point, CpuSet and CpuFastSet move
+memory, the LZ77, run length and difference calls decompress, BitUnPack widens
+packed fields, and BgAffineSet and ObjAffineSet build the rotation matrices. The
+calls that need the interrupt controller or the sound hardware (Halt, Stop,
+IntrWait, VBlankIntrWait, SoundBias and the sound driver) are known stubs that
+land with those devices.
+
+Angles are turns in 16 bits, the way the BIOS counts them, and the affine matrix
+drops the low byte of the rotation angle, giving 256 steps around the circle.
+The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
 
 ## The ROM header
 
