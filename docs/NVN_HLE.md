@@ -1510,13 +1510,15 @@ A follow-up trace of the first blocked 320×180 multi-attachment draw shows that
 its basic pipeline and attachment checks pass. It cannot load a 120×67 sampled
 source: no matching complete NVN shadow image is available, and the guest
 texture loader rejects the backing range because Maxwell has a fresh render
-target there. The sampled address changes between boots, so it must not be
-special-cased. No recorded NVN color draw or clear for that address was observed
-before this consumer in the sampled boot. The next parity step is to account
-for the producing GPU command stream or its resource lifetime; bypassing the
-fresh-target guard would use stale guest bytes. Later 320×180 passes also stop
-on pending shadow sources, consistent with a dependency chain from earlier
-unmodeled writes.
+target there. A shape probe identifies that Maxwell target as 80×45 at the
+same base address, distinct from the 120×67 TIC. The sampled address changes
+between boots, so it must not be special-cased. No recorded NVN color draw or
+clear for that address was observed before this consumer in the sampled boot.
+The next parity step is to preserve the texture contents at the time of the
+consumer or account for the producing command stream and image lifetime;
+bypassing the fresh-target guard would use stale guest bytes. Later 320×180
+passes also stop on pending shadow sources, consistent with a dependency
+chain from earlier unmodeled writes.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
