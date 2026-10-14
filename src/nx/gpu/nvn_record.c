@@ -4084,6 +4084,12 @@ static void execute_nvn_batch(void* arg) {
                     (u64)packet->word_count * sizeof(u32) +
                     packet->index_snapshot_reserved + packet->texture_snapshot_reserved;
                 memcpy(raw_registers, source, sizeof raw_registers);
+                if (raw_registers[0x372]) {
+                    static const u16 bias[] = {0x55b, 0x56f, 0x61f};
+                    u64 known[0x1000 / 64];
+                    memcpy(known, source + sizeof raw_registers, sizeof known);
+                    if (!raw_registers_have(known, bias, sizeof bias / sizeof *bias)) continue;
+                }
                 NvnTextureTarget draw_color_target = {0};
                 u32 color_matches = 0;
                 u32 control = raw_registers[0x487];

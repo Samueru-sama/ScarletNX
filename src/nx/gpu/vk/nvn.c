@@ -2198,7 +2198,8 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
         color_target->view.first_layer >= 64 || depth_target->view.first_layer >= 64 ||
         color_target->width != depth_target->width ||
         color_target->height != depth_target->height ||
-        registers[0x4e0] || registers[0x372]) CONTROL_DRAW_REJECT("inputs");
+        registers[0x4e0])
+        CONTROL_DRAW_REJECT("inputs");
     VkSh* shader[2];
     PipeKey key;
     VkPipeline pipeline = raw_depth_pipeline(probe, color_target, depth_target,
@@ -2353,8 +2354,14 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
     vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
     vkCmdSetLineWidth(cb, 1.0f);
-    vkCmdSetDepthBiasEnable(cb, VK_FALSE);
-    vkCmdSetDepthBias(cb, 0, 0, 0);
+    vkCmdSetDepthBiasEnable(cb, !!registers[0x372]);
+    if (registers[0x372]) {
+        float factor, units, clamp;
+        memcpy(&factor, &registers[0x55b], sizeof factor);
+        memcpy(&units, &registers[0x56f], sizeof units);
+        memcpy(&clamp, &registers[0x61f], sizeof clamp);
+        vkCmdSetDepthBias(cb, units, g_vk.feat.depthBiasClamp ? clamp : 0.0f, factor);
+    } else vkCmdSetDepthBias(cb, 0, 0, 0);
     float blend[4] = {0};
     vkCmdSetBlendConstants(cb, blend);
     vkCmdSetDepthTestEnable(cb, !!registers[0x4b3]);

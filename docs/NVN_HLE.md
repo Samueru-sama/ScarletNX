@@ -1938,7 +1938,11 @@ changes only 26 D16 texels with the old vertex binding, or 1,480 after
 matching Maxwell's cross-stride attribute padding. That replay remains a
 probe: the depth image still fails parity, and its packet ordering relative
 to the NVN clear has not been reconciled. The vertex binding correction is
-independent of the unresolved depth ordering.
+independent of the unresolved depth ordering. A surface-generation trace
+confirms Maxwell's D16 render target is unchanged from the NVN clear callback
+through the R16 sample, then advances across the subsequent control batch.
+The current NVN operation sequence therefore does not yet express the
+guest GPU's visible depth order at this consumer.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
