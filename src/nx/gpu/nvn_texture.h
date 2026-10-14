@@ -59,6 +59,9 @@ void nvn_texture_after(const CPU* c, const char* name, const NvnTextureCall* cal
 void nvn_texture_report(void);
 int nvn_texture_snapshot(u64 texture, NvnTextureSnapshot* out);
 NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSelection* view, NvnTextureTarget* out);
+/* Resolve a raw GPU attachment address only when live NVN textures at that extent agree on the backing and layout. */
+NvnTargetResult nvn_texture_find_target(u64 gpu_address, u32 width, u32 height,
+                                         u32* matches, NvnTextureTarget* out);
 /* Resolve an old-layout texture object copied after Initialize, only through an exact unique backing match. */
 NvnTargetResult nvn_texture_resolve_copied_target(u64 texture, const NvnTextureViewSelection* view,
                                                   NvnTextureTarget* out);

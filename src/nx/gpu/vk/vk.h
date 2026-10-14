@@ -42,6 +42,14 @@ int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command);
 void vk_nvn_batch_begin(void);
 void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
                                  NvnControlShaderProbeResult* result);
+int vk_nvn_control_depth_prepare(const NvnTextureTarget* target);
+int vk_nvn_control_pipeline_probe(const NvnControlShaderProbe* probe,
+                                   const NvnTextureTarget* depth_target,
+                                   const u32* registers, u32 primitive);
+u32 vk_nvn_control_buffer_probe(const NvnControlShaderProbe* probe, const u32* registers,
+                                 const u8* indices, u32 index_bytes, u32 index_count, u32 index_type);
+int vk_render_vertex_format_supported(u32 raw_attribute);
+VkFormat vk_render_vertex_format(u32 raw_attribute);
 void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key);
 int vk_nvn_draw_prepare(const NvnDrawCommand* command);
 int vk_nvn_dispatch(const NvnDispatchCommand* command);

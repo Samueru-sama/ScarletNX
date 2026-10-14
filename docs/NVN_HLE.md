@@ -1789,6 +1789,15 @@ metadata. The captured direct register state covers the viewport, scissor,
 raster, and depth-test inputs used by this pass. This is resource readiness;
 the raw draws still need ordered direct Vulkan execution and a depth-image
 comparison against Maxwell.
+The raw depth GVA resolves to two equivalent live NVN texture objects with
+the same 64×64 D32F backing. `SNX_NVN_CONTROL_DEPTH_PREPARE=1` allocates an
+NVN-owned depth image and view for that target. With
+`SNX_NVN_CONTROL_PIPELINE_PROBE=1`, each captured indexed draw also creates a
+Vulkan pipeline using its translated shaders, raw Maxwell vertex formats,
+triangle topology, and D32F attachment. `SNX_NVN_CONTROL_BUFFER_PROBE=1`
+checks mapped vertex streams and stages the captured index bytes. TotK reports
+successful pipelines and buffers for all 65 first-cubemap depth draws. These
+probes do not bind descriptors or issue a draw.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

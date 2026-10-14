@@ -455,6 +455,16 @@ static int vertex_format_ok(VkFormat f) {
     return r;
 }
 
+VkFormat vk_render_vertex_format(u32 raw_attribute) {
+    u32 size = (raw_attribute >> 21) & 0x3f;
+    u32 type = (raw_attribute >> 27) & 7;
+    return attr_format(size, type, raw_attribute >> 31);
+}
+
+int vk_render_vertex_format_supported(u32 raw_attribute) {
+    return vertex_format_ok(vk_render_vertex_format(raw_attribute));
+}
+
 /* bytes an attribute of a size code (bits 21-26) reads */
 static u32 attr_bytes(u32 size) {
     switch (size) {

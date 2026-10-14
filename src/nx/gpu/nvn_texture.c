@@ -364,6 +364,49 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
     return resolve_target_snapshot(texture, &t, view, out);
 }
 
+NvnTargetResult nvn_texture_find_target(u64 gpu_address, u32 width, u32 height,
+                                         u32* matches, NvnTextureTarget* out) {
+    if (matches) *matches = 0;
+    if (!gpu_address || !width || !height || !out) return NVN_TARGET_MISSING;
+    u64 texture = 0;
+    u32 found = 0;
+    Texture first = {0};
+    Texture other = {0};
+    int equivalent = 1;
+    pm_lock(&lock);
+    for (u32 i = 0; i < TEXTURE_SLOTS; i++) {
+        const Texture* t = &textures[i];
+        if (!t->key || !t->alive || !t->address_known || t->gpu_address != gpu_address ||
+            t->width != width || t->height != height) continue;
+        if (!found) {
+            texture = t->key;
+            first = *t;
+        } else if (t->pool != first.pool || t->offset != first.offset ||
+                   t->storage_size != first.storage_size || t->format != first.format ||
+                   t->target != first.target || t->depth != first.depth ||
+                   t->levels != first.levels || t->samples != first.samples ||
+                   t->storage_class != first.storage_class || t->stride != first.stride) {
+            equivalent = 0;
+            if (!other.key) other = *t;
+        }
+        found++;
+    }
+    pm_unlock(&lock);
+    if (other.key)
+        LOG_LIMIT(6, "nvn-raw-target-ambiguous: gpu=%llx first=%llx/%llx+%llx size=%u format=%x target=%u depth=%u levels=%u samples=%u class=%x stride=%lld other=%llx/%llx+%llx size=%u format=%x target=%u depth=%u levels=%u samples=%u class=%x stride=%lld\n",
+                  (unsigned long long)gpu_address,
+                  (unsigned long long)first.key, (unsigned long long)first.pool,
+                  (unsigned long long)first.offset, first.storage_size, first.format,
+                  first.target, first.depth, first.levels, first.samples, first.storage_class,
+                  (long long)first.stride,
+                  (unsigned long long)other.key, (unsigned long long)other.pool,
+                  (unsigned long long)other.offset, other.storage_size, other.format,
+                  other.target, other.depth, other.levels, other.samples, other.storage_class,
+                  (long long)other.stride);
+    if (matches) *matches = found;
+    return found && equivalent ? nvn_texture_resolve_target(texture, NULL, out) : NVN_TARGET_MISSING;
+}
+
 NvnTargetResult nvn_texture_resolve_copied_target(u64 texture, const NvnTextureViewSelection* view,
                                                   NvnTextureTarget* out) {
     /* Older SDK clients can memcpy an initialized texture object before SetRenderTargets. Accept a copy only when

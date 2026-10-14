@@ -516,6 +516,10 @@ static int prepare_attachment(const NvnTextureTarget* target, int depth) {
     return 0;
 }
 
+int vk_nvn_control_depth_prepare(const NvnTextureTarget* target) {
+    return target && prepare_attachment(target, 1);
+}
+
 /* Allocate the exact single-mip, single-layer storage view a future NVN draw will bind. This preflight neither
    writes pixels nor changes image layout; the draw path must order storage writes with later texture reads. */
 static int prepare_storage_image(const NvnTextureTarget* target, VkFormat expected) {
@@ -1554,10 +1558,11 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
     return 1;
 }
 
-void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
-                                 NvnControlShaderProbeResult* result) {
+static void raw_shader_probe(const NvnControlShaderProbe* probe,
+                             NvnControlShaderProbeResult* result, VkSh* compiled[2]) {
     if (!result) return;
     *result = (NvnControlShaderProbeResult){0};
+    if (compiled) compiled[0] = compiled[1] = NULL;
     if (!probe || !probe->code[0] || !probe->code[1]) return;
     for (u32 stage = 0; stage < 2; stage++) {
         u32 row = stage ? 4 : 0;
@@ -1587,6 +1592,7 @@ void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
                                      stage ? 0 : probe->attr_int, stage ? 0 : probe->attr_sint,
                                      0, 0, stage ? 0 : probe->clip_enable, 0, 0);
         if (shader && shader->mod && !shader->failed && !shader->si.unsupported) {
+            if (compiled) compiled[stage] = shader;
             result->ready |= 1u << stage;
             result->cbuf_mask[stage] = shader->si.cbuf_mask;
             result->texture_count[stage] = shader->si.ntex;
@@ -1640,11 +1646,113 @@ void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
                     gmmu_translate(tsc) && gmmu_translate(tsc + 31))
                     result->texture_descriptors_mapped[stage] |= 1u << i;
             }
-            if (!stage) result->vertex_input_mask = shader->si.in_mask;
+            if (!stage) {
+                result->vertex_input_mask = shader->si.in_mask;
+                for (u32 attr = 0; attr < 32; attr++)
+                    if ((shader->si.in_mask & (1u << attr)) &&
+                        (probe->raw_vertex_attrib_written & (1u << attr)) &&
+                        ((probe->raw_vertex_attrib[attr] & 0x40) ||
+                         vk_render_vertex_format_supported(probe->raw_vertex_attrib[attr])))
+                        result->vertex_format_ready |= 1u << attr;
+            }
         }
         memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
         memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
     }
+}
+
+void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
+                                 NvnControlShaderProbeResult* result) {
+    raw_shader_probe(probe, result, NULL);
+}
+
+int vk_nvn_control_pipeline_probe(const NvnControlShaderProbe* probe,
+                                   const NvnTextureTarget* depth_target,
+                                   const u32* registers, u32 primitive) {
+    if (!probe || !depth_target || !registers || primitive != 4) return 0;
+    NvnControlShaderProbeResult result;
+    VkSh* shader[2];
+    raw_shader_probe(probe, &result, shader);
+    if (result.ready != 3 || result.vertex_format_ready != result.vertex_input_mask) return 0;
+    VkFmt depth = nvn_format(depth_target->format);
+    if (!depth.vk || !depth.depth) return 0;
+    PipeKey key = {.vs = shader[0]->mod, .fs = shader[1]->mod,
+                   .topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+                   .polygon = VK_POLYGON_MODE_FILL, .depth = depth.vk,
+                   .stencil = depth.stencil ? depth.vk : VK_FORMAT_UNDEFINED};
+    const VkPhysicalDeviceLimits* limits = &g_vk.props.limits;
+    for (u32 location = 0; location < 32; location++) {
+        if (!(result.vertex_input_mask & (1u << location))) continue;
+        if (key.nattr >= 32 || key.nattr >= limits->maxVertexInputAttributes ||
+            key.nbind >= limits->maxVertexInputBindings) return 0;
+        u32 raw = registers[0x458 + location];
+        u32 stream = raw & 31;
+        if (stream >= 16) return 0;
+        u32 binding = key.nbind++;
+        key.attr[key.nattr].loc = location;
+        key.attr[key.nattr].binding = binding;
+        if (raw & 0x40) {
+            key.attr[key.nattr].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            key.attr[key.nattr].offset = 0;
+        } else {
+            u32 offset = (raw >> 7) & 0x3fff;
+            u32 stride = registers[0x700 + stream * 4] & 0xfff;
+            if (stride > limits->maxVertexInputBindingStride) return 0;
+            u32 base = offset > limits->maxVertexInputAttributeOffset ? offset : 0;
+            key.attr[key.nattr].format = vk_render_vertex_format(raw);
+            key.attr[key.nattr].offset = offset - base;
+            u32 divisor = registers[0x620 + stream] ?
+                (registers[0x700 + stream * 4 + 3] ? registers[0x700 + stream * 4 + 3] : 1) : 0;
+            if (divisor > 1 && !g_vk.has_divisor) return 0;
+            key.bind[binding].divisor = divisor;
+        }
+        key.nattr++;
+    }
+    return vk_pipeline_get(&key) != VK_NULL_HANDLE;
+}
+
+u32 vk_nvn_control_buffer_probe(const NvnControlShaderProbe* probe, const u32* registers,
+                                 const u8* indices, u32 index_bytes, u32 index_count, u32 index_type) {
+    if (!probe || !registers || !indices || index_type > 2 ||
+        index_count > UINT32_MAX >> index_type ||
+        index_bytes != (index_count << index_type)) return 0;
+    NvnControlShaderProbeResult result;
+    VkSh* shaders[2];
+    raw_shader_probe(probe, &result, shaders);
+    if (result.ready != 3) return 0;
+    u32 ready = 0;
+    VkBuffer vertex_buffer;
+    u64 vertex_offset;
+    u32 used_streams = 0;
+    int vertices_ready = 1;
+    for (u32 location = 0; location < 32; location++) {
+        if (!(result.vertex_input_mask & (1u << location))) continue;
+        u32 raw = registers[0x458 + location], stream = raw & 31;
+        if (stream >= 16 || (raw & 0x40)) {
+            vertices_ready = 0;
+            break;
+        }
+        if (used_streams & (1u << stream)) continue;
+        used_streams |= 1u << stream;
+        u64 start = ((u64)registers[0x700 + stream * 4 + 1] << 32) |
+                    registers[0x700 + stream * 4 + 2];
+        u64 end = ((u64)registers[0x7c0 + stream * 2] << 32) |
+                  registers[0x7c0 + stream * 2 + 1];
+        if (!start || end < start || end - start >= (4u << 20) ||
+            !vk_buf_get_strict(start, end - start + 1, &vertex_buffer, &vertex_offset)) {
+            vertices_ready = 0;
+            break;
+        }
+    }
+    if (vertices_ready) ready |= 1;
+    VkBuffer index_buffer;
+    u64 index_offset;
+    u8* staged = vk_stage(index_bytes, vk_stage_align(), &index_buffer, &index_offset);
+    if (staged) {
+        memcpy(staged, indices, index_bytes);
+        ready |= 2;
+    }
+    return ready;
 }
 
 static VkBlendFactor nvn_blend_factor(u32 factor) {

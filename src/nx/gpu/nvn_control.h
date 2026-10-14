@@ -41,6 +41,7 @@ typedef struct {
     u32 cbuf_size[2][18];
     u32 cbuf_known[2];
     u32 attr_int, attr_sint;
+    u32 raw_vertex_attrib[32], raw_vertex_attrib_written;
     u32 clip_enable;
     u64 tic_base, tsc_base;
     u32 texture_cbuf_bank, sampler_index_mode;
@@ -59,6 +60,6 @@ typedef struct {
     u32 texture_snapshots_available[2], texture_snapshots_match[2], texture_shapes_supported[2];
     u32 first_texture_handle;
     u32 vertex_input_mask;
-    u32 vertex_attrib_known, vertex_stream_ready;
+    u32 vertex_attrib_known, vertex_stream_ready, vertex_format_ready;
 } NvnControlShaderProbeResult;
 #endif

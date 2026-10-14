@@ -3438,6 +3438,42 @@ typedef struct {
     u32 channel, vertex_offset, fragment_offset;
     u8 used, vertex_bound, fragment_bound;
 } NvnProgramCursor;
+typedef struct {
+    NvnControlShaderProbe probe;
+    const NvnControlPacket* packet;
+    u32 primitive, index_count, index_type;
+} NvnControlPipelineCandidate;
+
+static NvnControlShaderProbe control_shader_probe_for_draw(const NvnControlPacket* packet,
+                                                            u64 vertex_code, u64 fragment_code) {
+    NvnControlShaderProbe probe = {.code = {vertex_code, fragment_code}};
+    memcpy(probe.cbuf_address, packet->cbuf.address, sizeof probe.cbuf_address);
+    memcpy(probe.cbuf_size, packet->cbuf.size, sizeof probe.cbuf_size);
+    memcpy(probe.cbuf_known, packet->cbuf.known, sizeof probe.cbuf_known);
+    memcpy(probe.raw_vertex_attrib, packet->vertex.attrib, sizeof probe.raw_vertex_attrib);
+    probe.raw_vertex_attrib_written = packet->vertex.attrib_written;
+    for (u32 attr = 0; attr < 32; attr++) {
+        if (!(packet->vertex.attrib_written & (1u << attr))) continue;
+        u32 type = (packet->vertex.attrib[attr] >> 27) & 7;
+        if (type == 3 || type == 4) {
+            probe.attr_int |= 1u << attr;
+            if (type == 3) probe.attr_sint |= 1u << attr;
+        }
+    }
+    probe.clip_enable = packet->clip_known ? packet->clip_enable : 0;
+    probe.tic_base = ((u64)packet->texture.registers[0] << 32) | packet->texture.registers[1];
+    probe.tsc_base = ((u64)packet->texture.registers[2] << 32) | packet->texture.registers[3];
+    probe.texture_cbuf_bank = packet->texture.registers[4];
+    probe.sampler_index_mode = packet->texture.registers[5];
+    probe.texture_registers_known = packet->texture.known;
+    if (packet->texture_snapshot_mask) {
+        probe.texture_descriptors = (const NvnControlTextureDescriptor*)(
+            (const u8*)packet->words + (u64)packet->word_count * sizeof(u32) +
+            packet->index_snapshot_reserved);
+        probe.texture_descriptor_mask = packet->texture_snapshot_mask;
+    }
+    return probe;
+}
 
 static void execute_nvn_batch(void* arg) {
     NvnGpuBatch* batch = arg;
@@ -3453,7 +3489,12 @@ static void execute_nvn_batch(void* arg) {
         u32 shader_probe_attempted = 0, shader_probe_ready = 0;
         u32 shader_probe_all_ready = 0, shader_probe_all_resources = 0;
         NvnControlShaderProbeResult shader_probe_result = {0};
+        NvnControlPipelineCandidate pipeline_candidates[128] = {0};
+        u32 pipeline_candidate_count = 0;
         u32 vertex_sph = 0, fragment_sph = 0;
+        u32 first_vertex_attrib[3] = {0};
+        u64 first_vertex_stream_size[2] = {0};
+        u32 first_index_type = 0, first_index_count = 0;
         u64 first_vertex_code = 0, first_fragment_code = 0;
         u32 vertex_attr0_seen = 0, vertex_stream0_seen = 0;
         u32 vertex_cbuf0_seen = 0, fragment_cbuf0_seen = 0;
@@ -3574,38 +3615,20 @@ static void execute_nvn_batch(void* arg) {
                                     distinct_fragment_code[pair] = fragment_code;
                                     distinct_shader_pairs++;
                                 }
+                                if (pipeline_candidate_count < 128 && packet->register_snapshot_valid &&
+                                    packet->index_snapshot_valid)
+                                    pipeline_candidates[pipeline_candidate_count++] =
+                                        (NvnControlPipelineCandidate){
+                                            .probe = control_shader_probe_for_draw(packet, vertex_code, fragment_code),
+                                            .packet = packet, .primitive = decoded.primitive,
+                                            .index_count = decoded.count, .index_type = decoded.index_type};
                                 const char* probe_opt = getenv("SNX_NVN_CONTROL_SHADER_PROBE");
                                 if (new_pair && shader_probe_attempted < 8 &&
                                     probe_opt && !strcmp(probe_opt, "1") &&
                                     g_renderer->nvn_control_shader_probe) {
-                                    NvnControlShaderProbe probe = {.code = {vertex_code, fragment_code}};
+                                    NvnControlShaderProbe probe =
+                                        control_shader_probe_for_draw(packet, vertex_code, fragment_code);
                                     NvnControlShaderProbeResult result = {0};
-                                    memcpy(probe.cbuf_address, packet->cbuf.address, sizeof probe.cbuf_address);
-                                    memcpy(probe.cbuf_size, packet->cbuf.size, sizeof probe.cbuf_size);
-                                    memcpy(probe.cbuf_known, packet->cbuf.known, sizeof probe.cbuf_known);
-                                    for (u32 attr = 0; attr < 32; attr++) {
-                                        if (!(packet->vertex.attrib_written & (1u << attr))) continue;
-                                        u32 type = (packet->vertex.attrib[attr] >> 27) & 7;
-                                        if (type == 3 || type == 4) {
-                                            probe.attr_int |= 1u << attr;
-                                            if (type == 3) probe.attr_sint |= 1u << attr;
-                                        }
-                                    }
-                                    probe.clip_enable = packet->clip_known ? packet->clip_enable : 0;
-                                    probe.tic_base = ((u64)packet->texture.registers[0] << 32) |
-                                                     packet->texture.registers[1];
-                                    probe.tsc_base = ((u64)packet->texture.registers[2] << 32) |
-                                                     packet->texture.registers[3];
-                                    probe.texture_cbuf_bank = packet->texture.registers[4];
-                                    probe.sampler_index_mode = packet->texture.registers[5];
-                                    probe.texture_registers_known = packet->texture.known;
-                                    if (packet->texture_snapshot_mask) {
-                                        probe.texture_descriptors = (const NvnControlTextureDescriptor*)(
-                                            (const u8*)packet->words +
-                                            (u64)packet->word_count * sizeof(u32) +
-                                            packet->index_snapshot_reserved);
-                                        probe.texture_descriptor_mask = packet->texture_snapshot_mask;
-                                    }
                                     g_renderer->nvn_control_shader_probe(&probe, &result);
                                     result.vertex_attrib_known =
                                         packet->vertex.attrib_written & result.vertex_input_mask;
@@ -3635,6 +3658,7 @@ static void execute_nvn_batch(void* arg) {
                                         (result.cbuf_bound[0] & result.cbuf_mask[0]) == result.cbuf_mask[0] &&
                                         (result.cbuf_bound[1] & result.cbuf_mask[1]) == result.cbuf_mask[1] &&
                                         result.vertex_stream_ready == result.vertex_input_mask &&
+                                        result.vertex_format_ready == result.vertex_input_mask &&
                                         result.texture_slots_known[1] &&
                                         result.texture_count[1] <= 32 &&
                                         result.texture_snapshots_available[1] ==
@@ -3643,6 +3667,19 @@ static void execute_nvn_batch(void* arg) {
                                     if (!shader_probe_attempted) {
                                         shader_probe_result = result;
                                         shader_probe_ready = result.ready;
+                                        first_vertex_attrib[0] = packet->vertex.attrib[0];
+                                        first_vertex_attrib[1] = packet->vertex.attrib[1];
+                                        first_vertex_attrib[2] = packet->vertex.attrib[8];
+                                        for (u32 stream = 0; stream < 2; stream++) {
+                                            u64 start = ((u64)packet->vertex.stream[stream][1] << 32) |
+                                                        packet->vertex.stream[stream][2];
+                                            u64 end = ((u64)packet->vertex.limit[stream][0] << 32) |
+                                                      packet->vertex.limit[stream][1];
+                                            if (start && end >= start)
+                                                first_vertex_stream_size[stream] = end - start + 1;
+                                        }
+                                        first_index_type = decoded.index_type;
+                                        first_index_count = decoded.count;
                                         probe_texture_snapshot_ready = result.texture_slots_known[1] &&
                                             (packet->texture_snapshot_mask & result.texture_slots[1]) ==
                                                 result.texture_slots[1];
@@ -3711,7 +3748,45 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u sequenced=%u/%llu paired-program-draws=%u mapped-shaders=%u valid-shaders=%u unique-shaders=%u shader-probe=%u/%x all-ready=%u resource-ready=%u cbmask=%x/%x cbbound=%x/%x tex=%u/%u texslots=%x/%x known=%u/%u handles=%x/%x descriptors=%x/%x snapshot-available=%x/%x snapshot-live-match=%x/%x shapes=%x/%x first-handle=%x texture-snapshots=%u/%x/%u registers=%u pipeline-regs=%u/%u/%u/%u img=%u/%u inputs=%x/%x/%x first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+        NvnTextureTarget raw_depth_target = {0};
+        u32 raw_depth_matches = 0;
+        int raw_depth_resolved = first_depth_address &&
+            nvn_texture_find_target(first_depth_address, first_depth_width, first_depth_height,
+                                    &raw_depth_matches, &raw_depth_target) == NVN_TARGET_RESOLVED;
+        int raw_depth_prepared = 0;
+        const char* prepare_opt = getenv("SNX_NVN_CONTROL_DEPTH_PREPARE");
+        if (raw_depth_resolved && prepare_opt && !strcmp(prepare_opt, "1") &&
+            g_renderer->nvn_control_depth_prepare)
+            raw_depth_prepared = g_renderer->nvn_control_depth_prepare(&raw_depth_target);
+        int raw_pipeline_ready = 0;
+        u32 raw_vertex_buffers_ready = 0, raw_index_buffers_ready = 0;
+        const char* pipeline_opt = getenv("SNX_NVN_CONTROL_PIPELINE_PROBE");
+        const char* buffer_opt = getenv("SNX_NVN_CONTROL_BUFFER_PROBE");
+        if (raw_depth_prepared && pipeline_opt && !strcmp(pipeline_opt, "1") &&
+            g_renderer->nvn_control_pipeline_probe)
+            for (u32 i = 0; i < pipeline_candidate_count; i++) {
+                const NvnControlPipelineCandidate* candidate = &pipeline_candidates[i];
+                const NvnControlPacket* packet = candidate->packet;
+                if (!packet->register_snapshot_valid) continue;
+                u32 raw_registers[0x1000];
+                const u8* source = (const u8*)packet->words +
+                    (u64)packet->word_count * sizeof(u32) +
+                    packet->index_snapshot_reserved + packet->texture_snapshot_reserved;
+                memcpy(raw_registers, source, sizeof raw_registers);
+                raw_pipeline_ready += g_renderer->nvn_control_pipeline_probe(
+                    &candidate->probe, &raw_depth_target, raw_registers, candidate->primitive);
+                if (buffer_opt && !strcmp(buffer_opt, "1") && packet->index_snapshot_valid &&
+                    g_renderer->nvn_control_buffer_probe) {
+                    const u8* indices = (const u8*)packet->words +
+                        (u64)packet->word_count * sizeof(u32);
+                    u32 buffers = g_renderer->nvn_control_buffer_probe(
+                        &candidate->probe, raw_registers, indices, packet->index_snapshot_size,
+                        candidate->index_count, candidate->index_type);
+                    raw_vertex_buffers_ready += !!(buffers & 1);
+                    raw_index_buffers_ready += !!(buffers & 2);
+                }
+            }
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u sequenced=%u/%llu paired-program-draws=%u mapped-shaders=%u valid-shaders=%u unique-shaders=%u shader-probe=%u/%x all-ready=%u resource-ready=%u cbmask=%x/%x cbbound=%x/%x tex=%u/%u texslots=%x/%x known=%u/%u handles=%x/%x descriptors=%x/%x snapshot-available=%x/%x snapshot-live-match=%x/%x shapes=%x/%x first-handle=%x texture-snapshots=%u/%x/%u registers=%u pipeline-regs=%u/%u/%u/%u img=%u/%u inputs=%x/%x/%x/%x attrib=%08x/%08x/%08x streams=%llu/%llu index=%u/%u first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u depth-target=%u/%u/%x/%u prepared=%u pipeline=%u buffers=%u/%u dropped=%u\n",
             batch->control_packet_count, ordered, macro12,
             (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
             macro38, decoded_draws, sequenced_draws, (unsigned long long)first_raw_sequence,
@@ -3734,7 +3809,10 @@ static void execute_nvn_batch(void* arg) {
             raster_registers, depth_pipeline_registers,
             shader_probe_result.image_count[0], shader_probe_result.image_count[1],
             shader_probe_result.vertex_input_mask, shader_probe_result.vertex_attrib_known,
-            shader_probe_result.vertex_stream_ready,
+            shader_probe_result.vertex_stream_ready, shader_probe_result.vertex_format_ready,
+            first_vertex_attrib[0], first_vertex_attrib[1], first_vertex_attrib[2],
+            (unsigned long long)first_vertex_stream_size[0],
+            (unsigned long long)first_vertex_stream_size[1], first_index_type, first_index_count,
             vertex_sph, fragment_sph,
             (unsigned long long)first_vertex_code, (unsigned long long)first_fragment_code,
             vertex_attr0_seen, vertex_stream0_seen,
@@ -3743,6 +3821,9 @@ static void execute_nvn_batch(void* arg) {
             (unsigned long long)decoded_indices, depth_state_known, depth_writers,
             (unsigned long long)first_depth_address, first_depth_width, first_depth_height,
             first_depth_writers,
+            raw_depth_resolved, raw_depth_matches, raw_depth_target.format, raw_depth_target.storage_size,
+            raw_depth_prepared, raw_pipeline_ready,
+            raw_vertex_buffers_ready, raw_index_buffers_ready,
             batch->control_packets_dropped);
     }
     u32 clear = 0, copy = 0, draw = 0, dispatch = 0, memory_write = 0;

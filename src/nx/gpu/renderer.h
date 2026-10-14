@@ -26,6 +26,12 @@ typedef struct Renderer {
     void (*nvn_batch_begin)(void);
     void (*nvn_control_shader_probe)(const NvnControlShaderProbe* probe,
                                      NvnControlShaderProbeResult* result);
+    int (*nvn_control_depth_prepare)(const NvnTextureTarget* target);
+    int (*nvn_control_pipeline_probe)(const NvnControlShaderProbe* probe,
+                                      const NvnTextureTarget* depth_target,
+                                      const u32* registers, u32 primitive);
+    u32 (*nvn_control_buffer_probe)(const NvnControlShaderProbe* probe, const u32* registers,
+                                     const u8* indices, u32 index_bytes, u32 index_count, u32 index_type);
     void (*nvn_probe_initial_color)(u64 address, u32 size, u64 sequence, u64 queue_key, u64 prior_unmodeled_write,
                                     int prior_writes_scoped);
     int (*nvn_clear)(const NvnClearCommand* command);
