@@ -287,6 +287,15 @@ static void brx_length(void) {
     g_shader_cb_read = old;
 }
 
+static void invalid_ldc_bank(void) {
+    const u64 ldc = 0xef94000000070d0dull | (31ull << 36);
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(&ldc, 1, ST_FS, &info, &words, 1);
+    check(!code && info.unsupported, "LDC rejects constant buffer banks outside the descriptor set");
+    free(code);
+}
+
 static void nro_shader_modes(void) {
     const u64 raw[] = {0x4c98078800070004ull, mov32i(4, 1), mov32i(5, 3), 0xeb18048600470400ull};
     const u64 ms[] = {0x4c98078800070004ull, mov32i(5, 4), mov32i(0, 3), mov32i(1, 5), 0xdd3c0007a0470000ull};
@@ -321,6 +330,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 4; i++) nro_paths[i] = argv[i + 3];
     }
     brx_length();
+    invalid_ldc_bank();
     f2i_modifiers();
     global_buffers();
     float_controls();

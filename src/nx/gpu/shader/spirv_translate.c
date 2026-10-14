@@ -1162,6 +1162,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (a < 255) used[a] = 1;
             if (B(insn[i], 48, 3) == 5 && d + 1 < 255) used[d + 1] = 1;
             u32 bank = B(insn[i], 36, 5);
+            if (bank >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[bank] = 1;
             cbuf_max[bank] = 65536;
             if (bank == 0) coverage.cbuf0_untracked_read = 1;
