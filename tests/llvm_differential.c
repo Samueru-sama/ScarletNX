@@ -117,14 +117,15 @@ static u64 special64(void) {
     return next_random();
 }
 
-/* floats at the edges of the LLVM backend's FP fast paths: exponents 0, 1, 2, precision+1..3, the top, and small
-   integers and products that round or not */
+/* floats at the edges of the LLVM backend's FP fast paths: exponents 0, 1, 2, precision+1..3, the top, signed
+   zeros, and small integers and products that round or not */
 static u32 edge32(void) {
     static const u32 exponents[] = {0, 1, 2, 3, 24, 25, 26, 27, 100, 127, 128, 150, 200, 252, 253, 254, 255};
     u64 r = next_random();
     u32 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
     u32 m =
         (r >> 8) & 7 ? (u32)(r >> 20) & 0x7FFFFF : (u32)((r >> 20) & 7) << 20; /* sometimes few bits: exact results */
+    if (r % 6 == 0) return (u32)((r >> 40) & 1) << 31;
     return (u32)((r >> 40) & 1) << 31 | e << 23 | m;
 }
 static u64 edge64(void) {
@@ -132,6 +133,7 @@ static u64 edge64(void) {
     u64 r = next_random(), r2 = next_random();
     u64 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
     u64 m = (r >> 8) & 7 ? r2 & 0xFFFFFFFFFFFFFull : (r2 & 7) << 49;
+    if (r2 % 6 == 0) return ((r >> 40) & 1) << 63;
     return ((r >> 40) & 1) << 63 | e << 52 | m;
 }
 static u64 fp_value(void) {
@@ -149,6 +151,32 @@ static void random_state(CPU* c, unsigned char* memory, const Word* w) {
         c->x[i] = addresses ? 0x1000 + (next_random() % 0x7000 & ~(u64)15) : special64();
         c->v[i].d[0] = fp_value();
         c->v[i].d[1] = fp_value();
+    }
+    {
+        /* the instruction's own FP operands (Rn, Rm, Ra) now and then: Rm or Ra a copy of Rn or its negation lane
+           by lane, for sums that cancel exactly; a register of zeros of random signs, so every lane's product has a
+           zero operand; and a vector whose lanes need different checks: 1*1 is exact, and 0x3F800001 * 0x01800001
+           is inexact with an FMA residual that underflows to zero */
+        static const u64 negations[] = {0, 0x8000000080000000ull, 0x8000000000000000ull};
+        unsigned rn = (w->word >> 5) & 31, rm = (w->word >> 16) & 31, ra = (w->word >> 10) & 31;
+        u64 r = next_random(), negate = negations[(r >> 8) % 3];
+        if (r % 4 == 0) {
+            c->v[rm].d[0] = c->v[rn].d[0] ^ negate;
+            c->v[rm].d[1] = c->v[rn].d[1] ^ negate;
+        }
+        if ((r >> 16) % 8 == 0) {
+            c->v[ra].d[0] = c->v[rn].d[0] ^ negate;
+            c->v[ra].d[1] = c->v[rn].d[1] ^ negate;
+        }
+        if ((r >> 24) % 12 == 0) {
+            V128* zero = &c->v[(r >> 32) % 2 ? rm : rn];
+            zero->d[0] = next_random() & 0x8000000080000000ull;
+            zero->d[1] = next_random() & 0x8000000080000000ull;
+        }
+        if ((r >> 40) % 24 == 0) {
+            c->v[rn].d[0] = c->v[rn].d[1] = 0x3F8000013F800000ull;
+            c->v[rm].d[0] = c->v[rm].d[1] = 0x018000013F800000ull;
+        }
     }
     c->n = next_random() & 1;
     c->z = next_random() & 1;

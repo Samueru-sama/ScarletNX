@@ -53,10 +53,14 @@ static V any(SnxIr* ir, const Shape* s, V c) {
 static V exponent(SnxIr* ir, const Shape* s, V bits) {
     return LLVMBuildAnd(B, LLVMBuildLShr(B, bits, kint(ir, s, s->mantissa), ""), kint(ir, s, s->emax), "");
 }
-/* lo <= exponent <= hi, every lane */
+/* lo <= exponent <= hi in each lane (i1, or a vector of them) */
+static V lane_exponent_in(SnxIr* ir, const Shape* s, V bits, unsigned lo, unsigned hi) {
+    return LLVMBuildICmp(B, LLVMIntULE, LLVMBuildSub(B, exponent(ir, s, bits), kint(ir, s, lo), ""),
+                         kint(ir, s, hi - lo), "");
+}
+/* every lane */
 static V exponent_in(SnxIr* ir, const Shape* s, V bits, unsigned lo, unsigned hi) {
-    V e = exponent(ir, s, bits);
-    return all(ir, s, LLVMBuildICmp(B, LLVMIntULE, LLVMBuildSub(B, e, kint(ir, s, lo), ""), kint(ir, s, hi - lo), ""));
+    return all(ir, s, lane_exponent_in(ir, s, bits, lo, hi));
 }
 static V rounds_to_nearest(SnxIr* ir) {
     V fpcr = ir_cpu_load(ir, ir->t_i32, ir_off_fpcr());
@@ -79,17 +83,34 @@ static V nonzero(SnxIr* ir, const Shape* s, V f) {
     return any(ir, s, LLVMBuildFCmp(B, LLVMRealUNE, f, kfloat(ir, s, 0.0), ""));
 }
 
+/* +0 or -0 in each lane */
+static V lane_zero(SnxIr* ir, const Shape* s, V bits) {
+    SnxU64 magnitude = ((SnxU64)s->emax << s->mantissa) | (((SnxU64)1 << s->mantissa) - 1);
+    return LLVMBuildICmp(B, LLVMIntEQ, LLVMBuildAnd(B, bits, kint(ir, s, magnitude), ""), kint(ir, s, 0), "");
+}
+static V lane_or(SnxIr* ir, V x, V y) { return LLVMBuildOr(B, x, y, ""); }
+static V lane_and(SnxIr* ir, V x, V y) { return LLVMBuildAnd(B, x, y, ""); }
+
 void ir_fp_fast(SnxIr* ir, unsigned op, unsigned width, unsigned lanes, V a, V b, V add, SnxFpFast* out) {
     Shape s;
-    V fa, fb, r, ok, exact_ok, args[3], ixc;
+    V fa, fb, r, lane_in, zero_ok, exact_ok, args[3], ixc, za, zb = NULL, result;
     unsigned p, top;
     shape(ir, width, lanes, &s);
     p = s.precision;
     top = s.emax - 1;
     fa = LLVMBuildBitCast(B, a, s.ft, "");
     fb = b ? LLVMBuildBitCast(B, b, s.ft, "") : NULL;
-    ok = LLVMBuildAnd(B, rounds_to_nearest(ir), exponent_in(ir, &s, a, 1, top), "");
-    if (b) ok = LLVMBuildAnd(B, ok, exponent_in(ir, &s, b, 1, top), "");
+    /* operands normal or zero: zeros follow IEEE's rules on the host, which are the architecture's (FPAdd, FPMul,
+       FPMulAdd, FPDiv and FPSqrt give the same zero and sign in round to nearest, and raise nothing for them) */
+    za = lane_zero(ir, &s, a);
+    lane_in = lane_or(ir, lane_exponent_in(ir, &s, a, 1, top), za);
+    if (b) {
+        zb = lane_zero(ir, &s, b);
+        lane_in = lane_and(ir, lane_in, lane_or(ir, lane_exponent_in(ir, &s, b, 1, top), zb));
+    }
+    /* a zero result is exact when it comes from a zero operand. Nonzero operands whose result rounds to zero
+       underflowed (UFC, IXC), except for a sum: two floats that cancel do so exactly */
+    zero_ok = splat(&s, LLVMConstInt(ir->t_i1, 1, 0));
     ixc = ixc_set(ir);
     exact_ok = ixc;
     out->inexact = LLVMConstInt(ir->t_i1, 0, 0);
@@ -107,51 +128,72 @@ void ir_fp_fast(SnxIr* ir, unsigned op, unsigned width, unsigned lanes, V a, V b
             break;
         }
         case SNX_IR_FP_MUL:
+            zero_ok = lane_or(ir, za, zb);
             r = LLVMBuildFMul(B, fa, fb, "");
-            if (host_fma(ir)) { /* a*b - r, exact while the result is at least 2^(emin+p) */
+            if (host_fma(ir)) { /* a*b - r, exact while the result is at least 2^(emin+p) or a zero operand's */
                 args[0] = fa, args[1] = fb, args[2] = LLVMBuildFNeg(B, r, "");
                 out->inexact = nonzero(ir, &s, fp_intrinsic(ir, "llvm.fma", &s, args, 3));
-                exact_ok =
-                    LLVMBuildOr(B, ixc, exponent_in(ir, &s, LLVMBuildBitCast(B, r, s.it, ""), p + 2, top - 1), "");
+                exact_ok = LLVMBuildOr(
+                    B, ixc,
+                    all(ir, &s,
+                        lane_or(ir, lane_exponent_in(ir, &s, LLVMBuildBitCast(B, r, s.it, ""), p + 2, top - 1),
+                                zero_ok)),
+                    "");
             }
             break;
         case SNX_IR_FP_DIV:
+            lane_in = lane_and(ir, lane_in, LLVMBuildNot(B, zb, "")); /* by zero: DZC, or IOC for 0/0 */
+            zero_ok = za;
             r = LLVMBuildFDiv(B, fa, fb, "");
-            if (host_fma(ir)) { /* a - r*b, exact under the same bounds on a and r */
+            if (host_fma(ir)) { /* a - r*b, exact under the same bounds on a and r, or for a zero dividend */
                 args[0] = LLVMBuildFNeg(B, r, ""), args[1] = fb, args[2] = fa;
                 out->inexact = nonzero(ir, &s, fp_intrinsic(ir, "llvm.fma", &s, args, 3));
-                exact_ok =
-                    LLVMBuildOr(B, ixc,
-                                LLVMBuildAnd(B, exponent_in(ir, &s, LLVMBuildBitCast(B, r, s.it, ""), p + 2, top - 1),
-                                             exponent_in(ir, &s, a, p + 2, top - 1), ""),
-                                "");
+                exact_ok = LLVMBuildOr(
+                    B, ixc,
+                    all(ir, &s,
+                        lane_or(ir,
+                                lane_and(ir, lane_exponent_in(ir, &s, LLVMBuildBitCast(B, r, s.it, ""), p + 2, top - 1),
+                                         lane_exponent_in(ir, &s, a, p + 2, top - 1)),
+                                za)),
+                    "");
             }
             break;
         case SNX_IR_FP_SQRT: {
-            V positive = all(ir, &s, LLVMBuildICmp(B, LLVMIntSGE, a, kint(ir, &s, 0), ""));
-            ok = LLVMBuildAnd(B, ok, positive, "");
+            /* sqrt(-0) is -0 without a flag; other negative operands are invalid */
+            lane_in = lane_and(ir, lane_in, lane_or(ir, LLVMBuildICmp(B, LLVMIntSGE, a, kint(ir, &s, 0), ""), za));
+            zero_ok = za;
             r = fp_intrinsic(ir, "llvm.sqrt", &s, &fa, 1);
             if (host_fma(ir)) { /* a - r*r */
                 args[0] = LLVMBuildFNeg(B, r, ""), args[1] = r, args[2] = fa;
                 out->inexact = nonzero(ir, &s, fp_intrinsic(ir, "llvm.fma", &s, args, 3));
-                exact_ok = LLVMBuildOr(B, ixc, exponent_in(ir, &s, a, p + 2, top - 1), "");
+                exact_ok =
+                    LLVMBuildOr(B, ixc, all(ir, &s, lane_or(ir, lane_exponent_in(ir, &s, a, p + 2, top - 1), za)), "");
             }
             break;
         }
-        default: /* FMA: add + a*b, fused; whether it is exact isn't cheap to know, so only once IXC is set */
+        default: { /* FMA: add + a*b, fused; whether it is exact isn't cheap to know, so only once IXC is set, or when
+                      every product is a zero operand's (the result is then add, or a zero by IEEE's sign rules) */
+            V zp = lane_or(ir, za, zb);
             args[0] = fa, args[1] = fb, args[2] = LLVMBuildBitCast(B, add, s.ft, "");
-            ok = LLVMBuildAnd(B, ok, exponent_in(ir, &s, add, 1, top), "");
+            lane_in = lane_and(ir, lane_in, lane_or(ir, lane_exponent_in(ir, &s, add, 1, top), lane_zero(ir, &s, add)));
+            zero_ok = zp;
             r = host_fma(ir) ? fp_intrinsic(ir, "llvm.fma", &s, args, 3) : NULL;
-            if (!r) { /* no hardware FMA: never fast */
+            if (r)
+                exact_ok = LLVMBuildOr(B, ixc, all(ir, &s, zp), "");
+            else { /* no hardware FMA: never fast */
                 r = LLVMBuildFAdd(B, args[2], LLVMBuildFMul(B, fa, fb, ""), "");
                 exact_ok = LLVMConstInt(ir->t_i1, 0, 0);
             }
             break;
+        }
     }
     out->value = LLVMBuildBitCast(B, r, s.it, "");
-    /* no zero, denormal or smallest-binade result (tininess is detected before rounding), no overflow */
-    ok = LLVMBuildAnd(B, ok, exponent_in(ir, &s, out->value, 2, top), "");
-    out->ok = LLVMBuildAnd(B, ok, exact_ok, "");
+    /* no denormal or smallest-binade result (tininess is detected before rounding), no overflow, and a zero only
+       where zero_ok says it is exact */
+    result =
+        lane_or(ir, lane_exponent_in(ir, &s, out->value, 2, top), lane_and(ir, lane_zero(ir, &s, out->value), zero_ok));
+    out->ok = LLVMBuildAnd(B, LLVMBuildAnd(B, rounds_to_nearest(ir), all(ir, &s, lane_and(ir, lane_in, result)), ""),
+                           exact_ok, "");
 }
 
 LLVMBasicBlockRef ir_fp_branch(SnxIr* ir, V ok, LLVMBasicBlockRef* slow) {

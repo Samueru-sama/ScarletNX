@@ -78,21 +78,30 @@ static V fma3f(SnxJit* j, const Shape* s, V a, V b, V c) {
 /* f != 0, true for NaN as LLVM's une */
 static V nonzero(SnxJit* j, const Shape* s, V f) { return NE(f, kfloat(j, s, 0.0)); }
 
+/* +0 or -0 */
+static V is_zero(SnxJit* j, const Shape* s, V bits) {
+    SnxU64 magnitude = ((SnxU64)s->emax << s->mantissa) | (((SnxU64)1 << s->mantissa) - 1);
+    return EQ(AND(jit_cast(j, bits, s->it), kint(j, s, magnitude)), kint(j, s, 0));
+}
+
 void jit_fp_fast(SnxJit* j, unsigned op, unsigned width, unsigned lanes, V const* a, V const* b, V const* add,
                  SnxJitFpFast* out) {
     Shape s;
-    V ok, exact_ok, ixc, inexact = NULL;
+    V ok, exact_ok, all_exact, ixc, inexact = NULL;
     unsigned p, top, i;
     shape(j, width, &s);
     p = s.precision;
     top = s.emax - 1;
     ixc = jit_val(j, ixc_set(j));
     ok = rounds_to_nearest(j);
-    exact_ok = op == SNX_JIT_FP_ADD || op == SNX_JIT_FP_SUB ? jit_true(j) : ixc;
+    all_exact = jit_true(j); /* every lane's IXC is known exactly: ir_fp_fast's all() of its lane conditions */
     for (i = 0; i < lanes; ++i) {
         V fa = to_float(j, &s, a[i]), fb = b ? to_float(j, &s, b[i]) : NULL, r = NULL, lane_inexact = NULL, lane_ok;
-        ok = jit_land(j, ok, exponent_in(j, &s, a[i], 1, top));
-        if (b) ok = jit_land(j, ok, exponent_in(j, &s, b[i], 1, top));
+        V za = jit_val(j, is_zero(j, &s, a[i])), zb = b ? jit_val(j, is_zero(j, &s, b[i])) : NULL;
+        V zero_ok = jit_true(j), lane_exact = jit_true(j);
+        /* operands normal or zero, a zero result only where it is exact (ir_fp_fast says why) */
+        ok = jit_land(j, ok, jit_lor(j, exponent_in(j, &s, a[i], 1, top), za));
+        if (b) ok = jit_land(j, ok, jit_lor(j, exponent_in(j, &s, b[i], 1, top), zb));
         switch (op) {
             case SNX_JIT_FP_ADD:
             case SNX_JIT_FP_SUB: { /* TwoSum: the rounding error of a sum is a float, and exactly da+db */
@@ -105,47 +114,63 @@ void jit_fp_fast(SnxJit* j, unsigned op, unsigned width, unsigned lanes, V const
                 break;
             }
             case SNX_JIT_FP_MUL:
+                zero_ok = jit_lor(j, za, zb);
                 r = jit_val(j, MUL(fa, fb));
-                if (j->fma) { /* a*b - r, exact while the result is at least 2^(emin+p) */
+                if (j->fma) { /* a*b - r, exact while the result is at least 2^(emin+p) or a zero operand's */
                     lane_inexact = nonzero(j, &s, fma3f(j, &s, fa, fb, NEG(r)));
-                    exact_ok = jit_lor(j, exact_ok, exponent_in(j, &s, to_bits(j, &s, r), p + 2, top - 1));
+                    lane_exact = jit_lor(j, exponent_in(j, &s, to_bits(j, &s, r), p + 2, top - 1), zero_ok);
                 }
                 break;
             case SNX_JIT_FP_DIV:
+                ok = jit_land(j, ok, jit_lnot(j, zb)); /* by zero: DZC, or IOC for 0/0 */
+                zero_ok = za;
                 r = jit_val(j, DIV(fa, fb));
-                if (j->fma) { /* a - r*b, exact under the same bounds on a and r */
+                if (j->fma) { /* a - r*b, exact under the same bounds on a and r, or for a zero dividend */
                     lane_inexact = nonzero(j, &s, fma3f(j, &s, NEG(r), fb, fa));
-                    exact_ok = jit_lor(j, exact_ok,
-                                       jit_land(j, exponent_in(j, &s, to_bits(j, &s, r), p + 2, top - 1),
-                                                exponent_in(j, &s, a[i], p + 2, top - 1)));
+                    lane_exact = jit_lor(j,
+                                         jit_land(j, exponent_in(j, &s, to_bits(j, &s, r), p + 2, top - 1),
+                                                  exponent_in(j, &s, a[i], p + 2, top - 1)),
+                                         za);
                 }
                 break;
-            case SNX_JIT_FP_SQRT:
-                ok = jit_land(j, ok, GE(jit_cast(j, a[i], jit_sint(j, width)), jit_k(j, jit_sint(j, width), 0)));
+            case SNX_JIT_FP_SQRT: /* sqrt(-0) is -0 without a flag; other negative operands are invalid */
+                ok = jit_land(
+                    j, ok, jit_lor(j, GE(jit_cast(j, a[i], jit_sint(j, width)), jit_k(j, jit_sint(j, width), 0)), za));
+                zero_ok = za;
                 r = math(j, &s, "__builtin_sqrt", 1, &fa);
                 if (j->fma) { /* a - r*r */
                     lane_inexact = nonzero(j, &s, fma3f(j, &s, NEG(r), r, fa));
-                    exact_ok = jit_lor(j, exact_ok, exponent_in(j, &s, a[i], p + 2, top - 1));
+                    lane_exact = jit_lor(j, exponent_in(j, &s, a[i], p + 2, top - 1), za);
                 }
                 break;
-            default: { /* FMA: add + a*b, fused; whether it is exact isn't cheap to know, so only once IXC is set */
+            default: { /* FMA: add + a*b, fused; exact when the product is a zero operand's, otherwise only fast once
+                          IXC is set */
                 V fadd = to_float(j, &s, add[i]);
-                ok = jit_land(j, ok, exponent_in(j, &s, add[i], 1, top));
+                ok = jit_land(j, ok, jit_lor(j, exponent_in(j, &s, add[i], 1, top), is_zero(j, &s, add[i])));
+                zero_ok = jit_lor(j, za, zb);
+                lane_exact = zero_ok;
                 if (j->fma)
                     r = fma3f(j, &s, fa, fb, fadd);
-                else { /* no hardware FMA: never fast */
+                else /* no hardware FMA: never fast */
                     r = jit_val(j, ADD(fadd, MUL(fa, fb)));
-                    exact_ok = jit_false(j);
-                }
                 break;
             }
         }
+        all_exact = jit_land(j, all_exact, lane_exact);
         out->value[i] = jit_val(j, to_bits(j, &s, r));
-        /* no zero, denormal or smallest-binade result (tininess is detected before rounding), no overflow */
-        lane_ok = exponent_in(j, &s, out->value[i], 2, top);
+        /* no denormal or smallest-binade result (tininess is detected before rounding), no overflow, and a zero only
+           where zero_ok says it is exact */
+        lane_ok =
+            jit_lor(j, exponent_in(j, &s, out->value[i], 2, top), jit_land(j, is_zero(j, &s, out->value[i]), zero_ok));
         ok = jit_land(j, ok, lane_ok);
         if (lane_inexact) inexact = inexact ? jit_lor(j, inexact, lane_inexact) : lane_inexact;
     }
+    if (op == SNX_JIT_FP_ADD || op == SNX_JIT_FP_SUB)
+        exact_ok = jit_true(j);
+    else if (op == SNX_JIT_FP_FMA && !j->fma)
+        exact_ok = jit_false(j);
+    else
+        exact_ok = j->fma ? jit_lor(j, ixc, all_exact) : ixc;
     out->ok = jit_val(j, jit_land(j, ok, exact_ok));
     out->inexact = inexact ? jit_val(j, inexact) : NULL;
 }

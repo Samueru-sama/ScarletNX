@@ -126,10 +126,14 @@ int snx_ir_more_simd(SnxIr* ir, SnxU32 word);
 
 /* ---- floating point fast paths (ir_fp.c) ----
    The host's IEEE arithmetic gives the soft-float helpers' exact result and flags when the rounding mode is
-   to-nearest, the operands are normal and the result is well inside the normal range: no denormal, overflow,
-   underflow or NaN can occur, FZ/DN/AHP don't apply, and the only flag is IXC. IXC is computed exactly (TwoSum for
-   add/sub, an FMA residual for mul/div/sqrt where the host has FMA), or not needed: it is sticky, and once set an
-   inexact result changes nothing. Everything else takes the helper call. */
+   to-nearest, the operands are normal or zero and the result is well inside the normal range or an exact zero: no
+   denormal, overflow, underflow or NaN can occur, FZ/DN/AHP don't apply, and the only flag is IXC. A zero result is
+   exact when a product's operand or a dividend is zero, or for any sum (floats only cancel exactly); nonzero
+   operands that round to zero underflowed and take the helper. Zeros keep IEEE's signs, which are the
+   architecture's in round to nearest. IXC is computed exactly (TwoSum for add/sub, an FMA residual for mul/div/sqrt
+   where the host has FMA), or not needed: it is sticky, and once set an inexact result changes nothing. Everything
+   else takes the helper call. All of this assumes the host thread never flushes denormals (x86 MXCSR.FTZ/DAZ, or
+   FPCR.FZ on an AArch64 host): a sum of normals that is a denormal would read as an exact zero */
 enum { SNX_IR_FP_ADD, SNX_IR_FP_SUB, SNX_IR_FP_MUL, SNX_IR_FP_DIV, SNX_IR_FP_SQRT, SNX_IR_FP_FMA };
 typedef struct {
     LLVMValueRef value;   /* result bits: iN, or <lanes x iN> */
