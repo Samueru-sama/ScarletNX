@@ -31,16 +31,18 @@ int nvn_command_gap_methods(const u32* words, u32 length, NvnGapMethodVisitor vi
     return 1;
 }
 
+static int method_no_write(u32 subchannel, u32 method, u32 value) {
+    return !subchannel && (method == 0x2 || (method >= 0x4 && method <= 0x6) ||
+                           (method == 0x7 && ((value & 0x1f) == 1 || (value & 0x1f) == 4)) ||
+                           (method >= 0x8e0 && method <= 0x8e3) ||
+                           (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0) ||
+                           method == 0x701 || method == 0x702 || method == 0x7c0 || method == 0x7c1 ||
+                           (method >= 0x6c0 && method <= 0x6c2) ||
+                           (method == 0x6c3 && (value & 3) == 1));
+}
+
 static void check_no_write(u32 subchannel, u32 method, u32 value, void* context) {
-    int* valid = context;
-    if (subchannel || !(method == 0x2 || (method >= 0x4 && method <= 0x6) ||
-                        (method == 0x7 && ((value & 0x1f) == 1 || (value & 0x1f) == 4)) ||
-                        (method >= 0x8e0 && method <= 0x8e3) ||
-                        (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0) ||
-                        method == 0x701 || method == 0x702 || method == 0x7c0 || method == 0x7c1 ||
-                        (method >= 0x6c0 && method <= 0x6c2) ||
-                        (method == 0x6c3 && (value & 3) == 1)))
-        *valid = 0;
+    if (!method_no_write(subchannel, method, value)) *(int*)context = 0;
 }
 
 int nvn_command_gap_no_writes(const u32* words, u32 length) {
@@ -182,6 +184,27 @@ int nvn_command_gap_modeled_indexed_draw(const u32* words, u32 count) {
        earlier packet must be provably read-only; a decoded write in the prefix
        still needs its own ordered scope and cannot be hidden by the draw. */
     return count == 6 || nvn_command_gap_no_writes(words, count - 6);
+}
+
+static void check_staged_write(u32 subchannel, u32 method, u32 value, void* context) {
+    if (method_no_write(subchannel, method, value)) return;
+    if (!subchannel && ((method == 0x7 && (value & 0x1f) == 2) ||
+                        (method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2)) ||
+                        (method >= 0x8e4 && method <= 0x8f3))) return;
+    *(int*)context = 0;
+}
+
+int nvn_command_gap_staged_writes(const u32* words, u32 count, int indexed_draw_staged) {
+    if (!words || !count || count > 16384) return 0;
+    u32 prefix = count;
+    if (indexed_draw_staged) {
+        NvnGapIndexedDraw draw;
+        if (!nvn_command_gap_indexed_draw(words, count, &draw)) return 0;
+        prefix -= 6;
+    }
+    if (!prefix) return 1;
+    int valid = 1;
+    return nvn_command_gap_methods(words, prefix, check_staged_write, &valid) && valid;
 }
 
 typedef struct {

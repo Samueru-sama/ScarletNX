@@ -44,6 +44,11 @@ int nvn_command_gap_indexed_draw(const u32* words, u32 count, NvnGapIndexedDraw*
    The caller must stage that draw separately before treating the gap as modeled. */
 int nvn_command_gap_modeled_indexed_draw(const u32* words, u32 count);
 
+/* True when all effects are read-only state, bounded memory writes, and optionally
+   one recognized final indexed draw. The caller must successfully extract and
+   stage the memory writes, and stage the draw when indexed_draw_staged is set. */
+int nvn_command_gap_staged_writes(const u32* words, u32 count, int indexed_draw_staged);
+
 /* Locate one syntactically complete MME call followed immediately by a three-word constant-buffer upload.
    The caller must separately prove what the uploaded macro does to the constant-buffer offset. */
 int nvn_command_gap_macro_data3(const u32* words, u32 count, u32 macro_method, NvnGapMacroData3* out);

@@ -71,6 +71,15 @@ int main(void) {
     assert(!nvn_command_gap_modeled_indexed_draw(upload_before_draw, 11));
     assert(!nvn_command_gap_modeled_indexed_draw(other_subchannel_before_draw, 8));
     assert(!nvn_command_gap_modeled_indexed_draw(packet, 11));
+    assert(nvn_command_gap_staged_writes(packet, 12, 1));
+    assert(!nvn_command_gap_staged_writes(packet, 12, 0));
+    assert(nvn_command_gap_staged_writes(upload_packet, 5, 0));
+    assert(nvn_command_gap_staged_writes(report_packet, 5, 0));
+    assert(nvn_command_gap_staged_writes(puller_release, 5, 0));
+    assert(nvn_command_gap_staged_writes(upload_before_draw, 11, 1));
+    assert(!nvn_command_gap_staged_writes(other_subchannel_before_draw, 8, 1));
+    assert(!nvn_command_gap_staged_writes(other_subchannel, 2, 0));
+    assert(!nvn_command_gap_staged_writes(packet, 11, 1));
     assert(!nvn_command_gap_no_writes(clear_packet, 2));
     assert(!nvn_command_gap_no_writes(upload_packet, 5)); /* CBUF data method writes guest memory. */
     assert(!nvn_command_gap_no_writes(report_packet, 5)); /* Query release writes guest memory. */
