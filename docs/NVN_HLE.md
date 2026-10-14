@@ -1596,6 +1596,34 @@ changed its pool bytes, even when no new NVN attachment lookup occurred. The
 TotK cube chain remained sampleable without pending or guest-wait traces in a
 40-second headless run with this coherence check enabled.
 
+Cross-batch backing checks also track each physical guest page when a texture
+pool image has no single contiguous host pointer. A mapped-page change or a
+CPU/GPU write still retires coverage. Once an older shadow has lost all
+coverage, semantic sampling lets the guest texture loader resolve the current
+source; a write in the current batch remains pending until replay can safely
+use it.
+
+`SNX_NVN_SHADOW_FULL_PROBE=1` tests an otherwise uncovered, unblended
+`RG16F`, `RGBA16F`, or `R11G11B10F` color draw up to 512×512 pixels. It clears only the
+shadow color attachment to a distinct per-component sentinel, reads it back
+after the draw, and certifies coverage only if every component at every pixel
+changed. Feedback, writable shader storage, and partial color masks are
+excluded. The probe can include a depth attachment because it does not change
+depth; the existing depth-coverage gate still applies to depth-tested draws.
+It synchronizes the GPU once per candidate and remains opt-in until its cost
+is measured. In TotK, this certifies the previously uncovered 256×256
+`RGBA16F` source and the 160×90 mip of a two-level `R11G11B10F` image. The
+source compared pixel-exact with Maxwell (0/65,536 differing pixels), and the
+formerly blocked 1280×720 draw issued. A later covered 1280×720 `RGBA8`
+target also compared pixel-exact (0/921,600 differing pixels). These are
+intermediate targets, not presented-frame parity.
+
+The direct color-attachment path also accepts `RG16F`, which TotK uses later
+in its postprocess chain. Its first observed 160×90 draw still waits on a
+160×90 `D32` input with missing shadow coverage; subsequent `RG16F` draws
+depend on that first result. The format support alone does not certify those
+draws or their sampled output.
+
 For later target comparisons, `SNX_NVN_SHADOW_COMPARE_COVERED=1` excludes
 images whose first layer has already lost shadow coverage. This avoids treating
 identical zero readbacks from an uncovered image as a pixel-parity result.
