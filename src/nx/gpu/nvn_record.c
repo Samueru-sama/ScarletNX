@@ -213,6 +213,11 @@ typedef struct {
     u64 stream_written;
     u16 instanced_written;
 } NvnRawVertexState;
+typedef struct {
+    u64 address[2][18];
+    u32 size[2][18];
+    u32 known[2];
+} NvnRawCbufState;
 /* Submission order, rather than control-record order, defines execution. A record may be
    submitted repeatedly or after an earlier record in the same list. Keep a bounded copy of
    each control-owned entry while the guest backing is still valid. */
@@ -224,7 +229,10 @@ typedef struct NvnControlPacket {
     u8 index_snapshot_valid;
     u32 depth_registers[8];
     u8 depth_known;
+    u32 shader_code_base[2];
+    u8 shader_code_base_known;
     NvnRawVertexState vertex;
+    NvnRawCbufState cbuf;
     u32 words[];
 } NvnControlPacket;
 typedef struct {
@@ -510,7 +518,12 @@ typedef struct {
     u8 clip_enable, clip_known;
     u32 depth_registers[8]; /* address hi/lo, width, height, format, enabled, test, write */
     u8 depth_known;
+    u32 shader_code_base[2];
+    u8 shader_code_base_known;
     NvnRawVertexState vertex;
+    NvnRawCbufState cbuf;
+    u32 cbuf_setup[3];
+    u8 cbuf_setup_known;
     u8 active, known;
 } NvnOriginStream;
 static NvnOriginStream origin_streams[128];
@@ -547,6 +560,9 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
     if (method == 0) {
         if (sub == 0 && stream->classes[sub] && stream->classes[sub] != (value & 0xffff)) {
             stream->depth_known = 0;
+            stream->shader_code_base_known = 0;
+            stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
+            stream->cbuf_setup_known = 0;
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
@@ -554,6 +570,34 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
         stream->classes[sub] = value & 0xffff;
     }
     if (sub == 0 && (stream->classes[sub] == 0xb197 || !stream->classes[sub])) {
+        if (method == 0x582 || method == 0x583) {
+            u32 index = method - 0x582;
+            stream->shader_code_base[index] = value;
+            stream->shader_code_base_known |= (u8)(1u << index);
+        }
+        if (method >= 0x8e0 && method <= 0x8e2) {
+            u32 index = method - 0x8e0;
+            stream->cbuf_setup[index] = value;
+            stream->cbuf_setup_known |= (u8)(1u << index);
+        } else if (method == 0x904 || method == 0x924) {
+            u32 stage = method == 0x924;
+            u32 bank = (value >> 4) & 31;
+            if (bank < 18) {
+                u32 bit = 1u << bank;
+                stream->cbuf.known[stage] &= ~bit;
+                if (!(value & 1)) {
+                    stream->cbuf.address[stage][bank] = 0;
+                    stream->cbuf.size[stage][bank] = 0;
+                    stream->cbuf.known[stage] |= bit;
+                } else if (stream->cbuf_setup_known == 7 && stream->cbuf_setup[0] &&
+                           stream->cbuf_setup[0] <= 65536 && stream->cbuf_setup[1] < 256) {
+                    stream->cbuf.address[stage][bank] =
+                        ((u64)stream->cbuf_setup[1] << 32) | stream->cbuf_setup[2];
+                    stream->cbuf.size[stage][bank] = stream->cbuf_setup[0];
+                    stream->cbuf.known[stage] |= bit;
+                }
+            }
+        }
         static const u16 depth_methods[8] = {0x3f8, 0x3f9, 0x48a, 0x48b,
                                               0x3fa, 0x54e, 0x4b3, 0x4ba};
         for (u32 i = 0; i < 8; i++)
@@ -628,6 +672,9 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
             stream->known = 0;
             stream->clip_known = 0;
             stream->depth_known = 0;
+            stream->shader_code_base_known = 0;
+            stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
+            stream->cbuf_setup_known = 0;
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
@@ -689,9 +736,12 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
                                  .control_offset = offset,
                                  .record_value = record_value, .word_count = words,
                                  .macro12_count = macro12_count, .macro38_count = macro38_count,
-                                 .depth_known = stream->depth_known};
+                                 .depth_known = stream->depth_known,
+                                 .shader_code_base_known = stream->shader_code_base_known};
     memcpy(packet->depth_registers, stream->depth_registers, sizeof packet->depth_registers);
+    memcpy(packet->shader_code_base, stream->shader_code_base, sizeof packet->shader_code_base);
     if (macro38_count) packet->vertex = stream->vertex;
+    if (macro38_count) packet->cbuf = stream->cbuf;
     memcpy(packet->words, data, (size_t)words * sizeof(u32));
     if (index_bytes) {
         packet->index_snapshot_valid = copy_gpu_pages(draw.index_address,
@@ -774,9 +824,12 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             stream->known = 0;
             stream->clip_known = 0;
             stream->depth_known = 0;
+            stream->shader_code_base_known = 0;
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
+            stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
+            stream->cbuf_setup_known = 0;
         }
         if (queue) {
             int matched_control = 0;
@@ -3292,7 +3345,13 @@ static void execute_nvn_batch(void* arg) {
         u64 previous = 0;
         u32 ordered = 0, macro12 = 0, macro38 = 0, decoded_draws = 0, depth_state_known = 0, depth_writers = 0;
         u32 decoded_program_binds = 0, draws_with_program_pair = 0;
+        u32 mapped_shader_pairs = 0;
+        u32 valid_shader_pairs = 0;
+        u32 vertex_sph = 0, fragment_sph = 0;
+        u64 first_vertex_code = 0, first_fragment_code = 0;
         u32 vertex_attr0_seen = 0, vertex_stream0_seen = 0;
+        u32 vertex_cbuf0_seen = 0, fragment_cbuf0_seen = 0;
+        u32 vertex_uniform_seen = 0, fragment_uniform_seen = 0;
         u32 index_snapshots = 0;
         u64 index_snapshot_bytes = 0;
         NvnProgramCursor cursors[16] = {0};
@@ -3354,7 +3413,43 @@ static void execute_nvn_batch(void* arg) {
                     index_snapshot_bytes += packet->index_snapshot_size;
                 }
                 draws_with_program_pair += cursor && cursor->vertex_bound && cursor->fragment_bound;
+                if (cursor && cursor->vertex_bound && cursor->fragment_bound &&
+                    packet->shader_code_base_known == 3) {
+                    u64 base = ((u64)packet->shader_code_base[0] << 32) |
+                               packet->shader_code_base[1];
+                    if (base <= UINT64_MAX - cursor->vertex_offset &&
+                        base <= UINT64_MAX - cursor->fragment_offset) {
+                        u64 vertex_code = base + cursor->vertex_offset;
+                        u64 fragment_code = base + cursor->fragment_offset;
+                        if (gmmu_translate(vertex_code) && gmmu_translate(fragment_code)) {
+                            mapped_shader_pairs++;
+                            u32 vs_header = 0, fs_header = 0;
+                            gmem_read_code(vertex_code, &vs_header, sizeof vs_header);
+                            gmem_read_code(fragment_code, &fs_header, sizeof fs_header);
+                            if ((vs_header & 31) == 1 && ((vs_header >> 10) & 15) <= 1 &&
+                                (fs_header & 31) == 2 && ((fs_header >> 10) & 15) == 5) {
+                                valid_shader_pairs++;
+                                if (!vertex_sph) {
+                                    vertex_sph = vs_header;
+                                    fragment_sph = fs_header;
+                                }
+                            }
+                            if (!first_vertex_code) {
+                                first_vertex_code = vertex_code;
+                                first_fragment_code = fragment_code;
+                            }
+                        }
+                    }
+                }
                 vertex_attr0_seen += !!(packet->vertex.attrib_written & 1);
+                vertex_cbuf0_seen += !!(packet->cbuf.known[0] & 1) &&
+                                     !!packet->cbuf.address[0][0];
+                fragment_cbuf0_seen += !!(packet->cbuf.known[1] & 1) &&
+                                       !!packet->cbuf.address[1][0];
+                vertex_uniform_seen += !!(packet->cbuf.known[0] & (1u << 3)) &&
+                                       !!packet->cbuf.address[0][3];
+                fragment_uniform_seen += !!(packet->cbuf.known[1] & (1u << 3)) &&
+                                         !!packet->cbuf.address[1][3];
                 if ((packet->vertex.stream_written & 6) == 6 &&
                     (packet->vertex.limit_written & 3) == 3) {
                     u64 start = ((u64)packet->vertex.stream[0][1] << 32) |
@@ -3396,11 +3491,14 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u attr0=%u stream0=%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u mapped-shaders=%u valid-shaders=%u first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
             batch->control_packet_count, ordered, macro12,
             (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
-            macro38, decoded_draws, draws_with_program_pair,
+            macro38, decoded_draws, draws_with_program_pair, mapped_shader_pairs,
+            valid_shader_pairs, vertex_sph, fragment_sph,
+            (unsigned long long)first_vertex_code, (unsigned long long)first_fragment_code,
             vertex_attr0_seen, vertex_stream0_seen,
+            vertex_cbuf0_seen, fragment_cbuf0_seen, vertex_uniform_seen, fragment_uniform_seen,
             index_snapshots, (unsigned long long)index_snapshot_bytes,
             (unsigned long long)decoded_indices, depth_state_known, depth_writers,
             (unsigned long long)first_depth_address, first_depth_width, first_depth_height,

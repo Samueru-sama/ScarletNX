@@ -1756,6 +1756,14 @@ in that TotK batch retained their index bytes (564,702 bytes total), so
 deferred direct replay can use the submitted geometry even if guest backing
 changes before its GPU callback. The 8 MiB per-queue and 32 MiB global packet
 budgets still apply; larger index ranges remain explicitly unsnapshotted.
+The direct register stream also tracks Maxwell's shader code base and the
+CBUF setup/bind registers for the two graphics shader stages. Paired with the
+ordered macro 12 offsets, all 65 first-cubemap depth draws resolve to mapped
+shader code; both code headers validate as VertexB and fragment programs.
+Both stages have observed CBUF0 and uniform slot 0 bindings for all 65 draws.
+These register snapshots are candidates for direct shader translation. Macro
+effects beyond the confirmed program binds and CBUF contents still need to be
+represented before executing the draws independently.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
