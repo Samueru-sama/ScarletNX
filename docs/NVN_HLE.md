@@ -1420,6 +1420,18 @@ compute write-set proof, including shader writes and storage/image bindings, bef
 retaining that counter across the dispatch. The native GPU's skipped clears are a
 regression target, not a license to skip unknown conditions globally.
 
+The opt-in dispatch trace identifies operation 886's compute program as code blob
+`0x403938c00`: its three bound storage ranges are fully captured (`0x0013` known
+and bound), it has no bound images, and the QMD shader analysis observes one writable
+global buffer at `0x622db0000` (58,848 bytes). That range is separate from the
+conditional counter near `0x5031ca960`. Replay still invalidates the counter at
+this dispatch because the CPU-side condition decision cannot yet use the GPU-thread
+shader write-set analysis. A scoped dispatch rule must transport that analysis in
+queue order and fall back to invalidation if it is unavailable or incomplete.
+The scoped counter change preserved the sampled comparisons for Catherine
+(`0/921,600`), Scarlet (`0/518,400`), and Odyssey (`0/1,440,000`); Catherine and
+Odyssey require the opt-in zero-backing probe for these exact targets.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
