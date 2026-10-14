@@ -77,16 +77,16 @@ static void analyze_compute_writes(void* ptr) {
     int bounded = 0, mapped = 0, branch = -1, unsupported = -1, images = -1, buffers = -1;
     const char* branch_name = "";
     if (header[0] == 0x12345679 && size >= 0x80 && size <= NVN_SHADER_CODE_MAX &&
-        address <= UINT64_MAX - 0x100 - NVN_SHADER_CODE_MAX) {
-        u8* code = malloc(NVN_SHADER_CODE_MAX + 80);
+        address <= UINT64_MAX - 0x100 - size) {
+        u8* code = malloc((size_t)size + 80);
         if (code) {
             memset(code, 0, 80);
-            gmem_read_code(address + 0x100, code + 80, NVN_SHADER_CODE_MAX);
+            gmem_read_code(address + 0x100, code + 80, size);
             bounded = mapped = !!gmem_ptr_untracked(address + 0x100, size);
             if (mapped) hash = compute_writes_hash(code + 80, size);
             int (*old)(u32, u32, u32*) = g_shader_cb_read;
             g_shader_cb_read = NULL;
-            shader_hash(code, NVN_SHADER_CODE_MAX + 80, &length);
+            shader_hash(code, size + 80, &length);
             bounded &= length >= 80 && length <= size + 80;
             for (u32 i = 11; bounded && i < length / 8; i++) {
                 if (!IDX_OK(i)) continue;
@@ -101,7 +101,7 @@ static void analyze_compute_writes(void* ptr) {
             if (mapped && !bounded) repeatable = 1;
             if (bounded) {
                 ShaderInfo info = {.cs_local = {1, 1, 1}};
-                char* glsl = shader_to_glsl(code, NVN_SHADER_CODE_MAX + 80, ST_CS, &info);
+                char* glsl = shader_to_glsl(code, size + 80, ST_CS, &info);
                 if (glsl) repeatable = 1;
                 unsupported = info.unsupported;
                 images = info.nimg;
