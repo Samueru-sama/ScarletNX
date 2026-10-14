@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* XCI/NSP extraction through hactool. Keys stay in a private temporary HOME. */
+/* Switch container extraction through hactool. Keys stay in a private temporary HOME. */
 #include "extract.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -25,19 +25,27 @@ typedef struct {
     char *base, *update, *out, *keys, *title_keys;
     char *hactool, *temp, *home, *base_dir, *update_dir;
     char *program, *patch, *exefs, *romfs;
-    int made_out;
+    int made_out, base_xci, update_xci, has_keys;
+    SnxU64 title_id;
     TitleKey* titles;
 } ExtractState;
 
+typedef struct ProgramNca {
+    char* path;
+    SnxU64 title_id, size;
+    int patch;
+    struct ProgramNca* next;
+} ProgramNca;
+
 static void extract_help(void) {
-    puts("Usage: scarletnx -x BASE.xci|BASE.nsp [options]\n"
+    puts("Usage: scarletnx -x BASE.xci|BASE.nsp|BASE.dxci|BASE.dnsp [options]\n"
          "  --update FILE       Apply a same-title update during extraction\n"
          "  --name NAME         Output name (default: base dump stem)\n"
          "  --out DIR           Output directory (default: REPO/work/NAME)\n"
          "  --keys FILE         prod.keys (default: REPO, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
          "  --help              Show this help\n"
-         "Uses your local dumps and keys; refuses output containing exefs.");
+         "Decrypted content needs no keys. Refuses output containing exefs.");
 }
 
 static char* text_copy(const char* text, size_t size) {
@@ -138,6 +146,43 @@ static int has_suffix(const char* text, const char* suffix) {
     for (i = 0; i < b; i++)
         if (ascii_lower(text[a - b + i]) != ascii_lower(suffix[i])) return 0;
     return 1;
+}
+
+static int container_kind(const char* path, int* xci) {
+    unsigned char header[0x104];
+    size_t size;
+    FILE* file;
+    int failed;
+    file = snx_fopen(path, "rb");
+    if (!file) return snx_error("Cannot read container header: %s", path);
+    size = fread(header, 1, sizeof header, file);
+    failed = ferror(file);
+    if (fclose(file)) failed = 1;
+    if (failed) return snx_error("Cannot read container header: %s", path);
+    if (size >= 4 && !memcmp(header, "PFS0", 4)) {
+        *xci = 0;
+        return 0;
+    }
+    if (size == sizeof header && (!memcmp(header + 0x100, "HEAD", 4) || !memcmp(header + 0x100, "DXCI", 4))) {
+        *xci = 1;
+        return 0;
+    }
+    return snx_error("Unsupported container header. Expected NSP/DNSP (PFS0) or XCI/DXCI (HEAD/DXCI)");
+}
+
+static int nca_needs_keys(const char* path) {
+    unsigned char header[0x204];
+    size_t size;
+    FILE* file;
+    int failed;
+    file = snx_fopen(path, "rb");
+    if (!file) return -1;
+    size = fread(header, 1, sizeof header, file);
+    failed = ferror(file);
+    if (fclose(file)) failed = 1;
+    if (failed) return -1;
+    return size != sizeof header || (memcmp(header + 0x200, "DNCA", 4) && memcmp(header + 0x200, "NCA3", 4) &&
+                                     memcmp(header + 0x200, "NCA2", 4));
 }
 
 static char* path_parent(const char* path) {
@@ -425,11 +470,10 @@ static int run_hactool(const ExtractState* state, const char* const* args, size_
     return 0;
 }
 
-static int unpack(const ExtractState* state, const char* container, const char* directory) {
+static int unpack(const ExtractState* state, const char* container, const char* directory, int xci) {
     const char* command[3];
     char* output_option;
-    int xci, result;
-    xci = has_suffix(container, ".xci");
+    int result;
     output_option = option_arg(xci ? "--securedir=" : "--outdir=", directory);
     if (!output_option) return snx_error("Out of memory unpacking container");
     command[0] = xci ? "-txci" : "-tpfs0";
@@ -454,16 +498,39 @@ static int program_type(const char* information) {
     return !strncmp(p, "Program", 7) && !ascii_name((unsigned char)p[7]);
 }
 
-static int program_nca(const ExtractState* state, const char* folder, char** selected) {
+static int program_title_id(const char* information, SnxU64* title_id) {
+    const char* p;
+    size_t i;
+    unsigned digit;
+    SnxU64 value;
+    p = information ? strstr(information, "Title ID:") : NULL;
+    if (!p) return 0;
+    p += strlen("Title ID:");
+    while (*p && isspace((unsigned char)*p)) p++;
+    value = 0;
+    for (i = 0; i < 16; i++) {
+        if (!ascii_hex((unsigned char)p[i])) return 0;
+        digit = p[i] <= '9' ? (unsigned)(p[i] - '0') : (unsigned)(ascii_lower(p[i]) - 'a' + 10);
+        value = (value << 4) | digit;
+    }
+    if (ascii_hex((unsigned char)p[16])) return 0;
+    *title_id = value;
+    return 1;
+}
+
+static int program_nca(const ExtractState* state, const char* folder, int update, SnxU64 expected_title,
+                       char** selected, char** embedded_patch, SnxU64* selected_title) {
     char **names, *path, *information;
     const char* args[2];
     size_t count, i;
-    SnxU64 size, best;
-    int failed;
+    SnxU64 title_id;
+    ProgramNca *programs, *item, *next, *base, *patch;
+    int failed, needs_keys;
     names = NULL;
     count = 0;
-    best = 0;
+    programs = base = patch = NULL;
     *selected = NULL;
+    if (embedded_patch) *embedded_patch = NULL;
     if (snx_list_dir(folder, &names, &count)) return snx_error("Cannot enumerate extracted NCAs");
     failed = 0;
     for (i = 0; i < count; i++) {
@@ -477,17 +544,36 @@ static int program_nca(const ExtractState* state, const char* folder, char** sel
             free(path);
             continue;
         }
+        needs_keys = nca_needs_keys(path);
+        if (needs_keys < 0)
+            failed = snx_error("Cannot read an extracted NCA header");
+        else if (needs_keys && !state->has_keys)
+            failed =
+                snx_error("Encrypted content needs prod.keys. Provide --keys or place it in the checkout/~/.switch");
+        if (failed) {
+            free(path);
+            break;
+        }
         args[0] = "-i";
         args[1] = path;
         information = NULL;
         failed = run_hactool(state, args, 2, &information);
         if (!failed && program_type(information)) {
-            size = snx_file_size(path);
-            if (!*selected || size > best) {
-                free(*selected);
-                *selected = path;
-                path = NULL;
-                best = size;
+            if (!program_title_id(information, &title_id))
+                failed = snx_error("hactool did not report a valid Program NCA title ID");
+            else {
+                item = (ProgramNca*)calloc(1, sizeof *item);
+                if (!item)
+                    failed = snx_error("Out of memory selecting Program NCA");
+                else {
+                    item->path = path;
+                    path = NULL;
+                    item->title_id = title_id;
+                    item->size = snx_file_size(item->path);
+                    item->patch = (title_id & 0x800UL) != 0 || strstr(information, "Patch RomFS") != NULL;
+                    item->next = programs;
+                    programs = item;
+                }
             }
         }
         if (information) secret_free(information, strlen(information));
@@ -495,9 +581,40 @@ static int program_nca(const ExtractState* state, const char* folder, char** sel
         if (failed) break;
     }
     snx_free_strings(names, count);
-    if (!failed && !*selected)
-        failed =
-            snx_error("Container has no Program NCA (possibly DLC). Supply a base game, and an update with --update.");
+    if (!failed) {
+        for (item = programs; item; item = item->next) {
+            if (update) {
+                if (item->patch && (item->title_id & ~(SnxU64)0x800UL) == expected_title &&
+                    (!base || item->size > base->size))
+                    base = item;
+            } else if (!item->patch && (!base || item->size > base->size))
+                base = item;
+        }
+        if (!base)
+            failed =
+                snx_error(update ? "Update has no Program NCA matching the selected base game"
+                                 : "Container has no base Program NCA (possibly an update or DLC). Supply a base game");
+        else {
+            if (embedded_patch) {
+                for (item = programs; item; item = item->next)
+                    if (item->patch && (item->title_id & ~(SnxU64)0x800UL) == base->title_id &&
+                        (!patch || item->size > patch->size))
+                        patch = item;
+                if (patch) {
+                    *embedded_patch = patch->path;
+                    patch->path = NULL;
+                }
+            }
+            *selected = base->path;
+            base->path = NULL;
+            if (selected_title) *selected_title = base->title_id;
+        }
+    }
+    for (item = programs; item; item = next) {
+        next = item->next;
+        free(item->path);
+        free(item);
+    }
     return failed;
 }
 
@@ -578,8 +695,11 @@ static int prepare_paths(ExtractState* state, const ExtractOptions* options, con
         return snx_error("Cannot resolve extraction input paths");
     if (!snx_is_file(state->base) || (state->update && !snx_is_file(state->update)))
         return snx_error("Base or update dump is missing or is not a file");
-    if (!snx_is_file(state->keys))
-        return snx_error("prod.keys not found; provide --keys or place it in the checkout/~/.switch");
+    if (container_kind(state->base, &state->base_xci) ||
+        (state->update && container_kind(state->update, &state->update_xci)))
+        return 1;
+    state->has_keys = snx_is_file(state->keys);
+    if (options->keys && !state->has_keys) return snx_error("Specified prod.keys file is missing");
     name = options->name ? text_copy(options->name, strlen(options->name)) : dump_name(state->base);
     if (!name) return snx_error("Out of memory resolving extraction output");
     if (!name[0] || !strcmp(name, ".") || !strcmp(name, "..") || strpbrk(name, "/\\:")) {
@@ -650,13 +770,24 @@ static int extract_files(ExtractState* state) {
         snx_error("Cannot create private key directory");
         goto done;
     }
-    if (clean_prod_keys(state->keys, prod_path) || unpack(state, state->base, state->base_dir)) goto done;
-    if (state->update && unpack(state, state->update, state->update_dir)) goto done;
+    if (state->has_keys) {
+        if (clean_prod_keys(state->keys, prod_path)) goto done;
+    } else if (snx_write_file(prod_path, "", 0)) {
+        snx_error("Cannot write private prod.keys");
+        goto done;
+    }
+    if (unpack(state, state->base, state->base_dir, state->base_xci)) goto done;
+    if (state->update && unpack(state, state->update, state->update_dir, state->update_xci)) goto done;
     if (read_title_keys(state->title_keys, &state->titles) || read_tickets(state->base_dir, &state->titles)) goto done;
     if (state->update_dir && read_tickets(state->update_dir, &state->titles)) goto done;
-    if (write_title_keys(title_path, state->titles) || program_nca(state, state->base_dir, &state->program)) goto done;
+    if (write_title_keys(title_path, state->titles) ||
+        program_nca(state, state->base_dir, 0, 0, &state->program, state->update_dir ? NULL : &state->patch,
+                    &state->title_id))
+        goto done;
     if (state->update_dir) {
-        if (program_nca(state, state->update_dir, &state->patch)) goto done;
+        if (program_nca(state, state->update_dir, 1, state->title_id, &state->patch, NULL, NULL)) goto done;
+    }
+    if (state->patch) {
         base_arg = option_arg("--basenca=", state->program);
         if (!base_arg) {
             snx_error("Out of memory preparing update extraction");

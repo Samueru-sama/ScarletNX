@@ -29,7 +29,7 @@ jobs:
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). libgccjit builds the
       # optional --backend=gcc too, so its tests (gccjit_differential, native_recompiler_gcc) run here
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed cmake ninja make nasm python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
+        run: pacman -Syu --noconfirm --needed cmake ninja make patch nasm python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
@@ -101,7 +101,7 @@ jobs:
       # llvm for the recompiler; quick-sharun bundles the libLLVM the runtime links, with its own dependencies
       - name: Install the build tools and the debloated Mesa
         run: |
-          pacman -Syu --noconfirm --needed cmake ninja make nasm clang llvm sdl3 libx11 mesa vulkan-icd-loader
+          pacman -Syu --noconfirm --needed cmake ninja make patch nasm clang llvm sdl3 libx11 mesa vulkan-icd-loader
           get-debloated-pkgs --add-common --prefer-nano
       - name: Build and install into /usr
         run: |
@@ -143,6 +143,8 @@ jobs:
           install: >-
             git
             make
+            patch
+            patchutils
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-llvm
             mingw-w64-clang-x86_64-lld
@@ -218,12 +220,51 @@ jobs:
           path: stage
           if-no-files-found: error
 
+  # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the
+  # checkout sits where the package looks for one, and stands in for what an installed copy lacks
+  appimage-check:
+    name: Linux AppImage, as installed
+    needs: appimage
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: AppImage-x86_64
+          path: dist
+      # Artifacts drop the executable bit
+      - name: Run the AppImage as a user would
+        run: |
+          chmod +x dist/*.AppImage
+          scripts/check-package.sh dist/*.AppImage
+
+  windows-check:
+    name: Windows zip, as installed
+    needs: windows
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Not in the workspace root: the build's checkout was there, and the package would take this one for it
+      - uses: actions/checkout@v7
+        with:
+          path: source
+      - uses: actions/download-artifact@v8
+        with:
+          name: scarletnx-windows
+          path: package
+      - name: Run the zip's scarletnx.exe as a user would
+        run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
+
   # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with Linux and Windows builds.
   # A newer push cancels a release still running, so an older commit never publishes last
   release:
     name: Nightly release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [linux, appimage, windows]
+    needs: [linux, appimage, windows, appimage-check, windows-check]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     concurrency:

@@ -10,8 +10,7 @@ enum {
     SNX_HEADLESS = 4,
     SNX_GDB = 8,
     SNX_STOP = 16,
-    SNX_FULLSCREEN = 32,
-    SNX_WINDOWED = 64
+    SNX_FULLSCREEN = 32
 };
 /* Shared by the driver and standalone game runtime. Windows accepts individual
    short options, but deliberately not POSIX-style clusters. */
@@ -26,10 +25,9 @@ static int snx_cli_flag(const char* arg, unsigned* flags) {
         bits = SNX_HEADLESS;
     else if (!strncmp(arg, "--headless=", 11))
         return -1;
-    else if (!strcmp(arg, "--fullscreen") || !strcmp(arg, "--fullscreen=1") || !strcmp(arg, "--fullscreen=0")) {
-        *flags &= ~(SNX_FULLSCREEN | SNX_WINDOWED);
-        bits = !strcmp(arg, "--fullscreen=0") ? SNX_WINDOWED : SNX_FULLSCREEN;
-    } else if (!strncmp(arg, "--fullscreen=", 13))
+    else if (!strcmp(arg, "--fullscreen"))
+        bits = SNX_FULLSCREEN;
+    else if (!strncmp(arg, "--fullscreen=", 13))
         return -1;
     else if (arg[0] == '-' && arg[1] && arg[1] != '-') {
 #ifdef _WIN32
@@ -40,6 +38,7 @@ static int snx_cli_flag(const char* arg, unsigned* flags) {
                 case 'x': bits |= SNX_EXTRACT; break;
                 case 'r': bits |= SNX_RECOMP; break;
                 case 'H': bits |= SNX_HEADLESS; break;
+                case 'f': bits |= SNX_FULLSCREEN; break;
 #ifndef _WIN32
                 case 'S': bits |= SNX_GDB; break;
                 case 's': bits |= SNX_GDB | SNX_STOP; break;

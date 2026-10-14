@@ -43,7 +43,11 @@ u32 h_new(KObj* o) {
     fatal("no free handles");
     return 0;
 }
+/* The pseudo process handle can be copied into IPC, including ldr:ro's Initialize. Its permanent reference
+   keeps it alive after clients close ordinary copies. */
+static KObj current_process = {.type = KO_PROCESS, .refs = 1, .name = "process"};
 KObj* h_get_nl(u32 h) {
+    if (h == H_CUR_PROC) return &current_process;
     if (h == H_CUR_THREAD) return (KObj*)kthread_cur();
     u32 i = h & 0x7FFF;
     if (!i || i >= MAXH || !htab[i] || hgen[i] != (h >> 15)) return NULL;

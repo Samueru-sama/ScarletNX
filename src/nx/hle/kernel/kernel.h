@@ -9,7 +9,8 @@
 #include "cpu/aarch64/cpu.h"
 #include "runtime/platform/plat.h"
 
-#define NCORES 4 /* the console's CPU cores */
+#define K_PROCESS_ID 0x51ull /* the single application process, also injected into IPC PID descriptors */
+#define NCORES       4       /* the console's CPU cores */
 
 enum {
     KO_NONE,

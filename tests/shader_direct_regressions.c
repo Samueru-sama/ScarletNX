@@ -320,6 +320,18 @@ static void nro_shader_modes(void) {
     }
 }
 
+/* a rejected instruction is logged with its word */
+static void unsupported_names_word(void) {
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate((const u64[]){0xFFFFFFFFFFFFFFFFull}, 1, ST_FS, &info, &words, 0);
+    check(!code && !strcmp(info.first_unsupported, "unknown opcode ffffffffffffffff"), "an unknown opcode is named");
+    free(code);
+    code = translate((const u64[]){0xEB10030200480502ull}, 1, ST_CS, &info, &words, 0);
+    check(!code && !strcmp(info.first_unsupported, "SULD eb10030200480502"), "a SULD form not done yet is named");
+    free(code);
+}
+
 int main(int argc, char** argv) {
     if (argc != 1 && argc != 7) return 2;
     if (argc == 7) {
@@ -329,6 +341,7 @@ int main(int argc, char** argv) {
     }
     brx_length();
     invalid_ldc_bank();
+    unsupported_names_word();
     f2i_modifiers();
     global_buffers();
     float_controls();

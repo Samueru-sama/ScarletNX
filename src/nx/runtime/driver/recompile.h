@@ -3,6 +3,7 @@
 #ifndef SNX_RECOMPILE_H
 #define SNX_RECOMPILE_H
 #include "common.h"
-unsigned snx_read_abi(const SnxPaths* paths);
+/* the ABI stamped into the games this build recompiles */
+unsigned snx_game_abi(void);
 int snx_recompile(int argc, char** argv, const SnxPaths* paths);
 #endif

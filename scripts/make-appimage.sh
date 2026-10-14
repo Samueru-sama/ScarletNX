@@ -24,7 +24,8 @@ export UPINFO="gh-releases-zsync|${REPOSITORY%/*}|${REPOSITORY#*/}|nightly|*$ARC
 # The runtime exits at once without a game module, so tracing it for dlopened libraries finds nothing: name them
 export STRACE_MODE=0 DEPLOY_SDL=1 DEPLOY_VULKAN=1
 
-quick-sharun /usr/bin/scarletnx
+# hactool too: --extract looks for it next to the runtime, and without it tries to build it from a checkout
+quick-sharun /usr/bin/scarletnx /usr/bin/hactool
 
 # The licenses travel with the AppImage: the runtime's and those of the libraries built into it (`cmake --install` put
 # them in /usr/share/licenses/scarletnx), and those of the Arch packages quick-sharun took the bundled libraries

@@ -89,7 +89,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     endif()
 endif()
 
+# FFmpeg's make does not see the build's -j
 cmake_host_system_information(RESULT snx_ffmpeg_jobs QUERY NUMBER_OF_LOGICAL_CORES)
+if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
+    set(snx_ffmpeg_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+endif()
 include(ExternalProject)
 ExternalProject_Add(ffmpeg_build
     SOURCE_DIR "${snx_ffmpeg_src}"

@@ -51,11 +51,50 @@ static char* read_text(const char* path) {
     return (char*)bytes;
 }
 
+/* Only the container signatures are real; the payload selects the synthetic hactool scenario. */
+static void write_container(const char* path, const char* kind, const char* mode) {
+    unsigned char bytes[0x240];
+    size_t size;
+    memset(bytes, 0, sizeof bytes);
+    if (!strcmp(kind, "pfs0"))
+        memcpy(bytes, "PFS0", 4);
+    else if (!strcmp(kind, "xci"))
+        memcpy(bytes + 0x100, "HEAD", 4);
+    else if (!strcmp(kind, "dxci"))
+        memcpy(bytes + 0x100, "DXCI", 4);
+    size = strlen(mode);
+    CHECK(size < sizeof bytes - 0x200);
+    memcpy(bytes + 0x200, mode, size);
+    CHECK(!snx_write_file(path, bytes, 0x200 + size));
+}
+
+static char* container_mode(const char* path, int* xci) {
+    unsigned char* bytes;
+    char* mode;
+    size_t size;
+    bytes = snx_read_file(path, &size);
+    CHECK(bytes != NULL && size >= 0x200);
+    *xci = !memcmp(bytes + 0x100, "HEAD", 4) || !memcmp(bytes + 0x100, "DXCI", 4);
+    CHECK(*xci || !memcmp(bytes, "PFS0", 4));
+    mode = snx_strdup((const char*)bytes + 0x200);
+    free(bytes);
+    return mode;
+}
+
 static void write_child(const char* dir, const char* name, const void* content, size_t size) {
     char* path;
     path = snx_path_join(dir, name);
     CHECK(!snx_write_file(path, content, size));
     free(path);
+}
+
+static void write_nca(const char* dir, const char* name, const char* type, size_t size, int encrypted) {
+    unsigned char bytes[2048];
+    CHECK(size >= 0x204 && size <= sizeof bytes);
+    memset(bytes, 0, sizeof bytes);
+    memcpy(bytes, type, strlen(type));
+    memcpy(bytes + 0x200, encrypted ? "\xfa\xfb\xfc\xfd" : "DNCA", 4);
+    write_child(dir, name, bytes, size);
 }
 
 static void child_equals(const char* dir, const char* name, const char* expected) {
@@ -123,19 +162,19 @@ static void expected_titles(const char* home, int update) {
 }
 
 static int fake_hactool(int argc, char** argv) {
-    const char *home, *profile, *dir, *exefs, *romfs, *base, *report;
+    const char *home, *profile, *dir, *exefs, *romfs, *base, *report, *no_keys;
     char *keys, *mode_path, *mode, *input;
-    unsigned char large[128], control[256], meta[512];
     FILE* file;
     unsigned i;
-    int update;
+    int update, xci, encrypted, embedded, update_path;
     CHECK(argc >= 3 && !strcmp(argv[1], "--disablekeywarns"));
     home = getenv("HOME");
     profile = getenv("USERPROFILE");
     CHECK(home && profile && !strcmp(home, profile));
     CHECK(getenv("XDG_CONFIG_HOME") == NULL);
     keys = snx_path_join(home, ".switch");
-    child_equals(keys, "prod.keys", filtered_keys);
+    no_keys = getenv("SNX_EXTRACT_TEST_NO_KEYS");
+    child_equals(keys, "prod.keys", no_keys && !strcmp(no_keys, "1") ? "" : filtered_keys);
     free(keys);
     report = getenv("SNX_EXTRACT_TEST_REPORT");
     CHECK(report != NULL);
@@ -145,11 +184,11 @@ static int fake_hactool(int argc, char** argv) {
     dir = find_arg(argc, argv, "--outdir=");
     if (!dir) dir = find_arg(argc, argv, "--securedir=");
     if (dir) {
-        input = read_text(argv[argc - 1]);
+        input = container_mode(argv[argc - 1], &xci);
         update = !strcmp(input, "update");
         if (!update) CHECK(!snx_write_file(mode_path, input, strlen(input)));
-        CHECK((!strcmp(input, "xci") && !strcmp(argv[2], "-txci")) ||
-              (strcmp(input, "xci") && !strcmp(argv[2], "-tpfs0")));
+        CHECK(!strcmp(argv[2], xci ? "-txci" : "-tpfs0"));
+        CHECK(find_arg(argc, argv, xci ? "--securedir=" : "--outdir=") != NULL);
         if (!strcmp(input, "failure")) {
             puts("key SECRET-EXTRACT-OUTPUT-MUST-NOT-ESCAPE");
             fputs("0123456789abcdef0123456789abcdef secret without a keyword\n", stderr);
@@ -158,16 +197,11 @@ static int fake_hactool(int argc, char** argv) {
             return 23;
         }
         CHECK(!snx_mkdirs(dir));
-        memset(large, ' ', sizeof large);
-        memset(control, ' ', sizeof control);
-        memset(meta, ' ', sizeof meta);
-        memcpy(large, !strcmp(input, "dlc") ? "Control" : "Program", 7);
-        memcpy(control, "Control", 7);
-        memcpy(meta, "Program", 7);
-        write_child(dir, "small.nca", !strcmp(input, "dlc") ? "Data" : "Program", !strcmp(input, "dlc") ? 4 : 7);
-        write_child(dir, "large.nca", large, sizeof large);
-        write_child(dir, "control.nca", control, sizeof control);
-        write_child(dir, "ignored.cnmt.nca", meta, sizeof meta);
+        encrypted = !strcmp(input, "encrypted-no-keys");
+        write_nca(dir, "small.nca", !strcmp(input, "dlc") ? "Data" : "Program", 0x240, encrypted);
+        write_nca(dir, "large.nca", !strcmp(input, "dlc") ? "Control" : "Program", 0x300, encrypted);
+        write_nca(dir, "control.nca", "Control", 0x400, encrypted);
+        write_nca(dir, "ignored.cnmt.nca", "Program", 0x600, encrypted);
         if (update) {
             ticket(dir, 4, 0xa1, 0xff, 0);
             ticket(dir, 4, 0xb0, 0xb1, 0);
@@ -180,9 +214,20 @@ static int fake_hactool(int argc, char** argv) {
     } else if (!strcmp(argv[2], "-i")) {
         CHECK(strstr(argv[3], ".cnmt.nca") == NULL);
         mode = read_text(mode_path);
-        expected_titles(home, !strcmp(mode, "base-update"));
+        expected_titles(home, !strcmp(mode, "base-update") || !strcmp(mode, "dnsp-update") ||
+                                  !strcmp(mode, "dxci-update") || !strcmp(mode, "embedded-update-explicit") ||
+                                  !strcmp(mode, "unmatched-update"));
         input = read_text(argv[3]);
         printf("Content Type: %s\n", !strncmp(input, "Program", 7) ? "Program" : "Control");
+        embedded = !strcmp(mode, "embedded-update") || !strcmp(mode, "embedded-update-explicit") ||
+                   !strcmp(mode, "unrelated-embedded-update");
+        update_path = strstr(argv[3], "/update/") != NULL || strstr(argv[3], "\\update\\") != NULL;
+        if (update_path || (embedded && strstr(argv[3], "large.nca")))
+            printf("Title ID: %s\n", !strcmp(mode, "unmatched-update") || !strcmp(mode, "unrelated-embedded-update")
+                                         ? "0100000000001800"
+                                         : "0100000000000800");
+        else
+            puts("Title ID: 0100000000000000");
         free(input);
         free(mode);
     } else {
@@ -190,9 +235,16 @@ static int fake_hactool(int argc, char** argv) {
         romfs = find_arg(argc, argv, "--romfsdir=");
         base = find_arg(argc, argv, "--basenca=");
         mode = read_text(mode_path);
-        CHECK(exefs && romfs && strstr(argv[argc - 1], "large.nca"));
-        update = !strcmp(mode, "base-update");
-        CHECK((update && base && strstr(base, "large.nca")) || (!update && !base));
+        CHECK(exefs && romfs &&
+              strstr(argv[argc - 1], !strcmp(mode, "unrelated-embedded-update") ? "small.nca" : "large.nca"));
+        embedded = !strcmp(mode, "embedded-update") || !strcmp(mode, "embedded-update-explicit");
+        update =
+            embedded || !strcmp(mode, "base-update") || !strcmp(mode, "dnsp-update") || !strcmp(mode, "dxci-update");
+        CHECK((update && base && strstr(base, embedded ? "small.nca" : "large.nca")) || (!update && !base));
+        if (!strcmp(mode, "embedded-update-explicit")) {
+            CHECK(strstr(base, "base") != NULL);
+            CHECK(strstr(argv[argc - 1], "update") != NULL);
+        }
         CHECK(!snx_mkdirs(exefs) && !snx_mkdirs(romfs));
         if (strcmp(mode, "no-main")) write_child(exefs, "main", "NSO0 synthetic", 14);
         write_child(romfs, "asset", update ? "updated" : "base", update ? 7 : 4);
@@ -244,7 +296,10 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
     SnxPaths paths;
     char *repo, *build, *home, *switch_dir, *prod, *titles, *base, *patch, *out, *tool, *report, *exefs, *text;
     char *arguments[16], *out_argument;
-    int count, result, expected_failure, existing, explicit_keys;
+    unsigned char *original, *after;
+    size_t original_size, after_size;
+    const char *base_name, *kind, *payload;
+    int count, result, expected_failure, existing, explicit_keys, no_keys, invalid, apply_update, merged;
     repo = snx_path_join(scratch, "repo space & ()");
     build = snx_path_join(repo, "build space");
     home = snx_path_join(scratch, "original home");
@@ -271,24 +326,59 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
         free(text);
     }
     CHECK(!snx_copy_file(self, tool) && !snx_make_executable(tool));
-    explicit_keys = !strcmp(mode, "explicit");
+    explicit_keys = !strcmp(mode, "explicit") || !strcmp(mode, "explicit-missing-keys");
+    merged = !strcmp(mode, "embedded-update") || !strcmp(mode, "embedded-update-explicit") ||
+             !strcmp(mode, "unrelated-embedded-update");
+    no_keys = strstr(mode, "keyless") != NULL || !strcmp(mode, "encrypted-no-keys") ||
+              !strcmp(mode, "explicit-missing-keys") || merged;
+    invalid = !strcmp(mode, "malformed-dxci") || !strcmp(mode, "truncated-dxci") || !strcmp(mode, "invalid-update");
+    apply_update = !strcmp(mode, "base-update") || !strcmp(mode, "dnsp-update") || !strcmp(mode, "dxci-update") ||
+                   !strcmp(mode, "embedded-update-explicit") || !strcmp(mode, "invalid-update") ||
+                   !strcmp(mode, "unmatched-update");
     prod = snx_path_join(explicit_keys || !strcmp(mode, "homekeys") ? switch_dir : repo, "prod.keys");
     titles = snx_path_join(explicit_keys || !strcmp(mode, "homekeys") ? switch_dir : repo, "title.keys");
-    CHECK(!snx_write_file(prod, prod_keys, strlen(prod_keys)));
+    if (!no_keys) CHECK(!snx_write_file(prod, prod_keys, strlen(prod_keys)));
     CHECK(!snx_write_file(titles, user_titles, strlen(user_titles)));
+    set_env("SNX_EXTRACT_TEST_NO_KEYS", no_keys ? "1" : "0");
     set_env("HOME", home);
     set_env("USERPROFILE", home);
     set_env("XDG_CONFIG_HOME", "must not reach hactool");
-    base = snx_path_join(scratch, !strcmp(mode, "xci") ? "Base Game (&).XCI" : "Base Game (&).NSP");
-    text =
-        !strcmp(mode, "explicit") || !strcmp(mode, "homekeys") || !strcmp(mode, "existing") || !strcmp(mode, "preserve")
-            ? "base"
-            : (char*)mode;
-    if (!strcmp(mode, "autobuild") || !strcmp(mode, "named-output")) text = "base";
-    if (!strcmp(mode, "preserve") || !strcmp(mode, "dot-parent")) text = "no-main";
-    CHECK(!snx_write_file(base, text, strlen(text)));
-    patch = snx_path_join(scratch, "Update file.nsp");
-    CHECK(!snx_write_file(patch, "update", 6));
+    kind = "pfs0";
+    base_name = "Base Game (&).NSP";
+    if (!strcmp(mode, "xci") || !strcmp(mode, "xci-keyless") || !strcmp(mode, "xci-renamed-dnsp")) {
+        kind = "xci";
+        base_name = !strcmp(mode, "xci-renamed-dnsp") ? "Base Game (&).DNsP" : "Base Game (&).XCI";
+    } else if (strstr(mode, "dxci") || merged) {
+        kind = "dxci";
+        base_name = !strcmp(mode, "dxci") ? "Base Game (&).dxci" : "Base Game (&).dXcI";
+        if (!strcmp(mode, "pfs0-renamed-dxci")) kind = "pfs0";
+        if (!strcmp(mode, "dxci-renamed-nsp")) base_name = "Base Game (&).NSP";
+    } else if (strstr(mode, "dnsp") || !strcmp(mode, "encrypted-no-keys"))
+        base_name = !strcmp(mode, "dnsp") ? "Base Game (&).dnsp" : "Base Game (&).dNsP";
+    payload = "base";
+    if (!strcmp(mode, "failure") || !strcmp(mode, "no-main") || !strcmp(mode, "dlc") || !strcmp(mode, "base-update") ||
+        !strcmp(mode, "dnsp-update") || !strcmp(mode, "dxci-update") || !strcmp(mode, "encrypted-no-keys") ||
+        !strcmp(mode, "unmatched-update") || merged)
+        payload = mode;
+    if (!strcmp(mode, "preserve") || !strcmp(mode, "dot-parent")) payload = "no-main";
+    if (!strcmp(mode, "malformed-dxci")) kind = "invalid";
+    base = snx_path_join(scratch, "My Switch DXCI's");
+    CHECK(!snx_mkdirs(base));
+    text = snx_path_join(base, base_name);
+    free(base);
+    base = text;
+    if (!strcmp(mode, "truncated-dxci"))
+        CHECK(!snx_write_file(base, "DXCI", 4));
+    else
+        write_container(base, kind, payload);
+    original = snx_read_file(base, &original_size);
+    CHECK(original != NULL);
+    patch = snx_path_join(scratch, !strcmp(mode, "dxci-update") ? "Update file.DXCI" : "Update file.dnsp");
+    write_container(patch,
+                    !strcmp(mode, "invalid-update") ? "invalid"
+                    : !strcmp(mode, "dxci-update")  ? "dxci"
+                                                    : "pfs0",
+                    "update");
     out =
         !strcmp(mode, "named-output") ? snx_path_join(repo, "work/Named Game") : snx_path_join(scratch, "output space");
     out_argument = !strcmp(mode, "dot-parent") ? snx_path_join(out, "missing/..") : snx_strdup(out);
@@ -309,7 +399,7 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
         arguments[count++] = "--out";
         arguments[count++] = out_argument;
     }
-    if (!strcmp(mode, "base-update")) {
+    if (apply_update) {
         arguments[count++] = "--update";
         arguments[count++] = patch;
     }
@@ -319,10 +409,19 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
         arguments[count++] = "--title-keys";
         arguments[count++] = titles;
     }
-    expected_failure = !strcmp(mode, "failure") || !strcmp(mode, "no-main") || !strcmp(mode, "dlc") || existing;
+    expected_failure = !strcmp(mode, "failure") || !strcmp(mode, "no-main") || !strcmp(mode, "dlc") ||
+                       !strcmp(mode, "encrypted-no-keys") || !strcmp(mode, "explicit-missing-keys") ||
+                       !strcmp(mode, "unmatched-update") || existing || invalid;
     result = snx_extract(count, arguments, &paths);
     CHECK((result != 0) == expected_failure);
-    child_equals(explicit_keys || !strcmp(mode, "homekeys") ? switch_dir : repo, "prod.keys", prod_keys);
+    after = snx_read_file(base, &after_size);
+    CHECK(after != NULL && after_size == original_size && !memcmp(original, after, original_size));
+    free(original);
+    free(after);
+    if (no_keys)
+        CHECK(!snx_is_file(prod));
+    else
+        child_equals(explicit_keys || !strcmp(mode, "homekeys") ? switch_dir : repo, "prod.keys", prod_keys);
     child_equals(explicit_keys || !strcmp(mode, "homekeys") ? switch_dir : repo, "title.keys", user_titles);
     if (existing)
         child_equals(out, "keep.txt", "owner data");
@@ -331,10 +430,11 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
     else {
         child_equals(exefs, "main", "NSO0 synthetic");
         text = snx_path_join(out, "romfs");
-        child_equals(text, "asset", !strcmp(mode, "base-update") ? "updated" : "base");
+        child_equals(text, "asset",
+                     apply_update || (merged && strcmp(mode, "unrelated-embedded-update")) ? "updated" : "base");
         free(text);
     }
-    if (!strcmp(mode, "existing"))
+    if (!strcmp(mode, "existing") || !strcmp(mode, "explicit-missing-keys") || invalid)
         CHECK(!snx_is_file(report));
     else
         assert_temp_removed(report);
@@ -357,9 +457,40 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
 }
 
 int main(int argc, char** argv) {
-    static const char* modes[] = {"base",       "xci",       "base-update", "explicit", "homekeys",
-                                  "failure",    "no-main",   "dlc",         "existing", "preserve",
-                                  "dot-parent", "autobuild", "named-output"};
+    static const char* modes[] = {"base",
+                                  "xci",
+                                  "dnsp",
+                                  "dnsp-mixed",
+                                  "dxci",
+                                  "dxci-mixed",
+                                  "dnsp-keyless",
+                                  "dxci-keyless",
+                                  "xci-keyless",
+                                  "xci-renamed-dnsp",
+                                  "pfs0-renamed-dxci",
+                                  "dxci-renamed-nsp",
+                                  "base-update",
+                                  "dnsp-update",
+                                  "dxci-update",
+                                  "embedded-update",
+                                  "embedded-update-explicit",
+                                  "unrelated-embedded-update",
+                                  "unmatched-update",
+                                  "explicit",
+                                  "homekeys",
+                                  "failure",
+                                  "no-main",
+                                  "dlc",
+                                  "existing",
+                                  "preserve",
+                                  "dot-parent",
+                                  "autobuild",
+                                  "named-output",
+                                  "malformed-dxci",
+                                  "truncated-dxci",
+                                  "invalid-update",
+                                  "encrypted-no-keys",
+                                  "explicit-missing-keys"};
     const char* command[6];
     char *self, *scratch, *directory, *output, *marker, *text;
     size_t i;
@@ -393,6 +524,14 @@ int main(int argc, char** argv) {
         CHECK(strstr(output, "0123456789abcdef0123456789abcdef") == NULL);
         if (result) fprintf(stderr, "%s", output);
         CHECK(result == 0);
+        if (!strcmp(modes[i], "malformed-dxci") || !strcmp(modes[i], "truncated-dxci") ||
+            !strcmp(modes[i], "invalid-update"))
+            CHECK(strstr(output, "Unsupported container header") != NULL);
+        if (!strcmp(modes[i], "encrypted-no-keys")) CHECK(strstr(output, "Encrypted content needs prod.keys") != NULL);
+        if (!strcmp(modes[i], "unmatched-update"))
+            CHECK(strstr(output, "Update has no Program NCA matching the selected base game") != NULL);
+        if (!strcmp(modes[i], "explicit-missing-keys"))
+            CHECK(strstr(output, "Specified prod.keys file is missing") != NULL);
         printf("PASS extraction scenario %s\n", modes[i]);
         free(output);
         free(directory);

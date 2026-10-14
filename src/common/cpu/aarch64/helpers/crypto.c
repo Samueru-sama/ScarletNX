@@ -44,7 +44,7 @@ static u8 gm(u8 a, u8 b) {
     }
     return p;
 }
-#if defined(__x86_64__) && defined(__AES__)
+#if defined(__x86_64__) && defined(__AES__) && !defined(SNX_CRYPTO_PORTABLE)
 /* AES-NI: Arm's AESE is ShiftRows(SubBytes(d^k)), AESENCLAST(d^k, 0); AESD likewise with AESDECLAST. MixColumns
    alone is AESENC(AESDECLAST(x, 0), 0); InvMixColumns is AESIMC */
 static void aes_ni(V128* d, const V128* k, int dec) {
@@ -58,7 +58,7 @@ static void aesmc_ni(V128* d, const V128* s, int inv) {
     _mm_storeu_si128((__m128i*)d, x);
 }
 #endif
-#if defined(__x86_64__) && defined(__PCLMUL__)
+#if defined(__x86_64__) && defined(__PCLMUL__) && !defined(SNX_CRYPTO_PORTABLE)
 static void pmull_clmul(V128* d, const V128* a, const V128* b, int hi) {
     __m128i r = hi ? _mm_clmulepi64_si128(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b), 0x11)
                    : _mm_clmulepi64_si128(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b), 0x00);
@@ -67,7 +67,7 @@ static void pmull_clmul(V128* d, const V128* a, const V128* b, int hi) {
 #endif
 
 void v_aes(V128* d, const V128* k, int dec) {
-#if defined(__x86_64__) && defined(__AES__)
+#if defined(__x86_64__) && defined(__AES__) && !defined(SNX_CRYPTO_PORTABLE)
     aes_ni(d, k, dec);
     return;
 #endif
@@ -88,7 +88,7 @@ void v_aes(V128* d, const V128* k, int dec) {
     *d = t;
 }
 void v_aesmc(V128* d, const V128* s, int inv) {
-#if defined(__x86_64__) && defined(__AES__)
+#if defined(__x86_64__) && defined(__AES__) && !defined(SNX_CRYPTO_PORTABLE)
     aesmc_ni(d, s, inv);
     return;
 #endif
@@ -211,7 +211,7 @@ void v_sha256(CPU* c, u32 op, u32 d, u32 n, u32 m) {
     }
 }
 void v_pmull(V128* d, const V128* a, const V128* b, int hi) {
-#if defined(__x86_64__) && defined(__PCLMUL__)
+#if defined(__x86_64__) && defined(__PCLMUL__) && !defined(SNX_CRYPTO_PORTABLE)
     pmull_clmul(d, a, b, hi);
     return;
 #endif

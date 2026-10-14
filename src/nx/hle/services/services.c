@@ -3,7 +3,7 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* the events the services share, and the registration of the services in sm.c, am.c, set.c, time.c, acc.c,
-   audio.c, misc.c and network/ */
+   audio.c, misc.c, ldr.c and network/ */
 #include "hle/services/services_int.h"
 #include "hle/services/network/network.h"
 
@@ -28,6 +28,8 @@ void svc_core_init(void) {
     network_init();
     plat_thread(audio_clock, NULL, 64 * 1024);
     svc_register("sm:", new_sm);
+    svc_register("ldr:ro", new_ldr);
+    svc_register("ro:1", new_ro1);
     svc_register("appletOE", new_appletoe);
     svc_register("appletAE", new_appletae);
     svc_register("set", new_set);

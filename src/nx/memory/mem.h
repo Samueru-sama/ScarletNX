@@ -54,6 +54,13 @@ enum { MEM_BADSTATE = -1, MEM_NOMEM = -2, MEM_LIMIT = -3 };
 int mem_map_physical(u64 addr, u64 size, u64 budget);
 int mem_unmap_physical(u64 addr, u64 size);
 int mem_unmap(u64 addr, u64 size);
+/* ldr:ro's contiguous code view of two heap ranges. Like MapMemory, backed by copies: sources stay locked
+   until unload copies back. These views do not charge the process's already-accounted heap twice. */
+typedef struct {
+    u64 base, source, size, bss, bss_size;
+} MemCodeMap;
+int mem_map_code(MemCodeMap* m); /* selects a free base; MEM_LIMIT if no code address space remains */
+int mem_unmap_code(const MemCodeMap* m);
 void mem_query(u64 addr, MemBlock* out);
 int mem_set_state(u64 addr, u64 size, u32 state, u32 perm);
 int mem_set_attr(u64 addr, u64 size, u32 mask, u32 attr);

@@ -45,6 +45,12 @@ if(SNX_BUILD_NX)
     endif()
 endif()
 
+add_executable(snx-test-arm-decode arm_decode.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c"
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c")
+snx_test_target(snx-test-arm-decode 11)
+add_test(NAME arm_decode COMMAND snx-test-arm-decode)
+
 # Small architectural witnesses need neither game assets nor an emulator.
 add_executable(snx-test-a64-fp a64_fp_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
 snx_test_target(snx-test-a64-fp 11)
@@ -145,6 +151,29 @@ add_executable(snx-test-runtime-nro runtime_nro.c "${PROJECT_SOURCE_DIR}/src/nx/
 snx_test_target(snx-test-runtime-nro 11)
 add_test(NAME runtime_nro COMMAND snx-test-runtime-nro)
 
+if(NOT WIN32)
+    # Emit the real fallback interpreter without LLVM, a game dump, or a precompiled code module.
+    add_executable(snx-test-ro-interp-gen "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm/rtlib_gen.c"
+        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/a64.c")
+    snx_test_target(snx-test-ro-interp-gen 11)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ldr_interp.inc"
+        COMMAND snx-test-ro-interp-gen interp "${CMAKE_CURRENT_BINARY_DIR}/ldr_interp.inc"
+        DEPENDS snx-test-ro-interp-gen VERBATIM)
+    add_executable(snx-test-ldr-service ldr_service.c ldr_interp.c "${CMAKE_CURRENT_BINARY_DIR}/ldr_interp.inc"
+        "${PROJECT_SOURCE_DIR}/src/nx/hle/services/ldr.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/sha256.c"
+        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_test_target(snx-test-ldr-service 11)
+    target_include_directories(snx-test-ldr-service PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(snx-test-ldr-service PRIVATE SNX_RO_INTERP_TEST)
+    target_link_libraries(snx-test-ldr-service PRIVATE m)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+        target_compile_options(snx-test-ldr-service PRIVATE -mcx16)
+    endif()
+    add_test(NAME ldr_service COMMAND snx-test-ldr-service)
+    set_tests_properties(ldr_service PROPERTIES TIMEOUT 60)
+endif()
+
 add_executable(snx_recompiler_test recompiler_native.c)
 snx_test_target(snx_recompiler_test 23)
 target_include_directories(snx_recompiler_test PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
@@ -164,6 +193,41 @@ add_executable(snx-llvm-bench llvm_bench.c)
 snx_test_target(snx-llvm-bench 11)
 target_include_directories(snx-llvm-bench PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
 target_link_libraries(snx-llvm-bench PRIVATE snx_driver ${CMAKE_DL_LIBS})
+# A32 emits self-contained host objects, without the A64 interpreter or RtAPI.
+add_executable(snx-test-arm-emit arm_emit.c)
+snx_test_target(snx-test-arm-emit 11)
+target_link_libraries(snx-test-arm-emit PRIVATE snx_arm_llvm)
+# Thumb16/32 emits self-contained host objects the same way.
+add_executable(snx-test-thumb-emit thumb_emit.c)
+snx_test_target(snx-test-thumb-emit 11)
+target_link_libraries(snx-test-thumb-emit PRIVATE snx_arm_llvm)
+option(SNX_TEST_ARM_DIFF "Compare A32 LLVM execution with Python unicorn 2.1.4" OFF)
+if(UNIX AND NOT CMAKE_CROSSCOMPILING)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME arm_llvm_witnesses COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_test.py"
+            --emitter $<TARGET_FILE:snx-test-arm-emit> --cc "${CMAKE_C_COMPILER}")
+        if(SNX_TEST_ARM_DIFF)
+            add_test(NAME arm_llvm_differential COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_test.py"
+                --emitter $<TARGET_FILE:snx-test-arm-emit> --cc "${CMAKE_C_COMPILER}" --unicorn)
+            set_tests_properties(arm_llvm_differential PROPERTIES TIMEOUT 900)
+            # VFP/NEON uses the same emitter plus the raw-bit FP and crypto runtime library.
+            get_filename_component(snx_llvm_bin "${SNX_LLVM_CONFIG}" DIRECTORY)
+            find_program(SNX_LLVM_MC llvm-mc HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
+            if(SNX_LLVM_MC)
+                add_test(NAME arm_llvm_vector COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_vector_test.py"
+                    --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt>
+                    --mc "${SNX_LLVM_MC}" --cc "${CMAKE_C_COMPILER}")
+                set_tests_properties(arm_llvm_vector PROPERTIES TIMEOUT 1800)
+                add_test(NAME thumb_llvm COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/thumb_test.py"
+                    --emitter $<TARGET_FILE:snx-test-thumb-emit> --mc "${SNX_LLVM_MC}"
+                    --cc "${CMAKE_C_COMPILER}")
+                set_tests_properties(thumb_llvm PROPERTIES TIMEOUT 900)
+            endif()
+        endif()
+    endif()
+endif()
+
 add_executable(snx-test-llvm-module llvm_module.c)
 snx_test_target(snx-test-llvm-module 11)
 target_include_directories(snx-test-llvm-module PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")

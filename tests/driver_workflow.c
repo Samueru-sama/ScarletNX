@@ -85,13 +85,18 @@ int snx_extract(int argc, char** argv, const SnxPaths* paths) {
         CHECK(!snx_remove_tree(argv[1]));
     return rc;
 }
-unsigned snx_read_abi(const SnxPaths* paths) {
-    (void)paths;
-    return 4;
-}
+unsigned snx_game_abi(void) { return 4; }
 int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     char *game, *partial;
     int rc;
+    if (getenv("SNX_WORKFLOW_BACKEND") && *getenv("SNX_WORKFLOW_BACKEND")) {
+        CHECK(argc == 7 && !strcmp(argv[2], "--backend") && !strcmp(argv[3], getenv("SNX_WORKFLOW_BACKEND")));
+        /* Normalize for the shared synthetic compilation assertions below. */
+        argv[2] = argv[4];
+        argv[3] = argv[5];
+        argv[4] = argv[6];
+        argc = 5;
+    }
     CHECK(argc == 5 && !strcmp(argv[0], "--outdir") && !strcmp(argv[2], "--"));
     if (getenv("SNX_WORKFLOW_NRO") && *getenv("SNX_WORKFLOW_NRO")) {
         char *given, *expected;
@@ -152,9 +157,10 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
     args[2] = repo;
     args[3] = "--build-dir";
     args[4] = repo;
-    if (flags && *flags) args[n++] = flags;
+    if (flags && *flags && strncmp(flags, "--backend=", 10)) args[n++] = flags;
     if (headless && *headless && !strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) args[n++] = headless;
     args[n++] = dump;
+    if (flags && !strncmp(flags, "--backend=", 10)) args[n++] = flags;
     if (headless && *headless && strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) args[n++] = headless;
     if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
         args[n++] = "--";
@@ -202,10 +208,9 @@ int main(int argc, char** argv) {
     if (getenv("SNX_WORKFLOW_CHILD")) {
         const char* flag = getenv("SNX_WORKFLOW_HEADLESS");
         const char* fullscreen = getenv("SNX_WORKFLOW_FLAGS");
-        if (fullscreen && !strncmp(fullscreen, "--fullscreen", 12)) {
-            const char* expected = !strcmp(fullscreen, "--fullscreen=0") ? "--fullscreen=0" : "--fullscreen";
-            CHECK(argc == 2 && !strcmp(argv[1], expected));
-        }
+        if (fullscreen && (!strcmp(fullscreen, "--fullscreen") || !strcmp(fullscreen, "-f")))
+            CHECK(argc == 2 && !strcmp(argv[1], "-f"));
+        if (getenv("SNX_WORKFLOW_BACKEND") && *getenv("SNX_WORKFLOW_BACKEND")) CHECK(argc == 1);
         if (flag && *flag) CHECK(argc == 2 && !strcmp(argv[1], "-H"));
         if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
             CHECK(argc == 6 && !strcmp(argv[1], "--"));
@@ -269,7 +274,7 @@ int main(int argc, char** argv) {
         free(stamp);
     }
     {
-        const char* flags[] = {"--fullscreen", "--fullscreen=0", "--fullscreen=1"};
+        const char* flags[] = {"--fullscreen", "-f"};
         size_t j;
         for (j = 0; j < sizeof(flags) / sizeof(flags[0]); ++j) {
             set_env("SNX_WORKFLOW_FLAGS", flags[j]);
@@ -277,6 +282,19 @@ int main(int argc, char** argv) {
         }
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid");
         run(exe, repo, dump, log, 1, "", "unknown option");
+        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=0");
+        run(exe, repo, dump, log, 1, "", "unknown option");
+        set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=1");
+        run(exe, repo, dump, log, 1, "", "unknown option");
+        set_env("SNX_WORKFLOW_FLAGS", "--backend=gcc");
+        set_env("SNX_WORKFLOW_BACKEND", "gcc");
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        set_env("SNX_WORKFLOW_FLAGS", "--backend=llvm");
+        set_env("SNX_WORKFLOW_BACKEND", "llvm");
+        run(exe, repo, dump, log, 0, "RG", NULL);
+        set_env("SNX_WORKFLOW_BACKEND", "");
+        set_env("SNX_WORKFLOW_FLAGS", "--backend=invalid");
+        run(exe, repo, dump, log, 1, "", "unknown backend");
         set_env("SNX_WORKFLOW_FLAGS", "");
     }
     set_env("SNX_WORKFLOW_ARGS", "1");
@@ -352,6 +370,31 @@ int main(int argc, char** argv) {
             run(exe, repo, dump, log, 0, "ERG", NULL);
         }
         set_env("SNX_WORKFLOW_HEADLESS", "");
+    }
+    /* Decrypted containers share the extract/recompile checkpoints, including quoted dump paths. */
+    {
+        const char* names[] = {"My Switch DXCI's/Test [game];.dnsp", "My Switch DXCI's/Test [game];.dNsP",
+                               "My Switch DXCI's/Test [game];.dxci", "My Switch DXCI's/Test [game];.dXcI"};
+        unsigned j;
+        for (j = 0; j < sizeof names / sizeof names[0]; ++j) {
+            char *decrypted = snx_path_join(repo, names[j]), *directory = snx_path_join(repo, "My Switch DXCI's");
+            CHECK(!snx_remove_tree(repo) && !snx_mkdirs(directory));
+            CHECK(!snx_write_file(decrypted, "synthetic", 9));
+            set_env("SNX_WORKFLOW_MODE", "exit");
+            set_env("SNX_WORKFLOW_FAIL", "");
+            run(exe, repo, decrypted, log, 0, "ERG", NULL);
+            CHECK(snx_is_dir(extracted) && snx_is_file(game));
+            run(exe, repo, decrypted, log, 0, "G", NULL);
+            CHECK(!snx_remove_tree(game));
+            run(exe, repo, decrypted, log, 0, "RG", NULL);
+            /* -r prepares a decrypted dump too, by its extension */
+            CHECK(!snx_remove_tree(extracted) && !snx_remove_tree(game));
+            set_env("SNX_WORKFLOW_FLAGS", "-r");
+            run(exe, repo, decrypted, log, 0, "ER", NULL);
+            set_env("SNX_WORKFLOW_FLAGS", "");
+            free(decrypted);
+            free(directory);
+        }
     }
     /* NROs bypass extraction even with a stale same-stem work directory or game executable. */
     {

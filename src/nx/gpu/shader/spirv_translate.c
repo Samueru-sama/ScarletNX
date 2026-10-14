@@ -1033,8 +1033,9 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                 snprintf(si->first_unsupported, sizeof si->first_unsupported, "%s ty%u lod%u dc%u mask%u off%u aoffi%u",
                          op->name, B(insn[i], 28, 3), B(insn[i], 55, 3), B(insn[i], 50, 1), B(insn[i], 31, 4),
                          B(insn[i], 36, 13), B(insn[i], 54, 1));
-            else
-                snprintf(si->first_unsupported, sizeof si->first_unsupported, "%s", op ? op->name : "unknown opcode");
+            else /* the word too, to decode which form of it is missing */
+                snprintf(si->first_unsupported, sizeof si->first_unsupported, "%s %016llx",
+                         op ? op->name : "unknown opcode", (unsigned long long)insn[i]);
             si->unsupported = 1;
             return NULL;
         }

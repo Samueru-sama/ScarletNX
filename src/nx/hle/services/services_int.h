@@ -46,6 +46,10 @@ SvcObj* new_time(void);
 /* acc.c */
 SvcObj* new_acc(void);
 
+/* ldr.c */
+SvcObj* new_ldr(void);
+SvcObj* new_ro1(void);
+
 /* audio.c */
 void audio_init(void); /* the audio renderer's event, before audio_clock runs */
 void audio_clock(void* arg);

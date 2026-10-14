@@ -1,0 +1,6 @@
+fixtures/flagged.c:7: flag: 'is_present' beside pointer 'p'
+fixtures/flagged.c:11: flag: 'has_name' beside pointer 'name'
+fixtures/flagged.c:15: atomics: 2 atomics in one struct (lock_1, lock_2), nothing keeps lock_2 off the one before
+fixtures/flagged.c:19: atomics: 2 atomics in one struct (submitted, completed), nothing keeps completed off the one before
+fixtures/flagged.c:31: allocs: 2 separate allocations into members of 'b'
+fixtures/flagged.c:26: atomics: 2 atomics at file scope (g_first, g_second), nothing keeps g_second off the one before

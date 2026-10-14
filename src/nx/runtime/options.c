@@ -165,7 +165,7 @@ typedef struct {
 } IniSec;
 static const IniOpt INI_DISPLAY[] = {
     {"docked", "0", "1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)"},
-    {"fullscreen", "1", "1 = start in fullscreen (F11 or Alt+Enter toggles it in game)"},
+    {"fullscreen", "0", "Startup is controlled by -f/--fullscreen (F11 or Alt+Enter toggles it in game)"},
     {"language", "1",
      "Game language: 0 Japanese, 1 English (US), 2 French, 3 German, 4 Italian, 5 Spanish,\n;   6 Chinese, 7 Korean, 8 Dutch, 9 Portuguese, 10 Russian, 11 Taiwanese, 12 English (UK),\n;   13 French (Canada), 14 Spanish (Latin America)"},
     {NULL, NULL, NULL}};

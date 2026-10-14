@@ -3,6 +3,8 @@
 # Game dumps, keys and anything extracted from them. These belong to their owners and never go in git.
 *.xci
 *.nsp
+*.[dD][xX][cC][iI]
+*.[dD][nN][sS][pP]
 *.nsz
 *.xcz
 *.nca

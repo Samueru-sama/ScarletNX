@@ -58,6 +58,29 @@ class ArchitectureTests(unittest.TestCase):
             errors = architecture.check_graph(graph)
             self.assertEqual(errors, ['scarletnx-gnuabi transitively links graphics/media target snx_gpu'])
 
+    def test_project_header_named_like_a_system_one_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            repo = Path(temporary)
+            for header in ('src/gui/process.h', 'src/gui/gui_model.h', 'src/runner/process/process.h'):
+                (repo / header).parent.mkdir(parents=True, exist_ok=True)
+                (repo / header).write_text('', encoding='utf-8')
+            reply = repo / 'build/.cmake/api/v1/reply'
+            reply.mkdir(parents=True)
+            documents = {
+                'index-test.json': {'reply': {'codemodel-v2': {'jsonFile': 'model.json'}}},
+                'model.json': {'configurations': [{'targets': [{'name': 'gui-test', 'jsonFile': 'gui.json'},
+                                                                {'name': 'runner', 'jsonFile': 'runner.json'}]}]},
+                'gui.json': {'compileGroups': [{'includes': [{'path': str(repo / 'src/gui')}]}]},
+                # only src/runner is on the path, so src/runner/process/process.h hides nothing
+                'runner.json': {'compileGroups': [{'includes': [{'path': 'src/runner'}]}]},
+            }
+            for name, content in documents.items():
+                (reply / name).write_text(json.dumps(content), encoding='utf-8')
+            errors = architecture.check_include_shadows(repo, repo / 'build')
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn('src/gui/process.h is on gui-test', errors[0])
+            self.assertIn('hides the system <process.h>', errors[0])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -6,16 +6,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool feed(GuiBanner* banner, const char* text) { return gui_banner_feed(banner, text, strlen(text)); }
+
 int main(void) {
     GuiMenu menu = {0};
     gui_menu_key(&menu, GUI_LEFT);
     assert(menu.selected == GUI_EXIT);
     gui_menu_key(&menu, GUI_RIGHT);
-    assert(menu.selected == GUI_SWITCH);
+    assert(menu.selected == GUI_SWITCH && !menu.activated);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.view == GUI_LOAD_OPTIONS && !menu.running);
+    assert(menu.activated && menu.active == GUI_SWITCH && menu.focus_load && !menu.load_activated);
     gui_menu_key(&menu, GUI_SELECT);
-    assert(menu.view == GUI_LOAD_DROP);
+    assert(menu.view == GUI_LOAD_DROP && menu.load_activated && menu.load_active == GUI_LOAD_DRAG);
     gui_menu_key(&menu, GUI_CANCEL);
     assert(menu.view == GUI_LOAD_OPTIONS);
     gui_menu_key(&menu, GUI_DOWN);
@@ -27,6 +30,15 @@ int main(void) {
     assert(menu.view == GUI_LOAD_NONE);
     gui_menu_key(&menu, GUI_DOWN);
     gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_KEYS);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.view == GUI_LOAD_KEYS && !menu.running);
+    gui_menu_key(&menu, GUI_DOWN);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.selected == GUI_KEYS && menu.view == GUI_LOAD_KEYS);
+    gui_menu_key(&menu, GUI_CANCEL);
+    assert(menu.view == GUI_LOAD_NONE && !menu.quit);
+    gui_menu_key(&menu, GUI_RIGHT);
     assert(menu.selected == GUI_FULLSCREEN);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.fullscreen && menu.view == GUI_LOAD_NONE);
@@ -37,15 +49,61 @@ int main(void) {
     assert(menu.selected == GUI_FULLSCREEN);
     menu.running = false;
     gui_menu_key(&menu, GUI_DOWN);
+    assert(menu.selected == GUI_GCCJIT && menu.active == GUI_FULLSCREEN);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.active == GUI_GCCJIT);
+    assert(menu.gccjit == !!SNX_GUI_HAS_GCCJIT && menu.view == GUI_LOAD_NONE);
+    assert(!strcmp(gui_setting_description(&menu), SNX_GUI_HAS_GCCJIT
+                   ? "libgccjit will be used instead of llvm" : "Program was not compiled with libgccjit"));
+    gui_menu_key(&menu, GUI_DOWN);
+    assert(menu.selected == GUI_GDBSTUB);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.gdbstub && menu.view == GUI_LOAD_NONE);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(!menu.gdbstub);
+    gui_menu_key(&menu, GUI_DOWN);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.selected == GUI_THEME && menu.theme_next && !menu.quit);
+    menu.theme_next = false; /* the GUI's to clear */
+    gui_menu_key(&menu, GUI_DOWN);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.quit);
+
+    menu = (GuiMenu){0};
+    gui_menu_key(&menu, GUI_SELECT);
+    menu.selected = GUI_LINUX; /* Mouse focus outside the open submenu. */
+    menu.focus_load = false;
+    gui_menu_key(&menu, GUI_DOWN);
+    assert(menu.selected == GUI_KEYS && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_OPTIONS);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.active == GUI_KEYS && menu.view == GUI_LOAD_KEYS);
+
+    for (int bits = 0; bits < 8; ++bits) {
+        menu = (GuiMenu){.selected = GUI_SWITCH, .fullscreen = !!(bits & 1),
+                         .gccjit = !!(bits & 2), .gdbstub = !!(bits & 4)};
+        for (int prepared = 0; prepared < 2; ++prepared) {
+            const char* args[4];
+            size_t n = gui_launch_options(&menu, prepared, args), i = 0;
+            if (menu.fullscreen) assert(i < n && !strcmp(args[i++], "-f"));
+            if (menu.gccjit && SNX_GUI_HAS_GCCJIT && !prepared)
+                assert(i < n && !strcmp(args[i++], "--backend=gcc"));
+            if (menu.gdbstub) {
+                assert(i < n && !strcmp(args[i++], "-S"));
+                assert(i < n && !strcmp(args[i++], "-s"));
+            }
+            assert(i == n);
+        }
+        menu.selected = GUI_LINUX;
+        const char* args[4];
+        assert(gui_launch_options(&menu, false, args) == 0);
+    }
 
     GuiBrowser browser = {.count = 23};
     gui_browser_resize(&browser, 10);
     assert(gui_browser_pages(&browser) == 3 && gui_browser_items(&browser) == 10);
     assert(gui_browser_key(&browser, GUI_SELECT) == GUI_BROWSER_BACK);
     gui_browser_key(&browser, GUI_UP);
-    assert(browser.selected == 10);
+    assert(browser.selected == 10 && !browser.activated);
     gui_browser_key(&browser, GUI_RIGHT);
     assert(browser.page == 1 && browser.selected == 10);
     gui_browser_key(&browser, GUI_PAGE_DOWN);
@@ -53,6 +111,7 @@ int main(void) {
     gui_browser_key(&browser, GUI_RIGHT); /* no wrapping past the last page */
     assert(browser.page == 2);
     assert(gui_browser_key(&browser, GUI_SELECT) == GUI_BROWSER_OPEN);
+    assert(browser.activated && browser.active == 22);
     gui_browser_resize(&browser, 7);
     assert(browser.page * browser.page_size + browser.selected - 1 == 22);
     gui_browser_key(&browser, GUI_PAGE_UP);
@@ -101,6 +160,22 @@ int main(void) {
     assert(!gui_drop_path("file:///tmp/%zz", true));
     assert(!gui_drop_path("one\ntwo", true));
     assert(!gui_drop_path("", true));
+    /* the theme item asks the GUI for the next theme */
+    GuiMenu themed = {.selected = GUI_THEME};
+    gui_menu_key(&themed, GUI_SELECT);
+    assert(themed.theme_next && themed.view == GUI_LOAD_NONE && !themed.quit);
+    assert(strstr(gui_setting_description(&themed), "themes/"));
+
+    /* the runner's banner, at the start of a line, split across reads or not */
+    GuiBanner banner;
+    gui_banner_reset(&banner);
+    assert(!feed(&banner, "Recompiling x\nnot ScarletNX - x\nScarletNX"));
+    assert(feed(&banner, " - x\n") && banner.seen);
+    gui_banner_reset(&banner);
+    assert(feed(&banner, "ScarletNX - first line"));
+    gui_banner_reset(&banner);
+    assert(!feed(&banner, "ScarletNX -x\n\nScarletNX  - x") && !banner.seen);
+    assert(feed(&banner, "\n\nScarletNX - y"));
     puts("GUI menu, bounded console, UTF-8 and file drops passed");
     return 0;
 }

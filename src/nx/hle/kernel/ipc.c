@@ -220,7 +220,8 @@ static void parse(IpcCtx* c) {
         c->has_pid = sh & 1;
         u32 ncopy = (sh >> 1) & 15, nmove = (sh >> 5) & 15;
         if (c->has_pid) {
-            memcpy(&c->pid, p, 8);
+            /* HIPC replaces the client placeholder with the sender's real process id. */
+            c->pid = K_PROCESS_ID;
             p += 8;
         }
         for (u32 i = 0; i < ncopy; i++, p += 4)

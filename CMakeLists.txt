@@ -97,6 +97,18 @@ if(NOT SNX_BUILD_NX)
     install(FILES LICENSE LICENSE.apache NOTICE DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
     return()
 endif()
+if(BUILD_TESTING AND TARGET hactool_lib)
+    add_executable(snx-test-hactool-decrypted tests/hactool_decrypted.c)
+    snx_test_target(snx-test-hactool-decrypted 11)
+    target_link_libraries(snx-test-hactool-decrypted PRIVATE hactool_lib)
+    add_test(NAME hactool_decrypted COMMAND snx-test-hactool-decrypted)
+    if(SNX_TEST_SANITIZERS AND WIN32)
+        execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
+            OUTPUT_VARIABLE snx_hactool_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+        set_tests_properties(hactool_decrypted PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:${snx_hactool_clang_resource}/lib/windows")
+    endif()
+endif()
 add_subdirectory(src/nx)
 add_subdirectory(tools)
 

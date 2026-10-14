@@ -337,6 +337,96 @@ u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) {
     return a;
 }
 
+/* Code aliases use the same copy/lock/copy-back model as MapMemory, but hold the memory lock across validation
+   and publication. This prevents another loader or a heap shrink from taking the source pages in between. */
+static int code_source_nl(u64 a, u64 s, int locked) {
+    if (!s) return 1;
+    if ((a | s) & 0xFFF || !in_as(a, s)) return 0;
+    u64 covered = 0;
+    for (int i = 0; i < nblk; i++) {
+        MemBlock* b = &blk[i];
+        if (b->addr >= a + s || b->addr + b->size <= a) continue;
+        if (b->state != MS_NORMAL || b->perm != (locked ? PERM_NONE : PERM_RW) || b->attr != (u32)locked || b->ipc ||
+            b->dev)
+            return 0;
+        u64 lo = b->addr > a ? b->addr : a;
+        u64 hi = b->addr + b->size < a + s ? b->addr + b->size : a + s;
+        covered += hi - lo;
+    }
+    return covered == s;
+}
+static void code_lock_nl(u64 a, u64 s, int locked) {
+    if (!s) return;
+    split_at(a);
+    split_at(a + s);
+    for (int i = 0; i < nblk; i++) {
+        MemBlock* b = &blk[i];
+        if (b->addr >= a && b->addr + b->size <= a + s) {
+            b->attr = (u32)locked;
+            b->perm = locked ? PERM_NONE : PERM_RW;
+        }
+    }
+}
+int mem_map_code(MemCodeMap* m) {
+    m->base = 0;
+    if (!m->size || m->size > AS_SIZE || m->bss_size > AS_SIZE - m->size) return MEM_BADSTATE;
+    if (g_gpu_mapping_begin) g_gpu_mapping_begin(0, 0, 1);
+    memlock();
+    int r = 0;
+    u64 total = m->size + m->bss_size;
+    if (!code_source_nl(m->source, m->size, 0) || !code_source_nl(m->bss, m->bss_size, 0) ||
+        (m->bss_size && m->source < m->bss + m->bss_size && m->bss < m->source + m->size))
+        r = MEM_BADSTATE;
+    u64 gap = r ? 0 : find_free_nl(AS_BASE, HEAP_BASE, total + 0x2000, 0x1000);
+    if (!r && !gap) r = MEM_LIMIT;
+    if (!r && !reserve_blocks(8)) r = MEM_NOMEM;
+    if (!r) r = map_nl(gap + 0x1000, total, MS_ALIASCODE, PERM_RW);
+    if (!r) {
+        m->base = gap + 0x1000;
+        memcpy(GP(m->base), GP(m->source), m->size);
+        if (m->bss_size) memcpy(GP(m->base + m->size), GP(m->bss), m->bss_size);
+        code_lock_nl(m->source, m->size, 1);
+        code_lock_nl(m->bss, m->bss_size, 1);
+        merge();
+    }
+    memunlock();
+    if (g_gpu_mapping_end) g_gpu_mapping_end();
+    return r;
+}
+int mem_unmap_code(const MemCodeMap* m) {
+    if (g_gpu_mapping_begin) g_gpu_mapping_begin(0, 0, 1);
+    memlock();
+    int r = 0;
+    u64 total = m->size + m->bss_size, covered = 0;
+    if (!m->size || total < m->size || !in_as(m->base, total) || !code_source_nl(m->source, m->size, 1) ||
+        !code_source_nl(m->bss, m->bss_size, 1))
+        r = MEM_BADSTATE;
+    for (int i = 0; !r && i < nblk; i++) {
+        MemBlock* b = &blk[i];
+        if (b->addr >= m->base + total || b->addr + b->size <= m->base) continue;
+        if (b->state != MS_ALIASCODE && b->state != MS_ALIASCODEDATA) {
+            r = MEM_BADSTATE;
+            break;
+        }
+        u64 lo = b->addr > m->base ? b->addr : m->base;
+        u64 hi = b->addr + b->size < m->base + total ? b->addr + b->size : m->base + total;
+        covered += hi - lo;
+    }
+    if (!r && covered != total) r = MEM_BADSTATE;
+    if (!r && !reserve_blocks(6)) r = MEM_NOMEM;
+    if (!r) {
+        memcpy(GP(m->source), GP(m->base), m->size);
+        if (m->bss_size) memcpy(GP(m->bss), GP(m->base + m->size), m->bss_size);
+        unmap_nl(m->base, total);
+        code_lock_nl(m->source, m->size, 0);
+        code_lock_nl(m->bss, m->bss_size, 0);
+        merge();
+    }
+    memunlock();
+    if (g_gpu_mapping_end) g_gpu_mapping_end();
+    return r;
+}
+
 /* finding and mapping in one hold, so two threads (CreateThread's TLS) can't be handed the same pages. The gap found
    has a page more on each side, left free as guard pages */
 u64 kmem_alloc(u64 size, u32 state, u32 perm) {

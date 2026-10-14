@@ -7,7 +7,7 @@ For the keyboard-controlled SDL3 menu and file drops, see [GUI](GUI.md).
 
 ## Extract → AOT → run
 
-Pass a single XCI or NSP to extract, recompile and play:
+Pass a single XCI, NSP, DXCI or DNSP to extract, recompile and play:
 
 ```sh
 ./build/scarletnx "Game.xci"
@@ -33,9 +33,23 @@ Pass arguments to the game executable after `--`, for example:
 The argument boundary is retained when launching the deployed game, so game arguments
 cannot trigger launcher actions or overwrite runtime settings. This does not add a
 homebrew-loader guest argv block.
-`--fullscreen` (or `--fullscreen=0` for windowed startup) can also precede or follow
-the dump and is forwarded to the game. It overrides that game's INI setting.
-Use the separate commands for updates, custom keys or compiler options.
+`-f` (or `--fullscreen`) can also precede or follow the dump and is forwarded to
+the game. Omitting it starts windowed, regardless of an older INI value;
+`--fullscreen=0|1` is no longer accepted.
+`--backend=gcc` selects libgccjit instead of the default LLVM backend when preparing
+a dump. An explicit `--backend=llvm|gcc` forces recompilation rather than reusing a
+cached executable built by another compiler.
+Use the separate commands for updates, custom keys or other compiler options.
+
+DXCI and DNSP with decrypted content need no keys. Containers are identified by their headers,
+including renamed files. A matching bundled update is applied automatically. An explicit `--update`
+replaces the bundled update and must match the base title. DLC-only and update-only dumps cannot
+be used as a base game.
+
+```powershell
+.\build\windows-native\scarletnx.exe "C:\Games\Game.dxci"
+.\build\windows-native\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
+```
 
 Run the same command again to retry after a failure or interruption:
 
@@ -72,13 +86,13 @@ To run the steps separately:
 ```sh
 ./build/scarletnx -x "Game.xci" --name Game
 ./build/scarletnx -r work/Game Game
-games/Game --fullscreen=0
+games/Game
 ```
 
 ```powershell
 .\build\scarletnx.exe -x "Game.xci" --name Game
 .\build\scarletnx.exe -r work/Game Game
-.\games\Game.exe --fullscreen=0
+.\games\Game.exe
 ```
 
 Remaining examples: POSIX.
@@ -93,7 +107,8 @@ Remaining examples: POSIX.
 ./build/scarletnx -r -h
 ```
 
-- **Keys:** flags → checkout → `~/.switch` (`%USERPROFILE%\.switch` on Windows). Common NSP tickets supplement title keys.
+- **Keys:** encrypted content uses flags → checkout → `~/.switch` (`%USERPROFILE%\.switch` on Windows).
+  Common NSP tickets supplement title keys. Fully decrypted content needs neither key file.
 - **Extraction:** defaults to `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing `exefs`;
   builds missing hactool. [Temp cleanup/key filtering](../src/nx/runtime/driver/extract.c).
 - **Recompile:** AOT → module (LLVM, or `--backend=gcc` for libgccjit on DEC Alpha EV67 hosts) →
@@ -187,16 +202,20 @@ SDL_VIDEO_DRIVER=x11 games/Game
 ```
 
 `--game` selects `Game_code.so`/`Game_data/`; or name the image `games/Game.AppImage` to load adjacent files.
+The AppImage also prepares dumps: `./ScarletNX-x86_64.AppImage Game.nsp`. Without the checkout it was built from
+(the AppImage, the Windows zip), the driver works in the current folder: `work/` and `games/` go there, and each
+game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
 X11 bypasses Wayland. [Licenses](CREDITS.md).
 
 ## Settings / input
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked`, `language`, `fullscreen`, `resolution`, `memory_gb`, `heap_max_mb`, `profile`.
+Restart for `docked`, `language`, `resolution`, `memory_gb`, `heap_max_mb`, `profile`.
+Fullscreen startup is controlled by `-f`/`--fullscreen`, not the INI; omit it for windowed startup.
 
 | Setting | Effect |
 | --- | --- |
-| `docked=1`, `fullscreen=0` | TV mode, windowed |
+| `docked=1` | TV mode |
 | `resolution=1` | Native scale; range 0.25–4 |
 | `fps_limit=1` | 60 FPS; `0` uncapped; `60..240` explicit cap |
 | `shadows=0` | Skip shadow maps |

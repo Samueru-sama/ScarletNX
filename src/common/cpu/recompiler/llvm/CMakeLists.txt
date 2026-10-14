@@ -3,6 +3,7 @@
 # The LLVM backend and the runtime library it links into every module (rtlib.c): helpers and interpreter, compiled
 # here with this Clang and the flags toolchain.c gives generated C, -march=native included
 set(snx_cpu "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64")
+add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" arm-backend)
 add_executable(snx-rtlib-gen rtlib_gen.c)
 target_link_libraries(snx-rtlib-gen PRIVATE scarletnx-common)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc"
@@ -36,4 +37,4 @@ target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_llvm PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_directories(snx_llvm PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
-target_link_libraries(snx_llvm PUBLIC scarletnx-common ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads)
+target_link_libraries(snx_llvm PUBLIC scarletnx-common snx_arm_llvm ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads)

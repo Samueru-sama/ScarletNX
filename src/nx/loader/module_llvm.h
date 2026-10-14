@@ -15,6 +15,8 @@ typedef struct {
     const char* keep_ir; /* when set, each unit's IR is saved there as .ll */
 } SnxLlvmBuild;
 
+/* SNX_ABI as this build has it: the layout its modules are written with, which the runtime of the same build checks */
+unsigned snx_module_abi(void);
 /* 0 on success. LLVM is a required recompiler dependency. */
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build);
 /* The libgccjit backend's entry point: reserved, it reports that it isn't implemented */

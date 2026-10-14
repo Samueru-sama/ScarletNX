@@ -21,7 +21,7 @@ static void usage(void) {
     puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
          "  INPUT                  Game/ExeFS directory or .nro\n"
          "  -o, --name, --out NAME  Output name (default: NPDM or input name)\n"
-         "  --outdir DIR           Output directory (default: checkout/games)\n"
+         "  --outdir DIR           Output directory (default: checkout/games, else ./games)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 2)\n"
          "  --jobs N               Parallel compiles (default: CPU count)");
     puts("  --backend NAME         Code generator: llvm (LLVM-C, the default and the recommended one),\n"
@@ -72,20 +72,42 @@ static char* title_name(const char* name, const SnxProgram* p, const char* input
     }
     return out;
 }
-unsigned snx_read_abi(const SnxPaths* paths) {
-    char* path = snx_path_join(paths->repo, "src/common/cpu/aarch64/cpu.h");
-    unsigned char* data;
-    const char* p;
-    size_t n;
-    unsigned abi = 0;
-    data = snx_read_file(path, &n);
-    free(path);
-    if (!data) return 0;
-    p = strstr((const char*)data, "#define SNX_ABI ");
-    if (p) abi = (unsigned)strtoul(p + strlen("#define SNX_ABI "), NULL, 10);
-    free(data);
-    return abi;
+/* This build's, not the checkout's cpu.h: the modules are laid out as this build's headers say, and an installed
+   build has no checkout */
+unsigned snx_game_abi(void) { return snx_module_abi(); }
+#ifdef SNX_WITH_RUNTIME
+/* In an AppImage this program is a launcher in its mount, which runs nothing once copied out: the AppImage is the
+   runtime, and a copy named after the game runs it. APPIMAGE is inherited, so it counts only inside the mount */
+static char* own_runtime(const SnxPaths* paths) {
+    const char *appimage = getenv("APPIMAGE"), *appdir = getenv("APPDIR");
+    if (appimage && *appimage && appdir && *appdir && snx_path_within(paths->executable, appdir))
+        return snx_absolute(appimage);
+    return snx_strdup(paths->executable);
 }
+#endif
+#ifdef _WIN32
+/* Windows finds a program's DLLs next to it: the game gets copies of those next to the runtime (the zip's LLVM),
+   or it does not start */
+static int copy_dlls(const char* run, const char* out) {
+    char **names = NULL, *from = snx_dirname(run), *src, *dst;
+    size_t i, count = 0, n;
+    int rc = snx_list_dir(from, &names, &count);
+    for (i = 0; !rc && i < count; ++i) {
+        n = strlen(names[i]);
+        if (n < 4 || names[i][n - 4] != '.' || tolower((unsigned char)names[i][n - 3]) != 'd' ||
+            tolower((unsigned char)names[i][n - 2]) != 'l' || tolower((unsigned char)names[i][n - 1]) != 'l')
+            continue;
+        src = snx_path_join(from, names[i]);
+        dst = snx_path_join(out, names[i]);
+        rc = snx_is_file(src) && snx_copy_file(src, dst);
+        free(src);
+        free(dst);
+    }
+    snx_free_strings(names, count);
+    free(from);
+    return rc;
+}
+#endif
 static SnxU64* read_hints(const char* base, size_t* count) {
     char *path = snx_format("%s.hints", base), line[256], *s;
     FILE* f = snx_fopen(path, "r");
@@ -311,8 +333,7 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("--target expects auto, linux or win64");
     /* The backends write the module for the machine they run on (build == host == target) */
     if (compile.target_win != host_win) return snx_error("--target: modules are built for this host only");
-    gen.abi = snx_read_abi(paths);
-    if (!gen.abi) return snx_error("cannot read src/common/cpu/aarch64/cpu.h; set --repo to the checkout");
+    gen.abi = snx_game_abi();
     if (snx_load_program(input, &program, error, sizeof(error))) return snx_error("%s", error);
     if (!program.npdm.is64) {
         snx_error("AArch32 programs are unsupported");
@@ -385,7 +406,7 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
     if (runtime) run = snx_absolute(runtime);
 #ifdef SNX_WITH_RUNTIME
     else if (host_win == compile.target_win)
-        run = snx_strdup(paths->executable);
+        run = own_runtime(paths);
 #endif
     else
         run = snx_build_runtime(paths, compile.target_win, compile.quiet);
@@ -393,6 +414,12 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
         snx_error("runtime unavailable; specify --runtime FILE");
         goto done;
     }
+#ifdef _WIN32
+    if (copy_dlls(run, out)) {
+        snx_error("cannot copy the runtime's DLLs to %s", out);
+        goto done;
+    }
+#endif
     /* Deploy the executable last: automatic play uses it as the completion checkpoint. */
     exe = snx_format("%s%s", base, compile.target_win ? ".exe" : "");
     tmp = snx_format("%s.tmp", exe);

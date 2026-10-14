@@ -8,7 +8,7 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
-  NASM on x86-64, Git and pkg-config.
+  NASM on x86-64, Git, pkg-config and `patch`.
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
 - **Windows:** Win10/11 x64 + Git. Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
@@ -23,6 +23,8 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
 
 Install dependencies before configuring. The default preset uses **Ninja** and **Clang/Clang++**.
 FFmpeg also uses **GNU make** and, on x86-64, **NASM**. These tools are not downloaded by CMake.
+CPM patches hactool with `patch`, which `build-essential`, `base-devel` and FreeBSD's base system include;
+Fedora lists it below.
 
 ### Debian / Ubuntu
 
@@ -61,7 +63,7 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build nasm make git pkgconf-pkg-config llvm-devel \
+sudo dnf install clang cmake ninja-build nasm make git pkgconf-pkg-config patch llvm-devel \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
@@ -246,7 +248,8 @@ Debian, `libgccjit-devel` on Fedora; `-DSNX_GCCJIT_ROOT=` points at another GCC'
 
 Extraction builds missing hactool separately. Recompilation deploys the running full runtime;
 the tools-only build creates one in `build/native-recomp`, or accepts `--runtime FILE`.
-`--repo DIR` and `--build-dir DIR` before the command override compiled-in checkout/tool paths.
+`--repo DIR` and `--build-dir DIR` before the command override compiled-in checkout/tool paths; without that
+checkout (an installed copy), the current folder stands in for it.
 Python ≥3.12 is optional for `tools/*.py` diagnostics.
 
 ## Install / AppImage

@@ -11,7 +11,8 @@
 #   llvm-mingw 20261006   Clang, lld and the MinGW-w64 headers and libraries
 #   CMake 4.4.4, Ninja 1.13.2
 #   NASM 3.02             FFmpeg's assembly
-#   w64devkit 2.10.0      only its sh (busybox) and GNU make, which FFmpeg's configure and Makefiles need
+#   w64devkit 2.10.0      only its sh and patch (busybox) and GNU make: FFmpeg's configure and Makefiles need sh and
+#                         make, and CPM patches hactool with patch
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'  # Invoke-WebRequest is many times slower with its progress bar
 
@@ -21,7 +22,7 @@ $downloads = Join-Path $tools 'downloads'
 New-Item -ItemType Directory -Force -Path $downloads | Out-Null
 
 # Bin is the folder, inside Dir, that env.ps1 puts on PATH. The order is PATH's: w64devkit last, so its GCC, CMake and
-# Ninja never come first (FFmpeg's build only needs its sh and make)
+# Ninja never come first (the build only needs its sh, make and patch)
 $packages = @(
     @{ Name = 'llvm-mingw'; Dir = 'llvm-mingw-20261006-ucrt-x86_64'; Bin = 'bin'; Kind = 'zip'
        Url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-x86_64.zip'

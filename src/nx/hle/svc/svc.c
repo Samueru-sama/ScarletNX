@@ -382,7 +382,7 @@ static void snx_svc_(CPU* c, u32 imm) {
             return;
         case 0x24:
             x[0] = 0;
-            x[1] = 0x51;
+            x[1] = K_PROCESS_ID;
             return;
         case 0x25: {
             KThread* n = (KThread*)h_get_type((u32)x[1], KO_THREAD);
