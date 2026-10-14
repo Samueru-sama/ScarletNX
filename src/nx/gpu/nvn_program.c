@@ -37,7 +37,7 @@ typedef struct {
     u64 address, hash;
     u32 size;
     u16 writes;
-    u8 state; /* 0 available, 1 queued, 2 certified */
+    u8 state; /* 0 available, 1 queued, 2 certified, 3 rejected for these code bytes */
 } ComputeWrites;
 #define COMPUTE_WRITES_SLOTS 4096
 static ComputeWrites compute_writes[COMPUTE_WRITES_SLOTS];
@@ -73,7 +73,7 @@ static void analyze_compute_writes(void* ptr) {
     u32 size = header[1], length = 0;
     u16 writes = 0;
     u64 hash = 0;
-    int certified = 0;
+    int certified = 0, repeatable = 0;
     int bounded = 0, mapped = 0, branch = -1, unsupported = -1, images = -1, buffers = -1;
     const char* branch_name = "";
     if (header[0] == 0x12345679 && size >= 0x80 && size <= NVN_SHADER_CODE_MAX &&
@@ -83,6 +83,7 @@ static void analyze_compute_writes(void* ptr) {
             memset(code, 0, 80);
             gmem_read_code(address + 0x100, code + 80, NVN_SHADER_CODE_MAX);
             bounded = mapped = !!gmem_ptr_untracked(address + 0x100, size);
+            if (mapped) hash = compute_writes_hash(code + 80, size);
             int (*old)(u32, u32, u32*) = g_shader_cb_read;
             g_shader_cb_read = NULL;
             shader_hash(code, NVN_SHADER_CODE_MAX + 80, &length);
@@ -97,9 +98,11 @@ static void analyze_compute_writes(void* ptr) {
                     branch_name = op ? op->name : "UNKNOWN";
                 }
             }
+            if (mapped && !bounded) repeatable = 1;
             if (bounded) {
                 ShaderInfo info = {.cs_local = {1, 1, 1}};
                 char* glsl = shader_to_glsl(code, NVN_SHADER_CODE_MAX + 80, ST_CS, &info);
+                if (glsl) repeatable = 1;
                 unsupported = info.unsupported;
                 images = info.nimg;
                 buffers = info.ngbuf;
@@ -114,7 +117,6 @@ static void analyze_compute_writes(void* ptr) {
                         }
                         writes |= (u16)(1u << ((offset - 0x310) / 16));
                     }
-                    if (certified) hash = compute_writes_hash(code + 80, size);
                 }
                 free(glsl);
             }
@@ -133,7 +135,7 @@ static void analyze_compute_writes(void* ptr) {
         slot->hash = hash;
         slot->size = size;
         slot->writes = writes;
-        slot->state = certified ? 2 : 0;
+        slot->state = certified ? 2 : repeatable ? 3 : 0;
     }
     pm_unlock(&compute_writes_lock);
 }
@@ -152,7 +154,7 @@ static void queue_compute_writes(u64 address) {
     pm_lock(&compute_writes_lock);
     ComputeWrites* slot = compute_writes_slot(address, 1);
     int queued = slot &&
-                 (!slot->state || (slot->state == 2 && (slot->size != size || slot->hash != hash)));
+                 (!slot->state || (slot->state >= 2 && (slot->size != size || slot->hash != hash)));
     if (queued) slot->state = 1;
     pm_unlock(&compute_writes_lock);
     if (!queued) return;
@@ -184,6 +186,7 @@ int nvn_program_compute_write_slots(u64 address, u16* slots) {
     ComputeWrites* slot = compute_writes_slot(address, 0);
     int valid = slot && slot->state == 2 && slot->size == size && slot->hash == hash;
     if (valid) *slots = slot->writes;
+    int stale = !slot || !slot->state || (slot->state >= 2 && (slot->size != size || slot->hash != hash));
     const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
     if (trace && !strcmp(trace, "1"))
         LOG("nvn-compute-writes: code=%llx size=%x state=%u analyzed-size=%x writes=%04x hash-match=%d valid=%d\n",
@@ -191,6 +194,7 @@ int nvn_program_compute_write_slots(u64 address, u16* slots) {
             slot ? slot->size : 0, slot ? slot->writes : 0,
             slot && slot->hash == hash, valid);
     pm_unlock(&compute_writes_lock);
+    if (stale) queue_compute_writes(address);
     return valid;
 }
 
