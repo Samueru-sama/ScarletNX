@@ -34,12 +34,12 @@ int main(void) {
     CHECK(agb_ppu_read(&board, 0x006) == 160);
     CHECK(agb_ppu_read(&board, 0x004) & 1); /* the vertical blank */
     CHECK(agb_ppu_read(&board, 0x004) & 4); /* the line matches the target */
-    CHECK(board.io[0x202 / 2] & AGB_IRQ_VBLANK);
+    CHECK(agb_read16(&board, 0x04000202) & AGB_IRQ_VBLANK);
     run_frame();
     CHECK(agb_ppu_read(&board, 0x006) == 160); /* a frame of lines from here wraps back */
     agb_ppu_step(&board, AGB_SCANLINE_CYCLES * 68);
     CHECK(agb_ppu_read(&board, 0x006) == 0);
-    board.io[0x202 / 2] = 0;
+    agb_io_write16(&board, 0x04000202, 0xFFFF);
 
     /* mode 3: the bitmap is the screen */
     agb_ppu_write(&board, 0x000, 0x0403); /* mode 3, BG2 on */

@@ -3,7 +3,30 @@
    Copyright 2026 the ScarletNX contributors */
 #include "memory.h"
 #include "board.h"
+#include <stdlib.h>
 #include <string.h>
+
+void agb_memory_init(AgbMemory* memory) {
+    memset(memory, 0, sizeof(*memory));
+    memory->ewram = (uint8_t*)calloc(1, AGB_EWRAM_SIZE);
+    memory->iwram = (uint8_t*)calloc(1, AGB_IWRAM_SIZE);
+    memory->palette = (uint8_t*)calloc(1, AGB_PALETTE_SIZE);
+    memory->vram = (uint8_t*)calloc(1, AGB_VRAM_SIZE);
+    memory->oam = (uint8_t*)calloc(1, AGB_OAM_SIZE);
+    memory->sram = (uint8_t*)calloc(1, AGB_SRAM_SIZE);
+    memory->owned = 1;
+}
+
+void agb_memory_free(AgbMemory* memory) {
+    if (!memory->owned) return;
+    free(memory->ewram);
+    free(memory->iwram);
+    free(memory->palette);
+    free(memory->vram);
+    free(memory->oam);
+    free(memory->sram);
+    memset(memory, 0, sizeof(*memory));
+}
 
 static uint16_t load16(const uint8_t* p) { return (uint16_t)(p[0] | p[1] << 8); }
 static uint32_t load32(const uint8_t* p) {

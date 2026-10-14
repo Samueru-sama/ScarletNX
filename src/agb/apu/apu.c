@@ -5,9 +5,9 @@
 #include "board/board.h"
 #include <string.h>
 
-/* The PSG runs at 4 MiHz and the mixer samples it every 128 cycles, 32768 times a second. The frame
+/* The PSG runs at 4 MiHz and the mixer samples it every 512 cycles, 32768 times a second. The frame
    sequencer clocks the length counters at 256 Hz, the sweep at 128 Hz and the envelopes at 64 Hz. */
-#define CYCLES_PER_SAMPLE 128
+#define CYCLES_PER_SAMPLE 512
 #define LENGTH_TICK       128
 #define SWEEP_TICK        256
 #define ENVELOPE_TICK     512
@@ -285,6 +285,7 @@ static void mix_sample(AgbBoard* board, int16_t* left, int16_t* right) {
     r = psg_right * (int)(apu->soundcnt_l & 7) / 7;
     for (int fifo = 0; fifo < 2; ++fifo) {
         int sample = fifo_pop(apu, fifo);
+        if (apu->fifo_count[fifo] <= 16) agb_dma_event(board, fifo ? AGB_DMA_FIFO_B : AGB_DMA_FIFO_A);
         if (!(apu->soundcnt_h & (4 << fifo))) sample >>= 1;     /* the 50 percent volume setting */
         if (apu->soundcnt_h & (0x100 << fifo * 2)) r += sample; /* bits 8 and 10: to the right */
         if (apu->soundcnt_h & (0x200 << fifo * 2)) l += sample; /* bits 9 and 11: to the left */

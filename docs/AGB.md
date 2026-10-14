@@ -26,12 +26,12 @@ The board is under construction, piece by piece:
 | Memory map | done: every region and mirror, the I/O window as plain storage |
 | HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
 | PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending |
-| APU (audio) | not yet |
-| Keypad (HID) | not yet |
-| CPU, DMA, timers, interrupts | not yet |
+| APU (audio) | done: the four PSG channels, the two FIFOs and the stereo mixer |
+| Keypad (HID) | not yet: KEYINPUT reads as every button released |
+| CPU, DMA, timers, interrupts | done |
 
-This build recognizes a ROM, reports its header and runs the BIOS as HLE. No
-code runs on the board yet.
+A ROM is recompiled when it is loaded, the same process the other system
+types use, and runs on the board from its native module.
 
 ## The display device
 
@@ -42,6 +42,15 @@ line is drawn into the 240 by 160 RGBA frame the host presents: the text,
 affine and bitmap background layers, the sprites with their affine forms, the
 windows, and the colour special effects (alpha blending and brightness). Mosaic
 is the one display feature still missing.
+
+## The sound hardware
+
+`apu/apu.c` owns the sound registers and the mixer: the two square channels with
+their envelopes, length counters and sweep, the wave channel with its two banks
+of four bit digits, the noise channel with its feedback register, and the two
+direct sound FIFOs the audio DMA fills. The mixer samples at 32768 Hz and
+produces the interleaved stereo stream the host plays, with the SOUNDCNT_L and
+SOUNDCNT_H volume and panning settings applied.
 
 ## The memory map
 
@@ -67,6 +76,27 @@ land with those devices.
 Angles are turns in 16 bits, the way the BIOS counts them, and the affine matrix
 drops the low byte of the rotation angle, giving 256 steps around the circle.
 The trigonometry rounds to 1.14 fixed point like the BIOS's own tables.
+
+## The recompiled ROM
+
+`cpu/recomp.c` takes the ROM's ARM and Thumb code through the existing ARM
+recompiler of `src/common/cpu/arm`, block by block, and links the emitted
+objects into a native module with the host compiler. Loading a ROM does this
+automatically and caches the module beside it as `<ROM>.code.so`, the way the
+NX system type caches `<Game>_code.so`; `-r` rebuilds it. Blocks the discovery
+step does not reach, a branch through a register for example, are compiled
+when they are first dispatched.
+
+The CPU state is the recompiler's `SnxArmCPU` on a flat window (`cpu/memmap.c`)
+where the board's regions live at their canonical addresses with the console's
+mirrors mapped to the same pages, so generated code reaches everything with
+one pointer add. The privileged instructions the recompiler refuses, the mode
+switching MSR/MRS forms, SWP and the exception return, are interpreted against
+the banked register state. Software interrupts go to the HLE BIOS and
+interrupts follow the entry and return the BIOS stub performs. Recompiled
+blocks are charged two cycles per instruction, and the waits, the save memory
+width rules and the timer driven FIFO rates are approximations documented
+divergences.
 
 ## The ROM header
 

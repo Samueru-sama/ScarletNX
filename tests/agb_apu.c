@@ -22,11 +22,11 @@ static void reset(void) {
     agb_apu_write(&board, 0x084, 0x0080);
 }
 
-/* One stereo pair of samples per 128 cycles. */
+/* One stereo pair of samples per 512 cycles. */
 static uint32_t run_samples(uint32_t count) {
     CHECK(count * 2 <= sizeof(out) / sizeof(out[0]));
     memset(out, 0, sizeof(out));
-    return agb_apu_run(&board, count * 128, out, count);
+    return agb_apu_run(&board, count * 512, out, count);
 }
 
 int main(void) {
