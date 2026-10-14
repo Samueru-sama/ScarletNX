@@ -3442,7 +3442,7 @@ typedef struct {
     u32 channel, vertex_offset, fragment_offset;
     u8 used, vertex_bound, fragment_bound;
 } NvnProgramCursor;
-typedef struct {
+typedef struct NvnGpuBatch {
     NvnClearBatch* clears;
     NvnCopyBatch* copies;
     NvnDrawBatch* draws;
@@ -3454,7 +3454,13 @@ typedef struct {
     NvnProgramCursor initial_cursors[16];
     NvnStorageSeed* storage_seeds;
     NvnUniformUpdate* uniform_updates;
+    struct NvnGpuBatch* semantic_prefix;
+    NvnControlPacket* executed_cursor;
+    u8 executed_started;
+    u8 executed_seed_valid, executed_seed_zero;
 } NvnGpuBatch;
+
+static _Thread_local NvnControlSubmit* executing_control_submit;
 
 static void free_storage_seeds(NvnStorageSeed* seed) {
     while (seed) {
@@ -3502,6 +3508,47 @@ static void refresh_control_packet_descriptors(NvnControlPacket* packet) {
             !copy_gpu_pages(tic_base + tic_offset, descriptor->tic, sizeof descriptor->tic) ||
             !copy_gpu_pages(tsc_base + tsc_offset, descriptor->tsc, sizeof descriptor->tsc)) continue;
         packet->texture_snapshot_mask |= 1u << slot;
+    }
+}
+
+void nvn_record_control_execute_begin(NvnControlSubmit* submit) {
+    executing_control_submit = submit;
+}
+
+void nvn_record_control_executed_draw(u64 color) {
+    const char* enabled = getenv("SNX_NVN_CONTROL_EXECUTED_DESCRIPTOR");
+    if (!enabled || strcmp(enabled, "1") || !executing_control_submit) return;
+    for (u32 i = 0; i < executing_control_submit->count; i++) {
+        const NvnControlCheckpoint* checkpoint = &executing_control_submit->checkpoint[i];
+        if (checkpoint->color != color || !checkpoint->arg) continue;
+        NvnGpuBatch* batch = checkpoint->arg;
+        NvnControlPacket* packet = batch->executed_started
+            ? batch->executed_cursor : batch->control_packets;
+        batch->executed_started = 1;
+        while (packet && packet->macro38_count != 1) packet = packet->next;
+        if (!packet) return;
+        refresh_control_packet_descriptors(packet);
+        batch->executed_cursor = packet->next;
+        LOG_LIMIT(12, "nvn-control-executed-descriptor: color=%llx ordinal=%llu sequence=%llu mask=%x\n",
+                  (unsigned long long)color, (unsigned long long)packet->ordinal,
+                  (unsigned long long)packet->sequence, packet->texture_snapshot_mask);
+        return;
+    }
+}
+
+void nvn_record_control_executed_seed(u64 color, int verified_zero) {
+    const char* enabled = getenv("SNX_NVN_CONTROL_EXECUTED_SEED");
+    if (!enabled || strcmp(enabled, "1") || !executing_control_submit) return;
+    for (u32 i = 0; i < executing_control_submit->count; i++) {
+        const NvnControlCheckpoint* checkpoint = &executing_control_submit->checkpoint[i];
+        if (checkpoint->color != color || !checkpoint->arg) continue;
+        NvnGpuBatch* batch = checkpoint->arg;
+        if (batch->executed_seed_valid) return;
+        batch->executed_seed_valid = 1;
+        batch->executed_seed_zero = !!verified_zero;
+        LOG_LIMIT(12, "nvn-control-executed-seed: color=%llx zero=%d\n",
+                  (unsigned long long)color, !!verified_zero);
+        return;
     }
 }
 static int raw_registers_have(const u64 known[0x1000 / 64], const u16* methods, u32 count) {
@@ -3561,6 +3608,7 @@ static NvnControlShaderProbe control_shader_probe_for_draw(const NvnControlPacke
 
 static void execute_nvn_batch(void* arg) {
     NvnGpuBatch* batch = arg;
+    if (batch->semantic_prefix) execute_nvn_batch(batch->semantic_prefix);
     NvnControlPipelineCandidate post_semantic_candidate = {0};
     NvnTextureTarget post_semantic_target = {0};
     int post_semantic_probe = 0;
@@ -3610,7 +3658,8 @@ static void execute_nvn_batch(void* arg) {
         const char* dump = getenv("SNX_NVN_CONTROL_PACKET_DUMP");
         const char* descriptor_refresh = getenv("SNX_NVN_CONTROL_LIVE_DESCRIPTOR_REFRESH");
         for (NvnControlPacket* packet = batch->control_packets; packet; packet = packet->next) {
-            if (descriptor_refresh && !strcmp(descriptor_refresh, "1") && packet->macro38_count)
+            if (descriptor_refresh && !strcmp(descriptor_refresh, "1") && packet->macro38_count &&
+                !getenv("SNX_NVN_CONTROL_EXECUTED_DESCRIPTOR"))
                 refresh_control_packet_descriptors(packet);
             NvnProgramCursor* cursor = NULL;
             for (u32 i = 0; i < 16; i++)
@@ -3893,7 +3942,7 @@ static void execute_nvn_batch(void* arg) {
         const char* sequence_batches_opt = getenv("SNX_NVN_CONTROL_SEQUENCE_BATCHES");
         if (sequence_batches_opt) {
             unsigned long requested = strtoul(sequence_batches_opt, NULL, 0);
-            if (requested && requested <= NVN_CONTROL_SUBMIT_CHECKPOINTS)
+            if (requested && requested <= 64)
                 sequence_batch_limit = (u32)requested;
         }
         int sequence_batch = sequence_opt && !strcmp(sequence_opt, "1") &&
@@ -3972,6 +4021,8 @@ static void execute_nvn_batch(void* arg) {
                             experiment_flags |= 2 | (same_draws << 8);
                         }
                     }
+                    if (batch->executed_seed_valid && batch->executed_seed_zero)
+                        experiment_flags |= 4;
                     const u8* indices = (const u8*)packet->words +
                         (u64)packet->word_count * sizeof(u32);
                     raw_draws_issued += g_renderer->nvn_control_draw_probe(
@@ -4171,6 +4222,94 @@ static void execute_nvn_batch(void* arg) {
     free(batch);
 }
 
+/* The control checkpoint may precede QueueFlush even though its sampled-image
+   producers were already recorded. Move only earlier semantic commands into
+   that GPU-thread callback; retain their seeds until the queue's later flush. */
+static NvnGpuBatch* take_control_semantic_prefix(ReplayQueue* queue, u64 before_sequence) {
+    if (!queue || !before_sequence) return NULL;
+    NvnGpuBatch* prefix = calloc(1, sizeof *prefix);
+    if (!prefix) return NULL;
+#define COPY_PREFIX(field, Type) do { \
+        if (queue->field) { \
+            u32 count = 0; \
+            while (count < queue->field->count && \
+                   queue->field->commands[count].sequence < before_sequence) count++; \
+            if (count) { \
+                prefix->field = malloc(sizeof(Type) + (size_t)count * sizeof queue->field->commands[0]); \
+                if (!prefix->field) goto allocation_failed; \
+                prefix->field->count = prefix->field->capacity = count; \
+                memcpy(prefix->field->commands, queue->field->commands, \
+                       (size_t)count * sizeof queue->field->commands[0]); \
+            } \
+        } \
+    } while (0)
+    COPY_PREFIX(clears, NvnClearBatch);
+    COPY_PREFIX(copies, NvnCopyBatch);
+    COPY_PREFIX(draws, NvnDrawBatch);
+    COPY_PREFIX(dispatches, NvnDispatchBatch);
+    COPY_PREFIX(memory_writes, NvnMemoryWriteBatch);
+#undef COPY_PREFIX
+    if (!prefix->clears && !prefix->copies && !prefix->draws &&
+        !prefix->dispatches && !prefix->memory_writes) {
+        free(prefix);
+        return NULL;
+    }
+#define REMOVE_PREFIX(field) do { \
+        if (prefix->field) { \
+            u32 remaining = queue->field->count - prefix->field->count; \
+            memmove(queue->field->commands, queue->field->commands + prefix->field->count, \
+                    (size_t)remaining * sizeof queue->field->commands[0]); \
+            queue->field->count = remaining; \
+        } \
+    } while (0)
+    REMOVE_PREFIX(clears);
+    REMOVE_PREFIX(copies);
+    REMOVE_PREFIX(draws);
+    REMOVE_PREFIX(dispatches);
+    REMOVE_PREFIX(memory_writes);
+#undef REMOVE_PREFIX
+    LOG_LIMIT(8, "nvn-control-semantic-prefix: before=%llu clears=%u copies=%u draws=%u dispatches=%u writes=%u\n",
+              (unsigned long long)before_sequence,
+              prefix->clears ? prefix->clears->count : 0,
+              prefix->copies ? prefix->copies->count : 0,
+              prefix->draws ? prefix->draws->count : 0,
+              prefix->dispatches ? prefix->dispatches->count : 0,
+              prefix->memory_writes ? prefix->memory_writes->count : 0);
+    return prefix;
+allocation_failed:
+    free(prefix->clears);
+    free(prefix->copies);
+    free(prefix->draws);
+    free(prefix->dispatches);
+    free(prefix->memory_writes);
+    free(prefix);
+    return NULL;
+}
+
+static u64 control_target_first_semantic_write(const ReplayQueue* queue, u64 color, u64 limit) {
+    if (!queue || !color) return limit;
+    if (queue->clears)
+        for (u32 i = 0; i < queue->clears->count; i++)
+            if (queue->clears->commands[i].target.gpu_address == color &&
+                queue->clears->commands[i].sequence < limit)
+                limit = queue->clears->commands[i].sequence;
+    if (queue->copies)
+        for (u32 i = 0; i < queue->copies->count; i++)
+            if (queue->copies->commands[i].target.gpu_address == color &&
+                queue->copies->commands[i].sequence < limit)
+                limit = queue->copies->commands[i].sequence;
+    if (queue->draws)
+        for (u32 i = 0; i < queue->draws->count; i++) {
+            const NvnDrawCommand* draw = &queue->draws->commands[i];
+            if (draw->sequence >= limit) continue;
+            for (u32 target = 0; target < 8; target++)
+                if ((draw->color_target_mask & (1u << target)) &&
+                    draw->color_target[target].gpu_address == color)
+                    limit = draw->sequence;
+        }
+    return limit;
+}
+
 void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
     if (!result) return;
     memset(result, 0, sizeof *result);
@@ -4316,6 +4455,19 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
             result->tail_fn = execute_nvn_batch;
             result->tail_arg = batch;
         } else free(batch);
+        const char* semantic_prefix = getenv("SNX_NVN_CONTROL_SEMANTIC_PREFIX");
+        if (result->count && semantic_prefix && !strcmp(semantic_prefix, "1")) {
+            NvnGpuBatch* first = result->checkpoint[0].arg;
+            u64 first_draw_sequence = 0;
+            for (NvnControlPacket* packet = first->control_packets; packet; packet = packet->next)
+                if (packet->macro38_count && packet->sequence) {
+                    first_draw_sequence = packet->sequence;
+                    break;
+                }
+            u64 producer_end = control_target_first_semantic_write(
+                queue, result->checkpoint[0].color, first_draw_sequence);
+            first->semantic_prefix = take_control_semantic_prefix(queue, producer_end);
+        }
     }
     pm_unlock(&lock);
 }
@@ -4441,8 +4593,8 @@ static void flush_replay_queue(u64 command_buffer) {
     pm_unlock(&lock);
     for (u32 i = 0; i < count; i++) nvn_program_translate_async(codes[i]);
     if (clear_batch || copy_batch || draw_batch || dispatch_batch || memory_write_batch ||
-        control_packets || control_packets_dropped) {
-        NvnGpuBatch* owned = malloc(sizeof *owned);
+        control_packets || control_packets_dropped || storage_seeds || uniform_updates) {
+        NvnGpuBatch* owned = calloc(1, sizeof *owned);
         if (owned) {
             owned->clears = clear_batch;
             owned->copies = copy_batch;

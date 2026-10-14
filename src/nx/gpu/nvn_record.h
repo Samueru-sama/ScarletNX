@@ -25,6 +25,9 @@ typedef struct {
     void* tail_arg;
 } NvnControlSubmit;
 void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result);
+void nvn_record_control_execute_begin(NvnControlSubmit* submit);
+void nvn_record_control_executed_draw(u64 color);
+void nvn_record_control_executed_seed(u64 color, int verified_zero);
 void nvn_record_forget_gpu_channel(u32 channel);
 void nvn_record_report(void);
 void nvn_record_enable_descriptor_replay(void);

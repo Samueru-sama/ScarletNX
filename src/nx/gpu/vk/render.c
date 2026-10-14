@@ -12,6 +12,7 @@
 #include <string.h>
 #include "runtime/options.h"
 #include "gpu/gpu.h"
+#include "gpu/nvn_record.h"
 #include "gpu/renderer.h"
 #include "gpu/shader/shader.h"
 #include "hle/services/nvdrv.h"
@@ -988,6 +989,15 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
 u64 g_vk_drawn, g_vk_skipped;
 static struct { u64 address; u32 draws; } g_control_faces[8];
 static u32 g_control_face_count;
+static int control_face_guest_zero(const Surf* target) {
+    if (!target || target->wgen != target->mem_wgen ||
+        !target->layer_size || target->layer_size > (1u << 20)) return 0;
+    const u8* guest = gmem_ptr_untracked(target->gva, target->layer_size);
+    if (!guest) return 0;
+    for (u64 i = 0; i < target->layer_size; i++)
+        if (guest[i]) return 0;
+    return 1;
+}
 void vk_control_faces_begin(const u64* color_addresses, u32 count) {
     g_control_face_count = count < 8 ? count : 8;
     for (u32 i = 0; i < g_control_face_count; i++) {
@@ -1539,6 +1549,18 @@ retry:
     }
     vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
 
+    const char* control_seed = getenv("SNX_NVN_CONTROL_EXECUTED_SEED");
+    if (control_seed && !strcmp(control_seed, "1") && indexed && zt && n && rt[0] &&
+        zt->w == 64 && zt->h == 64)
+        for (u32 i = 0; i < g_control_face_count; i++)
+            if (rt[0]->gva == g_control_faces[i].address && !g_control_faces[i].draws) {
+                int zero = control_face_guest_zero(rt[0]);
+                LOG_LIMIT(12, "nvn-control-guest-seed: color=%llx zero=%d generation=%u/%u bytes=%llu\n",
+                          (unsigned long long)rt[0]->gva, zero, rt[0]->wgen,
+                          rt[0]->mem_wgen, (unsigned long long)rt[0]->layer_size);
+                nvn_record_control_executed_seed(rt[0]->gva, zero);
+            }
+
     if (indexed) {
         vkCmdBindIndexBuffer(cb, ibuf, ioff, itype);
         /* quads made from guest indices keep the base vertex, quads made from vertex numbers have it in them */
@@ -1555,8 +1577,10 @@ retry:
     g_vk_drawn++;
     if (indexed && zt && n && rt[0] && zt->w == 64 && zt->h == 64)
         for (u32 i = 0; i < g_control_face_count; i++)
-            if (rt[0]->gva == g_control_faces[i].address && g_control_faces[i].draws < UINT32_MAX)
+            if (rt[0]->gva == g_control_faces[i].address && g_control_faces[i].draws < UINT32_MAX) {
                 g_control_faces[i].draws++;
+                nvn_record_control_executed_draw(rt[0]->gva);
+            }
     const char* control_compare = getenv("SNX_NVN_CONTROL_COMPARE_PROBE");
     if (control_compare && !strcmp(control_compare, "1") && indexed && zt)
         vk_nvn_control_compare_probe(zt, n && rt[0] ? rt[0]->gva : 0, count, base_vertex);

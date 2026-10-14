@@ -1623,8 +1623,9 @@ that samples it. The `R16` probe uses a `0x6666` clear sentinel and requires
 every pixel to replace it. Both first draws pass that test, so the direct
 path can sample the 192×192 image and certify the 96×96 result. A filtered
 post-submit comparisons match Maxwell at 0/36,864 pixels for the 192×192
-target and 0/9,216 pixels for the 96×96 target. Raw cubemap color replay still depends on descriptor updates in GPU
-execution order; these producer results do not establish cubemap parity.
+target and 0/9,216 pixels for the 96×96 target. Their use by the first raw
+cubemap pass also requires the execution-order descriptor capture described
+below; producer comparisons alone do not establish cubemap parity.
 
 The same per-component probe now certifies a TotK 80×45 `RGBA8` draw. That
 allows the following six draws, which alternate between two 80×45 targets, to
@@ -1853,42 +1854,32 @@ identify the moment its draws execute. Direct replay must advance with the
 GPU thread's executed control methods, including depth clears and attachment
 changes, before this experiment can establish whole-list parity.
 
-The opt-in executed-face checkpoint counts completed indexed Maxwell draws to
-the captured color face and runs the first 65-draw NVN segment after that face
-reaches its recorded count. On the TotK capture, the immediate 64×64 D32F
-readback then differs at **0/4,096 pixels**; both paths changed 305 pixels
-from the clear value. This confirms the first face at the correct execution
-point. Color output and sampled-image producers still need validation before
-the pass can switch to direct NVN.
+The executed-face checkpoint splits a submission at each captured color-face
+transition and carries shader binds between segments. TotK's first cubemap
+pass has **65 + 12 + 11 + 29 + 50 + 44 = 211** raw draws. The shadow path
+now moves semantic producers recorded before the first raw face to that GPU
+checkpoint (`SNX_NVN_CONTROL_SEMANTIC_PREFIX=1`). Its 192×192 and 96×96
+`R16` images match Maxwell at 0/36,864 and 0/9,216 pixels respectively.
+At each executed raw draw, `SNX_NVN_CONTROL_EXECUTED_DESCRIPTOR=1` snapshots
+the then-current handle bank and texture descriptors; a submit-time snapshot
+or one refresh at face end cannot represent GPU-side CBUF writes between draws.
 
-The checkpoint now splits a submission at each captured color-face transition,
-tracks executed draws for every face, and carries the shader program binds from
-one segment to the next. With `SNX_NVN_CONTROL_SEQUENCE_BATCHES=6`, the first
-TotK cubemap pass issues **65 + 12 + 11 + 29 + 50 + 44 = 211** NVN-owned draws.
-Each face's immediate 64×64 depth readback matches Maxwell at **0/4,096**
-different pixels; the six faces change 305, 2, 237, 942, 861, and 950 depth
-pixels respectively. These are depth comparisons at executed face boundaries,
-not color or whole-frame parity. The color comparison shows why: the probe's
-magenta clear differs from Maxwell's clear, and its submit-time register
-snapshot misses SDK macro 9's color-mask write. The capture now models that
-macro's observed low-16-bit mask effect. With a diagnostic register-color
-clear, the first isolated draw still differs at its two colored pixels while
-its two depth pixels match. Captured texture handles differ from live GPU
-handles at some checkpoints: GPU-side CBUF writes occur after submission.
-At the executed first-draw checkpoint, refreshing the guest descriptor bank
-finds the live handle, but its texture is a Maxwell-owned render target and
-the independent NVN path correctly declines it. Enabling the explicit
-diagnostic source bridge makes that single draw's **color and depth both
-match 0/4,096 pixels different**. The bridge proves the missing producer;
-it is not a direct NVN parity result. A complete path must capture descriptor
-state in draw order and render that source without borrowing Maxwell's image.
+The first executed draw to each face also checks that its guest backing is
+zero and still matches the Maxwell target's memory generation. With
+`SNX_NVN_CONTROL_EXECUTED_SEED=1`, only a verified zero backing initializes
+that NVN-owned color face. TotK passes this check for all six 64×64 faces.
+The direct shadow replay then matches Maxwell at **0/4,096 different pixels
+in both color and D32F depth on every face** at the executed face boundaries.
+The faces change 305, 2, 237, 942, 861, and 950 depth pixels. No Maxwell
+texture bridge supplies the sampled `R16` source. This is first-pass
+intermediate-target parity; the guest GPFIFO still executes, and later frames
+and the presented image have not reached direct-NVN parity.
 
-The opt-in `R16` coverage probe now produces the upstream 192×192 and 96×96
-images in the NVN path, with both results matching Maxwell pixel-for-pixel.
-This removes one producer dependency, but the raw first-face replay can still
-reject its submitted texture descriptors before GPU-side writes update the
-handle bank. Live descriptor refresh at a later checkpoint is only diagnostic;
-the recorder still needs execution-order descriptor state.
+The sequence experiment accepts up to 64 checkpoints so repeated passes can
+be inspected. With twelve TotK checkpoints, the next first-face segment
+encounters a sampled cubemap whose direct-NVN coverage is incomplete and
+issues none of its candidate draws. This is the next producer dependency;
+the first-pass six-face result does not carry over automatically.
 
 On later passes, a 256×256 NVN shadow draw feeds a sampled control texture.
 The normal shadow path cannot certify that producer's whole image; its

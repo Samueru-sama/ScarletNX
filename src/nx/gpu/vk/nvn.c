@@ -2258,7 +2258,9 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = {.color = {{0.5f, 0.0f, 0.5f, 1.0f}}}};
     const char* register_clear = getenv("SNX_NVN_CONTROL_REGISTER_CLEAR");
-    if (clear_color && register_clear && !strcmp(register_clear, "1")) {
+    if (clear_color && (experiment_flags & 4))
+        color_attachment.clearValue.color = (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}};
+    if (clear_color && !(experiment_flags & 4) && register_clear && !strcmp(register_clear, "1")) {
         memcpy(&color_attachment.clearValue.color, &registers[0x360], 16);
         LOG_LIMIT(8, "nvn-control-register-color-clear: color=%llx value=%08x,%08x,%08x,%08x\n",
                   (unsigned long long)color_target->gpu_address,

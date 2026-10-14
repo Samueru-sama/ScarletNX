@@ -465,7 +465,8 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control
         u64 addresses[NVN_CONTROL_SUBMIT_CHECKPOINTS];
         for (u32 i = 0; i < control->count; i++) addresses[i] = control->checkpoint[i].color;
         g_renderer->control_faces_begin(addresses, control->count);
-    }
+    } else if (g_renderer->control_faces_begin) g_renderer->control_faces_begin(NULL, 0);
+    nvn_record_control_execute_begin(control);
     u32 next_checkpoint = 0;
     for (u32 k = 0; k < n; k++) {
         u64 ent = e[k];
@@ -499,6 +500,7 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control
                     checkpoint->draws, k + 1, n);
             pm_unlock(&g_gpulock);
             checkpoint->fn(checkpoint->arg);
+            checkpoint->arg = NULL;
             pm_lock(&g_gpulock);
             ch = chan_get(channel);
         }
@@ -506,6 +508,7 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control
     r3d_const_flush(ch);
     r3d_pending_flush();
     pm_unlock(&g_gpulock);
+    nvn_record_control_execute_begin(NULL);
     while (next_checkpoint < control->count) {
         NvnControlCheckpoint* checkpoint = &control->checkpoint[next_checkpoint++];
         if (track_faces)
@@ -513,6 +516,7 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control
                 (unsigned long long)checkpoint->color,
                 g_renderer->control_face_count(checkpoint->color), checkpoint->draws);
         checkpoint->fn(checkpoint->arg);
+        checkpoint->arg = NULL;
     }
 }
 
