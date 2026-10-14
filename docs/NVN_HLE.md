@@ -1555,6 +1555,18 @@ state, enabled writes, or any overlapping color or storage write. The 64×64
 depth sample is no longer the first pending texture in the TotK trace; cubemap
 subresource coverage is next.
 
+The pre-submit zero-backing proof now accepts prior graphics draws when their
+complete write sets are known and disjoint from the candidate image, including
+draws with multiple color attachments and bound storage buffers. Direct drawing
+also accepts single-face cubemap attachments. For a certified zero-backed cube,
+the shadow renderer clears every face and mip before the first draw and tracks
+their coverage individually. TotK's first 64×64, six-face, four-mip
+`R11G11B10F` cube becomes available to later texture sampling. The following
+six-face intermediate cube is drawn, but its faces still lack a full-coverage
+proof, so the next mip pass remains pending. These cubemap draws have not yet
+been established pixel exact against Maxwell, and presented-frame parity is
+still open.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

@@ -94,6 +94,7 @@ typedef struct {
     u8 uniform_updates_complete;
     u16 uniform_bound[NVN_DRAW_SHADER_STAGES];
     NvnStorageBinding storage[2][NVN_DRAW_STORAGE_SLOTS]; /* vertex and fragment */
+    u16 storage_bound[2];
     u16 storage_known[2];
     u64 texture[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
     NvnDescriptorSnapshot texture_descriptor[NVN_DRAW_SHADER_STAGES][NVN_DRAW_TEXTURE_SLOTS];
@@ -110,6 +111,7 @@ typedef struct {
     NvnTextureTarget color_target[8], depth_target;
     u8 color_target_mask, depth_target_bound, target_complete;
     u8 color_initial_zero; /* opt-in pre-submit zero-backing candidate */
+    u8 write_set_scoped; /* replay proved all graphics writes are in bound ranges */
     u32 channel_mask;
     u8 channel_mask_known;
     u32 color_state;

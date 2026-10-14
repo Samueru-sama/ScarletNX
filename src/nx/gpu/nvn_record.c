@@ -1641,6 +1641,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                                         (draw.uniform[stage][slot].size + 255ull) & ~255ull});
             memcpy(draw.storage[0], state->storage[0], sizeof draw.storage[0]);
             memcpy(draw.storage[1], state->storage[1], sizeof draw.storage[1]);
+            draw.storage_bound[0] = state->storage_bound[0];
+            draw.storage_bound[1] = state->storage_bound[1];
             draw.storage_known[0] = state->storage_known[0];
             draw.storage_known[1] = state->storage_known[1];
             storage_draw_snapshots += !!(draw.storage_known[0] | draw.storage_known[1]);
@@ -1768,6 +1770,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
             else
                 draw_targets_incomplete++;
             if (queue) query_draw_scoped = replay_query_scope_draw(&draw, state, queue);
+            draw.write_set_scoped = query_draw_scoped;
             if (!strncmp(op->name, "nvnCommandBufferDrawElements", 28)) {
                 draw_elements++;
                 draw.indexed = 1;
@@ -2560,13 +2563,21 @@ static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawComm
         for (u32 i = 0; i < queue->draws->count; i++) {
             const NvnDrawCommand* prior = &queue->draws->commands[i];
             if (prior->sequence < start || prior->sequence >= draw->sequence) continue;
-            if (prior->sequence + 1 >= draw->sequence || !prior->program_known ||
-                !prior->shader_refs_known || prior->color_target_mask != 1 ||
-                prior->storage_known[0] || prior->storage_known[1] ||
-                !prior->color_target[0].gpu_address || !prior->color_target[0].storage_size ||
-                probe_ranges_overlap(target->gpu_address, target->storage_size,
-                                     prior->color_target[0].gpu_address,
-                                     prior->color_target[0].storage_size)) return 0;
+            if (prior->sequence + 1 >= draw->sequence || !prior->write_set_scoped) return 0;
+            for (u32 stage = 0; stage < 2; stage++)
+                for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+                    if (!(prior->storage_bound[stage] & (1u << slot))) continue;
+                    const NvnBufferRange* range = &prior->storage[stage][slot].range;
+                    if (probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                             range->address, range->size)) return 0;
+                }
+            for (u32 color = 0; color < 8; color++) {
+                if (!(prior->color_target_mask & (1u << color))) continue;
+                const NvnTextureTarget* written = &prior->color_target[color];
+                if (!written->gpu_address || !written->storage_size ||
+                    probe_ranges_overlap(target->gpu_address, target->storage_size,
+                                         written->gpu_address, written->storage_size)) return 0;
+            }
             if (prior->depth_target_bound &&
                 (!prior->depth_target.gpu_address || !prior->depth_target.storage_size ||
                  probe_ranges_overlap(target->gpu_address, target->storage_size,

@@ -2304,7 +2304,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
          command->color_target[0].format != 0x0a && command->color_target[0].format != 0x25 &&
          command->color_target[0].format != 0x29 && command->color_target[0].format != 0x38 &&
          command->color_target[0].format != 0x3d && command->color_target[0].format != 0x3f) ||
-        (command->color_target[0].target != 1 && command->color_target[0].target != 4) ||
+        (command->color_target[0].target != 1 && command->color_target[0].target != 4 &&
+         command->color_target[0].target != 8) ||
         (command->color_target[0].storage_target != 1 && command->color_target[0].storage_target != 4 &&
          command->color_target[0].storage_target != 8) ||
         command->color_target[0].view.base_level >= command->color_target[0].levels ||
@@ -2340,7 +2341,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         u32 height = mip < 16 ? target->height >> mip : 0;
         if (!width) width = 1;
         if (!height) height = 1;
-        if (!format.vk || format.depth || (target->target != 1 && target->target != 4) ||
+        if (!format.vk || format.depth ||
+            (target->target != 1 && target->target != 4 && target->target != 8) ||
             (target->storage_target != 1 && target->storage_target != 4 &&
              target->storage_target != 8) || mip >= target->levels || mip >= 16 ||
             target->view.first_layer >= 64 || width != color_width ||
@@ -2775,8 +2777,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int zero_seed = command->color_initial_zero &&
                     color_written && !color->image_was_written && !prior_covered &&
                     !color_mip && !color_layer && command->color_target_mask == 1 &&
+                    (color->target != 8 ||
+                     (color->layers == 6 && color->bytes <= color_target->storage_size)) &&
                     (color_target->format == 0x25 || color_target->format == 0x38 ||
-                     color_target->format == 0x29 || color_target->format == 0x06);
+                     color_target->format == 0x29 || color_target->format == 0x06 ||
+                     color_target->format == 0x3f);
     if (zero_seed) {
         zero_seed = 0;
         for (u32 i = 0; i < 64; i++) {
@@ -2822,6 +2827,32 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     if (zero_seed) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}};
+        if (color->target == 8) {
+            /* A certified zero backing initializes every cube face and mip, including subresources
+               the first draw does not touch. The attachment itself is a single face view. */
+            vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT, color->stage, color->access,
+                       color->layout, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, color->levels, 0, color->layers};
+            VkClearColorValue clear = {{0.0f, 0.0f, 0.0f, 0.0f}};
+            vkCmdClearColorImage(cb, color->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+            vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            color->layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color->stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            color->access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            for (u32 mip = 0; mip < color->levels; mip++) {
+                color->color_layers[mip] = (1ull << color->layers) - 1;
+                for (u32 layer = 0; layer < color->layers; layer++)
+                    color->subresource_sequence[mip][layer] = command->sequence;
+            }
+            color->image_was_written = 1;
+            shadow_record_backing(color);
+        }
         LOG("nvn-shadow-initial-color: target=%llx sequence=%llu size=%u\n",
             (unsigned long long)color_target->gpu_address,
             (unsigned long long)command->sequence, color_target->storage_size);
