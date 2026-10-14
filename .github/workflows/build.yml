@@ -179,7 +179,7 @@ jobs:
           set -euo pipefail
           build/default/scarletnx.exe --help > /dev/null
           build/default/scarletnx.exe --extract --help > /dev/null
-          build/default/scarletnx.exe --recompile --help > /dev/null
+          build/default/scarletnx.exe --recomp --help > /dev/null
       - name: Test native tooling and indexed filesystems
         run: |
           set -euo pipefail

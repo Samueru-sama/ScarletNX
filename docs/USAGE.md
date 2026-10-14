@@ -18,7 +18,7 @@ The name comes from the dump stem, retaining letters, digits, UTF-8, spaces, hyp
 `--repo DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
 `-H` (`--headless`) can precede or follow the dump and is passed to the game only.
 Omitting it selects windowed startup, unless the build has no window backend.
-`-x` means `--extract`, and `-r` means `--recomp` (the old `--recompile` spelling was removed).
+`-x` means `--extract`, and `-r` means `--recomp` (the old `--recomp` spelling was removed).
 On UNIX, short flags can be combined. Windows accepts separate short flags only.
 
 To prepare a dump without playing, use `./build/scarletnx -r "Game.xci"`.

@@ -3,7 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <psapi.h>
-#include "process.h"
+#include "gui_process.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

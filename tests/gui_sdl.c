@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_ESCAPE);
     assert(app.menu.view == GUI_LOAD_NONE);
     key(&app, SDLK_RETURN);
-    key(&app, SDLK_RETURN); /* activate Please drag and drop */
+    key(&app, SDLK_RETURN); /* activate Select via drag and drop */
     SDL_Event e = {0};
     e.type = SDL_EVENT_DROP_TEXT;
     e.drop.data = "one\ntwo";

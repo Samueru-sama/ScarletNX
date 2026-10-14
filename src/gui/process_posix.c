@@ -4,7 +4,7 @@
 #ifndef __FreeBSD__
 #define _POSIX_C_SOURCE 200809L
 #endif
-#include "process.h"
+#include "gui_process.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>

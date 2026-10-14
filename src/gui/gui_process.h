@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+/* Do not name this process.h: SDL needs the Windows CRT header of that name. */
 #ifndef SNX_GUI_PROCESS_H
 #define SNX_GUI_PROCESS_H
 #include <stdbool.h>

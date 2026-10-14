@@ -33,4 +33,33 @@ if(NOT SNX_LLVM_VERSION OR NOT EXISTS "${SNX_LLVM_INCLUDE_DIR}/llvm-c/Core.h" OR
 endif()
 separate_arguments(SNX_LLVM_LIBS UNIX_COMMAND "${SNX_LLVM_LIBS}")
 separate_arguments(SNX_LLVM_SYSTEM_LIBS UNIX_COMMAND "${SNX_LLVM_SYSTEM_LIBS}")
+
+function(snx_llvm_windows_libraries output)
+    # With -static, MinGW's linker will not find libLLVM-23.dll.a through
+    # -lLLVM-23. Pass the exact import library instead, without changing the
+    # linkage of the toolchain or SDL. llvm-config --libfiles is not a substitute:
+    # on Windows it reports the runtime DLL in bin/, not its import library.
+    set(CMAKE_FIND_LIBRARY_PREFIXES "lib" "")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll.a" ".a" ".lib")
+    set(libraries "")
+    foreach(library IN LISTS ARGN)
+        if(library MATCHES "^-l(.+)$")
+            set(name "${CMAKE_MATCH_1}")
+            set(resolved "resolved-NOTFOUND")
+            find_library(resolved NAMES "${name}" PATHS "${SNX_LLVM_LIBRARY_DIR}"
+                         NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH NO_CACHE)
+            if(NOT resolved)
+                message(FATAL_ERROR "LLVM is required, but ${library} from ${SNX_LLVM_CONFIG} has no library in "
+                                    "${SNX_LLVM_LIBRARY_DIR}. Install the target LLVM development libraries.")
+            endif()
+            list(APPEND libraries "${resolved}")
+        else()
+            list(APPEND libraries "${library}")
+        endif()
+    endforeach()
+    set(${output} "${libraries}" PARENT_SCOPE)
+endfunction()
+if(WIN32)
+    snx_llvm_windows_libraries(SNX_LLVM_LIBS ${SNX_LLVM_LIBS})
+endif()
 message(STATUS "LLVM backend: LLVM ${SNX_LLVM_VERSION} (${SNX_LLVM_CONFIG})")

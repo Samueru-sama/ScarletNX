@@ -8,7 +8,7 @@
 #include "browser.h"
 #include "font.h"
 #include "model.h"
-#include "process.h"
+#include "gui_process.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,7 +114,7 @@ static void render(App* app) {
                 snprintf(label, sizeof(label), "- %s", items[i]);
             text(app, 1, row, label, is_hovered ? yellow : normal);
             if (is_hovered && app->menu.view != GUI_LOAD_NONE) {
-                text(app, 3, row + 1, "-> Please drag and drop",
+                text(app, 3, row + 1, "-> Select via drag and drop",
                      app->menu.load_selected == GUI_LOAD_DRAG ? yellow : normal);
                 text(app, 3, row + 2, "-> Select file from games/ instead",
                      app->menu.load_selected == GUI_LOAD_DIRECTORY ? yellow : normal);

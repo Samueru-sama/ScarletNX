@@ -13,9 +13,9 @@ English text only. No font files or localization packages are needed.
 - Up/Down and Left/Right move the yellow selection, wrapping at the ends.
 - Space or Enter activates the selected item.
 - Selecting **Load Switch NSP/XCI/NRO** or **Load Linux ARM ELF** keeps that item
-  visible and opens two selectable options underneath it: **Please drag and drop**
+  visible and opens two selectable options underneath it: **Select via drag and drop**
   and **Select file from games/ instead**.
-- Activate **Please drag and drop** to wait for a file. SDL file drops and text drops
+- Activate **Select via drag and drop** to wait for a file. SDL file drops and text drops
   are supported. Ctrl+V also accepts a clipboard path while waiting. ESC returns to
   the two options, and another ESC returns to the main menu.
 - **Fullscreen** toggles the Switch game's startup setting, not the launcher's

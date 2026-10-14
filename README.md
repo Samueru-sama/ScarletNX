@@ -6,7 +6,9 @@
 
 Discord: https://discord.gg/tRTRXXbyjp (my god why don't we just use IRC like good people?)
 
-A GPLv3 static ARM64 to x86 recompiler with a Nintendo Switch translation layer for Linux, Windows and FreeBSD. Forked from MZLab's SwitchRecomp.
+A GPLv3 static ARM64 to x86 recompiler with a Nintendo Switch translation layer for Linux, Windows and FreeBSD.
+
+Forked from MZLab's SwitchRecomp. SwitchRecomp is based off Nexium.
 
 The shared ARM64 recompiler lives under `src/common/`. Nintendo Switch Horizon HLE
 and Maxwell graphics live under `src/nx/`. The CPU-only Linux AArch64 runtime lives

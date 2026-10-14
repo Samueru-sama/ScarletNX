@@ -72,7 +72,8 @@ target_link_libraries(scarletnx PRIVATE scarletnx-nx)
 # the native driver and CI look for it
 set_target_properties(scarletnx PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 if(WIN32)
-    # Static, so the runtime runs without the MinGW DLLs next to it. user32 has the backends' message boxes:
+    # Prefer static toolchain/SDL libraries. LLVM may still use a DLL import library,
+    # resolved by cmake/llvm.cmake and bundled by CI. user32 provides message boxes;
     # winmm is loaded at run time, and the static SDL3 brings the libraries it needs
     target_link_libraries(scarletnx PRIVATE user32)
     # The application manifest (runtime/platform/runtime.manifest): UTF-8 as the process's code page, long paths

@@ -217,7 +217,7 @@ int snx_driver(int argc, char** argv) {
             continue;
         }
         parsed = snx_cli_flag(argv[i], &flags);
-        if (parsed < 0 || !strcmp(argv[i], "--recompile")) {
+        if (parsed < 0) {
             result = snx_error("unknown option: %s", argv[i]);
             goto done;
         }
