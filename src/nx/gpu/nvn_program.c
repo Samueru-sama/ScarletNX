@@ -33,11 +33,27 @@ typedef struct {
     u64 address, hash;
     u32 size;
     u16 writes;
+    u8 cb_sensitive;
     u8 state; /* 0 available, 1 queued, 2 certified, 3 rejected for these code bytes */
 } ComputeWrites;
+typedef struct {
+    u64 address;
+    u64 hash, code_hash;
+    u32 size;
+    u8 cbuf1[256];
+    u8 has_cbuf1;
+} ComputeWritesJob;
 #define COMPUTE_WRITES_SLOTS 4096
 static ComputeWrites compute_writes[COMPUTE_WRITES_SLOTS];
 static PMutex compute_writes_lock = PMUTEX_INIT;
+static int readable_range(u64 addr, u64 size);
+/* The translator callback is global, and analysis runs on the GPU thread. */
+static const ComputeWritesJob* compute_writes_active;
+static int compute_writes_cb_read(u32 bank, u32 offset, u32* value) {
+    if (!compute_writes_active || bank != 1 || !compute_writes_active->has_cbuf1 || offset > 252) return 0;
+    memcpy(value, compute_writes_active->cbuf1 + offset, sizeof *value);
+    return 1;
+}
 static void shader_translate_probe(void* ptr);
 
 static ComputeWrites* compute_writes_slot(u64 address, int create) {
@@ -59,18 +75,60 @@ static u64 compute_writes_hash(const u8* code, u32 size) {
     return hash;
 }
 
-/* Translate with the same 80-byte SPH prefix as the NVN QMD path. A BRX needs live CBUF
-   jump-table words, so program-setup analysis never certifies a shader containing one. */
+static u64 compute_writes_hash_cbuf1(u64 hash, const u8 cbuf1[256]) {
+    hash = (hash ^ 1) * 1099511628211ull;
+    for (u32 i = 0; i < 256; i++) hash = (hash ^ cbuf1[i]) * 1099511628211ull;
+    return hash;
+}
+
+static int compute_writes_inputs(u64 address, u64 control, ComputeWritesJob* job) {
+    const u8* header = gmem_ptr_untracked(address, 8);
+    u32 magic = 0, size = 0;
+    if (!header) return 0;
+    memcpy(&magic, header, sizeof magic);
+    memcpy(&size, header + 4, sizeof size);
+    if (magic != 0x12345679 || size < 0x80 || size > NVN_SHADER_CODE_MAX ||
+        address > UINT64_MAX - 0x100 - size) return 0;
+    const u8* code = gmem_ptr_untracked(address + 0x100, size);
+    if (!code) return 0;
+    memset(job, 0, sizeof *job);
+    job->address = address;
+    job->size = size;
+    job->hash = job->code_hash = compute_writes_hash(code, size);
+    if (control) {
+        /* Program control is a CPU virtual address; shader code and embedded CBUF1
+           are GPU addresses. Match the address spaces used by dispatch replay. */
+        const u8* descriptor = readable_range(control, 0x758) ? GP(control) : NULL;
+        u32 descriptor_magic = 0, descriptor_size = 0, offset = 0;
+        if (descriptor) {
+            memcpy(&descriptor_magic, descriptor, 4);
+            memcpy(&descriptor_size, descriptor + 0x20, 4);
+            memcpy(&offset, descriptor + 0x700, 4);
+        }
+        if (descriptor_magic == 0x98761234 && descriptor_size == 0x880 &&
+            offset >= 0x100 && offset <= 0x10000 && address <= UINT64_MAX - offset - 256) {
+            const u8* cbuf1 = gmem_ptr_untracked(address + offset, 256);
+            if (cbuf1) {
+                memcpy(job->cbuf1, cbuf1, 256);
+                job->has_cbuf1 = 1;
+                job->hash = compute_writes_hash_cbuf1(job->hash, job->cbuf1);
+            }
+        }
+    }
+    return 1;
+}
+
+/* Translate with the same 80-byte SPH prefix and CBUF1 bytes as the NVN QMD path. */
 static void analyze_compute_writes(void* ptr) {
-    u64 address = *(u64*)ptr;
-    free(ptr);
+    ComputeWritesJob* job = ptr;
+    u64 address = job->address;
     u32 header[2] = {0};
     gmem_read_code(address, header, sizeof header);
     u32 size = header[1], length = 0;
     u16 writes = 0;
-    u64 hash = 0;
+    u64 hash = 0, code_hash = 0;
     int certified = 0, repeatable = 0;
-    int bounded = 0, mapped = 0, branch = -1, unsupported = -1, images = -1, buffers = -1;
+    int bounded = 0, mapped = 0, has_brx = 0, branch = -1, unsupported = -1, images = -1, buffers = -1;
     const char* branch_name = "";
     if (header[0] == 0x12345679 && size >= 0x80 && size <= NVN_SHADER_CODE_MAX &&
         address <= UINT64_MAX - 0x100 - size) {
@@ -79,16 +137,24 @@ static void analyze_compute_writes(void* ptr) {
             memset(code, 0, 80);
             gmem_read_code(address + 0x100, code + 80, size);
             bounded = mapped = !!gmem_ptr_untracked(address + 0x100, size);
-            if (mapped) hash = compute_writes_hash(code + 80, size);
+            if (mapped) {
+                hash = code_hash = compute_writes_hash(code + 80, size);
+                if (job->has_cbuf1) hash = compute_writes_hash_cbuf1(hash, job->cbuf1);
+            }
             int (*old)(u32, u32, u32*) = g_shader_cb_read;
-            g_shader_cb_read = NULL;
+            compute_writes_active = job;
+            g_shader_cb_read = compute_writes_cb_read;
             shader_hash(code, size + 80, &length);
             bounded &= length >= 80 && length <= size + 80;
             for (u32 i = 11; bounded && i < length / 8; i++) {
                 if (!IDX_OK(i)) continue;
                 const Op* op = decode(((const u64*)code)[i]);
+                if (op && op->id == O_BRX) has_brx = 1;
                 /* The translator skips unknown encodings, which cannot prove a write set. */
-                if (!op || op->id == O_BRX || op->id == O_CAL || op->id == O_JMP) {
+                u32 targets[64];
+                if (!op || op->id == O_CAL || op->id == O_JMP ||
+                    (op->id == O_BRX &&
+                     shader_brx_targets_bounded((const u64*)code, i, length / 8, targets, 64) < 0)) {
                     bounded = 0;
                     branch = (int)i;
                     branch_name = op ? op->name : "UNKNOWN";
@@ -118,6 +184,7 @@ static void analyze_compute_writes(void* ptr) {
                 free(spirv);
             }
             g_shader_cb_read = old;
+            compute_writes_active = NULL;
             free(code);
         }
     }
@@ -129,69 +196,57 @@ static void analyze_compute_writes(void* ptr) {
     pm_lock(&compute_writes_lock);
     ComputeWrites* slot = compute_writes_slot(address, 0);
     if (slot && slot->state == 1) {
-        slot->hash = hash;
+        slot->hash = has_brx ? hash : code_hash;
         slot->size = size;
         slot->writes = writes;
+        slot->cb_sensitive = has_brx;
         slot->state = certified ? 2 : repeatable ? 3 : 0;
     }
     pm_unlock(&compute_writes_lock);
+    free(job);
 }
 
-static void queue_compute_writes(u64 address) {
+static void queue_compute_writes(u64 address, u64 control) {
     if (!address || address > UINT64_MAX - 0x100 - NVN_SHADER_CODE_MAX) return;
-    const u8* header = gmem_ptr_untracked(address, 8);
-    u32 magic = 0, size = 0;
-    if (!header) return;
-    memcpy(&magic, header, sizeof magic);
-    memcpy(&size, header + 4, sizeof size);
-    if (magic != 0x12345679 || size < 0x80 || size > NVN_SHADER_CODE_MAX) return;
-    const u8* code = gmem_ptr_untracked(address + 0x100, size);
-    if (!code) return;
-    u64 hash = compute_writes_hash(code, size);
+    ComputeWritesJob* owned = malloc(sizeof *owned);
+    if (!owned) return;
+    if (!compute_writes_inputs(address, control, owned)) { free(owned); return; }
     pm_lock(&compute_writes_lock);
     ComputeWrites* slot = compute_writes_slot(address, 1);
-    int queued = slot &&
-                 (!slot->state || (slot->state >= 2 && (slot->size != size || slot->hash != hash)));
+    int queued = slot && (!slot->state ||
+                         (slot->state >= 2 &&
+                          (slot->size != owned->size ||
+                           slot->hash != (slot->cb_sensitive ? owned->hash : owned->code_hash))));
     if (queued) slot->state = 1;
     pm_unlock(&compute_writes_lock);
-    if (!queued) return;
-    u64* owned = malloc(sizeof *owned);
-    if (!owned) {
-        pm_lock(&compute_writes_lock);
-        slot = compute_writes_slot(address, 0);
-        if (slot && slot->state == 1) slot->state = 0;
-        pm_unlock(&compute_writes_lock);
+    if (!queued) {
+        free(owned);
         return;
     }
-    *owned = address;
     gpu_call(analyze_compute_writes, owned);
 }
 
-int nvn_program_compute_write_slots(u64 address, u16* slots) {
+int nvn_program_compute_write_slots(u64 address, u64 control, u16* slots) {
     if (!address || !slots) return 0;
-    const u8* header = gmem_ptr_untracked(address, 8);
-    u32 magic = 0, size = 0;
-    if (!header) return 0;
-    memcpy(&magic, header, sizeof magic);
-    memcpy(&size, header + 4, sizeof size);
-    if (magic != 0x12345679 || size < 0x80 || size > NVN_SHADER_CODE_MAX ||
-        address > UINT64_MAX - 0x100 - size) return 0;
-    const u8* code = gmem_ptr_untracked(address + 0x100, size);
-    if (!code) return 0;
-    u64 hash = compute_writes_hash(code, size);
+    ComputeWritesJob input;
+    if (!compute_writes_inputs(address, control, &input)) return 0;
     pm_lock(&compute_writes_lock);
     ComputeWrites* slot = compute_writes_slot(address, 0);
-    int valid = slot && slot->state == 2 && slot->size == size && slot->hash == hash;
+    int valid = slot && slot->state == 2 && slot->size == input.size &&
+                slot->hash == (slot->cb_sensitive ? input.hash : input.code_hash);
     if (valid) *slots = slot->writes;
-    int stale = !slot || !slot->state || (slot->state >= 2 && (slot->size != size || slot->hash != hash));
+    int stale = !slot || !slot->state ||
+                (slot->state >= 2 &&
+                 (slot->size != input.size ||
+                  slot->hash != (slot->cb_sensitive ? input.hash : input.code_hash)));
     const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
     if (trace && !strcmp(trace, "1"))
         LOG("nvn-compute-writes: code=%llx size=%x state=%u analyzed-size=%x writes=%04x hash-match=%d valid=%d\n",
-            (unsigned long long)address, size, slot ? slot->state : 0,
+            (unsigned long long)address, input.size, slot ? slot->state : 0,
             slot ? slot->size : 0, slot ? slot->writes : 0,
-            slot && slot->hash == hash, valid);
+            slot && slot->hash == (slot->cb_sensitive ? input.hash : input.code_hash), valid);
     pm_unlock(&compute_writes_lock);
-    if (stale) queue_compute_writes(address);
+    if (stale) queue_compute_writes(address, control);
     return valid;
 }
 
@@ -331,7 +386,7 @@ void nvn_program_before(const CPU* c, const char* name, NvnProgramCall* call) {
 }
 
 void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* call) {
-    u64 analyze[NVN_PROGRAM_MAX_SHADERS] = {0};
+    NvnShaderRef analyze[NVN_PROGRAM_MAX_SHADERS] = {0};
     u32 analyze_count = 0;
     pm_lock(&lock);
     if (!strcmp(name, "nvnProgramInitialize")) {
@@ -381,7 +436,7 @@ void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* cal
                     if (!call->refs[i].code_candidate) zero_code_addresses++;
                     if (!call->refs[i].control_candidate) zero_control_addresses++;
                     if (getenv("SNX_NVN_SHADOW_DISPATCH") && analyze_count < NVN_PROGRAM_MAX_SHADERS)
-                        analyze[analyze_count++] = call->refs[i].code_candidate;
+                        analyze[analyze_count++] = call->refs[i];
                 }
             } else if (call->shader_count > NVN_PROGRAM_MAX_SHADERS) {
                 refs_oversized++;
@@ -392,7 +447,8 @@ void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* cal
         }
     }
     pm_unlock(&lock);
-    for (u32 i = 0; i < analyze_count; i++) queue_compute_writes(analyze[i]);
+    for (u32 i = 0; i < analyze_count; i++)
+        queue_compute_writes(analyze[i].code_candidate, analyze[i].control_candidate);
 }
 
 int nvn_program_check(u64 program) {

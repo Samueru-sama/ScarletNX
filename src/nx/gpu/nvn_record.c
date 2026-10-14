@@ -715,7 +715,8 @@ static int replay_query_scope_dispatch(const ReplayState* state, ReplayQueue* qu
     if (!(state->program_bound & (1u << 5)) || !program->generation || !program->refs_known ||
         program->shader_count != 1 || state->image_bound[5] ||
         state->storage_bound[5] != state->storage_known[5] ||
-        !nvn_program_compute_write_slots(program->refs[0].code_candidate, &writes) ||
+        !nvn_program_compute_write_slots(program->refs[0].code_candidate,
+                                         program->refs[0].control_candidate, &writes) ||
         (writes & ~state->storage_known[5])) return 0;
     for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
         if (!(writes & (1u << slot))) continue;

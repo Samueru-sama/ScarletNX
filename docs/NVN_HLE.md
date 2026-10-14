@@ -1455,8 +1455,15 @@ TotK's native QMD shader has a compiler-generated table load at instruction 93
 and a `BRX` at 125, farther apart than the translator's original eight-instruction
 lookup. A guarded straight-line lookup now finds its four CBUF1 entries and
 resolves targets 127, 135, 141, and 147 during shader translation. The offline
-query proof has no ordered CBUF1 snapshot, so this renderer improvement does not
-relax its BRX rejection.
+query proof now reads the same embedded CBUF1 through the program's CPU control
+record, accepts only a fully clamped branch table, and checks the table bytes again
+before using a cached write set. Branch-free proofs depend only on shader code bytes;
+the embedded buffer may change between program setup and the first dispatch without
+forcing a conservative cache miss. In the TotK probe, both the first-visit dispatch
+after the producer draw and the later BRX dispatch now preserve the disjoint query
+counter. The second zero clear is skipped, and the sampled 320×180 producer target
+matches the emulated GPU at all 57,600 pixels. This establishes parity for that
+sampled target, not for the later passes or presented frame.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

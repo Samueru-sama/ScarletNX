@@ -164,7 +164,7 @@ static int brx_far_ldc(const u64* w, u32 i, u32 ra) {
 }
 
 /* BRX targets from its jump table (LDC nearby -> cbuf). -1 if the table can't be resolved. */
-int shader_brx_targets(const u64* w, u32 i, u32 n, u32* out, int max) {
+static int brx_targets(const u64* w, u32 i, u32 n, u32* out, int max, int require_exact) {
     if (!g_shader_cb_read) return -1;
     u32 ra = B(w[i], 8, 8);
     i32 imm = (i32)(B(w[i], 20, 24) << 8) >> 8;
@@ -187,6 +187,7 @@ int shader_brx_targets(const u64* w, u32 i, u32 n, u32* out, int max) {
         i32 coff = (i32)(B(w[ldc], 20, 16) << 16) >> 16;
         u32 table_count = 0;
         int exact = brx_table_count(w, ldc, &table_count);
+        if (require_exact && !exact) return -1;
         if (exact && table_count > (u32)max) return -1;
         int cnt = 0;
         for (u32 e = 0; e < (exact ? table_count : 64u) && cnt < max; e++) {
@@ -216,6 +217,12 @@ int shader_brx_targets(const u64* w, u32 i, u32 n, u32* out, int max) {
         return cnt ? cnt : -1;
     }
     return -1;
+}
+int shader_brx_targets(const u64* w, u32 i, u32 n, u32* out, int max) {
+    return brx_targets(w, i, n, out, max, 0);
+}
+int shader_brx_targets_bounded(const u64* w, u32 i, u32 n, u32* out, int max) {
+    return brx_targets(w, i, n, out, max, 1);
 }
 /* ---- static SSY/PBK/PCNT resolution ----
    The hardware has one CRS stack: SSY/PBK/PCNT push a token of their kind with the target, SYNC/BRK/CONT pop the

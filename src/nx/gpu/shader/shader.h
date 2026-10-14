@@ -72,6 +72,8 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
 extern int (*g_shader_cb_read)(u32 idx, u32 off, u32* out);
 int shader_brx_targets(const u64* words, u32 index, u32 count, u32* targets, int max_targets);
 u64 shader_hash(const u8* code, u32 max_bytes, u32* out_len);
+/* Resolve only compiler-clamped BRX tables whose complete target set is known. */
+int shader_brx_targets_bounded(const u64* words, u32 index, u32 count, u32* targets, int max);
 /* shader corpus (SNX_SHADER_CORPUS=dir): each translated shader's code and its ShaderInfo inputs, so
    tools/snx_shaderc.c can translate them again offline. The files only load into a build with the same ShaderInfo */
 int shader_corpus_save(const char* dir, const u8* code, u32 len, u32 max_bytes, int stage, const ShaderInfo* si,
