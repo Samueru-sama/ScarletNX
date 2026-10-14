@@ -174,6 +174,21 @@ static int is_dump(const char* path) {
     return 0;
 }
 
+void snx_save_before_exit(void) {
+    static PMutex lock = PMUTEX_INIT;
+    static int done;
+    pm_lock(&lock);
+    if (!done) {
+        done = 1;
+        save_hints();
+        /* the process ends without shutting the renderer down, so it saves what it keeps across runs (the pipeline
+           cache) here */
+        if (g_renderer && g_renderer->save) g_renderer->save();
+        nvn_trace_report();
+    }
+    pm_unlock(&lock);
+}
+
 int snx_main(int argc, char** argv) {
     int startup = snx_startup_options(argc, argv);
     if (startup) return startup;
@@ -301,11 +316,7 @@ int snx_main(int argc, char** argv) {
         else if (now - next > 100000000ull)
             next = now;
     }
-    save_hints();
-    nvn_trace_report();
-    /* the process ends without shutting the renderer down, so it saves what it keeps across runs (the pipeline cache)
-       here */
-    if (g_renderer && g_renderer->save) g_renderer->save();
+    snx_save_before_exit();
     LOG("Exit.\n");
     plat_exit_now(0); /* the guest threads are still running: they aren't joined */
 }

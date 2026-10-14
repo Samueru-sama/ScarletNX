@@ -4,7 +4,7 @@
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* threads: creating, starting, the thread a host thread runs, exiting */
 #include "hle/kernel/kernel_int.h"
-#include "gpu/renderer.h"
+#include "runtime/main.h"
 /* ============================================================ threads */
 KThread* g_threads[256];
 int g_nthreads;
@@ -274,8 +274,7 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
    run in it, so the process ends at once, the way main.c ends it when the window closes (with the hints and the
    renderer's pipeline cache saved first, as there) */
 void process_exit(int code) {
-    save_hints();
-    if (g_renderer && g_renderer->save) g_renderer->save();
+    snx_save_before_exit();
     LOG("The game exited (code %d)\n", code);
     plat_exit_now(code);
 }

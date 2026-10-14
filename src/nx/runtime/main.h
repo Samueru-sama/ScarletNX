@@ -8,6 +8,9 @@
 #include "cpu/aarch64/cpu.h"
 
 int snx_main(int argc, char** argv);
+/* What a clean exit saves (the recompiler hints, the renderer's pipeline cache) and reports (SNX_NVN_TRACE). Each exit
+   path calls it before plat_exit_now: the first does the work, a concurrent one waits for it */
+void snx_save_before_exit(void);
 extern char g_datadir[1024], g_exename[256], g_exedir[1024];
 extern volatile int g_quit;
 extern int g_frames;
