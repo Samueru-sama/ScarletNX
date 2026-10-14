@@ -1675,6 +1675,28 @@ comparison also confirms the complete first-draw uniform bytes, TIC/TSC,
 vertex stream, indices, viewport, and 256×256 sampled source match; disabling
 depth testing in either path alone does not remove the difference.
 
+An operation-aligned depth readback identifies the remaining first-face
+difference. Immediately before its first cubemap draw, Maxwell's 64×64 depth
+surface has 305 pixels below the cleared value of 1.0; the direct depth
+surface has none. Disabling depth tests on both paths makes the color face
+pixel-exact. The preceding Maxwell work includes 65 indexed draws with depth
+writes from macro 38 (`0xe4c`) in GPFIFO entries outside every recorded NVN
+command-list span. These entries occur inside the same NVN queue submit, so a
+semantic list alone cannot reproduce that submit. The three secondary lists
+immediately before the first face contain state binds, not those draws. A
+direct-only renderer needs an ordered representation of such GPU entries, or
+an explicit hybrid fallback that preserves their depth result at the point of
+the following NVN draw. A later readback of the same address is insufficient
+because TotK clears and reuses the depth surface for each cube face.
+
+`SNX_NVN_GPU_COVERAGE=1` reports GPFIFO entry counts for each replay batch:
+entries whose CPU backing lies in a recorded draw-list span, macro packets
+outside those spans, and outside-span macro 38 packets. Macro numbers are
+game/SDK-defined; the last counter diagnoses this TotK run rather than
+classifying draws in every title. One TotK submit reports 65 outside-span
+macro 38 packets alongside 121 semantic draws. This diagnostic is opt-in and
+does not alter rendering.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

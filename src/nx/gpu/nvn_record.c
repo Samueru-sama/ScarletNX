@@ -202,6 +202,8 @@ typedef struct {
     u64 next_visit;
     u64 batch_start_sequence;
     u64 last_unmodeled_write;
+    u64 gpu_entries, gpu_entries_in_draw_span;
+    u64 gpu_macro_packets_outside_draw_span, gpu_macro38_packets_outside_draw_span;
     u64 color_probe_seen[128];
     u16 color_probe_seen_count;
     ReplayState state;
@@ -425,6 +427,7 @@ typedef struct {
     u32 mode, sub, method, count, index;
     u32 origin, origin_writes;
     u32 clip_writes;
+    u64 macro_packets, macro38_packets;
     u8 clip_enable, clip_known;
     u8 active, known;
 } NvnOriginStream;
@@ -488,6 +491,10 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
         u32 header = words[i++], mode = header >> 29;
         u32 sub = (header >> 13) & 7, method = header & 0xfff;
         u32 count = (header >> 16) & 0x1fff;
+        if (!sub && method >= 0xe00 && (mode == 1 || mode == 3 || mode == 4 || mode == 5)) {
+            stream->macro_packets++;
+            if (method == 0xe4c) stream->macro38_packets++;
+        }
         if (mode == 4)
             origin_method(stream, sub, method, count);
         else if (mode == 1 || mode == 3 || mode == 5) {
@@ -549,11 +556,21 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             }
         u32 writes_before = stream->origin_writes;
         u32 clip_writes_before = stream->clip_writes;
+        u64 macros_before = stream->macro_packets;
+        u64 macro38_before = stream->macro38_packets;
         const u32* data = (const u32*)gmem_ptr_untracked(va, bytes);
         if (data) origin_pushbuffer(stream, data, words);
         else {
             stream->known = 0;
             stream->clip_known = 0;
+        }
+        if (queue) {
+            queue->gpu_entries++;
+            queue->gpu_entries_in_draw_span += !!matched_visit && matched_visit != UINT64_MAX;
+            if (!matched_visit || matched_visit == UINT64_MAX) {
+                queue->gpu_macro_packets_outside_draw_span += stream->macro_packets - macros_before;
+                queue->gpu_macro38_packets_outside_draw_span += stream->macro38_packets - macro38_before;
+            }
         }
         if (queue && queue->draws && matched_visit)
             for (u32 i = 0; i < queue->draws->count; i++) {
@@ -3099,6 +3116,17 @@ static void flush_replay_queue(u64 command_buffer) {
     pm_lock(&lock);
     ReplayQueue* queue = replay_queue_slot(command_buffer);
     if (queue && queue->key == command_buffer) {
+        const char* coverage = getenv("SNX_NVN_GPU_COVERAGE");
+        if (coverage && !strcmp(coverage, "1") && queue->gpu_entries)
+            LOG("nvn-gpu-coverage: queue=%llx entries=%llu draw-span=%llu outside-macros=%llu outside-macro38=%llu draws=%u\n",
+                (unsigned long long)command_buffer,
+                (unsigned long long)queue->gpu_entries,
+                (unsigned long long)queue->gpu_entries_in_draw_span,
+                (unsigned long long)queue->gpu_macro_packets_outside_draw_span,
+                (unsigned long long)queue->gpu_macro38_packets_outside_draw_span,
+                queue->draws ? queue->draws->count : 0);
+        queue->gpu_entries = queue->gpu_entries_in_draw_span = 0;
+        queue->gpu_macro_packets_outside_draw_span = queue->gpu_macro38_packets_outside_draw_span = 0;
         if (queue->pending_roots) {
             preflight_batches++;
             if (!queue->pending_clears)
