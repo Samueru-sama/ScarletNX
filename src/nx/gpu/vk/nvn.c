@@ -2417,6 +2417,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                        !command->rasterizer_discard &&
                        (!fill_offset || (command->polygon_offset_known &&
                                          (g_vk.feat.depthBiasClamp || !command->polygon_offset[2])));
+    int has_color = !!(command->color_target_mask & 1);
+    int depth_only = !command->color_target_mask && command->depth_target_bound;
     if (!enabled || !pipeline || !vertex || !fragment || !command->uniform_updates_complete ||
         (cbuf_mask & ~((1u << 18) - 1)) ||
         ((cbuf_mask & 1) && (command->first || command->base_vertex || command->base_instance)) ||
@@ -2425,11 +2427,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         vertex->si.nimg || fragment->si.nimg > NVN_DRAW_IMAGE_SLOTS ||
         vertex->si.ngbuf < 0 || vertex->si.ngbuf > 16 ||
         fragment->si.ngbuf < 0 || fragment->si.ngbuf > 16 ||
-        !(command->color_target_mask & 1) || !command->target_complete ||
+        (!has_color && !depth_only) || !command->target_complete ||
         (!strip && !triangles && !indexed_triangles) || !command->count || !command->instance_count ||
         !fill_polygon ||
-        (command->color_state & 0xffff00ffu) != 0x08030000u ||
-        (key->blend[0].en != !!(command->color_state & 0x100)) ||
+        (has_color && (command->color_state & 0xffff00ffu) != 0x08030000u) ||
+        (has_color && key->blend[0].en != !!(command->color_state & 0x100)) ||
         (command->depth_target_bound &&
          (((command->depth_stencil_state[0] & 1) &&
            (((command->depth_stencil_state[0] >> 4) & 15) < 1 ||
@@ -2439,17 +2441,18 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
            (!command->depth_bounds_known || !g_vk.feat.depthBounds)))) ||
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
-        (command->color_target[0].format != 0x01 && command->color_target[0].format != 0x05 &&
+        (has_color && command->color_target[0].format != 0x01 && command->color_target[0].format != 0x05 &&
          command->color_target[0].format != 0x06 && command->color_target[0].format != 0x11 &&
          command->color_target[0].format != 0x0a && command->color_target[0].format != 0x25 &&
          command->color_target[0].format != 0x29 && command->color_target[0].format != 0x38 &&
          command->color_target[0].format != 0x3d && command->color_target[0].format != 0x3f) ||
-        (command->color_target[0].target != 1 && command->color_target[0].target != 4 &&
+        (has_color && command->color_target[0].target != 1 && command->color_target[0].target != 4 &&
          command->color_target[0].target != 8) ||
-        (command->color_target[0].storage_target != 1 && command->color_target[0].storage_target != 4 &&
+        (has_color && command->color_target[0].storage_target != 1 && command->color_target[0].storage_target != 4 &&
          command->color_target[0].storage_target != 8) ||
-        command->color_target[0].view.base_level >= command->color_target[0].levels ||
-        command->color_target[0].view.base_level >= 16 || command->color_target[0].view.first_layer >= 64 ||
+        (has_color && command->color_target[0].view.base_level >= command->color_target[0].levels) ||
+        (has_color && (command->color_target[0].view.base_level >= 16 ||
+                       command->color_target[0].view.first_layer >= 64)) ||
         (command->depth_target_bound &&
          ((command->depth_target.format != 0x32 && command->depth_target.format != 0x34 &&
            command->depth_target.format != 0x35) ||
@@ -2465,7 +2468,8 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
        shadow clears and draws can bridge their own synthetic markers; any other unknown write breaks
        the chain, so a failed or unsupported operation cannot certify sampled-image contents. */
     u64 effective_unknown = effective_unknown_write(command->last_unmodeled_write);
-    const NvnTextureTarget* color_target = &command->color_target[0];
+    /* Depth-only draws use the depth target's extent for viewport and scissor validation. */
+    const NvnTextureTarget* color_target = has_color ? &command->color_target[0] : &command->depth_target;
     const NvnTextureTarget* depth_target = &command->depth_target;
     u32 color_mip = color_target->view.base_level;
     u32 color_width = color_target->width >> color_mip;
@@ -2911,10 +2915,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                                   .imageLayout = depth ? depth->layout : VK_IMAGE_LAYOUT_UNDEFINED,
                                                   .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
-    int color_written = (fragment->si.sph[18] & 15) && key->blend[0].mask;
-    int prior_covered = (color->color_layers[color_mip] & (1ull << color_layer)) &&
+    int color_written = has_color && (fragment->si.sph[18] & 15) && key->blend[0].mask;
+    int prior_covered = has_color && (color->color_layers[color_mip] & (1ull << color_layer)) &&
                         color->subresource_sequence[color_mip][color_layer] > effective_unknown;
-    int zero_seed = command->color_initial_zero &&
+    int zero_seed = has_color && command->color_initial_zero &&
                     color_written && !color->image_was_written && !prior_covered &&
                     !color_mip && !color_layer && command->color_target_mask == 1 &&
                     (color->target != 8 ||
@@ -2956,7 +2960,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int new_target = captured_target_count < 8;
     for (u32 i = 0; i < captured_target_count; i++)
         if (captured_targets[i] == color_target->gpu_address) new_target = 0;
-    int capture = compare_enabled && (capture_chain ? new_target : sample_first) &&
+    int capture = has_color && compare_enabled && (capture_chain ? new_target : sample_first) &&
                   shadow_capture_matches_compare_filter(color_target) &&
                   !color_mip && command->color_target_mask == 1 && color_written &&
                   (!prior_covered || force_capture) &&
@@ -2965,7 +2969,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int zero_probe = capture && zero_seed && command->color_initial_zero &&
                      (color_target->format == 0x25 || color_target->format == 0x38);
     const char* cube_coverage = getenv("SNX_NVN_SHADOW_CUBE_COVERAGE");
-    int cube_probe = cube_coverage && !strcmp(cube_coverage, "1") && !capture && !zero_seed &&
+    int cube_probe = has_color && cube_coverage && !strcmp(cube_coverage, "1") && !capture && !zero_seed &&
                      color->target == 8 && color_target->format == 0x3f &&
                      color->transfer_src && color_width <= 64 && color_height <= 64 &&
                      !prior_covered && command->color_target_mask == 1 && !depth &&
@@ -2973,7 +2977,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                      !key->blend[0].en && key->blend[0].mask == 15 &&
                      (fragment->si.sph[18] & 15) == 15;
     const char* full_probe_opt = getenv("SNX_NVN_SHADOW_FULL_PROBE");
-    int full_probe = full_probe_opt && !strcmp(full_probe_opt, "1") && !capture && !zero_seed &&
+    int full_probe = has_color && full_probe_opt && !strcmp(full_probe_opt, "1") && !capture && !zero_seed &&
                     (color->target == 1 || color->target == 4) &&
                     (color_target->format == 0x11 || color_target->format == 0x29 ||
                      color_target->format == 0x3f) &&
