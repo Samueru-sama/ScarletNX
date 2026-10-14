@@ -21,6 +21,8 @@ typedef struct {
 typedef struct {
     NvnControlCheckpoint checkpoint[NVN_CONTROL_SUBMIT_CHECKPOINTS];
     u32 count;
+    void (*pre_fn)(void*);
+    void* pre_arg;
     void (*tail_fn)(void*);
     void* tail_arg;
 } NvnControlSubmit;

@@ -1869,9 +1869,21 @@ static VkImageView raw_control_sample_view(const u32 tic[8], u64 address, u32 wi
         covered_matches++;
         VkImageView view = image_sample_view(image, format, type, levels, tic, &source);
         if (!view) continue;
+        const char* compare_cube = getenv("SNX_NVN_CONTROL_COMPARE_CUBE");
+        if (compare_cube && !strcmp(compare_cube, "1") && width == 16 && height == 16 &&
+            type == VK_IMAGE_VIEW_TYPE_CUBE) {
+            Surf* surface = vk_rt_find(address);
+            LOG_LIMIT(
+                12,
+                "nvn-control-cube-source: address=%llx image=%u coverage=%llx/%llx rt=%d size=%ux%ux%u levels=%u format=%u write=%u/%u\n",
+                (unsigned long long)address, i, (unsigned long long)image->color_layers[0],
+                (unsigned long long)image->color_layers[1], !!surface, surface ? surface->w : 0,
+                surface ? surface->h : 0, surface ? surface->layers : 0, surface ? surface->levels : 0,
+                surface ? surface->f.vk : 0, surface ? surface->wgen : 0, surface ? surface->mem_wgen : 0);
+        }
         if (transition) {
-            vk_barrier(vk_cmd(), image->image, vk_aspect(&source), image->stage, image->access,
-                       image->layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            vk_barrier(vk_cmd(), image->image, vk_aspect(&source), image->stage, image->access, image->layout,
+                       VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             image->stage = VK_SAMPLED_STAGES;
@@ -1883,9 +1895,11 @@ static VkImageView raw_control_sample_view(const u32 tic[8], u64 address, u32 wi
     const char* cube_trace = getenv("SNX_NVN_CONTROL_TRACE_CUBE");
     if ((trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address)) ||
         (cube_trace && !strcmp(cube_trace, "1") && type == VK_IMAGE_VIEW_TYPE_CUBE))
-        LOG_LIMIT(1024, "nvn-control-sampled-image: address=%llx size=%ux%ux%u levels=%u type=%u format=%u candidates=%u/%u/%u\n",
-                  (unsigned long long)address, width, height, layers, levels, type, format,
-                  address_matches, shape_matches, covered_matches);
+        LOG_LIMIT(
+            1024,
+            "nvn-control-sampled-image: address=%llx size=%ux%ux%u levels=%u type=%u format=%u candidates=%u/%u/%u\n",
+            (unsigned long long)address, width, height, layers, levels, type, format, address_matches, shape_matches,
+            covered_matches);
     return VK_NULL_HANDLE;
 }
 
@@ -3909,6 +3923,30 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                 command->color_target[j].view.first_layer == target->view.first_layer) return 0;
     }
     NvnImage* color = colors[0];
+    const char* compare_cube_target = getenv("SNX_NVN_CONTROL_COMPARE_CUBE");
+    if (compare_cube_target && !strcmp(compare_cube_target, "1") && color &&
+        color->target == 8 && color_width == 16 && !color_mip &&
+        command->color_target_mask == 0x3f) {
+        Surf* surface = vk_rt_find(color_target->gpu_address);
+        LOG_LIMIT(8, "nvn-control-cube-producer-rt: address=%llx found=%d size=%ux%ux%u levels=%u format=%u write=%u/%u\n",
+                  (unsigned long long)color_target->gpu_address, !!surface,
+                  surface ? surface->w : 0, surface ? surface->h : 0,
+                  surface ? surface->layers : 0, surface ? surface->levels : 0,
+                  surface ? surface->f.vk : 0, surface ? surface->wgen : 0,
+                  surface ? surface->mem_wgen : 0);
+        static int mapped_cube_layout;
+        if (!mapped_cube_layout && color_target->storage_size <= 16384) {
+            mapped_cube_layout = 1;
+            for (u32 offset = 0; offset < color_target->storage_size; offset += 512) {
+                Surf* part = vk_rt_find(color_target->gpu_address + offset);
+                if (part && part->w <= 16 && part->h <= 16)
+                    LOG("nvn-control-cube-maxwell-layout: base=%llx offset=%x size=%ux%ux%u levels=%u format=%u layer-size=%llu write=%u/%u\n",
+                        (unsigned long long)color_target->gpu_address, offset,
+                        part->w, part->h, part->layers, part->levels, part->f.vk,
+                        (unsigned long long)part->layer_size, part->wgen, part->mem_wgen);
+            }
+        }
+    }
     NvnImage* depth = command->depth_target_bound
                           ? image_for(depth_target, depth_format.vk, vk_aspect(&depth_format), &full) : NULL;
     if (command->depth_target_bound && (!depth || !depth->attachment)) return 0;
@@ -4008,26 +4046,35 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int color_written = has_color && (fragment->si.sph[18] & 15) && key->blend[0].mask;
     int prior_covered = has_color && (color->color_layers[color_mip] & (1ull << color_layer)) &&
                         color->subresource_sequence[color_mip][color_layer] > effective_unknown;
-    int zero_seed = has_color && command->color_initial_zero &&
-                    color_written && !color->image_was_written && !prior_covered &&
-                    !color_mip && !color_layer && command->color_target_mask == 1 &&
-                    (color->target != 8 ||
-                     (color->layers == 6 && color->bytes <= color_target->storage_size)) &&
-                    (color_target->format == 0x25 || color_target->format == 0x38 ||
-                     color_target->format == 0x29 || color_target->format == 0x06 ||
-                     color_target->format == 0x3f);
+    int zero_seed = has_color && command->color_initial_zero && color_written && !color->image_was_written &&
+                    !prior_covered && !color_mip && !color_layer &&
+                    (command->color_target_mask == 1 || (color->target == 8 && command->color_target_mask == 0x3f)) &&
+                    (color->target != 8 || (color->layers == 6 && color->bytes <= color_target->storage_size)) &&
+                    (color_target->format == 0x25 || color_target->format == 0x38 || color_target->format == 0x29 ||
+                     color_target->format == 0x06 || color_target->format == 0x3f);
     if (zero_seed) {
         zero_seed = 0;
         for (u32 i = 0; i < 64; i++) {
-            if (!initial_color_seeds[i].valid ||
-                initial_color_seeds[i].address != color_target->gpu_address ||
+            if (!initial_color_seeds[i].valid || initial_color_seeds[i].address != color_target->gpu_address ||
                 initial_color_seeds[i].size != color_target->storage_size ||
                 initial_color_seeds[i].sequence != command->sequence ||
-                initial_color_seeds[i].queue_key != command->queue_key) continue;
+                initial_color_seeds[i].queue_key != command->queue_key)
+                continue;
             initial_color_seeds[i].valid = 0;
             zero_seed = 1;
             break;
         }
+    }
+    if (zero_seed && command->color_target_mask == 0x3f) {
+        const u8* backing = gmem_ptr_untracked(color_target->gpu_address, color_target->storage_size);
+        if (!backing)
+            zero_seed = 0;
+        else
+            for (u32 i = 0; i < color_target->storage_size; i++)
+                if (backing[i]) {
+                    zero_seed = 0;
+                    break;
+                }
     }
     static int sample_first = 1;
     static u64 captured_targets[8];
@@ -4362,16 +4409,81 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             }
         }
     }
+    if (compare_cube_target && !strcmp(compare_cube_target, "1") && color &&
+        color->target == 8 && color_target->width == 16 && color_target->height == 16 &&
+        color_mip < 2 && command->color_target_mask == 0x3f && color_format.bpp == 4 &&
+        color_target->storage_size >= 0x3000) {
+        Surf* surfaces[6] = {0};
+        int comparable = 1;
+        for (u32 face = 0; face < 6; face++) {
+            u64 address = color_target->gpu_address + face * 0x800u + color_mip * 0x400u;
+            surfaces[face] = vk_rt_find(address);
+            if (!surfaces[face] || !surfaces[face]->is_rt || surfaces[face]->w < color_width ||
+                surfaces[face]->h < color_height || surfaces[face]->f.vk != color_format.vk ||
+                surfaces[face]->wgen <= surfaces[face]->mem_wgen ||
+                command->color_target[face].view.first_layer != face)
+                comparable = 0;
+        }
+        if (comparable) {
+            u64 bytes = (u64)color_width * color_height * 4;
+            VkBuffer readback;
+            u8* pixels = vk_readback_buffer(bytes * 12, &readback);
+            if (pixels) {
+                cb = vk_cmd();
+                vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT, color->stage, color->access, color->layout,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                color->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+                color->access = VK_ACCESS_2_TRANSFER_READ_BIT;
+                color->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                for (u32 face = 0; face < 6; face++) {
+                    vk_surf_use(cb, surfaces[face], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                    VkBufferImageCopy copy = {.bufferOffset = bytes * (face * 2),
+                                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, color_mip, face, 1},
+                                              .imageExtent = {color_width, color_height, 1}};
+                    vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
+                    copy.bufferOffset += bytes;
+                    copy.imageSubresource.mipLevel = 0;
+                    copy.imageSubresource.baseArrayLayer = 0;
+                    vkCmdCopyImageToBuffer(cb, surfaces[face]->img, surfaces[face]->layout, readback, 1, &copy);
+                }
+                vk_finish();
+                vk_readback_ready();
+                for (u32 face = 0; face < 6; face++) {
+                    u32 different = 0, first = color_width * color_height;
+                    u32 hle_first = 0, maxwell_first = 0;
+                    for (u32 pixel = 0; pixel < color_width * color_height; pixel++) {
+                        u32 hle, maxwell;
+                        memcpy(&hle, pixels + bytes * (face * 2) + pixel * 4, 4);
+                        memcpy(&maxwell, pixels + bytes * (face * 2 + 1) + pixel * 4, 4);
+                        if (hle != maxwell) {
+                            if (first == color_width * color_height) {
+                                first = pixel;
+                                hle_first = hle;
+                                maxwell_first = maxwell;
+                            }
+                            different++;
+                        }
+                    }
+                    LOG_LIMIT(
+                        72,
+                        "nvn-control-cube-producer-compare: address=%llx mip=%u face=%u different=%u/%u first=%u,%u hle=%08x maxwell=%08x\n",
+                        (unsigned long long)color_target->gpu_address, color_mip, face, different,
+                        color_width * color_height, first % color_width, first / color_width, hle_first, maxwell_first);
+                }
+            }
+        }
+    }
     if (capture) {
         u64 bytes = (u64)color_target->width * color_target->height * color_format.bpp;
         VkBuffer readback;
-        u8* pixels = color->transfer_src && bytes <= (32ull << 20)
-                         ? vk_readback_buffer(bytes, &readback) : NULL;
+        u8* pixels = color->transfer_src && bytes <= (32ull << 20) ? vk_readback_buffer(bytes, &readback) : NULL;
         if (pixels) {
-            vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT,
-                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             color->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             color->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             color->access = VK_ACCESS_2_TRANSFER_READ_BIT;
@@ -4385,9 +4497,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             const u32 magenta_packed = color_target->format == 0x3f ? 0x780003c0u : 0xffff00ffu;
             const u8 rgba8_sentinel[4] = {51, 102, 153, 204};
             const u64 zero = 0;
-            const void* sentinel = zero_probe ? (const void*)&zero
+            const void* sentinel = zero_probe                     ? (const void*)&zero
                                    : color_target->format == 0x25 ? (const void*)rgba8_sentinel
-                                   : color_format.bpp == 8 ? (const void*)rgba16f_sentinel : &magenta_packed;
+                                   : color_format.bpp == 8        ? (const void*)rgba16f_sentinel
+                                                                  : &magenta_packed;
             for (u64 i = 0; i < bytes; i += color_format.bpp) {
                 changed += memcmp(pixels + i, sentinel, color_format.bpp) != 0;
                 if (!zero_probe && color_target->format == 0x25) {

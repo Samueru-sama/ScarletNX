@@ -1892,10 +1892,22 @@ fully replaces only two of six base faces; its six 8×8 mip-1 faces are fully
 replaced. Later cubemaps fully replace every face and mip. The first cube's
 four partial base faces still require a verified initial value. At the late
 semantic replay point, the guest backing reads zero but Maxwell already
-owns fresh render-target bytes there, so that zero cannot seed HLE. A
-pre-submit probe certifies zero before Maxwell writes, but replaying the draw
-at that point lacks the GPU clip state. Seed certification must be retained
-across those two points before this dependency can be marked covered.
+owns fresh render-target bytes there, so that zero cannot seed HLE. With
+`SNX_NVN_CONTROL_CUBE_EARLY_SEED=1`, an ordered callback before the GPFIFO
+job certifies the zero backing for six cube allocations, after checking
+earlier semantic writes for overlap. Control-range markers for Maxwell work
+in that same job are accounted for separately; any other unknown write or
+dropped control packet rejects certification. The later semantic prefix
+consumes the seed only if the guest backing still reads zero, then clears all
+faces and mips before its draw. In one twelve-face TotK run, all twelve color
+and depth checkpoints matched Maxwell exactly. Repeated passes still show
+intermittent color divergence. With `SNX_NVN_CONTROL_COMPARE_CUBE=1`, all
+six 16×16 cubemaps match Maxwell across all six faces of both mips (72/72
+subresources pixel-exact). In a run that samples this verified cube, the next
+pass's first three faces match, while its last three differ by 608, 33, and
+2 color pixels; their depth still matches. The remaining difference is in a
+later consumer or another sampled input, and whole-frame parity is not yet
+established.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

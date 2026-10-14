@@ -552,6 +552,10 @@ static void gpu_run(GpuJob* j) {
         WARN(
             "gpu: a submission waited 2 s on the GPU thread for syncpoint %u to reach %u (it is at %u), and runs anyway\n",
             j->wait_id, j->wait_val, syncpt_read(j->wait_id));
+    if (j->control.pre_fn) {
+        j->control.pre_fn(j->control.pre_arg);
+        j->control.pre_arg = NULL;
+    }
     gpu_submit_now(j->e, j->n, j->channel, &j->control);
     gpu_signal_point();
     for (u32 i = 0; i < j->incs; i++) syncpt_incr(j->channel);
@@ -600,7 +604,7 @@ void gpu_submit(u64* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val,
     nvn_record_observe_gpu_submit(e, n, channel);
     NvnControlSubmit control = {0};
     nvn_record_take_control_submit(n, &control);
-    if (g_renderer->async_submit(e, n, channel, incs)) {
+    if (!control.pre_fn && g_renderer->async_submit(e, n, channel, incs)) {
         for (u32 i = 0; i < control.count; i++)
             gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.checkpoint[i].fn,
                                .arg = control.checkpoint[i].arg});

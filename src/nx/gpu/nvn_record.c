@@ -3069,16 +3069,22 @@ static int probe_ranges_overlap(u64 address, u32 size, u64 other, u32 other_size
     return first <= second ? second - first < size : first - second < other_size;
 }
 
-/* A pre-submit backing is authoritative only if every earlier operation in this batch
-   is a known write to a disjoint range. Unknown markers leave a sequence gap. */
-static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawCommand* draw) {
-    if (draw->sequence < queue->batch_start_sequence ||
-        draw->sequence - queue->batch_start_sequence > 8192) return 0;
+/* A pre-submit backing is authoritative only if every earlier semantic write
+   is known and disjoint. Unclassified sequence gaps reject the seed. */
+static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawCommand* draw, int ordered_control_seed) {
+    if (draw->sequence < queue->batch_start_sequence || draw->sequence - queue->batch_start_sequence > 8192) return 0;
     const NvnTextureTarget* target = &draw->color_target[0];
     if (!target->gpu_address || !target->storage_size) return 0;
     u64 start = queue->batch_start_sequence;
     u32 span = (u32)(draw->sequence - start);
     u8 accounted[8192] = {0};
+    /* This seed samples guest backing before the current GPU job. Control-range
+       markers describe Maxwell work in that same job, separate from the NVN
+       shadow image; other unknown markers still reject the seed. */
+    if (ordered_control_seed)
+        for (const NvnControlRange* range = queue->control_ranges; range; range = range->next)
+            if (range->after_sequence >= start && range->after_sequence < draw->sequence)
+                accounted[range->after_sequence - start] = 1;
     if (queue->memory_writes)
         for (u32 i = 0; i < queue->memory_writes->count; i++) {
             const NvnMemoryWriteCommand* write = &queue->memory_writes->commands[i];
@@ -3113,7 +3119,13 @@ static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawComm
                                       prior->depth_target.gpu_address,
                                       prior->depth_target.storage_size))) return 0;
             for (u32 stage = 0; stage < NVN_DRAW_SHADER_STAGES; stage++)
-                if (prior->image_bound[stage]) return 0;
+                if (prior->image_bound[stage]) {
+                    if (getenv("SNX_NVN_CONTROL_CUBE_EARLY_SEED"))
+                        LOG_LIMIT(8, "nvn-control-cube-seed-reject: draw=%llu prior=%llu image-stage=%u\n",
+                                  (unsigned long long)draw->sequence,
+                                  (unsigned long long)prior->sequence, stage);
+                    return 0;
+                }
             accounted[prior->sequence - start] = 1;
             accounted[prior->sequence + 1 - start] = 1; /* draw's following unknown-write marker */
         }
@@ -3154,7 +3166,12 @@ static int probe_prior_writes_scoped(const ReplayQueue* queue, const NvnDrawComm
             accounted[copy->sequence - start] = 1;
         }
     for (u32 i = 0; i < span; i++)
-        if (!accounted[i]) return 0;
+        if (!accounted[i]) {
+            if (getenv("SNX_NVN_CONTROL_CUBE_EARLY_SEED"))
+                LOG_LIMIT(8, "nvn-control-cube-seed-reject: draw=%llu unknown=%llu\n",
+                          (unsigned long long)draw->sequence, (unsigned long long)(start + i));
+            return 0;
+        }
     return 1;
 }
 
@@ -3162,9 +3179,70 @@ static void execute_pre_submit_color_probe(void* arg) {
     NvnPreSubmitColorProbe* probe = arg;
     if (g_renderer->nvn_probe_initial_color)
         g_renderer->nvn_probe_initial_color(probe->address, probe->size, probe->sequence, probe->queue_key,
-                                             probe->prior_unmodeled_write,
-                                             probe->prior_writes_scoped);
+                                            probe->prior_unmodeled_write, probe->prior_writes_scoped);
     free(probe);
+}
+
+typedef struct {
+    u32 count;
+    NvnPreSubmitColorProbe probe[16];
+} NvnControlCubeSeeds;
+
+static void execute_control_cube_seeds(void* arg) {
+    NvnControlCubeSeeds* seeds = arg;
+    if (g_renderer->nvn_probe_initial_color)
+        for (u32 i = 0; i < seeds->count; i++) {
+            const NvnPreSubmitColorProbe* probe = &seeds->probe[i];
+            g_renderer->nvn_probe_initial_color(probe->address, probe->size, probe->sequence, probe->queue_key,
+                                                probe->prior_unmodeled_write, probe->prior_writes_scoped);
+        }
+    free(seeds);
+}
+
+static NvnControlCubeSeeds* collect_control_cube_seeds(ReplayQueue* queue, u64 before_sequence) {
+    if (!queue || !queue->draws) return NULL;
+    NvnControlCubeSeeds* seeds = calloc(1, sizeof *seeds);
+    if (!seeds) return NULL;
+    u32 shape_count = 0, scoped_count = 0;
+    for (u32 i = 0; i < queue->draws->count && seeds->count < 16; i++) {
+        NvnDrawCommand* draw = &queue->draws->commands[i];
+        const NvnTextureTarget* target = &draw->color_target[0];
+        if (draw->sequence >= before_sequence || draw->color_target_mask != 0x3f || target->target != 8 ||
+            target->storage_target != 8 || target->format != 0x3f || target->view.base_level || target->width != 16 ||
+            target->height != 16 || target->depth != 6 || target->levels < 2 || !target->gpu_address ||
+            !target->storage_size || target->storage_size > (1u << 20) ||
+            target->gpu_address > UINT64_MAX - target->storage_size)
+            continue;
+        u32 faces = 0;
+        for (u32 slot = 0; slot < 6; slot++) {
+            const NvnTextureTarget* output = &draw->color_target[slot];
+            if (output->gpu_address != target->gpu_address || output->storage_size != target->storage_size ||
+                output->pool != target->pool || output->view.base_level || output->view.first_layer >= 6)
+                break;
+            faces |= 1u << output->view.first_layer;
+        }
+        if (faces != 0x3f) continue;
+        shape_count++;
+        if (!probe_prior_writes_scoped(queue, draw, 1)) continue;
+        scoped_count++;
+        int seen = 0;
+        for (u32 j = 0; j < seeds->count; j++) seen |= seeds->probe[j].address == target->gpu_address;
+        if (seen) continue;
+        draw->color_initial_zero = 1;
+        seeds->probe[seeds->count++] = (NvnPreSubmitColorProbe){.address = target->gpu_address,
+                                                                .size = target->storage_size,
+                                                                .sequence = draw->sequence,
+                                                                .queue_key = queue->key,
+                                                                .prior_unmodeled_write = draw->last_unmodeled_write,
+                                                                .prior_writes_scoped = 1};
+    }
+    LOG_LIMIT(8, "nvn-control-cube-seed-candidates: end=%llu batch-start=%llu shape=%u scoped=%u scheduled=%u\n",
+              (unsigned long long)before_sequence,
+              (unsigned long long)queue->batch_start_sequence,
+              shape_count, scoped_count, seeds->count);
+    if (seeds->count) return seeds;
+    free(seeds);
+    return NULL;
 }
 
 static void flush_replay_queue(u64 command_buffer);
@@ -3248,7 +3326,7 @@ u64 nvn_record_before(const CPU* c, const char* name) {
                     if (draw->color_target_mask != 1 || !target->storage_size ||
                         target->storage_size > (16u << 20) ||
                         target->gpu_address > UINT64_MAX - target->storage_size ||
-                        !probe_prior_writes_scoped(queue, draw)) continue;
+                        !probe_prior_writes_scoped(queue, draw, 0)) continue;
                     NvnPreSubmitColorProbe* probe = malloc(sizeof *probe);
                     if (!probe) break;
                     *probe = (NvnPreSubmitColorProbe){.address = target->gpu_address,
@@ -4424,10 +4502,11 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
                                     first_color = address;
                                     draw_count = prefix_count = prefix_macro12 = 0;
                                     previous = NULL;
-                                    memcpy(segment_cursors, scan_cursors,
-                                           sizeof segment_cursors);
-                                } else segment_valid = 0;
-                            } else segment_valid = 0;
+                                    memcpy(segment_cursors, scan_cursors, sizeof segment_cursors);
+                                } else
+                                    segment_valid = 0;
+                            } else
+                                segment_valid = 0;
                         }
                         if (segment_valid) draw_count++;
                     }
@@ -4448,20 +4527,20 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
                             }
                     NvnControlProgramBind binds[512];
                     u32 bind_count = 0;
-                    int parsed = nvn_control_program_binds(packet->words, packet->word_count,
-                                                           binds, 512, &bind_count);
+                    int parsed = nvn_control_program_binds(packet->words, packet->word_count, binds, 512, &bind_count);
                     if (cursor) {
                         if (!parsed || bind_count != packet->macro12_count)
                             cursor->vertex_bound = cursor->fragment_bound = 0;
-                        else for (u32 i = 0; i < bind_count; i++) {
-                            if (binds[i].selector == 1) {
-                                cursor->vertex_offset = binds[i].code_offset;
-                                cursor->vertex_bound = 1;
-                            } else if (binds[i].selector == 5) {
-                                cursor->fragment_offset = binds[i].code_offset;
-                                cursor->fragment_bound = 1;
+                        else
+                            for (u32 i = 0; i < bind_count; i++) {
+                                if (binds[i].selector == 1) {
+                                    cursor->vertex_offset = binds[i].code_offset;
+                                    cursor->vertex_bound = 1;
+                                } else if (binds[i].selector == 5) {
+                                    cursor->fragment_offset = binds[i].code_offset;
+                                    cursor->fragment_bound = 1;
+                                }
                             }
-                        }
                     }
                 }
                 prefix_count++;
@@ -4494,6 +4573,7 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
         batch->control_packets = remaining;
         batch->control_packet_count = remaining_count;
         batch->control_packets_dropped = queue->control_packets_dropped;
+        u32 captured_control_packets_dropped = queue->control_packets_dropped;
         batch->gpu_macro12_packets = remaining_macro12;
         control_packet_snapshot_bytes -= queue->control_packet_bytes;
         queue->control_packets = queue->control_packets_tail = NULL;
@@ -4514,6 +4594,14 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
                 }
             u64 producer_end = control_target_first_semantic_write(
                 queue, result->checkpoint[0].color, first_draw_sequence);
+            const char* cube_seed = getenv("SNX_NVN_CONTROL_CUBE_EARLY_SEED");
+            if (cube_seed && !strcmp(cube_seed, "1") && !captured_control_packets_dropped) {
+                NvnControlCubeSeeds* seeds = collect_control_cube_seeds(queue, producer_end);
+                if (seeds) {
+                    result->pre_fn = execute_control_cube_seeds;
+                    result->pre_arg = seeds;
+                }
+            }
             first->semantic_prefix = take_control_semantic_prefix(queue, producer_end);
         }
     }
