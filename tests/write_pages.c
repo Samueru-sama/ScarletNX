@@ -15,13 +15,14 @@ static void check(int ok, const char* what) {
 
 int main(void) {
     WritePages* t = calloc(1, sizeof(WritePages));
-    if (!t) return 1;
     const u64 tex = 0x500000000ull, tex_size = 16u << 20; /* a 16 MiB texture */
+    u64 g;
+    if (!t) return 1;
     check(!write_pages_since(t, 0, tex, tex_size), "an empty table has no writes");
     /* constant buffer updates 256 MiB and 1 GiB away shared the texture's slots in the hashed table */
     write_pages_stamp(t, tex + (256u << 20) + 0x40, 0x100, 1);
     write_pages_stamp(t, tex - (1u << 30), 0x10000, 2);
-    for (u64 g = 3; g < 5000; g++) write_pages_stamp(t, 0x100000000ull + (g & 63) * 0x1000, 4, g);
+    for (g = 3; g < 5000; g++) write_pages_stamp(t, 0x100000000ull + (g & 63) * 0x1000, 4, g);
     check(!write_pages_since(t, 0, tex, tex_size), "writes elsewhere leave a large range clean");
     write_pages_stamp(t, tex + tex_size - 4, 4, 5000);
     check(write_pages_since(t, 4999, tex, tex_size), "a write in the last page of a large range is seen");
