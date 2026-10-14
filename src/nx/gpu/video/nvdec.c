@@ -6,7 +6,6 @@
    setup struct (nvdec_h264_pic_s, its iova in register 0x404). Each NVDEC channel has its own decoder, and each
    picture goes into the output surface its job names, where VIC reads it */
 #include "gpu/video/host1x_int.h"
-#ifndef SNX_NO_H264
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -164,7 +163,6 @@ static u32 build_headers(const u8* ps, u8* out, u32 cap) {
     if (!pn) return 0;
     return o + pn;
 }
-#endif
 
 /* ------------------------------------------------------------ a decoder per channel */
 /* NVDEC writes each picture into the surface its job names as it decodes it, in decode order, and the game shows the
@@ -178,7 +176,6 @@ typedef struct {
     u32 w, h;             /* the picture in pixels */
 } PicOut;
 struct NvdecCtx {
-#ifndef SNX_NO_H264
     AVCodecContext* dec;
     AVPacket* pkt;
     AVFrame* frame; /* FFmpeg's output, dropped */
@@ -187,25 +184,19 @@ struct NvdecCtx {
     /* SPS + PPS from the last successful job: full scaling lists with emulation prevention come to about 800 */
     u8 last_hdr[1024];
     u32 last_hdr_n;
-#endif
     int fail; /* the decoder could not be opened */
 };
-#ifndef SNX_NO_H264
 static u32 g_vframes; /* pictures written, all channels: only for the log */
-#endif
 NvdecCtx* nvdec_new(void) { return calloc(1, sizeof(NvdecCtx)); }
 void nvdec_free(NvdecCtx* d) {
     if (!d) return;
-#ifndef SNX_NO_H264
     /* the references and the pictures the decoder still holds go with it: the game closed the stream */
     avcodec_free_context(&d->dec);
     av_packet_free(&d->pkt);
     av_frame_free(&d->frame);
     av_frame_free(&d->cur);
-#endif
     free(d);
 }
-#ifndef SNX_NO_H264
 /* FFmpeg's messages go to the game log at warning level and above, a limited number: by default they go to stderr
    at info level, outside the log, without end */
 static void ff_log(void* avcl, int level, const char* fmt, va_list vl) {
@@ -237,15 +228,7 @@ static int get_buf(AVCodecContext* c, AVFrame* f, int flags) {
     }
     return r;
 }
-#endif
 static int dec_open(NvdecCtx* d) {
-#ifdef SNX_NO_H264
-    if (!d->fail) {
-        d->fail = 1;
-        LOG_LIMIT(1, "video: this build has no H.264 decoder (the game's videos stay black)\n");
-    }
-    return 0;
-#else
     if (d->dec) return 1;
     if (d->fail) return 0;
     ffmpeg_log_init();
@@ -272,9 +255,7 @@ static int dec_open(NvdecCtx* d) {
     }
     LOG_LIMIT(1, "video: H.264 decoder ready (FFmpeg %s, NVDEC jobs are decoded on the CPU)\n", av_version_info());
     return 1;
-#endif
 }
-#ifndef SNX_NO_H264
 static u32 nal_length(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
 static int nal_header(u8 b) { return !(b & 0x80) && (b & 31) && (b & 31) < 24; }
 /* NVDEC jobs normally contain Annex B. Also accept complete four-byte-length-prefixed access units and a
@@ -390,7 +371,6 @@ static int write_pic(const AVFrame* f, const PicOut* t) {
     g_vframes++;
     return 1;
 }
-#endif
 /* nvdec_status_s, its iova in register 0x424. Players check it: an all-zero status means the frame failed */
 static void put_status(const u32* r, u32 mbs, int failed) {
     u64 st_iova = (u64)r[0x424 / 4] << 8;
@@ -400,16 +380,12 @@ static void put_status(const u32* r, u32 mbs, int failed) {
     memcpy(sp, v, 16);
 }
 static void fail_job(NvdecCtx* d, const u32* r, u32 mbs) {
-#ifndef SNX_NO_H264
     /* A failed first field must not let a later second-field job publish a stale picture. Resend the parameter
        sets too: constructing/submitting them is not proof that the decoder accepted them. */
     if (d->cur) av_frame_unref(d->cur);
     d->cur_new = 0;
     d->last_hdr_n = 0;
     if (d->pkt) av_packet_unref(d->pkt);
-#else
-    (void)d;
-#endif
     put_status(r, mbs, 1);
 }
 void nvdec_execute(NvdecCtx* d, const u32* r) {
@@ -417,7 +393,6 @@ void nvdec_execute(NvdecCtx* d, const u32* r) {
         fail_job(d, r, 0);
         return;
     }
-#ifndef SNX_NO_H264
     /* SET_APPLICATION_ID (register 0x200) names the codec: 3 is H.264, which the game's TVMR library writes before
        every H.264 job (VP8 is 5, HEVC 7, VP9 9). Anything else fed to the H.264 decoder would only be garbage */
     u32 app = r[0x200 / 4];
@@ -509,5 +484,4 @@ void nvdec_execute(NvdecCtx* d, const u32* r) {
                 pt.pitch_y, 1u << pt.bh);
         }
     }
-#endif
 }

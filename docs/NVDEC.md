@@ -49,8 +49,8 @@ cmake --build build/packet-tests --target snx-test-nvdec-packets
 ctest --test-dir build/packet-tests -R '^nvdec_packets$' --output-on-failure
 ```
 
-`nvdec_decode` builds against real FFmpeg when `SNX_H264=ON` and
-`SNX_TOOLS_ONLY=OFF`. It decodes synthetic 16x16 I_PCM and reference-dependent
+`nvdec_decode` builds against real FFmpeg when `SNX_TOOLS_ONLY=OFF`.
+It decodes synthetic 16x16 I_PCM and reference-dependent
 P-skip pictures, checks exact luma/interleaved chroma values, reuses SPS/PPS and
 exercises Annex B, four-byte AVCC and bare-NAL submission. No copyrighted video or
 encoder dependency is required.
@@ -64,7 +64,6 @@ Validation here: 16 tools-only CTests passed with Clang 21.1.5 and ASan/UBSan;
 the real-decoder harness passed 2,290 checks against the pinned FFmpeg 9.0.2.
 The locally built FFmpeg library itself was not sanitizer-instrumented. A `-no-pie`
 executable link flag was needed for ASan's address-space reservation in the sandbox.
-The `SNX_NO_H264` production path also compiled with warnings treated as errors.
 
 ## Limits
 

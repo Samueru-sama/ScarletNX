@@ -201,7 +201,7 @@ add_executable(snx-test-nvdec-packets nvdec_packets.c)
 snx_test_target(snx-test-nvdec-packets 11)
 target_include_directories(snx-test-nvdec-packets BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg_stub")
 add_test(NAME nvdec_packets COMMAND snx-test-nvdec-packets)
-if(SNX_H264 AND NOT SNX_TOOLS_ONLY)
+if(NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-nvdec-decode nvdec_packets.c)
     snx_test_target(snx-test-nvdec-decode 11)
     target_compile_definitions(snx-test-nvdec-decode PRIVATE SNX_TEST_REAL_FFMPEG)
@@ -289,12 +289,12 @@ add_executable(snx-test-astc astc_decode.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/tex
 snx_test_target(snx-test-astc 23)
 add_test(NAME astc_decode COMMAND snx-test-astc)
 
-add_executable(snx-test-audio-out audio_out.c)
-snx_test_target(snx-test-audio-out 11)
-# Isolate audout in this fixture without FFmpeg, also when testing a tools-only build.
-# Production NX targets always link FFmpeg and never define SNX_NO_H264.
-target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
-add_test(NAME audio_out COMMAND snx-test-audio-out)
+if (NOT SNX_TOOLS_ONLY)
+    add_executable(snx-test-audio-out audio_out.c)
+    snx_test_target(snx-test-audio-out 11)
+    target_link_libraries(snx-test-audio-out PRIVATE FFmpeg::avcodec)
+    add_test(NAME audio_out COMMAND snx-test-audio-out)
+endif()
 
 if(UNIX)
     add_executable(snx-test-audren audren_render.c)

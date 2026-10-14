@@ -35,4 +35,4 @@ The orchestrator applies your fixes without re-deriving them. A confident causal
 
 ## Known past-bug shapes to check for
 - IAudioOut never released buffers, so CRI movies stopped after about ten frames; the released-buffer array was not cleared, so the SDK re-appended stale tags.
-- Without the H.264 decoder (then OpenH264), the recompiler's old runtime build used `-DSNX_NO_H264` silently and movies stayed black. The decoder is FFmpeg now (`cmake/ffmpeg.cmake`), built with only the h264, vp8 and vp9 decoders.
+- The decoder is FFmpeg (`cmake/ffmpeg.cmake`), built with only the h264, vp8 and vp9 decoders.

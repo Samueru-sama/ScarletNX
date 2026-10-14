@@ -5,11 +5,9 @@
 /* audio services: audout sends guest PCM to the host, audren renders the game's voices (audren.c, audren_dsp.c),
    and hwopus decodes the game's Opus packets with FFmpeg */
 #include "hle/services/services_int.h"
-#ifndef SNX_NO_H264
 #include "gpu/video/host1x.h"
 #include <libavcodec/avcodec.h>
 #include <math.h>
-#endif
 /* IAudioOut: appended PCM is copied to the host output and buffers come back at 48 kHz speed like on the console.
    Players time video against the released buffers (CRI movies): never releasing them stalls the video.
    Buffers are laid out on a play clock that runs only while the audout is started: a buffer is released once the
@@ -442,7 +440,6 @@ SvcObj* new_audout(void) { return svcobj_new("audout:u", audout_disp, 0); }
 typedef struct {
     u32 rate, channels;
     PMutex lk;
-#ifndef SNX_NO_H264
     AVCodecContext* dec;
     AVPacket* pkt;
     AVFrame* frame;
@@ -454,9 +451,7 @@ typedef struct {
     float* fir;
     float* hist;
     float* x;
-#endif
 } HwOpus;
-#ifndef SNX_NO_H264
 /* windowed sinc (Blackman), cut off at 90% of the output rate's Nyquist frequency, unity gain */
 static void opus_fir(float* h, u32 n, u32 step) {
     double fc = 0.45 / step, sum = 0, m = (n - 1) / 2.0;
@@ -472,18 +467,13 @@ static i16 opus_s16(float v) {
     v *= 32768.0f;
     return v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (i16)lrintf(v);
 }
-#endif
 static void hwopus_destroy(SvcObj* o) {
     HwOpus* h = (HwOpus*)o->data;
-#ifndef SNX_NO_H264
     avcodec_free_context(&h->dec);
     av_packet_free(&h->pkt);
     av_frame_free(&h->frame);
     free(h->in);
     free(h->fir);
-#else
-    (void)h;
-#endif
 }
 /* the decoder for rate and channels: streams Opus streams, stereo of them coupled, map[c] the stream channel of
    output channel c (as libopus' multistream decoder takes them). 0 when it can't be made */
@@ -491,18 +481,15 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     h->rate = rate;
     h->channels = channels;
     pm_init(&h->lk);
-#ifdef SNX_NO_H264
-    (void)streams;
-    (void)stereo;
-    (void)map;
-    LOG_LIMIT(1, "hwopus: this test fixture has no Opus decoder\n");
-    return 0;
-#else
     if (rate != 48000 && rate != 24000 && rate != 16000 && rate != 12000 && rate != 8000) return 0;
     if (!channels || channels > 255 || !streams || stereo > streams || streams + stereo > 255) return 0;
     const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_OPUS);
     if (!codec) return 0;
+    /*
+    TODO: global logging at init (Driver does this)
+    TODO: swrescale properly for native opus doesn't handle s16
     ffmpeg_log_init();
+    */
     h->dec = avcodec_alloc_context3(codec);
     h->pkt = av_packet_alloc();
     h->frame = av_frame_alloc();
@@ -536,22 +523,10 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     h->dec->ch_layout.nb_channels = (int)channels;
     if (avcodec_open2(h->dec, codec, NULL) < 0 || h->dec->ch_layout.nb_channels != (int)channels) return 0;
     return 1;
-#endif
 }
 /* one packet (header and payload) into out, interleaved s16 */
 static u32 hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples) {
-#ifdef SNX_NO_H264
-    (void)h;
-    (void)in;
-    (void)in_size;
-    (void)out;
-    (void)out_size;
-    (void)reset;
-    (void)consumed;
-    (void)samples;
-    return OPUS_BAD_PACKET;
-#else
     if (reset) {
         avcodec_flush_buffers(h->dec);
         memset(h->hist, 0, (size_t)h->channels * h->taps * sizeof(float));
@@ -605,7 +580,6 @@ static u32 hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
     *consumed = len + 8;
     *samples = got;
     return 0;
-#endif
 }
 static int hwopus_dec(SvcObj* o, IpcCtx* c) {
     HwOpus* h = (HwOpus*)o->data;
