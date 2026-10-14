@@ -117,14 +117,14 @@ static void arena_retire(void) {
         memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
         g_nretired--;
     }
-    g_retired[g_nretired++] = (typeof(g_retired[0])){g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_number()};
+    g_retired[g_nretired++] = (typeof(g_retired[0])){g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_id()};
     g_ar = VK_NULL_HANDLE;
 }
 static int arena_fit(u64 need) {
     if (g_ar && g_ar_used <= g_ar_cap && need <= g_ar_cap - g_ar_used && g_ar_cap >= g_ar_want) return 1;
     vk_cmd(); /* frames older than VK_FRAMES are done once the current one has started */
     for (int i = 0; i < g_nretired; i++)
-        if (g_retired[i].frame + VK_FRAMES <= vk_frame_number() && g_retired[i].cap >= need &&
+        if (g_retired[i].frame + VK_FRAMES <= vk_frame_id() && g_retired[i].cap >= need &&
             g_retired[i].cap >= g_ar_want) {
             if (g_ar) vk_defer_buffer(g_ar, g_ar_mem);
             g_ar = g_retired[i].b;
@@ -426,6 +426,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     u64 tic_key_base;
     CsBufImg bimg[8] = {0};
     int i;
+    vk_frame_check();
     if (!gx || !gy || !gz || !lx || !ly || !lz) return;
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     if (gx > lim->maxComputeWorkGroupCount[0] || gy > lim->maxComputeWorkGroupCount[1] ||

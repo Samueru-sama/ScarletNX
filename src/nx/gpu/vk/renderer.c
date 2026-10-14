@@ -249,7 +249,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     int recreate = 0;
     if (!g_opt_headless && src && (g_vk.swapchain || vk_swapchain_create(srgb))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
-        VkSemaphore acq = g_acquired[vk_frame_number() % VK_FRAMES];
+        VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 1000000000ull, acq, VK_NULL_HANDLE, &idx);
         if (r == VK_ERROR_OUT_OF_DATE_KHR)
             recreate = 1;
@@ -312,6 +312,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
+    vk_frame_next();
     if (signal) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                .waitSemaphoreCount = 1,

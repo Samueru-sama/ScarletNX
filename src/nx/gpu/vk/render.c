@@ -663,7 +663,7 @@ static int cb_get(int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
     /* Pending shader results there land first: the checks below only see guest memory. */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
     if (g_gfx_any && a) vk_buf_mem_need(a, sz);
-    if (a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch && c[stage][i].frame == vk_frame_number() &&
+    if (a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch && c[stage][i].frame == vk_submit_number() &&
         c[stage][i].sz >= sz && !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
         *buf = c[stage][i].buf;
         *off = c[stage][i].off;
@@ -672,7 +672,7 @@ static int cb_get(int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
     if (!(cache && a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
     c[stage][i].a = a;
     c[stage][i].gw = gpu_mem_generation();
-    c[stage][i].frame = vk_frame_number();
+    c[stage][i].frame = vk_submit_number();
     c[stage][i].sz = sz;
     c[stage][i].epoch = g_vk_epoch;
     c[stage][i].buf = *buf;
@@ -685,7 +685,7 @@ static int cb_get(int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
 static int frame_consts(VkBuffer* buf, u64* off) {
     static u64 frame = ~0ull, o;
     static VkBuffer b;
-    if (frame != vk_frame_number()) {
+    if (frame != vk_submit_number()) {
         u8* p = vk_stage(64, vk_stage_align(), &b, &o);
         if (!p) return 0;
         float rs[4] = {1 / g_vk_scale, 1 / g_vk_scale, g_vk_scale, 0}, fa[4] = {0, 0, 0, 1};
@@ -693,7 +693,7 @@ static int frame_consts(VkBuffer* buf, u64* off) {
         memcpy(p, rs, 16);
         memcpy(p + 16, fa, 16);
         memcpy(p + 32, ia, 16);
-        frame = vk_frame_number();
+        frame = vk_submit_number();
     }
     *buf = b;
     *off = o;
@@ -1137,13 +1137,14 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
     VkSh *tcs, *tes, *gs, *between[3];
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
+    vk_frame_check();
     u32 initial_first = first, initial_count = count;
     int retries = 0;
 retry:
     vk_buf_writable_abort();
     first = initial_first;
     count = initial_count;
-    u64 setup_frame = vk_frame_number();
+    u64 setup_frame = vk_submit_number();
     /* shaders: VertexB always runs (after VertexA when that is on), the fragment stage when enabled */
     u64 code = ((u64)r[0x582] << 32) | r[0x583];
     u32 attr_int = 0, attr_sint = 0;
@@ -1431,7 +1432,7 @@ retry:
     if (alias) {
         if (g_cs_any) vk_compute_land();
         vk_buf_land(); /* a page atlas starts from the completed output of earlier draws */
-        if (setup_frame != vk_frame_number() && ++retries < 4) goto retry;
+        if (setup_frame != vk_submit_number() && ++retries < 4) goto retry;
         draw_storage_read(&storage, vs, fs); /* landing may have changed storage descriptors in c0 */
     }
     if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) {
@@ -1565,9 +1566,9 @@ retry:
         g_vk_skipped++;
         return;
     }
-    /* A guest read while preparing descriptors can land an older graphics output and submit this frame. Rebuild
-       descriptors and staged inputs in the new frame before recording the draw. */
-    if (setup_frame != vk_frame_number()) {
+    /* A guest read while preparing descriptors can submit and land an older graphics output into memory these
+       descriptors and staged inputs were read from. Rebuild them before recording the draw. */
+    if (setup_frame != vk_submit_number()) {
         draw_images_discard(&images);
         if (++retries < 4) goto retry;
         g_vk_skipped++;

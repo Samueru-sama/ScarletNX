@@ -80,17 +80,23 @@ u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem);
 /* Host-cached memory for the current frame's GPU -> host copies, read after its fence once invalidated. */
 u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem);
-/* ends and submits the current frame's commands, waiting for wait (at wait_stage) and signaling signal, then starts
-   the next frame. Either semaphore may be VK_NULL_HANDLE */
+/* ends and submits the commands recorded since the last submit, waiting for wait (at wait_stage) and signaling signal.
+   The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
+   Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
-void vk_finish(void); /* submits and waits until the GPU has done everything */
+void vk_finish(void);      /* submits and waits until the GPU has done everything, and lands every result */
+void vk_frame_next(void);  /* ends the frame (a present): the next records in the other slot */
+void vk_frame_check(void); /* at the start of a draw or dispatch: ends a frame that has grown too big */
 /* a buffer for GPU -> host copies: record the copy into it, vk_finish(), vk_readback_ready(), then read */
 u8* vk_readback_buffer(u64 size, VkBuffer* buf);
 void vk_readback_ready(void);
 /* destroyed once the frame being recorded now is done (the GPU may still use them until then) */
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2);
 void vk_defer_buffer(VkBuffer b, VmaAllocation a);
-u64 vk_frame_number(void);
+/* the submission being recorded (a number that grows at every submit: what a submit may have changed, results landed,
+   is checked against it), and the frame (grows at vk_frame_next: frame f's work is done once f + VK_FRAMES started) */
+u64 vk_submit_number(void);
+u64 vk_frame_id(void);
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,
                 VkAccessFlags2 dst_access, VkImageLayout to);

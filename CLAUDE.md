@@ -149,9 +149,10 @@ comments and developer docs under `.claude/` are out of scope.
   Maxwell shaders rely on them (NVIDIA's compiler makes -inf with `MUFU.LG2` of zero). Without it, Tears of the
   Kingdom's lighting came out as NaN blocks. The direct SPIR-V emitter declares the float controls requested by
   `spirv_translate.c` for supported shader modules.
-- Nothing in a draw's setup may submit or wait for the GPU (`vk_finish`, a readback like `vk_rt_flush`): the frame's
-  descriptor pools and staging reset after it, and the draw's sets already allocated turn to garbage. Copy on the GPU
-  instead.
+- Nothing in a draw's setup should submit or wait for the GPU (`vk_finish`, a readback like `vk_rt_flush`). A frame's
+  descriptor pools and staging live until its next present now, but a wait lands storage results into guest memory
+  the setup may already have read, so the draw starts its setup over when `vk_submit_number()` changed. Copy on the
+  GPU instead.
 - Submodule pins went wrong for a week of commits (a `git submodule add` records the default branch's tip, not the
   tag checked out afterwards). The libraries are CPM packages now (`cmake/dependencies.cmake`), each a release URL with
   its SHA-256: a bump changes both, and the hash is checked against the download. CPM's `OPTIONS` become cache

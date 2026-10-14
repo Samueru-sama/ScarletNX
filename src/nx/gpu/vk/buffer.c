@@ -254,10 +254,10 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     GfxOut* o = match;
     u64 delta = gva - o->addr;
     u8* host = gva >= o->addr && len <= o->size - delta ? gmem_ptr_untracked(gva, len) : NULL;
-    if (o->frame == vk_frame_number() && host && !memcmp(host, o->org + delta, len) &&
+    if (o->frame == vk_submit_number() && host && !memcmp(host, o->org + delta, len) &&
         !((o->off + delta) & (vk_stage_align() - 1))) {
         static u64 barrier_frame = ~0ull, barrier_draw = ~0ull;
-        if (barrier_frame != vk_frame_number() || barrier_draw != g_vk_drawn) {
+        if (barrier_frame != vk_submit_number() || barrier_draw != g_vk_drawn) {
             vk_render_end();
             VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                   .srcStageMask =
@@ -268,7 +268,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
             VkDependencyInfo d = {
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
             vkCmdPipelineBarrier2(vk_cmd(), &d);
-            barrier_frame = vk_frame_number();
+            barrier_frame = vk_submit_number();
             barrier_draw = g_vk_drawn;
         }
         *buf = o->buf;
@@ -277,7 +277,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
         return 1;
     }
     if (copy_stats_on())
-        g_wb_draw_miss[o->frame != vk_frame_number() ? 0 : !host ? 1 : memcmp(host, o->org + delta, len) ? 2 : 3]++;
+        g_wb_draw_miss[o->frame != vk_submit_number() ? 0 : !host ? 1 : memcmp(host, o->org + delta, len) ? 2 : 3]++;
     land_reason(WB_DRAW);
     return 0;
 }
@@ -458,7 +458,7 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     o->size = len;
     o->buf = *buf;
     o->off = *off;
-    o->frame = vk_frame_number();
+    o->frame = vk_submit_number();
     if (g_prep_tail)
         g_prep_tail->next = o;
     else
@@ -553,7 +553,7 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     o->pages[0] = p->key;
     o->addr = p->gva;
     o->size = 4096;
-    o->frame = vk_frame_number();
+    o->frame = vk_submit_number();
     o->buf = buf;
     o->off = off;
     o->mem = mem;
@@ -700,7 +700,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
     for (; e; e = e->next)
         if (e->start == gva && e->len == len) break;
     /* valid: the data is where draws can read it this frame */
-    int valid = e && e->buf && (e->own || e->frame == vk_frame_number());
+    int valid = e && e->buf && (e->own || e->frame == vk_submit_number());
     if (valid && !gpu_mem_dirty_since(e->gw, gva, len)) {
         if (e->epoch == g_vk_epoch && (!strict || e->strict_epoch == g_vk_epoch)) {
             use(e, buf, off);
@@ -772,7 +772,7 @@ static int buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict) {
         if (!p) return 0;
         memcpy(p, src, len);
         if (copy_stats_on()) g_copy_stage += len;
-        e->frame = vk_frame_number();
+        e->frame = vk_submit_number();
     }
     use(e, buf, off);
     return 1;
