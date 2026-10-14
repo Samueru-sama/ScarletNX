@@ -90,10 +90,11 @@ static void analyze_compute_writes(void* ptr) {
             for (u32 i = 11; bounded && i < length / 8; i++) {
                 if (!IDX_OK(i)) continue;
                 const Op* op = decode(((const u64*)code)[i]);
-                if (op && (op->id == O_BRX || op->id == O_CAL || op->id == O_JMP)) {
+                /* The translator skips unknown encodings, which cannot prove a write set. */
+                if (!op || op->id == O_BRX || op->id == O_CAL || op->id == O_JMP) {
                     bounded = 0;
                     branch = (int)i;
-                    branch_name = op->name;
+                    branch_name = op ? op->name : "UNKNOWN";
                 }
             }
             if (bounded) {
