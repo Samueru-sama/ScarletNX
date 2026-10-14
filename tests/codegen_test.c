@@ -189,7 +189,10 @@ static void emit_semantic_fixture(FILE* out) {
         0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under RP: a tiny operand overflows to +inf or -max, OFC and IXC. */
         0x4EE1D820UL, /* FRECPE V0.2D,V1.2D under RZ: to the largest finite. */
         0x5EE1D820UL, /* FRECPE D0,D1 under FZ: from 2^1022 up, a zero. */
-        0x4EA1D820UL  /* FRECPE V0.4S,V1.4S under RM: -inf or +max. */
+        0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under RM: -inf or +max. */
+        0x9E630020UL, /* UCVTF D0,X1: 0 is +0 under round toward minus infinity. */
+        0x6E61D820UL, /* UCVTF V0.2D,V1.2D: the same per lane; 2^63+1 rounds down. */
+        0x9E630020UL  /* UCVTF D0,X1: 2^63+1 rounds up, once, toward plus infinity. */
     };
     size_t i;
     char function[32];
@@ -257,6 +260,9 @@ static void emit_semantic_fixture(FILE* out) {
         out);
     fputs(" case 42:c.fpcr=0x800000;c.v[1].s[0]=1;c.v[1].s[1]=0x80000001u;c.v[1].s[2]=0x7E800000u;\n", out);
     fputs(" c.v[1].s[3]=0x3F800000u;break;\n", out);
+    /* UCVTF of 0 and of 2^63+1 in the directed modes */
+    fputs(" case 43:c.fpcr=0x800000;break;case 44:c.fpcr=0x800000;c.v[1].d[1]=0x8000000000000001ULL;break;\n", out);
+    fputs(" case 45:c.fpcr=0x400000;c.x[1]=0x8000000000000001ULL;break;\n", out);
     fputs(" default:break;}\n", out);
     fputs(" pc=mode?snx_step(&c,words[i],0x1000):steps[i](&c);ok=pc==(i==16?0xFFC:i==17?0x1000:0x1004);\n switch(i){\n",
           out);
@@ -310,6 +316,9 @@ static void emit_semantic_fixture(FILE* out) {
     fputs(" case 41:ok&=c.v[0].d[0]==0x8000000000000000ULL&&!c.v[0].d[1]&&c.fpsr==8;break;\n", out);
     fputs(" case 42:ok&=c.v[0].d[0]==0xFF8000007F7FFFFFULL&&c.v[0].d[1]==0x3F7F8000007FC000ULL&&c.fpsr==0x14;break;\n",
           out);
+    fputs(" case 43:ok&=!c.v[0].d[0]&&!c.v[0].d[1];break;\n", out);
+    fputs(" case 44:ok&=!c.v[0].d[0]&&c.v[0].d[1]==0x43E0000000000000ULL;break;\n", out);
+    fputs(" case 45:ok&=c.v[0].d[0]==0x43E0000000000001ULL&&!c.v[0].d[1];break;\n", out);
     fputs(" default:break;}\n", out);
     fputs(" if(!ok||(i!=17&&traps)){fprintf(stderr,\"semantic case %u mode %u failed\\n\",i,mode);return 1;}}\n", out);
     fputs(" puts(\"Static/interpreted scalar, FP, SIMD, memory and trap semantics passed\");return 0;}\n", out);
