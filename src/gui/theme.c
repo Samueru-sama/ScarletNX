@@ -33,8 +33,8 @@ static const GuiTheme builtins[] = {
         .prompt = {.align = GUI_ALIGN_CENTER,
                    .open = "[ ",
                    .close = " ]",
-                   .blink = true,
-                   .lines = {[GUI_PROMPT_KEYS] = true}},
+                   .blink = 1,
+                   .lines = {[GUI_PROMPT_KEYS] = 1}},
     },
     {
         .id = "yorha",
@@ -51,8 +51,8 @@ static const GuiTheme builtins[] = {
         .dim = {0xB4, 0xB0, 0x9C},
         .head = GUI_STYLE_BAR,
         .footer = GUI_STYLE_BAR,
-        .head_rule = true,
-        .focus_bar = true,
+        .head_rule = 1,
+        .focus_bar = 1,
         .marker = "\xE2\x96\xA0 ", /* U+25A0, the font's square */
         .title = {"SCARLETNX  /  MENU", "SCARLETNX  /  GAMES", "SCARLETNX  /  KEYS", "COMPILING", "BOOTING"},
         .run = GUI_RUN_STEPS,
@@ -62,8 +62,8 @@ static const GuiTheme builtins[] = {
                        .dim = {0x3E, 0x3E, 0x40},
                        .failure = {0xD2, 0x46, 0x3A},
                        .warning = {0xD9, 0xB2, 0x4A}},
-        .texture = true,
-        .detailed = true,
+        .texture = 1,
+        .detailed = 1,
         .ring = GUI_RING_RIGHT,
         .line_in = GUI_LINE_TYPING,
         .fade_in_ms = 250,
@@ -74,22 +74,26 @@ static const GuiTheme builtins[] = {
         .prompt = {.align = GUI_ALIGN_CENTER,
                    .open = "[ ",
                    .close = " ]",
-                   .blink = true,
-                   .lines = {[GUI_PROMPT_KEYS] = true}},
+                   .blink = 1,
+                   .lines = {[GUI_PROMPT_KEYS] = 1}},
     },
 };
+/* a theme's id fits a slot of the theme list: an array of negative size otherwise */
+typedef char snx_gui_id_slot[sizeof(((GuiThemes*)0)->ids[0]) == sizeof(((GuiTheme*)0)->id) ? 1 : -1];
 static const char* const screens[GUI_SCREEN_COUNT] = {"menu", "games", "keys", "compiling", "loading"};
 static const char* const rings[] = {"none", "left", "right", "right-near-text"};
 
 const GuiTheme* gui_theme_builtin(const char* id) {
-    for (size_t i = 0; id && i < sizeof(builtins) / sizeof(*builtins); ++i)
+    size_t i;
+    for (i = 0; id && i < sizeof(builtins) / sizeof(*builtins); ++i)
         if (!strcmp(builtins[i].id, id)) return &builtins[i];
     return NULL;
 }
 
 static char* trim(char* s) {
+    size_t n;
     while (*s == ' ' || *s == '\t') ++s;
-    size_t n = strlen(s);
+    n = strlen(s);
     while (n && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\r')) s[--n] = 0;
     return s;
 }
@@ -102,10 +106,10 @@ static char* unquote(char* s) {
     }
     return s;
 }
-static bool copy(char* out, size_t size, const char* value) {
-    if (strlen(value) >= size) return false;
+static int copy(char* out, size_t size, const char* value) {
+    if (strlen(value) >= size) return 0;
     strcpy(out, value);
-    return true;
+    return 1;
 }
 static int hex(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -113,18 +117,21 @@ static int hex(char c) {
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
-static bool colour(GuiRgb* out, const char* value) {
+static int colour(GuiRgb* out, const char* value) {
+    int i;
     uint8_t v[3];
-    if (strlen(value) != 7 || value[0] != '#') return false;
-    for (int i = 0; i < 3; ++i) {
+    if (strlen(value) != 7 || value[0] != '#') return 0;
+    for (i = 0; i < 3; ++i) {
         int hi = hex(value[1 + 2 * i]), lo = hex(value[2 + 2 * i]);
-        if (hi < 0 || lo < 0) return false;
+        if (hi < 0 || lo < 0) return 0;
         v[i] = (uint8_t)(hi * 16 + lo);
     }
-    *out = (GuiRgb){v[0], v[1], v[2]};
-    return true;
+    out->r = v[0];
+    out->g = v[1];
+    out->b = v[2];
+    return 1;
 }
-static bool style(GuiStyle* out, const char* value) {
+static int style(GuiStyle* out, const char* value) {
     if (!strcmp(value, "plain"))
         *out = GUI_STYLE_PLAIN;
     else if (!strcmp(value, "bar"))
@@ -132,42 +139,46 @@ static bool style(GuiStyle* out, const char* value) {
     else if (!strcmp(value, "none"))
         *out = GUI_STYLE_NONE;
     else
-        return false;
-    return true;
+        return 0;
+    return 1;
 }
-static bool flag(bool* out, const char* value) {
+static int flag(int* out, const char* value) {
     if (!strcmp(value, "true"))
-        *out = true;
+        *out = 1;
     else if (!strcmp(value, "false"))
-        *out = false;
+        *out = 0;
     else
-        return false;
-    return true;
+        return 0;
+    return 1;
 }
 /* a whole number, 0 to 10000 */
-static bool integer(uint32_t* out, const char* value) {
+static int integer(uint32_t* out, const char* value) {
     char* end;
     unsigned long n = strtoul(value, &end, 10);
-    if (!*value || *end || n > 10000) return false;
+    if (!*value || *end || n > 10000) return 0;
     *out = (uint32_t)n;
-    return true;
+    return 1;
 }
-static bool word(int* out, const char* value, const char* const* words, int count) {
-    for (int i = 0; i < count; ++i)
+static int word(int* out, const char* value, const char* const* words, int count) {
+    int i;
+    for (i = 0; i < count; ++i)
         if (!strcmp(value, words[i])) {
             *out = i;
-            return true;
+            return 1;
         }
-    return false;
+    return 0;
 }
 static void palette(GuiPalette* p, const char* key, const char* value) {
-    GuiRgb* roles[] = {&p->page, &p->ink, &p->soft, &p->dim, &p->failure, &p->warning};
+    size_t i;
+    static const size_t roles[] = {offsetof(GuiPalette, page),    offsetof(GuiPalette, ink),
+                                   offsetof(GuiPalette, soft),    offsetof(GuiPalette, dim),
+                                   offsetof(GuiPalette, failure), offsetof(GuiPalette, warning)};
     static const char* const names[] = {"page", "ink", "soft", "dim", "failure", "warning"};
-    for (size_t i = 0; i < sizeof roles / sizeof *roles; ++i)
-        if (!strcmp(key, names[i])) colour(roles[i], value);
+    for (i = 0; i < sizeof roles / sizeof *roles; ++i)
+        if (!strcmp(key, names[i])) colour((GuiRgb*)((char*)p + roles[i]), value);
 }
 /* run_colors: an ErET loading theme's [colors] are its loading screen's, here the run's */
-static void apply(GuiTheme* t, const char* section, const char* key, const char* value, bool run_colors) {
+static void apply(GuiTheme* t, const char* section, const char* key, const char* value, int run_colors) {
     uint32_t number;
     if (!strcmp(section, "theme") && !strcmp(key, "name"))
         copy(t->name, sizeof t->name, value);
@@ -179,19 +190,24 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
         if (!strcmp(key, "texture")) flag(&t->texture, value);
         palette(&t->run_colors, key, value);
     } else if (!strcmp(section, "colors")) {
-        GuiRgb* roles[] = {&t->page, &t->ink, &t->soft, &t->focus, &t->active, &t->failure, &t->dim, &t->warning};
+        size_t i;
+        static const size_t roles[] = {offsetof(GuiTheme, page),   offsetof(GuiTheme, ink),
+                                       offsetof(GuiTheme, soft),   offsetof(GuiTheme, focus),
+                                       offsetof(GuiTheme, active), offsetof(GuiTheme, failure),
+                                       offsetof(GuiTheme, dim),    offsetof(GuiTheme, warning)};
         static const char* const names[] = {"page", "ink", "soft", "focus", "active", "failure", "dim", "warning"};
         if (!strcmp(key, "texture")) flag(&t->texture, value); /* where ErET keeps it */
-        for (size_t i = 0; i < sizeof roles / sizeof *roles; ++i)
-            if (!strcmp(key, names[i])) colour(roles[i], value);
+        for (i = 0; i < sizeof roles / sizeof *roles; ++i)
+            if (!strcmp(key, names[i])) colour((GuiRgb*)((char*)t + roles[i]), value);
     } else if (!strcmp(section, "head") || !strcmp(section, "footer")) {
-        bool head = section[0] == 'h';
+        int i;
+        int head = section[0] == 'h';
         if (!strcmp(key, "style"))
             style(head ? &t->head : &t->footer, value);
         else if (!strcmp(key, "rule"))
             flag(head ? &t->head_rule : &t->footer_rule, value);
         else
-            for (int i = 0; head && i < GUI_SCREEN_COUNT; ++i)
+            for (i = 0; head && i < GUI_SCREEN_COUNT; ++i)
                 if (!strcmp(key, screens[i])) copy(t->title[i], sizeof t->title[i], value);
     } else if (!strcmp(section, "body")) {
         if (!strcmp(key, "marker"))
@@ -265,17 +281,24 @@ static const GuiTheme* layout_base(const char* layout) {
         return gui_theme_builtin("default");
     return NULL;
 }
-static bool visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme** bases, bool base_only,
-                  bool run_colors) {
+static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme** bases, int base_only,
+                  int run_colors) {
+    char section[32];
+    char* line;
+    char* next;
     char* copy_of = malloc(size + 1);
-    if (!copy_of) return false;
+    if (!copy_of) return 0;
     memcpy(copy_of, text, size);
     copy_of[size] = 0;
-    char section[32] = "";
-    for (char *line = copy_of, *next; line; line = next) {
+    memset(section, 0, sizeof section);
+    for (line = copy_of; line; line = next) {
+        char *key;
+        char * value;
+        char * equals;
+        char * s;
         next = strchr(line, '\n');
         if (next) *next++ = 0;
-        char* s = trim(line);
+        s = trim(line);
         if (!*s || *s == ';' || *s == '#') continue;
         if (*s == '[') {
             char* end = strchr(s, ']');
@@ -286,10 +309,10 @@ static bool visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme
                 section[0] = 0;
             continue;
         }
-        char* equals = strchr(s, '=');
+        equals = strchr(s, '=');
         if (!equals) continue;
         *equals = 0;
-        char *key = trim(s), *value = unquote(trim(equals + 1));
+        key = trim(s); value = unquote(trim(equals + 1));
         if (base_only) {
             if (!strcmp(section, "theme") && !strcmp(key, "base") && gui_theme_builtin(value))
                 bases[0] = gui_theme_builtin(value);
@@ -301,29 +324,31 @@ static bool visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme
             apply(theme, section, key, value, run_colors);
     }
     free(copy_of);
-    return true;
+    return 1;
 }
-bool gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t size) {
+int gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t size) {
     const GuiTheme* bases[3] = {NULL, NULL, NULL}; /* the base, ErET's layout, set when that is loading */
-    if (!visit(text, size, theme, bases, true, false)) return false;
+    if (!visit(text, size, theme, bases, 1, 0)) return 0;
     *theme = bases[0] ? *bases[0] : bases[1] ? *bases[1] : builtins[0];
     copy(theme->id, sizeof theme->id, id);
     copy(theme->name, sizeof theme->name, id);
-    return visit(text, size, theme, bases, false, !bases[0] && bases[2]);
+    return visit(text, size, theme, bases, 0, !bases[0] && bases[2]);
 }
 void gui_theme_load(GuiTheme* theme, const char* const* dirs, size_t count, const char* id) {
-    for (size_t i = 0; i < count; ++i) {
+    size_t i;
+    const GuiTheme* builtin;
+    for (i = 0; i < count; ++i) {
         char* folder = dirs[i] ? snx_path_join(dirs[i], id) : NULL;
         char* path = folder ? snx_path_join(folder, "theme.ini") : NULL;
         size_t size = 0;
         unsigned char* text = path ? snx_read_file(path, &size) : NULL;
-        bool read = text && gui_theme_parse(theme, id, (const char*)text, size);
+        int read = text && gui_theme_parse(theme, id, (const char*)text, size);
         free(text);
         free(path);
         free(folder);
         if (read) return;
     }
-    const GuiTheme* builtin = gui_theme_builtin(id);
+    builtin = gui_theme_builtin(id);
     *theme = builtin ? *builtin : builtins[0];
 }
 
@@ -332,33 +357,36 @@ void gui_themes_free(GuiThemes* themes) {
     themes->ids = NULL;
     themes->count = 0;
 }
-static bool listed(const GuiThemes* themes, const char* id) {
-    for (size_t i = 0; i < themes->count; ++i)
-        if (!strcmp(themes->ids[i], id)) return true;
-    return false;
+static int listed(const GuiThemes* themes, const char* id) {
+    size_t i;
+    for (i = 0; i < themes->count; ++i)
+        if (!strcmp(themes->ids[i], id)) return 1;
+    return 0;
 }
 void gui_themes_scan(GuiThemes* themes, const char* const* dirs, size_t count) {
+    size_t total, capacity, i, d;
     gui_themes_free(themes);
-    size_t total = sizeof(builtins) / sizeof(*builtins), capacity = total;
-    _Static_assert(sizeof *themes->ids == sizeof builtins->id, "a theme's id fits its slot");
+    total = sizeof(builtins) / sizeof(*builtins);
+    capacity = total;
     themes->ids = calloc(capacity, sizeof *themes->ids);
     if (!themes->ids) return;
-    for (size_t i = 0; i < total; ++i) memcpy(themes->ids[themes->count++], builtins[i].id, sizeof *themes->ids);
-    for (size_t d = 0; d < count; ++d) {
+    for (i = 0; i < total; ++i) memcpy(themes->ids[themes->count++], builtins[i].id, sizeof *themes->ids);
+    for (d = 0; d < count; ++d) {
         char** names = NULL;
         size_t found = 0;
+        char (*grown)[sizeof *themes->ids];
         if (!dirs[d] || snx_list_dir(dirs[d], &names, &found)) continue; /* no such folder: nothing from it */
-        char (*grown)[sizeof *themes->ids] = realloc(themes->ids, (capacity + found) * sizeof *themes->ids);
+        grown = realloc(themes->ids, (capacity + found) * sizeof *themes->ids);
         if (!grown) {
             snx_free_strings(names, found);
             continue;
         }
         themes->ids = grown;
         capacity += found;
-        for (size_t i = 0; i < found; ++i) {
+        for (i = 0; i < found; ++i) {
             char* folder = snx_path_join(dirs[d], names[i]);
             char* file = folder ? snx_path_join(folder, "theme.ini") : NULL;
-            bool usable = names[i][0] != '.' && !listed(themes, names[i]) && strlen(names[i]) < sizeof *themes->ids &&
+            int usable = names[i][0] != '.' && !listed(themes, names[i]) && strlen(names[i]) < sizeof *themes->ids &&
                           file && snx_is_file(file);
             free(file);
             free(folder);

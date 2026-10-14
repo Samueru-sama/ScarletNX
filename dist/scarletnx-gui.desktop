@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=ScarletNX Launcher
+GenericName=Game launcher
+Comment=Picks a game and runs it recompiled to native code
+Exec=scarletnx-gui
+Icon=wimsy
+Categories=Game;Emulator;
+Keywords=recompiler;launcher;
+Terminal=false
+# The window's class and Wayland app id are the executable's name, which ties the window to this entry and its icon
+StartupWMClass=scarletnx-gui

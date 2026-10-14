@@ -80,13 +80,9 @@ int gnu_process_stack(GnuProcess* p, int argc, const char* const* argv, const ch
             if (++envc > 65536) return -GNU_E2BIG;
         }
     if (gnu_memory_map(&p->memory, stack_low, sp - stack_low, 3, 0)) return -GNU_ENOMEM;
-    uint64_t* arguments = calloc((size_t)argc, sizeof *arguments);
-    uint64_t* environment = calloc(envc ? envc : 1, sizeof *environment);
-    if (!arguments || !environment) {
-        free(arguments);
-        free(environment);
-        return -GNU_ENOMEM;
-    }
+    uint64_t* arguments = calloc((size_t)argc + envc, sizeof *arguments);
+    if (!arguments) return -GNU_ENOMEM;
+    uint64_t* environment = arguments + argc;
     int result = 0;
     for (size_t i = envc; i > 0; i--) {
         if ((result = push(p, &sp, env[i - 1], strlen(env[i - 1]) + 1))) goto done;
@@ -153,6 +149,93 @@ int gnu_process_stack(GnuProcess* p, int argc, const char* const* argv, const ch
         result = gnu_memory_protect(&p->memory, stack_low, UINT64_C(0x800000), p->elf.stack_permissions);
     }
 done:
+    free(arguments); /* and the environment after them */
+    return result;
+}
+
+int gnu_process_stack32(GnuProcess* p, int argc, const char* const* argv, const char* const* env) {
+    uint32_t sp = 0xf0000000u, stack_low = 0xef800000u;
+    if (argc < 1 || argc > 65536) return -GNU_EINVAL;
+    size_t envc = 0;
+    if (env)
+        while (env[envc]) {
+            if (++envc > 65536) return -GNU_E2BIG;
+        }
+    if (gnu_memory_map(&p->memory, stack_low, (uint64_t)sp - stack_low, 3, 0)) return -GNU_ENOMEM;
+    uint32_t* arguments = calloc((size_t)argc, sizeof *arguments);
+    uint32_t* environment = calloc(envc ? envc : 1, sizeof *environment);
+    if (!arguments || !environment) {
+        free(arguments);
+        free(environment);
+        return -GNU_ENOMEM;
+    }
+    int result = 0;
+    uint64_t s64 = sp;
+    for (size_t i = envc; i > 0; i--) {
+        if ((result = push(p, &s64, env[i - 1], strlen(env[i - 1]) + 1))) goto done;
+        environment[i - 1] = (uint32_t)s64;
+    }
+    for (int i = argc; i > 0; i--) {
+        if (!argv[i - 1] || (result = push(p, &s64, argv[i - 1], strlen(argv[i - 1]) + 1))) {
+            result = -GNU_E2BIG;
+            goto done;
+        }
+        arguments[i - 1] = (uint32_t)s64;
+    }
+    const char platform[] = "arm";
+    if ((result = push(p, &s64, platform, sizeof platform))) goto done;
+    uint32_t platform_address = (uint32_t)s64;
+    unsigned char random[16];
+    if ((result = gnu_random_bytes(random, sizeof random)) || (result = push(p, &s64, random, sizeof random)))
+        goto done;
+    uint32_t random_address = (uint32_t)s64;
+    const uint32_t auxiliary[] = {3,  (uint32_t)p->elf.phdr,
+                                  4,  p->elf.phentsize,
+                                  5,  p->elf.phnum,
+                                  6,  GNU_PAGE_SIZE,
+                                  7,  0,
+                                  8,  0,
+                                  9,  (uint32_t)p->elf.entry | (p->elf.thumb ? 1u : 0u),
+                                  11, 1000,
+                                  12, 1000,
+                                  13, 1000,
+                                  14, 1000,
+                                  15, platform_address,
+                                  16, 3,
+                                  17, 100,
+                                  23, 0,
+                                  25, random_address,
+                                  26, 0,
+                                  31, arguments[0],
+                                  0,  0};
+    size_t words = 1 + (size_t)argc + 1 + envc + 1 + sizeof auxiliary / sizeof auxiliary[0];
+    uint64_t bytes = (uint64_t)words * 4;
+    uint64_t initial = (s64 - bytes) & ~UINT64_C(7);
+    if (initial < stack_low) {
+        result = -GNU_E2BIG;
+        goto done;
+    }
+    uint32_t* values = calloc(words, 4);
+    if (!values) {
+        result = -GNU_ENOMEM;
+        goto done;
+    }
+    size_t index = 0;
+    values[index++] = (uint32_t)argc;
+    for (int i = 0; i < argc; i++) values[index++] = arguments[i];
+    values[index++] = 0;
+    for (size_t i = 0; i < envc; i++) values[index++] = environment[i];
+    values[index++] = 0;
+    memcpy(values + index, auxiliary, sizeof auxiliary);
+    result = gnu_memory_write(&p->memory, initial, values, (size_t)bytes);
+    free(values);
+    if (!result) {
+        p->arm.r[13] = (uint32_t)initial;
+        p->arm.r[15] = (uint32_t)p->elf.entry;
+        p->arm.cpsr = 0x10u | (p->elf.thumb ? 0x20u : 0u); /* USR, Thumb state as loaded */
+        result = gnu_memory_protect(&p->memory, stack_low, 0x800000, p->elf.stack_permissions);
+    }
+done:
     free(arguments);
     free(environment);
     return result;
@@ -166,10 +249,17 @@ int gnu_process_init(GnuProcess* p, const char* path, int argc, const char* cons
     if (!r) r = gnu_vfs_init(&p->vfs);
     if (!r) r = gnu_elf_load(&p->elf, &p->memory, path, error, cap);
     if (!r) {
-        p->cpu.mem = p->memory.base;
-        p->cpu.rt = &gnu_rtapi;
-        p->cpu.thread = p;
-        r = gnu_process_stack(p, argc, argv, env);
+        if (p->elf.bits == 32) {
+            p->arm.mem = p->memory.base;
+            p->arm.mem_size = p->memory.size;
+            p->arm.cpsr = 0x10u | (p->elf.thumb ? 0x20u : 0u);
+            r = gnu_process_stack32(p, argc, argv, env);
+        } else {
+            p->cpu.mem = p->memory.base;
+            p->cpu.rt = &gnu_rtapi;
+            p->cpu.thread = p;
+            r = gnu_process_stack(p, argc, argv, env);
+        }
     }
     if (!r) r = gnu_vfs_set_process(&p->vfs, p->pid, "/program", argc, argv);
     if (!r) r = gnu_vfs_set_executable(&p->vfs, p->elf.image, p->elf.size);

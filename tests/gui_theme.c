@@ -8,7 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static bool same(GuiRgb a, GuiRgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+static int same(GuiRgb a, GuiRgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+static int rgb_is(GuiRgb a, int r, int g, int b) { return a.r == r && a.g == g && a.b == b; }
 static void parse(GuiTheme* theme, const char* text) { assert(gui_theme_parse(theme, "mine", text, strlen(text))); }
 static void write(const char* dir, const char* name, const char* text) {
     char* folder = snx_path_join(dir, name);
@@ -20,17 +21,28 @@ static void write(const char* dir, const char* name, const char* text) {
 }
 
 int main(void) {
+    static const char* const ids[] = {"default", "yorha"};
+    const char* shipped[] = {SNX_GUI_THEMES_DIR};
+    char* missing;
+    GuiThemes themes;
+    const char *dirs[3], *none[1];
+    char* second;
+    char* dir;
+    char longer[200];
+    const GuiTheme * b;
+    GuiTheme theme;
+    size_t i;
     const GuiTheme *def = gui_theme_builtin("default"), *yorha = gui_theme_builtin("yorha");
     const GuiTheme* loading = yorha; /* YoRHa's runs are its loading screen */
     assert(def && yorha && !gui_theme_builtin("yorha-loading") && !gui_theme_builtin("nothing") &&
            !gui_theme_builtin(NULL));
-    assert(same(yorha->run_colors.page, (GuiRgb){0x14, 0x14, 0x16}) && !same(yorha->run_colors.page, yorha->page));
+    assert(rgb_is(yorha->run_colors.page, 0x14, 0x14, 0x16) && !same(yorha->run_colors.page, yorha->page));
     assert(same(def->run_colors.page, def->page) && same(def->run_colors.ink, def->ink));
     assert(def->run == GUI_RUN_CONSOLE && !def->fade_in_ms && !def->fade_out_ms && def->line_in == GUI_LINE_NONE);
     assert(loading->run == GUI_RUN_STEPS && loading->ring == GUI_RING_RIGHT && loading->texture && !loading->bar);
     assert(loading->line_in == GUI_LINE_TYPING && loading->typing_ms == 5 && loading->fade_out_ms == 500);
     assert(loading->detailed && !loading->collapse && !def->detailed && !def->collapse);
-    for (const GuiTheme* b = def; b; b = b == def ? loading : NULL) {
+    for (b = def; b; b = b == def ? loading : NULL) {
         const GuiPrompt* p = &b->prompt;
         assert(p->align == GUI_ALIGN_CENTER && !strcmp(p->open, "[ ") && !strcmp(p->close, " ]") && p->blink);
         assert(p->lines[GUI_PROMPT_KEYS] && !p->lines[GUI_PROMPT_DONE] && !p->lines[GUI_PROMPT_FAILED] &&
@@ -40,7 +52,6 @@ int main(void) {
     assert(def->head == GUI_STYLE_PLAIN && !def->focus_bar && !strcmp(def->marker, "- ") && !def->title[0][0]);
     assert(yorha->head == GUI_STYLE_BAR && yorha->focus_bar && yorha->title[GUI_SCREEN_COMPILING][0]);
 
-    GuiTheme theme;
     parse(&theme, ""); /* nothing: the default, named after its folder */
     assert(same(theme.ink, def->ink) && !strcmp(theme.id, "mine") && !strcmp(theme.name, "mine"));
 
@@ -50,7 +61,7 @@ int main(void) {
                   "loading = \"  BOOT  \"\r\nmenu =\r\n[footer]\r\nstyle = plain\r\nrule = true\r\n"
                   "[body]\r\nmarker = \"* \"\r\nfocus = color\r\n[nowhere]\r\nink = #FFFFFF\r\nstray line\r\n");
     assert(!strcmp(theme.name, "Mine") && !strcmp(theme.id, "mine"));
-    assert(same(theme.page, (GuiRgb){0x0A, 0x0B, 0x0C}));
+    assert(rgb_is(theme.page, 0x0A, 0x0B, 0x0C));
     assert(same(theme.ink, yorha->ink) && same(theme.soft, yorha->soft) && same(theme.focus, yorha->focus));
     assert(theme.head == GUI_STYLE_NONE && theme.head_rule == yorha->head_rule);
     assert(theme.footer == GUI_STYLE_PLAIN && theme.footer_rule && !theme.focus_bar && !strcmp(theme.marker, "* "));
@@ -66,8 +77,8 @@ int main(void) {
     assert(!theme.detailed && theme.collapse);
     assert(theme.line_in == GUI_LINE_SLIDE && theme.line_in_ms == 300 && theme.typing_ms == 0);
     assert(theme.fade_in_ms == loading->fade_in_ms && theme.fade_out_ms == loading->fade_out_ms);
-    assert(theme.blink_ms == loading->blink_ms && same(theme.dim, (GuiRgb){1, 2, 3}));
-    assert(same(theme.run_colors.page, (GuiRgb){5, 5, 5}) && same(theme.run_colors.ink, yorha->run_colors.ink));
+    assert(theme.blink_ms == loading->blink_ms && rgb_is(theme.dim, 1, 2, 3));
+    assert(rgb_is(theme.run_colors.page, 5, 5, 5) && same(theme.run_colors.ink, yorha->run_colors.ink));
     assert(same(theme.page, yorha->page));
 
     /* an ErET file: its layout picks the base when no base does, ErET's own keys apply, the rest waits for it */
@@ -77,14 +88,14 @@ int main(void) {
                   "[sizes]\ntitle_scale = 0.75\n");
     assert(same(theme.page, yorha->page) && theme.format == 2 && !strcmp(theme.author, "rEden"));
     assert(theme.texture && theme.ring == GUI_RING_NEAR_TEXT && theme.typing_sync);
-    assert(same(theme.warning, (GuiRgb){0xD9, 0xB2, 0x4A}) && !strcmp(theme.title[GUI_SCREEN_LOADING], "WAKING"));
+    assert(rgb_is(theme.warning, 0xD9, 0xB2, 0x4A) && !strcmp(theme.title[GUI_SCREEN_LOADING], "WAKING"));
     /* ErET's loading layout is YoRHa's runs: its [colors] are the run's, the menus keep YoRHa's */
     parse(&theme, "[theme]\nlayout = loading\n[colors]\npage = #101010\nink = #F0F0F0\ntexture = false\n");
-    assert(same(theme.run_colors.page, (GuiRgb){16, 16, 16}) && same(theme.run_colors.ink, (GuiRgb){240, 240, 240}));
+    assert(rgb_is(theme.run_colors.page, 16, 16, 16) && rgb_is(theme.run_colors.ink, 240, 240, 240));
     assert(same(theme.page, yorha->page) && same(theme.ink, yorha->ink) && !theme.texture &&
            theme.run == GUI_RUN_STEPS);
     parse(&theme, "[theme]\nbase = yorha\nlayout = loading\n[colors]\npage = #101010\n"); /* a base: menus' */
-    assert(same(theme.page, (GuiRgb){16, 16, 16}) && same(theme.run_colors.page, yorha->run_colors.page));
+    assert(rgb_is(theme.page, 16, 16, 16) && same(theme.run_colors.page, yorha->run_colors.page));
     parse(&theme, "[theme]\nbase = default\nlayout = menu\nformat = 0\n"); /* base wins; no format 0 */
     assert(same(theme.page, def->page) && theme.format == GUI_THEME_FORMAT);
     parse(&theme, "[header]\nring_side = nowhere\n[run]\nring = right-near-text\n[transitions]\ntyping = later\n");
@@ -103,13 +114,14 @@ int main(void) {
     assert(theme.prompt.align == GUI_ALIGN_LEFT);
 
     /* a value longer than its field keeps the base's; an unknown base leaves the default */
-    char longer[200] = "[theme]\nbase = elsewhere\n[body]\nmarker = ";
+    memset(longer, 0, sizeof longer);
+    strcpy(longer, "[theme]\nbase = elsewhere\n[body]\nmarker = ");
     memset(longer + strlen(longer), 'x', 40);
     parse(&theme, longer);
     assert(!strcmp(theme.marker, def->marker) && same(theme.page, def->page));
 
-    char* dir = snx_temp_dir(NULL);
-    char* second = snx_temp_dir(NULL);
+    dir = snx_temp_dir(NULL);
+    second = snx_temp_dir(NULL);
     assert(dir && second);
     write(dir, "alpha", "[theme]\nbase = yorha\nname = Alpha\n");
     write(dir, "beta", NULL); /* a folder without theme.ini */
@@ -117,8 +129,10 @@ int main(void) {
     write(dir, "yorha", "[theme]\nbase = yorha\n[colors]\npage = #FFFFFF\n"); /* replaces the built-in */
     write(second, "alpha", "[theme]\nname = Alpha too\n");                    /* the first folder's wins */
     write(second, "gamma", "[theme]\nname = Gamma\n");
-    const char* dirs[] = {dir, NULL, second};
-    GuiThemes themes = {0};
+    dirs[0] = dir;
+    dirs[1] = NULL;
+    dirs[2] = second;
+    memset(&themes, 0, sizeof themes);
     gui_themes_scan(&themes, dirs, 3);
     assert(themes.count == 4 && !strcmp(themes.ids[0], "default") && !strcmp(themes.ids[1], "yorha") &&
            !strcmp(themes.ids[2], "alpha") && !strcmp(themes.ids[3], "gamma"));
@@ -127,12 +141,12 @@ int main(void) {
     gui_theme_load(&theme, dirs, 3, "gamma");
     assert(!strcmp(theme.name, "Gamma") && same(theme.page, def->page));
     gui_theme_load(&theme, dirs, 3, "yorha");
-    assert(same(theme.page, (GuiRgb){255, 255, 255}) && same(theme.ink, yorha->ink));
+    assert(rgb_is(theme.page, 255, 255, 255) && same(theme.ink, yorha->ink));
     gui_theme_load(&theme, dirs, 3, "beta");
     assert(!strcmp(theme.id, "default"));
     gui_themes_free(&themes);
-    char* missing = snx_path_join(dir, "missing");
-    const char* none[] = {missing};
+    missing = snx_path_join(dir, "missing");
+    none[0] = missing;
     gui_themes_scan(&themes, none, 1); /* no themes/ folder: the built-ins */
     assert(themes.count == 2);
     gui_themes_free(&themes);
@@ -142,9 +156,9 @@ int main(void) {
     free(second);
 
     /* the versioned theme files are the built-ins, key for key */
-    static const char* const ids[] = {"default", "yorha"};
-    const char* shipped[] = {SNX_GUI_THEMES_DIR};
-    for (size_t i = 0; i < sizeof ids / sizeof *ids; ++i) {
+    for (i = 0; i < sizeof ids / sizeof *ids; ++i) {
+        int l;
+        int s;
         const GuiTheme* b = gui_theme_builtin(ids[i]);
         GuiTheme f;
         gui_theme_load(&f, shipped, 1, ids[i]);
@@ -159,13 +173,13 @@ int main(void) {
         assert(f.detailed == b->detailed && f.collapse == b->collapse);
         assert(f.prompt.align == b->prompt.align && !strcmp(f.prompt.open, b->prompt.open));
         assert(!strcmp(f.prompt.close, b->prompt.close) && f.prompt.blink == b->prompt.blink);
-        for (int l = 0; l < GUI_PROMPT_COUNT; ++l) assert(f.prompt.lines[l] == b->prompt.lines[l]);
+        for (l = 0; l < GUI_PROMPT_COUNT; ++l) assert(f.prompt.lines[l] == b->prompt.lines[l]);
         assert(f.format == GUI_THEME_FORMAT && b->format == GUI_THEME_FORMAT && !strcmp(f.author, b->author));
         assert(same(f.warning, b->warning) && same(f.run_colors.page, b->run_colors.page));
         assert(same(f.run_colors.ink, b->run_colors.ink) && same(f.run_colors.soft, b->run_colors.soft));
         assert(same(f.run_colors.dim, b->run_colors.dim) && same(f.run_colors.failure, b->run_colors.failure));
         assert(same(f.run_colors.warning, b->run_colors.warning));
-        for (int s = 0; s < GUI_SCREEN_COUNT; ++s) assert(!strcmp(f.title[s], b->title[s]));
+        for (s = 0; s < GUI_SCREEN_COUNT; ++s) assert(!strcmp(f.title[s], b->title[s]));
     }
     puts("GUI themes: built-ins, theme.ini over its base, themes/ folders passed");
     return 0;

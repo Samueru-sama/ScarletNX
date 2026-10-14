@@ -50,6 +50,10 @@ add_executable(snx-test-arm-decode arm_decode.c "${PROJECT_SOURCE_DIR}/src/commo
     "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c")
 snx_test_target(snx-test-arm-decode 11)
 add_test(NAME arm_decode COMMAND snx-test-arm-decode)
+add_executable(snx-test-arm-exec arm_exec_test.c)
+snx_test_target(snx-test-arm-exec 11)
+target_link_libraries(snx-test-arm-exec PRIVATE snx_arm_llvm)
+add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
 
 # Small architectural witnesses need neither game assets nor an emulator.
 add_executable(snx-test-a64-fp a64_fp_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -63,6 +67,24 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     target_compile_options(snx-test-a64-fp PRIVATE -mcx16)
 endif()
 add_test(NAME a64_fp_witnesses COMMAND snx-test-a64-fp)
+
+# one build per snx_crc32 path: the nibble table, PCLMULQDQ, PCLMULQDQ with SSE4.2
+function(snx_crc32_test name)
+    add_executable(snx-test-${name} crc32_helper.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_test_target(snx-test-${name} 11)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        target_compile_options(snx-test-${name} PRIVATE -mcx16 ${ARGN})
+    endif()
+    if(NOT WIN32)
+        target_link_libraries(snx-test-${name} PRIVATE m)
+    endif()
+    add_test(NAME ${name} COMMAND snx-test-${name})
+endfunction()
+snx_crc32_test(crc32_helper)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    snx_crc32_test(crc32_helper_clmul -mpclmul)
+    snx_crc32_test(crc32_helper_x86 -msse4.2 -mpclmul)
+endif()
 
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -344,13 +366,28 @@ endif()
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode depth_texel write_pages nvn_command_gap nvn_control)
+    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode crc32_helper depth_texel write_pages nvn_command_gap nvn_control)
     if(TEST native_recompiler)
         list(APPEND snx_sanitized_tests native_recompiler)
+    endif()
+    if(TEST crc32_helper_x86)
+        list(APPEND snx_sanitized_tests crc32_helper_clmul crc32_helper_x86)
     endif()
     set_tests_properties(${snx_sanitized_tests}
         PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
 endif()
 
 endif() # SNX_BUILD_NX
+
+# dist/icons/ is what scripts/make-icons.py draws from dist/wimsy.svg: a changed SVG fails until it runs again
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME dist_icons COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/make-icons.py" --check)
+endif()
+if(NOT WIN32)
+    include(GNUInstallDirs)
+    add_test(NAME dist_install COMMAND "${CMAKE_COMMAND}" -DBUILD=${PROJECT_BINARY_DIR}
+        -DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/dist-install -DDATADIR=${CMAKE_INSTALL_DATADIR} -DNX=${SNX_BUILD_NX}
+        -DGUI=${SNX_BUILD_GUI} -DDIST=${PROJECT_SOURCE_DIR}/dist -P "${CMAKE_CURRENT_SOURCE_DIR}/dist_install.cmake")
+endif()
 include(architecture.cmake)

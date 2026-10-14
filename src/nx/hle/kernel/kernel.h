@@ -73,6 +73,7 @@ struct KThread {
     KThread* next_waiter;
     char name[32];
     const char* wait_name;
+    u64 wait_tid; /* the thread a join waits for, for the thread dump */
     i64 wait_timeout;
     u64 sleep_lr, sleep_n, sleep_x[31]; /* for threads.txt: catches SleepThread polling loops */
 };

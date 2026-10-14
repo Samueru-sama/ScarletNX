@@ -172,6 +172,13 @@ static VkFmt TV(VkFormat f, int bpp, int conv) { /* converted on upload */
     r.conv = (u8)conv;
     return r;
 }
+/* Whether a header samples a depth/stencil target's stencil: R24G8 (stencil in G) or R8G24 (stencil in R), with
+   the first component taken from the stencil one. Unreal reads its scene stencil this way, R8G24 with R everywhere. */
+int vk_tic_reads_stencil(const u32* tic) {
+    u32 f = tic[0] & 0x7F, x = (tic[0] >> 19) & 7; /* 2 R, 3 G */
+    return (f == 0x0D && x == 3) || (f == 0x0E && x == 2);
+}
+
 VkFmt vk_tic_format(u32 w0, int srgb) {
     u32 f = w0 & 0x7F, ct = (w0 >> 7) & 7;
     int flt = ct == 7, sn = ct == 1, ui = ct == 4, si = ct == 3;
@@ -211,15 +218,6 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x0C:
             PICK(VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16_SINT,
                  VK_FORMAT_R16G16_UNORM, 4);
-        case 0x0E:
-            /* G24R8 with R UINT and G, B, A UNORM is depth and stencil (Eden's format table reads it as S8_UINT_D24_UNORM,
-               like Z24S8); other component types stay unsupported */
-            if ((w0 & 0x7ffffu) == 0x24a0eu) {
-                VkFmt r = vk_zt_format(0x14);
-                r.bpp = 4; /* four-byte G24R8 guest storage, even when the host uses D32F S8 */
-                return r;
-            }
-            break;
         case 0x0F:
             return flt  ? T(VK_FORMAT_R32_SFLOAT, 4, 0, 0)
                    : ui ? T(VK_FORMAT_R32_UINT, 4, 1, 0)
@@ -261,8 +259,11 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x45: return TA(10, 10, srgb);
         case 0x54: return TA(12, 10, srgb);
         case 0x46: return TA(12, 12, srgb);
-        /* Z24S8, X8Z24 and S8Z24: four bytes a texel in guest memory, whatever the host depth format's size (texture.c
-           unpacks each by where its depth bits are) */
+        /* depth and stencil, four bytes a texel in guest memory whatever the host depth format's size (texture.c
+           unpacks each by where its depth bits are). G8R24 and G24R8 are a D24S8 target's two parts as color
+           components, depth in 24 bits and stencil in 8: vk_tic_reads_stencil says which a header samples */
+        case 0x0D:
+        case 0x0E:
         case 0x29:
         case 0x2A:
         case 0x2B: {
@@ -277,7 +278,7 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
     }
 #undef PICK
     static u32 said[8];
-    if (first_time(said, f)) WARN("vulkan: unsupported texture format %x (not drawn)\n", f);
+    if (first_time(said, f)) WARN("vulkan: unsupported texture format %x, header word 0 %08x (not drawn)\n", f, w0);
     VkFmt r = {0};
     return r;
 }

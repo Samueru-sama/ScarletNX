@@ -3,6 +3,7 @@
 #include "../process/process.h"
 #include "cpu/execution/execution.h"
 #include "execution.h"
+#include "arm_exec.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +15,8 @@ int main(int argc, char** argv) {
     while (first < argc && !strncmp(argv[first], "--", 2)) {
         if (!strcmp(argv[first], "--help")) {
             puts(
-                "Usage: scarletnx-gnuabi [--cc=COMPILER] [--] AARCH64_ELF [arguments...]\n"
-                "Executes static Linux AArch64 ELF files through the ScarletNX recompiler.\n"
+                "Usage: scarletnx-gnuabi [--cc=COMPILER] [--] ELF [arguments...]\n"
+                "Executes static Linux AArch64 or AArch32 (A32/Thumb) ELF files through the ScarletNX recompiler.\n"
                 "The guest filesystem is isolated; /tmp is ephemeral. Dynamic interpreters and clone are unsupported.");
             return 0;
         }
@@ -49,6 +50,16 @@ int main(int argc, char** argv) {
         gnu_process_destroy(process);
         free(process);
         return 2;
+    }
+    if (process->elf.bits == 32) {
+        /* AArch32 runs the ARM LLVM block backend directly, without the A64
+           recompiling step. */
+        free(ranges);
+        int status = gnu_arm_run(process);
+        if (process->faulted) fprintf(stderr, "scarletnx-gnuabi: %s\n", process->diagnostic);
+        gnu_process_destroy(process);
+        free(process);
+        return status;
     }
     for (size_t i = 0; i < process->elf.code_count; i++) {
         ranges[i].address = process->elf.code[i].address;

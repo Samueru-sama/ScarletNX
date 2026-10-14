@@ -2,7 +2,6 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_GUI_THEME_H
 #define SNX_GUI_THEME_H
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -27,8 +26,8 @@ typedef enum {
 typedef struct {
     GuiAlign align;
     char open[16], close[16];
-    bool blink;
-    bool lines[GUI_PROMPT_COUNT];
+    int blink;
+    int lines[GUI_PROMPT_COUNT];
 } GuiPrompt;
 /* the theme.ini format this GUI writes and reads; a newer file's keys this one knows still apply */
 #define GUI_THEME_FORMAT 1
@@ -48,17 +47,17 @@ typedef struct {
     uint32_t format;
     GuiRgb page, ink, soft, focus, active, failure, dim, warning;
     GuiStyle head, footer;
-    bool head_rule, footer_rule;
-    bool focus_bar; /* the focused line as a band of ink, its text in the page colour */
+    int head_rule, footer_rule;
+    int focus_bar; /* the focused line as a band of ink, its text in the page colour */
     char marker[16];
     char title[GUI_SCREEN_COUNT][64];
     GuiRunLayout run;
     GuiPalette run_colors;   /* the steps screen's own: a loading screen, darker than the menus */
-    bool texture, bar;       /* faint lines over the page; the progress bar and its percentage */
-    bool detailed, collapse; /* each step's lines under it; folded once the step is done */
+    int texture, bar;       /* faint lines over the page; the progress bar and its percentage */
+    int detailed, collapse; /* each step's lines under it; folded once the step is done */
     GuiRing ring;
     GuiLineIn line_in;
-    bool typing_sync; /* one line typed at a time, those already done three times faster */
+    int typing_sync; /* one line typed at a time, those already done three times faster */
     GuiPrompt prompt;
     uint32_t fade_in_ms, fade_out_ms, line_in_ms, typing_ms, blink_ms;
 } GuiTheme;
@@ -71,7 +70,7 @@ typedef struct {
 const GuiTheme* gui_theme_builtin(const char* id);
 /* A theme.ini's text over the built-in its [theme] base names (default when absent): a key it lacks, or cannot
    read, keeps the base's value. Returns false only when out of memory. */
-bool gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t size);
+int gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t size);
 /* The first dirs[i]/id/theme.ini that can be read, else the built-in of that id, else the default theme: a folder
    named like a built-in replaces it */
 void gui_theme_load(GuiTheme* theme, const char* const* dirs, size_t count, const char* id);

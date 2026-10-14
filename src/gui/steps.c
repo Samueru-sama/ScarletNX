@@ -8,13 +8,14 @@ void gui_steps_reset(GuiSteps* steps) { memset(steps, 0, sizeof *steps); }
 
 static GuiStep* current(GuiSteps* steps) { return steps->count ? &steps->step[steps->count - 1] : NULL; }
 static void begin(GuiSteps* steps, const char* label, const char* detail, size_t detail_length, uint64_t now) {
+    GuiStep * step;
     GuiStep* last = current(steps);
     if (last && last->state == GUI_STEP_ACTIVE) last->state = GUI_STEP_DONE;
     if (steps->count == GUI_STEPS_MAX)
         memmove(steps->step, steps->step + 1, sizeof steps->step - sizeof *steps->step);
     else
         steps->count++;
-    GuiStep* step = current(steps);
+    step = current(steps);
     memset(step, 0, sizeof *step);
     snprintf(step->label, sizeof step->label, "%s", label);
     if (detail_length >= sizeof step->detail) detail_length = sizeof step->detail - 1;
@@ -23,18 +24,19 @@ static void begin(GuiSteps* steps, const char* label, const char* detail, size_t
     step->serial = ++steps->serial;
 }
 static void note(GuiSteps* steps, const char* s, uint64_t now) {
+    GuiNote * n;
     while (*s == ' ' || *s == '\t') ++s;
     if (!*s || !steps->count) return;
     if (steps->notes == GUI_NOTES_MAX)
         memmove(steps->note, steps->note + 1, sizeof steps->note - sizeof *steps->note);
     else
         steps->notes++;
-    GuiNote* n = &steps->note[steps->notes - 1];
+    n = &steps->note[steps->notes - 1];
     snprintf(n->text, sizeof n->text, "%s", s);
     n->shown_ms = now;
     n->step = steps->step[steps->count - 1].serial;
 }
-static bool prefix(const char* line, const char* text) { return !strncmp(line, text, strlen(text)); }
+static int prefix(const char* line, const char* text) { return !strncmp(line, text, strlen(text)); }
 static void line(GuiSteps* steps, const char* s, uint64_t now) {
     GuiStep* last = current(steps);
     uint32_t before = steps->serial;
@@ -67,12 +69,13 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         const char* paren = strstr(device, " (");
         if (paren && paren < end) end = paren;
         begin(steps, "GPU", device, (size_t)(end - device), now);
-        steps->gpu = true;
+        steps->gpu = 1;
     }
     if (steps->serial == before) note(steps, s, now); /* not a step of its own: a line of the current one */
 }
 void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now_ms) {
-    for (size_t i = 0; i < size; ++i) {
+    size_t i;
+    for (i = 0; i < size; ++i) {
         char c = data[i];
         if (c == '\n' || c == '\r') {
             steps->line[steps->length] = 0;
@@ -82,17 +85,19 @@ void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now
             steps->line[steps->length++] = c;
     }
 }
-void gui_steps_finish(GuiSteps* steps, bool ok) {
+void gui_steps_finish(GuiSteps* steps, int ok) {
+    GuiStep * last;
     if (steps->length) gui_steps_feed(steps, "\n", 1, current(steps) ? current(steps)->shown_ms : 0);
-    GuiStep* last = current(steps);
+    last = current(steps);
     if (last && last->state == GUI_STEP_ACTIVE)
         last->state = ok ? GUI_STEP_DONE : GUI_STEP_FAILED;
     else if (last && !ok)
         last->state = GUI_STEP_FAILED;
 }
 int gui_steps_percent(const GuiSteps* steps) {
+    int i;
     int percent = -1;
-    for (int i = 0; i < steps->count; ++i) {
+    for (i = 0; i < steps->count; ++i) {
         const GuiStep* s = &steps->step[i];
         if (!strcmp(s->label, "RECOMPILE"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : 0;
@@ -102,10 +107,11 @@ int gui_steps_percent(const GuiSteps* steps) {
     return percent;
 }
 int gui_step_notes(const GuiSteps* steps, const GuiStep* step, const GuiNote** out, int max) {
+    int i;
     int count = 0;
-    for (int i = steps->notes - 1; i >= 0 && count < max; --i)
+    for (i = steps->notes - 1; i >= 0 && count < max; --i)
         if (steps->note[i].step == step->serial) out[count++] = &steps->note[i];
-    for (int i = 0; i < count / 2; ++i) {
+    for (i = 0; i < count / 2; ++i) {
         const GuiNote* swap = out[i];
         out[i] = out[count - 1 - i];
         out[count - 1 - i] = swap;

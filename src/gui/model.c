@@ -36,12 +36,39 @@ void gui_menu_key(GuiMenu* menu, GuiKey key) {
     } else {
         menu->focus_load = false;
     }
+    /* the recent games and the items are one ring: the last game leads to the first item, Exit to the first game */
     switch (key) {
         case GUI_UP:
-        case GUI_LEFT: menu->selected = (menu->selected + GUI_ITEM_COUNT - 1) % GUI_ITEM_COUNT; break;
+        case GUI_LEFT:
+            if (menu->recent_focus > 1)
+                menu->recent_focus--;
+            else if (menu->recent_focus) {
+                menu->recent_focus = 0;
+                menu->selected = GUI_ITEM_COUNT - 1;
+            } else if (menu->selected == 0 && menu->recent)
+                menu->recent_focus = menu->recent;
+            else
+                menu->selected = (menu->selected + GUI_ITEM_COUNT - 1) % GUI_ITEM_COUNT;
+            break;
         case GUI_DOWN:
-        case GUI_RIGHT: menu->selected = (menu->selected + 1) % GUI_ITEM_COUNT; break;
+        case GUI_RIGHT:
+            if (menu->recent_focus && menu->recent_focus < menu->recent)
+                menu->recent_focus++;
+            else if (menu->recent_focus) {
+                menu->recent_focus = 0;
+                menu->selected = 0;
+            } else if (menu->selected == GUI_ITEM_COUNT - 1 && menu->recent)
+                menu->recent_focus = 1;
+            else
+                menu->selected = (menu->selected + 1) % GUI_ITEM_COUNT;
+            break;
         case GUI_SELECT:
+            if (menu->recent_focus) {
+                menu->recent_open = menu->recent_focus;
+                menu->view = GUI_LOAD_NONE;
+                menu->focus_load = menu->load_activated = false;
+                break;
+            }
             menu->active = menu->selected;
             menu->activated = true;
             menu->load_activated = false;
@@ -53,7 +80,7 @@ void gui_menu_key(GuiMenu* menu, GuiKey key) {
             } else if (menu->selected == GUI_GDBSTUB)
                 menu->gdbstub = !menu->gdbstub;
             else if (menu->selected == GUI_THEME)
-                menu->theme_next = true;
+                menu->theme_next = 1;
             else if (menu->selected == GUI_EXIT)
                 menu->quit = true;
             else if (menu->selected == GUI_KEYS)
@@ -283,12 +310,13 @@ invalid:
 static const char banner_text[] = "\nScarletNX - ";
 void gui_banner_reset(GuiBanner* banner) {
     banner->matched = 1; /* the output starts at the start of a line */
-    banner->seen = false;
+    banner->seen = 0;
 }
-bool gui_banner_feed(GuiBanner* banner, const char* data, size_t size) {
-    for (size_t i = 0; i < size && !banner->seen; ++i) {
+int gui_banner_feed(GuiBanner* banner, const char* data, size_t size) {
+    size_t i;
+    for (i = 0; i < size && !banner->seen; ++i) {
         if (data[i] == banner_text[banner->matched]) {
-            if (++banner->matched == sizeof banner_text - 1) banner->seen = true;
+            if (++banner->matched == sizeof banner_text - 1) banner->seen = 1;
         } else
             banner->matched = data[i] == '\n' ? 1 : 0; /* only a newline starts the text again */
     }

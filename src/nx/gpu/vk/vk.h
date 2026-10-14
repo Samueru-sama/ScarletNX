@@ -97,7 +97,9 @@ void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPi
 /* a descriptor set from the current frame's pools, freed when the frame is reused */
 VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout);
 /* a descriptor pool's sizes (4 entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
+#define VK_POOL_TYPES 5 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers */
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
+extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in the compute set, from SNX_VKB_IMGBUF */
 /* the staging alignment that suits every use: uniform, storage, vertex and index buffers */
 u64 vk_stage_align(void);
 u64 vk_hash(const void* p, u64 size);
@@ -136,6 +138,7 @@ enum {
 VkFmt vk_rt_format(u32 fmt);
 VkFmt vk_zt_format(u32 fmt);
 VkFmt vk_tic_format(u32 w0, int srgb); /* bpp 0: not supported */
+int vk_tic_reads_stencil(const u32* tic);
 /* sRGB and linear views of the same bytes: the twin of a color format, or the format itself when it has none */
 VkFormat vk_srgb_as(VkFormat f, int srgb);
 typedef struct {
@@ -244,7 +247,8 @@ Surf* vk_tex_from_tic(const u32* tic);
 Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes */
 /* a view of s as the shader declares it, sRGB or linear (color formats that have both), with a component mapping;
    VK_NULL_HANDLE when the image can't be viewed that way */
-VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map);
+/* stencil: a depth/stencil surface's stencil aspect instead of its depth */
+VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers) */
 VkImageView vk_null_view(VkImageViewType type, int num);
 VkSampler vk_sampler(const u32* tsc);
@@ -321,11 +325,19 @@ extern VkPipelineLayout g_vk_playout;
 extern int g_vk_preserve_infnan;
 extern int g_vk_flush_denorm;
 extern VkShaderStageFlags g_vk_subgroup_stages;
-extern VkDescriptorSetLayout g_vk_dslayout[3]; /* by set: shader_vk_set(stage) */
+extern VkDescriptorSetLayout g_vk_dslayout[5]; /* by set: shader_vk_set(stage) */
+extern u32 g_vk_stage_sets; /* sets in the pipeline layout: 5, or 2 without the tessellation and geometry stages */
+/* the stages that read the push constants: every graphics stage reads snx_vp (the last one before rasterization
+   applies it), and the fragment stage snx_at */
+#define VK_PUSH_STAGES                                                                                                 \
+    (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                                           \
+     VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
-   vertex stage, textures and render target outputs for the fragment stage. clip: the clip distances the 3D engine
-   enables (vertex stage). dc_color, dc_funcs: depth-compare samples of color textures (ShaderInfo's fragment key) */
+   vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
+   tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
+   enables, and SNX_SH_NOT_LAST (the stages before rasterization). dc_color, dc_funcs: depth-compare samples of color
+   textures (ShaderInfo's fragment key) */
 VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip,
                     u32 dc_color, u32 dc_funcs);
 /* the bound constant buffers per stage, which the translator also reads to resolve indirect branches */
@@ -333,7 +345,11 @@ extern u64 g_vk_cb[5][18];
 extern u32 g_vk_cbsize[5][18];
 typedef struct {
     VkShaderModule vs, fs;
-    u32 topo_class; /* POINT_LIST, LINE_LIST or TRIANGLE_LIST: the topology is dynamic within its class */
+    VkShaderModule tcs, tes, gs; /* tessellation control and evaluation, geometry: VK_NULL_HANDLE when off */
+    u32 patch;                   /* control points of a patch, with tessellation */
+    /* POINT_LIST, LINE_LIST, TRIANGLE_LIST, their adjacency forms or PATCH_LIST: the topology is dynamic within its
+       class */
+    u32 topo_class;
     u32 polygon;
     u32 nattr, nbind;
     struct {

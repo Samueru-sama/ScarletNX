@@ -11,6 +11,8 @@ static const GuiStep* at(const GuiSteps* s, int i) { return &s->step[i]; }
 
 int main(void) {
     GuiSteps s;
+    int n, i;
+    const GuiNote* notes[8];
     gui_steps_reset(&s);
     assert(gui_steps_percent(&s) == -1);
     feed(&s, "Unpacking Game.nsp\nBuilding hactool\r\nExtracting the base ", 10);
@@ -30,12 +32,11 @@ int main(void) {
     assert(s.count == 7 && !strcmp(at(&s, 5)->label, "LAUNCH") && !strcmp(at(&s, 5)->detail, "Game"));
     assert(!strcmp(at(&s, 6)->label, "GPU") && !strcmp(at(&s, 6)->detail, "AMD Radeon RX 6700 XT"));
     assert(at(&s, 6)->state == GUI_STEP_ACTIVE);
-    gui_steps_finish(&s, true);
+    gui_steps_finish(&s, 1);
     assert(at(&s, 6)->state == GUI_STEP_DONE);
 
     /* the lines of a step that start none: its notes, trimmed, the latest max of them, oldest first */
-    const GuiNote* notes[8];
-    int n = gui_step_notes(&s, at(&s, 3), notes, 8);
+    n = gui_step_notes(&s, at(&s, 3), notes, 8);
     assert(n == 4 && !strcmp(notes[0]->text, "Functions: 9  instructions: 99"));
     assert(!strcmp(notes[1]->text, "compiled block 1/4: code_000 (1.0 s)") &&
            !strcmp(notes[3]->text, "LLVM module: 1.1 MB"));
@@ -50,7 +51,7 @@ int main(void) {
     feed(&s, "a line before any step\n", 1);
     assert(s.notes == 0);
     feed(&s, "Recompiling Many (1 modules)\n", 1);
-    for (int i = 0; i < GUI_NOTES_MAX + 5; ++i) {
+    for (i = 0; i < GUI_NOTES_MAX + 5; ++i) {
         char note_line[32];
         snprintf(note_line, sizeof note_line, "note %d\n", i);
         feed(&s, note_line, 2);
@@ -67,23 +68,23 @@ int main(void) {
     /* a failed process fails the step it was in, even one already done, and a line cut short still counts */
     gui_steps_reset(&s);
     feed(&s, "Recompiling Broken (2 modules)\n  compiled block 1/2: x\nScarletNX - Bro", 5);
-    gui_steps_finish(&s, false);
+    gui_steps_finish(&s, 0);
     assert(s.count == 2 && at(&s, 0)->state == GUI_STEP_DONE && at(&s, 1)->state == GUI_STEP_FAILED);
     assert(!strcmp(at(&s, 1)->detail, "Bro") && gui_steps_percent(&s) == 100);
     gui_steps_reset(&s); /* a recompile that fails stops the bar where it was */
     feed(&s, "Recompiling Broken (1 modules)\n  compiled block 4/9: x\n", 5);
-    gui_steps_finish(&s, false);
+    gui_steps_finish(&s, 0);
     assert(at(&s, 0)->state == GUI_STEP_FAILED && gui_steps_percent(&s) == 44);
     gui_steps_reset(&s);
     feed(&s, "Built /games/Game\n", 5);
-    gui_steps_finish(&s, false);
+    gui_steps_finish(&s, 0);
     assert(at(&s, 0)->state == GUI_STEP_FAILED);
 
     /* a native launch, no recompile: 100% from the banner; the oldest steps go past the maximum */
     gui_steps_reset(&s);
     feed(&s, "ScarletNX - Native\n", 1);
     assert(gui_steps_percent(&s) == 100);
-    for (int i = 0; i < GUI_STEPS_MAX + 3; ++i) {
+    for (i = 0; i < GUI_STEPS_MAX + 3; ++i) {
         char line[64];
         snprintf(line, sizeof line, "Unpacking part%d\nnote of part%d\n", i, i);
         feed(&s, line, (uint64_t)i);

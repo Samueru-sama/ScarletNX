@@ -14,6 +14,8 @@ typedef struct GnuElf {
     uint64_t entry, bias, phdr, image_end;
     uint16_t phnum, phentsize;
     unsigned stack_permissions;
+    unsigned bits; /* 32 or 64 */
+    int thumb;     /* AArch32 entry in Thumb state (entry bit 0) */
     GnuElfRange* code;
     size_t code_count;
 } GnuElf;

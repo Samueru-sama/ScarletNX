@@ -34,16 +34,47 @@ static u32 crc32c_sse42(u32 acc, u64 val, int bytes) {
     }
 }
 #endif
+#if defined(__x86_64__) && defined(__PCLMUL__)
+static u64 clmul_lo(u64 a, u64 b) {
+    return (u64)_mm_cvtsi128_si64(
+        _mm_clmulepi64_si128(_mm_cvtsi64_si128((long long)a), _mm_cvtsi64_si128((long long)b), 0));
+}
+/* Barrett reduction, as the LLVM backend's crc32() in ir_a64.c */
+static u32 crc32_clmul(u32 acc, u64 val, int bytes, int castagnoli) {
+    u64 poly = castagnoli ? 0x105EC76F1ull : 0x1DB710641ull, mu = castagnoli ? 0xDEA713F1ull : 0x1F7011641ull;
+    int steps = bytes == 8 ? 2 : 1, n = bytes == 8 ? 32 : 8 * bytes, k;
+    for (k = 0; k < steps; k++) {
+        u32 x = acc ^ (u32)(val >> (32 * k)), t;
+        if (n < 32) x = (x & ((1u << n) - 1)) << (32 - n);
+        t = (u32)(clmul_lo(clmul_lo(x, mu) & 0xFFFFFFFFu, poly) >> 32);
+        acc = n < 32 ? t ^ (acc >> n) : t;
+    }
+    return acc;
+}
+#endif
+/* a byte in two lookups instead of eight shifts */
+static const u32 crc32_nibble[2][16] = {
+    {0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC, 0x76DC4190, 0x6B6B51F4, 0x4DB26158, 0x5005713C, 0xEDB88320,
+     0xF00F9344, 0xD6D6A3E8, 0xCB61B38C, 0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C},
+    {0x00000000, 0x105EC76F, 0x20BD8EDE, 0x30E349B1, 0x417B1DBC, 0x5125DAD3, 0x61C69362, 0x7198540D, 0x82F63B78,
+     0x92A8FC17, 0xA24BB5A6, 0xB21572C9, 0xC38D26C4, 0xD3D3E1AB, 0xE330A81A, 0xF36E6F75}};
 u32 snx_crc32(u32 acc, u64 val, int bytes, int castagnoli) {
+#if !(defined(__x86_64__) && defined(__PCLMUL__))
+    const u32* t = crc32_nibble[castagnoli != 0];
+#endif
 #if defined(__x86_64__) && defined(__SSE4_2__)
     if (castagnoli) return crc32c_sse42(acc, val, bytes);
 #endif
-    u32 poly = castagnoli ? 0x82F63B78u : 0xEDB88320u;
+#if defined(__x86_64__) && defined(__PCLMUL__)
+    return crc32_clmul(acc, val, bytes, castagnoli);
+#else
     for (int i = 0; i < bytes; i++) {
         acc ^= (u8)(val >> (i * 8));
-        for (int k = 0; k < 8; k++) acc = (acc >> 1) ^ ((acc & 1) ? poly : 0);
+        acc = (acc >> 4) ^ t[acc & 15];
+        acc = (acc >> 4) ^ t[acc & 15];
     }
     return acc;
+#endif
 }
 
 /* the 16-byte builtin compiles to lock cmpxchg16b only where cx16 is enabled, and the game module isn't built with

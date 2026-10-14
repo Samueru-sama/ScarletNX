@@ -53,9 +53,9 @@ int main(void) {
     code[23] = 0;
 
     reads = 0;
-    code[13] |= 1ull << 49; /* LDC.B64 is not the compiler's jump-table shape */
+    code[13] |= 1ull << 49; /* LDC.B64: 8-byte entries whose low words the BRX would take, not a word table */
     shader_hash((const u8*)code, sizeof code, &len);
-    check(len == 20 * 8 && reads == 3, "non-B32 loads do not borrow the table clamp");
+    check(len == 20 * 8 && reads == 0, "a non-B32 load leaves the BRX unresolved");
 
     memset(code, 0, sizeof code);
     code[10] = SCHED;

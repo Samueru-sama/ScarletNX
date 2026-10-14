@@ -3,6 +3,7 @@
 #ifndef SNX_GNU_PROCESS_H
 #define SNX_GNU_PROCESS_H
 #include "cpu/aarch64/cpu.h"
+#include "cpu/arm/arm.h"
 #include "../memory/memory.h"
 #include "../loader/elf/elf.h"
 #include "../filesystem/vfs.h"
@@ -10,6 +11,7 @@
 #include <setjmp.h>
 typedef struct GnuProcess {
     CPU cpu;
+    SnxArmCPU arm; /* used when elf.bits == 32 */
     GnuMemory memory;
     GnuElf elf;
     GnuVfs vfs;
@@ -25,6 +27,7 @@ int gnu_clock_gettime(int clock_id, int64_t* seconds, int64_t* nanoseconds);
 int gnu_process_init(GnuProcess* process, const char* path, int argc, const char* const* argv,
                      const char* const* environment, char* error, size_t error_capacity);
 int gnu_process_stack(GnuProcess* process, int argc, const char* const* argv, const char* const* environment);
+int gnu_process_stack32(GnuProcess* process, int argc, const char* const* argv, const char* const* environment);
 void gnu_process_destroy(GnuProcess* process);
 void gnu_process_exit(GnuProcess* process, int status);
 void gnu_process_fault(GnuProcess* process, int signal, const char* reason);

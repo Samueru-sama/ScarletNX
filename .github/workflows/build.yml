@@ -176,6 +176,18 @@ jobs:
             -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_GCCJIT=OFF
           cmake --build --preset default --parallel 4
           cmake --install build/default --prefix stage
+      # Explorer and the taskbar show the first icon of an executable's resources (runtime.rc)
+      - name: Check the executables' icon
+        run: |
+          set -euo pipefail
+          for exe in stage/bin/scarletnx.exe stage/bin/scarletnx-gui.exe; do
+            # the whole listing first: grep -q stopping early would fail the pipe under pipefail
+            resources=$(llvm-readobj --coff-resources "$exe")
+            if ! grep -q 'Type: GROUP_ICON' <<<"$resources"; then
+              echo "$exe has no icon" >&2
+              exit 1
+            fi
+          done
       - name: Check the native driver
         run: |
           set -euo pipefail

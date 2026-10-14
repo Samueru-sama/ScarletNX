@@ -61,6 +61,16 @@ typedef struct GfxOut {
     struct GfxOut* next;
 } GfxOut;
 static GfxOut *g_prep, *g_prep_tail, *g_out, *g_out_tail;
+/* an output with its page list and its original bytes after it, in one block */
+static GfxOut* gfx_out_new(u32 npages, u32 len) {
+    GfxOut* o = calloc(1, sizeof *o + (size_t)npages * sizeof *o->pages + len);
+    if (!o) return NULL;
+    o->pages = (u64*)(o + 1);
+    o->npages = npages;
+    o->org = (u8*)(o->pages + npages);
+    return o;
+}
+
 /* Suppress recursive lookups by the landing thread. Other readers still take vk_lock and wait for landing. */
 static _Thread_local int g_out_landing;
 
@@ -68,8 +78,6 @@ void vk_buf_writable_abort(void) {
     while (g_prep) {
         GfxOut* o = g_prep;
         g_prep = o->next;
-        free(o->org);
-        free(o->pages);
         free(o);
     }
     g_prep_tail = NULL;
@@ -119,8 +127,6 @@ void vk_buf_frame_done(u64 frame) {
             g_wb_outputs++;
             g_wb_bytes += o->size;
         }
-        free(o->org);
-        free(o->pages);
         free(o);
     }
     g_out_landing--;
@@ -417,6 +423,7 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 /* Each writable binding keeps its original bytes until its draw's frame completes. The guest can keep writing RAM:
    vk_write_changed resolves those writes against the GPU result at the fence. */
 int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
+    GfxOut* o;
     if (!gva) return vk_buf_copy(0, len, buf, off);
     /* Repeated bindings of one writable range in the same draw must name the same storage. */
     for (GfxOut* p = g_prep; p; p = p->next)
@@ -426,27 +433,14 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
             return 1;
         }
     if (gfx_gpu_src(gva, len, buf, off)) return 1;
-    GfxOut* o = calloc(1, sizeof *o);
+    o = gfx_out_new((u32)(((gva & 0xFFF) + len + 0xFFF) >> 12), len);
     if (!o) return 0;
-    o->org = malloc(len);
-    if (!o->org) {
-        free(o);
-        return 0;
-    }
     const u8* src = guest_bytes(gva, len);
     if (!src) {
-        free(o->org);
         free(o);
         return 0;
     }
     memcpy(o->org, src, len);
-    o->npages = (u32)(((gva & 0xFFF) + len + 0xFFF) >> 12);
-    o->pages = calloc(o->npages, sizeof *o->pages);
-    if (!o->pages) {
-        free(o->org);
-        free(o);
-        return 0;
-    }
     for (u32 i = 0; i < o->npages; i++) {
         u64 cpu = gmmu_translate((gva & ~0xFFFull) + (u64)i * 0x1000);
         o->pages[i] = cpu ? cpu >> 12 : ~0ull;
@@ -456,8 +450,6 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
     if (align < g_vk.props.limits.nonCoherentAtomSize) align = g_vk.props.limits.nonCoherentAtomSize;
     o->ptr = vk_stage_output(len, align, buf, off, &o->mem);
     if (!o->ptr) {
-        free(o->org);
-        free(o->pages);
         free(o);
         return 0;
     }
@@ -553,20 +545,12 @@ static u32 draw_page_index(const DrawPage* p, size_t n, u64 key) {
     return (u32)lo;
 }
 static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, VmaAllocation mem) {
+    GfxOut* o;
     if (p->key & (1ull << 63)) return 1;
-    GfxOut* o = calloc(1, sizeof *o);
+    o = gfx_out_new(1, 4096);
     if (!o) return 0;
-    o->org = malloc(4096);
-    o->pages = malloc(sizeof *o->pages);
-    if (!o->org || !o->pages) {
-        free(o->org);
-        free(o->pages);
-        free(o);
-        return 0;
-    }
     memcpy(o->org, ptr, 4096);
     o->pages[0] = p->key;
-    o->npages = 1;
     o->addr = p->gva;
     o->size = 4096;
     o->frame = vk_frame_number();

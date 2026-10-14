@@ -284,6 +284,7 @@ void kernel_dump_threads(void) {
         if (t->on_core == -2) LOG(" (waiting for its core)");
         if (t->suspended) LOG(" (paused by svcSetThreadActivity)");
         if (k == 1) LOG(" [%s%s]", t->wait_name ? t->wait_name : "?", t->wait_timeout < 0 ? "" : " with timeout");
+        if (k == 1 && t->wait_tid) LOG(" (thread %lu)", (unsigned long)t->wait_tid); /* a join */
         if (k >= 2 && k <= 4) {
             u64 a = t->wait_addr;
             LOG(" [addr %llx value %x", (unsigned long long)a, mapped(a, 4) ? gr32(a) : 0u);

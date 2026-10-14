@@ -7,6 +7,7 @@
 #ifndef SNX_NX_MODULE_ABI_H
 #define SNX_NX_MODULE_ABI_H
 #include "cpu.h"
+#include "cpu/arm/arm.h"
 /* the module descriptor: what snx_module() in the game module's module.c (written by src/nx/loader/module.c) hands
    the runtime's loader. abi stays the first field so a module from another version is recognized before anything
    else is read */
@@ -30,5 +31,22 @@ typedef struct SnxModule {
     u64 title_id;
     u32 main_stack, main_prio, main_core;
 } SnxModule;
+
+/* AArch32 (A32/Thumb) module descriptor, selected when the NPDM reports 32-bit
+   (is64 = 0). Blocks are SnxArmBlock(void(SnxArmCPU*)). Syscalls share the A64
+   HLE surface: the runtime supplies SnxArmSyscall, which zero-extends r0-r5
+   into 64-bit arguments and calls the same handler A64 does (DRY). */
+typedef void (*SnxArmSyscall)(SnxArmCPU* cpu, u32 imm);
+typedef struct SnxArmModule {
+    u32 abi;
+    u32 nentries;
+    const u64* entry_addr;
+    const SnxArmBlock* entry_fn;
+    SnxArmSyscall syscall;
+    u32 code_lo, code_hi;
+    const char* title;
+    u64 title_id;
+    u32 main_stack, main_prio, main_core;
+} SnxArmModule;
 
 #endif

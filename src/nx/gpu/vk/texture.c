@@ -420,18 +420,26 @@ static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     c->last_used = g_vk_present;
     if (c->crop_gen != rt->wgen) {
         VkCommandBuffer cb = vk_cmd();
+        VkImageCopy r[2];
         vk_surf_use(cb, rt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_READ_BIT);
         vk_surf_use(cb, c, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        /* A depth/stencil texture view samples depth. Copy only that aspect: VkImageCopy requires one aspect per
-           region, and the snapshot's stencil is never read. */
+        /* VkImageCopy takes one aspect per region: depth and stencil are two (a view samples one of them) */
         VkImageAspectFlags a = rt->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-        VkImageCopy r = {.srcSubresource = {a, 0, 0, rt->layers},
-                         .dstSubresource = {a, 0, 0, rt->layers},
-                         .extent = {c->sw, c->sh, 1}};
+        memset(r, 0, sizeof r);
+        r[0].srcSubresource.aspectMask = a;
+        r[0].srcSubresource.layerCount = rt->layers;
+        r[0].dstSubresource.aspectMask = a;
+        r[0].dstSubresource.layerCount = rt->layers;
+        r[0].extent.width = c->sw;
+        r[0].extent.height = c->sh;
+        r[0].extent.depth = 1;
+        r[1] = r[0];
+        r[1].srcSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        r[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         vkCmdCopyImage(cb, rt->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &r);
+                       rt->f.stencil ? 2 : 1, r);
         c->crop_gen = rt->wgen;
     }
     return c;
@@ -642,7 +650,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
     return tex_upload(t) ? t : NULL;
 }
 
-VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map) {
+VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil) {
     /* what a view of each image type can be */
     u32 layers;
     switch (type) {
@@ -671,7 +679,9 @@ VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkCompone
         default: return VK_NULL_HANDLE;
     }
     VkFormat fmt = s->f.depth ? s->f.vk : vk_srgb_as(s->f.vk, srgb);
-    u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20;
+    stencil = stencil && s->f.stencil;
+    u64 key = (u64)type | (u64)map->r << 4 | (u64)map->g << 8 | (u64)map->b << 12 | (u64)map->a << 16 | (u64)fmt << 20 |
+              (u64)stencil << 60;
     for (int i = 0; i < s->nsv; i++)
         if (s->sv[i].key == key) return s->sv[i].v;
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -679,7 +689,9 @@ VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkCompone
                                 .viewType = type,
                                 .format = fmt,
                                 .components = *map,
-                                .subresourceRange = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                                .subresourceRange = {stencil      ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                                     : s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                  : VK_IMAGE_ASPECT_COLOR_BIT,
                                                      0, s->levels, 0, layers}};
     VkImageView v;
     if (!VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
@@ -747,7 +759,7 @@ VkImageView vk_null_view(VkImageViewType type, int num) {
         imgs[is3d][num] = s;
     }
     VkComponentMapping id = {0};
-    views[type][num] = vk_tex_view(s, type, 0, &id);
+    views[type][num] = vk_tex_view(s, type, 0, &id, 0);
     return views[type][num];
 }
 

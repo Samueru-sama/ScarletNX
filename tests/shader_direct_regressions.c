@@ -19,6 +19,8 @@ static int failures;
 static const char* storage_paths[2];
 static const char* nro_paths[4];
 static const char* dc_color_path;
+static const char* issue126_paths[17];
+static const char* stage_paths[3];
 static void check(int condition, const char* what) {
     if (!condition) {
         fprintf(stderr, "FAIL: %s\n", what);
@@ -36,6 +38,7 @@ static u32* translate_with_rt_mask(const u64* instructions, int count, int stage
     }
     memset(info, 0, sizeof *info);
     info->rt_int_mask = rt_mask;
+    if (stage == ST_VS) info->clip_enable = rt_mask;
     if (stage == ST_CS) {
         info->cs_local[0] = info->cs_local[1] = info->cs_local[2] = 1;
         info->shared_size = 16;
@@ -220,6 +223,11 @@ static void fragment_storage_images(void) {
     free(code);
 }
 
+/* w without its predicate guard, with these destination, coordinate and handle registers */
+static u64 unguarded(u64 w, u32 d, u32 a, u32 handle) {
+    return (w & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xffull << 39)) | d | (u64)a << 8 | 7ull << 16 |
+           (u64)handle << 39;
+}
 static u64 mov32i(u32 reg, u32 value) { return 0x0100000000000000ull | ((u64)value << 20) | 0x71000ull | reg; }
 
 static int brx_table(u32 bank, u32 offset, u32* value) {
@@ -243,7 +251,7 @@ static int invalid_brx_table(u32 bank, u32 offset, u32* value) {
 static void brx_length(void) {
     u64 code[64] = {0};
     code[10] = 0x001F8000FC0007E0ull;
-    code[11] = 0xef90000000070001ull; /* LDC R1, c[0][0] */
+    code[11] = 0xef94000000070001ull; /* LDC.B32 R1, c[0][0] */
     code[12] = 0xe25000000007010full; /* BRX R1 */
     code[13] = 0xe30000000007000full;
     code[14] = code[10];
@@ -321,6 +329,249 @@ static void nro_shader_modes(void) {
     }
 }
 
+static void issue126_shader_modes(void) {
+    const u64 intmath[] = {
+        0x1f00000000070000ull | (7ull << 20) | (1ull << 8),                               /* IMUL32I low */
+        0x1f00000000070002ull | (1ull << 53) | (1ull << 54) | (3ull << 20) | (1ull << 8), /* signed high */
+        0x8000000000070004ull | (3ull << 20) | (1ull << 8),                               /* IMAD32I */
+    };
+    const u64 clip[] = {0xeff000000007ff00ull | (0x2c0ull << 20)};
+    const u64 bindless[] = {
+        0x4c98078800070004ull, /* MOV R4, c[0][...] supplies the texture handle */
+        0xdea0000000070008ull | (6ull << 28) | (1ull << 37) | (4ull << 20), /* TEX.B cube LZ */
+    };
+    const u64 indexed_handle[] = {
+        0xef94002000070004ull, /* LDC R4, c[0][R0 + 0x20] */
+        0xdd380007a0470000ull, /* TLD.B using the handle loaded above */
+    };
+    const u64 tex3d[] = {0x4c98078800070004ull, 0xdea0000000070008ull | (4ull << 28) | (3ull << 37) | (4ull << 20)};
+    const u64 cube_array_bias[] = {0x4c98078800070004ull,
+                                   0xdea0000000070008ull | (7ull << 28) | (2ull << 37) | (4ull << 20)};
+    const u64 tex1d_array[] = {0x4c98078800070004ull,
+                               0xdea0000000070008ull | (1ull << 28) | (1ull << 37) | (4ull << 20)};
+    const u64 split_handle[] = {
+        0x4c98078800070004ull,
+        0x4c98078800470005ull,
+        0x5c40000000070006ull | (4ull << 8) | (5ull << 20) | (1ull << 41), /* LOP.OR R6, R4, R5 */
+        0xdea0000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
+    };
+    const u64 dynamic_3d_offset[] = {0x4c98078800070004ull,
+                                     0xdea0000000070008ull | (4ull << 28) | (1ull << 36) | (4ull << 20)};
+    /* Ender Magnolia ORs the sampler half in from a constant buffer operand. */
+    const u64 split_cbuf_handle[] = {
+        0x4c98078805c70006ull, /* MOV R6, c[0x2][0x170] */
+        0x4c47020815c70606ull, /* LOP.OR R6, R6, c[0x2][0x570] */
+        0xdea0000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
+    };
+    /* Ender Magnolia's buffer images: SULD.D.32, SUATOM.ADD and SUST.P on the handle MOV R4, c[0x2][0x128] */
+    const u64 buffer_surfaces[] = {
+        0x4c98078804a70004ull,
+        unguarded(0xeb10020200480370ull, 8, 0, 4),
+        (unguarded(0xea70070200980b0aull, 9, 0, 4) & ~(0xffull << 20)) | (1ull << 20),
+        unguarded(0xeb203a0200f77614ull, 12, 0, 4),
+    };
+    /* TXQ.B: the handle in R4, the level in R5 */
+    const u64 bindless_query[] = {(0x4c98078805a7001eull & ~0xffull) | 4, 0x5c9807800ff70005ull, 0xdf50000180470400ull};
+    /* a 2D texture offset from a register the translator can't resolve: the coordinates move instead */
+    const u64 dynamic_2d_offset[] = {0x4c98078800070004ull,
+                                     0xdea0000000070008ull | (2ull << 28) | (1ull << 36) | (4ull << 20)};
+    /* the lane ID after a branch: lanes reconverge on the subgroup's lowest pc */
+    const u64 lane_after_branch[] = {0xe24000000000000full | (16ull << 20), FMUL_KEEP | 5, 0xf0c8000000070003ull};
+    /* a clip distance and flow: every OpVariable before the clip distance's store */
+    const u64 clip_flow[] = {0xe24000000007000full, 0xeff000000007ff00ull | (0x2c0ull << 20)};
+    /* Single-register writers and a TEX.B masked to one result write just below the handle. */
+    const u64 handle_past_writers[] = {
+        0x4c98078800070006ull,
+        FMUL_KEEP | 5,
+        FFMA_KEEP | 3,
+        0xdea0000000070004ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31),
+        0xdea0000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
+    };
+    /* edenprobe's indexed handle: the table index from an attribute, shifted to a 16-byte stride, then LDC */
+    const u64 indexed_table[] = {
+        0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
+        0x5cb0118000070a00ull, /* F2I.U32 R0, R0 */
+        0x3848000000470000ull, /* SHL R0, R0, 4 */
+        0xef94002000070004ull, /* LDC R4, c[2][R0] */
+        0x5c9807800ff70000ull, /* MOV R0, RZ */
+        0x5c9807800ff70001ull, /* MOV R1, RZ */
+        0xdd380007a0470000ull, /* TLD.B using the handle loaded above */
+    };
+    struct {
+        const u64* instructions;
+        int count, stage;
+        u32 mask;
+        u32 opcode;
+    } cases[] = {{intmath, 3, ST_FS, 0, 151},
+                 {clip, 1, ST_VS, 1, 65},
+                 {bindless, 2, ST_FS, 0, 88},
+                 {indexed_handle, 2, ST_FS, 0, 95},
+                 {tex3d, 2, ST_FS, 0, 88},
+                 {cube_array_bias, 2, ST_FS, 0, 87},
+                 {tex1d_array, 2, ST_FS, 0, 88},
+                 {split_handle, 4, ST_FS, 0, 88},
+                 {dynamic_3d_offset, 2, ST_FS, 0, 103},
+                 {split_cbuf_handle, 3, ST_FS, 0, 88},
+                 {handle_past_writers, 5, ST_FS, 0, 88},
+                 {buffer_surfaces, 4, ST_CS, 0, 98},
+                 {bindless_query, 3, ST_FS, 0, 103},
+                 {clip_flow, 2, ST_VS, 1, 65},
+                 {dynamic_2d_offset, 2, ST_FS, 0, 103},
+                 {lane_after_branch, 3, ST_FS, 0, 354},
+                 {indexed_table, 7, ST_FS, 0, 95}};
+    for (int i = 0; i < 17; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        g_shader_texture_arrays = i == 16; /* the device's non-uniform indexing, for the table */
+        u32* code = translate_with_rt_mask(cases[i].instructions, cases[i].count, cases[i].stage, &info, &words, 1,
+                                           cases[i].mask);
+        check(code && !info.unsupported, "issue 126 shader translates");
+        if (code) {
+            check(count_opcode(code, words, cases[i].opcode, 0xffffffffu) > 0,
+                  "issue 126 emits the expected SPIR-V instruction");
+            if (i == 1) check(info.uses_clip_mask == 1, "enabled clip distance is reported");
+            if (i == 7) check(info.ntex == 1 && info.tex[0].bl2, "split bindless handle retains both descriptor reads");
+            if (i == 9)
+                check(info.ntex == 1 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0x170 / 4 &&
+                          info.tex[0].bl2 && info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x570 / 4,
+                      "a handle ORed with a constant buffer operand keeps both reads");
+            if (i == 10) check(info.ntex == 1, "a handle is tracked past writes to the registers below it");
+            if (i == 11)
+                check(info.nimg == 2 && info.img[0].type == 1 && info.img[0].kind == 1 && info.img[1].type == 1 &&
+                          info.img[1].kind == 2,
+                      "buffer loads and atomics share an R32ui image, stores take a typeless one");
+            if (i == 12) check(info.ntex == 1 && info.tex[0].bindless, "TXQ.B queries its tracked handle");
+            if (i == 16)
+                check(info.ntex == 1 && info.tex[0].flags == (SNX_TEX_INDEXED | 4 << 4) &&
+                          count_opcode(code, words, 17, 5307) == 1,
+                      "an indexed handle samples an element of the texture array, 16 bytes apart");
+            save_fixture(issue126_paths[i], code, words);
+        }
+        free(code);
+    }
+    g_shader_texture_arrays = 0;
+    /* A TEX.B with all four results from R4 overwrites the handle in R6. */
+    const u64 clobbered_handle[] = {
+        0x4c98078800070006ull,
+        0xdea0000000070004ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
+        0xdea0000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(clobbered_handle, 3, ST_FS, &info, &words, 1);
+    check(!code && info.unsupported && !strcmp(info.first_unsupported, "untracked texture handle"),
+          "a handle overwritten by a texture result is not tracked");
+    free(code);
+    /* A handle loaded under P0 reaches a TEX.B under P0, and not one under !P0. */
+    const u64 tex_b = 0xdea0000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20);
+    const u64 guarded[] = {0x4c98078800000006ull, tex_b & ~(0xfull << 16)};
+    code = translate(guarded, 2, ST_FS, &info, &words, 1);
+    check(code && !info.unsupported, "a handle loaded under a predicate reaches a use under the same one");
+    free(code);
+    const u64 other_guard[] = {0x4c98078800000006ull, (tex_b & ~(0xfull << 16)) | (8ull << 16)};
+    code = translate(other_guard, 2, ST_FS, &info, &words, 1);
+    check(!code && info.unsupported, "a handle loaded under P0 doesn't reach a use under !P0");
+    free(code);
+    /* A handle loaded before a forward branch reaches its target, unless the skipped code writes it. */
+    const u64 branch = 0xe24000000000000full | (16ull << 20); /* @P0 BRA over the next instruction */
+    const u64 across[] = {0x4c98078800070006ull, branch, FMUL_KEEP | 5, tex_b};
+    code = translate(across, 4, ST_FS, &info, &words, 1);
+    check(code && !info.unsupported, "a handle loaded before a forward branch reaches the branch target");
+    free(code);
+    /* IPA of a[0x7c] reads the interpolated 1/w as it is, FragCoord.w */
+    {
+        const u64 position_w[] = {0xe003ff87cff7ff1dull};
+        code = translate(position_w, 1, ST_FS, &info, &words, 1);
+        check(code && !info.unsupported && count_opcode(code, words, 136, 0xffffffffu) == 0,
+              "IPA of a[0x7c] reads FragCoord.w without a division");
+        free(code);
+    }
+    const u64 skipped_write[] = {0x4c98078800070006ull, branch, FMUL_KEEP | 6, tex_b};
+    code = translate(skipped_write, 4, ST_FS, &info, &words, 1);
+    check(!code && info.unsupported, "a handle written in code a branch skips doesn't reach the target");
+    free(code);
+}
+
+/* a tessellation or geometry program: the instructions after an SPH with words 2 to 4 set */
+static u32* translate_stage(const u64* instructions, int count, int stage, const u32* sph, u32 primitive,
+                            ShaderInfo* info, size_t* words) {
+    u64 code[128] = {0};
+    int at = 10;
+    memcpy((u32*)code + 2, sph, 3 * sizeof *sph); /* SPH words 2, 3 and 4 */
+    for (int i = 0; i <= count; i++) {
+        if ((at - 10) % 4 == 0) code[at++] = SCHED;
+        code[at++] = i < count ? instructions[i] : EXIT;
+    }
+    memset(info, 0, sizeof *info);
+    info->rt_int_mask = primitive;
+    if (stage == ST_TCS) info->clip_enable = SNX_SH_NOT_LAST;
+    return shader_to_spirv((const u8*)code, sizeof code, stage, info, words, 1, 1, 1);
+}
+
+/* edenprobe's tessellated patch: a control program passing its 4 vertices through and writing every level from
+   vertex 0's attribute, and an evaluation program mixing the corners by the tessellation coordinate and reading
+   the outer level back. Then a geometry program passing a triangle's first vertex on as a strip of one. */
+static void between_stages(void) {
+    const u64 control[] = {
+        0xf0c8000001170004ull, 0xf0c8000001d70000ull, 0x384700000ff70001ull, 0x3800000081070000ull,
+        0x5b00020000170002ull, 0x5b007fa800170001ull, 0x5b30011800170000ull, 0xefd0000000070005ull,
+        0xefd982800707ff00ull, 0xeff1ff800707ff00ull, 0xefd982800907ff00ull, 0xeff1ff800907ff00ull,
+        0xe29000000c800000ull, 0x5b6403800ff70407ull, 0xf0f800000008000full, 0xf0c8000001d70000ull,
+        0x384700000ff70001ull, 0x3800000081070000ull, 0x5b007f8000170002ull, 0x5b007fa800170001ull,
+        0x5b30011800170000ull, 0xefd0000000070000ull, 0xefd8000009c7ff00ull, 0x386810437f070000ull,
+        0x5ca8140000070a00ull, 0xeff07f808007ff00ull, 0xeff07f808047ff00ull, 0xeff07f808087ff00ull,
+        0xeff07f8080c7ff00ull, 0xeff07f808107ff00ull, 0xeff07f808147ff00ull, 0xf0f800000007000full,
+    };
+    const u64 evaluation[] = {
+        0xf0c8000000070002ull, 0xefd881012f07ff00ull, 0xf0c8000001d70002ull, 0x384700000ff70203ull,
+        0xeff0ff800807ff00ull, 0x3800000081070202ull, 0x010000000017f004ull, 0x5b00020000370204ull,
+        0x5b007fa800370211ull, 0x5b30021801170204ull, 0xefd0000000070408ull, 0xefd984000707ff04ull,
+        0x5b007f8000370208ull, 0x5b30041801170208ull, 0xefd000000007080cull, 0xefd986000707ff08ull,
+        0x5c58300000870404ull, 0x59a004000047000dull, 0x5c58300000970504ull, 0x59a004800047000eull,
+        0x5c58300000a70604ull, 0x59a005000047000full, 0x5c58300000b70704ull, 0x59a0058000470010ull,
+        0x010000000027f004ull, 0x5b00020000370204ull, 0x5b30021801170204ull, 0xefd0000000070408ull,
+        0xefd984000707ff04ull, 0x010000000037f008ull, 0x5b00040000370203ull, 0x5b30019801170202ull,
+        0xefd0000000070202ull, 0xefd981000707ff08ull, 0x5c58300000870402ull, 0x59a0040000270002ull,
+        0xefd87f808007ff08ull, 0x5c58300000970503ull, 0x59a0048000370003ull, 0x5c58300000a70604ull,
+        0x59a0050000470006ull, 0xefd806000987ff0aull, 0x5c58300000b70704ull, 0x59a0058000470007ull,
+        0x5c58300000d70202ull, 0x59a0068000270104ull, 0x5c58300000e70302ull, 0x59a0070000270105ull,
+        0x5c58300000f70602ull, 0x59a0078000270106ull, 0x5c58300001070702ull, 0x59a0080000270107ull,
+        0xefd886000907ff02ull, 0x1e23b8080817080bull, 0xeff1ff800707ff04ull, 0x5c98078000270008ull,
+        0x5c98078000370009ull, 0xeff1ff800907ff08ull,
+    };
+    const u64 geometry[] = {
+        0xefd9ff800707ff00ull, /* ALD R0, a[0x70] of vertex RZ, 4 words */
+        0xeff1ff800707ff00ull, /* AST a[0x70], R0, 4 words */
+        0xfbe000800ff70404ull, /* OUT.EMIT R4, R4, RZ */
+        0xfbe001000ff70404ull, /* OUT.CUT R4, R4, RZ */
+    };
+    const u32 control_sph[3] = {4u << 24, 0, 0};         /* 4 threads, each an output vertex */
+    const u32 geometry_sph[3] = {1u << 24, 7u << 24, 3}; /* 1 invocation, a triangle strip of up to 3 vertices */
+    const u32 none[3] = {0, 0, 0};
+    struct {
+        const u64* instructions;
+        int count, stage;
+        const u32* sph;
+        u32 primitive, mode;
+    } cases[] = {{control, (int)(sizeof control / sizeof *control), ST_TCS, control_sph, 0, 26},
+                 /* quads, equal spacing, connected counterclockwise triangles */
+                 {evaluation, (int)(sizeof evaluation / sizeof *evaluation), ST_TES, none, 0x302, 24},
+                 {geometry, 4, ST_GS, geometry_sph, 3, 29}};
+    for (int i = 0; i < 3; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate_stage(cases[i].instructions, cases[i].count, cases[i].stage, cases[i].sph,
+                                    cases[i].primitive, &info, &words);
+        check(code && !info.unsupported, "a tessellation or geometry program translates");
+        if (code) {
+            check(count_opcode(code, words, 16, cases[i].mode) == 1, "its execution mode says its primitive");
+            if (i == 2) check(count_opcode(code, words, 218, 0xffffffffu) == 1, "OUT.EMIT emits a vertex");
+            if (stage_paths[i]) save_fixture(stage_paths[i], code, words);
+        }
+        free(code);
+    }
+}
+
 /* a rejected instruction is logged with its word */
 static void unsupported_names_word(void) {
     ShaderInfo info;
@@ -328,8 +579,9 @@ static void unsupported_names_word(void) {
     u32* code = translate((const u64[]){0xFFFFFFFFFFFFFFFFull}, 1, ST_FS, &info, &words, 0);
     check(!code && !strcmp(info.first_unsupported, "unknown opcode ffffffffffffffff"), "an unknown opcode is named");
     free(code);
-    code = translate((const u64[]){0xEB10030200480502ull}, 1, ST_CS, &info, &words, 0);
-    check(!code && !strcmp(info.first_unsupported, "SULD eb10030200480502"), "a SULD form not done yet is named");
+    /* SULD.D.64 on a buffer image: its 32-bit form is translated */
+    code = translate((const u64[]){0xEB10030200580502ull}, 1, ST_CS, &info, &words, 0);
+    check(!code && !strcmp(info.first_unsupported, "SULD eb10030200580502"), "a SULD form not done yet is named");
     free(code);
 }
 
@@ -362,12 +614,14 @@ static void dc_color_compare(void) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 1 && argc != 8) return 2;
-    if (argc == 8) {
+    if (argc != 1 && argc != 28) return 2;
+    if (argc == 28) {
         storage_paths[0] = argv[1];
         storage_paths[1] = argv[2];
         for (int i = 0; i < 4; i++) nro_paths[i] = argv[i + 3];
         dc_color_path = argv[7];
+        for (int i = 0; i < 17; i++) issue126_paths[i] = argv[i + 8];
+        for (int i = 0; i < 3; i++) stage_paths[i] = argv[i + 25];
     }
     dc_color_compare();
     brx_length();
@@ -379,5 +633,7 @@ int main(int argc, char** argv) {
     precise_math();
     fragment_storage_images();
     nro_shader_modes();
+    issue126_shader_modes();
+    between_stages();
     return failures ? 1 : 0;
 }

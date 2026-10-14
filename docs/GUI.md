@@ -10,6 +10,10 @@ English text only. No font files or localization packages are needed.
 ./build/scarletnx-gui
 ```
 
+The window's title tells which build it is, as `ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)`, for example
+`ScarletNX main 43bf71a (clang 22.1.8, Linux x86_64)`; the commit ends in `-dirty` when the tree had changes, a
+build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
+
 - Up/Down and Left/Right move the yellow focus, wrapping at the ends.
 - Moving the mouse over an item focuses it in yellow without activating it.
 - Space, Enter or a left click explicitly activates an item, marking it bright
@@ -49,6 +53,16 @@ English text only. No font files or localization packages are needed.
   folder of `themes/` (see [Themes](#themes)). It lasts for the session.
 - **Exit** closes the launcher. Closing its window during a run terminates the
   entire owned process tree, so let the game exit normally to preserve its saves.
+- **Recent games**, above the items, lists the last five games run, newest first, by
+  the name their run gave (the runner's `ScarletNX - <name>` line), else their file's.
+  The focus moves between them and the items in one ring, and the line under the menu
+  shows the focused game's path. Choosing one runs it again with the driver it was
+  loaded with and the options the menu has now; a game whose file is gone leaves the
+  list instead. The list is kept in `recent.txt` in the user's data folder
+  (`$XDG_DATA_HOME/scarletnx/gui/`, by default `~/.local/share/scarletnx/gui/`, or
+  `%APPDATA%\scarletnx\gui\` on Windows), a line per
+  game: `switch` or `linux`, `file` or `games` (a program from games/, run as it is),
+  the path and the name, separated by tabs.
 
 The launcher looks beside its executable, then on PATH, for `scarletnx-mariko`
 (the existing Switch driver alias) or `scarletnx-gnuabi`. Files are passed directly

@@ -19,7 +19,7 @@ typedef struct {
     u8 bl_cbuf;
     u8 bl2;
     u8 bl2_cbuf; /* bl2: handle = read1 | read2 (separate tex/sampler handles) */
-    u8 flags; /* 1: raw integer surface load, 2: multisample texel fetch */
+    u8 flags;    /* 1: raw integer surface load, 2: multisample texel fetch, 4: indexed (SNX_TEX_INDEXED) */
     u32 bl2_off; /* word offset of read2 */
 } ShTex;
 typedef struct {
@@ -32,7 +32,8 @@ typedef struct {
     u32 in_mask;       /* generic attribs 0..31 read */
     u32 attr_int_mask; /* key: integer VS attribs */
     u32 attr_sint_mask;
-    u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), others aren't written */
+    u32 clip_enable; /* key: the clip distances the 3D engine enables (SetUserClipEnable), others aren't written,
+                        and SNX_SH_NOT_LAST */
     int uses_position_in, uses_clip_mask, writes_layer, writes_point_size;
     int fp32_flush, fp32_preserve; /* FP32 arithmetic whose FTZ/FMZ field flushes denormals, and whose doesn't */
     u32 gbuf_cbuf_off[16];
@@ -46,23 +47,41 @@ typedef struct {
         u32 cbuf_off;
         u8 type, bindless, bl_cbuf, kind; /* 0 float store, 1 unsigned atomic, 2 unsigned store */
     } img[8];
-    int nimg;                                                   /* storage image stores and atomics */
-    u32 tex_int_mask, tex_sint_mask, rt_int_mask, rt_sint_mask; /* FS key: integer textures / outputs */
+    int nimg; /* storage image stores and atomics */
+    /* FS key: integer textures / outputs. rt_int_mask keys the primitives of the other stages instead: the
+       tessellation parameters (register 0xC8) for TES, and the input primitive's vertex count for GS */
+    u32 tex_int_mask, tex_sint_mask, rt_int_mask, rt_sint_mask;
     /* FS key: depth-compare samples of a color texture (TEX.DC on a color format compares its first component, which
        Vulkan's compare samplers don't do): the slots, and their compare functions 3 bits each in slot order */
     u32 tex_dc_color_mask, tex_dc_color_funcs;
 } ShaderInfo;
-#define SH_DC_COLOR_MAX 10 /* slots tex_dc_color_funcs holds */
+#define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs holds */
 /* the shader flushes FP32 denormals everywhere: every FADD, FMUL and FFMA it has asks for it, as the console's
    compiler emits them (Eden declares DenormFlushToZero on the same condition) */
 /* One descriptor set per stage, with bindings grouped by resource kind. */
-#define SNX_VKB_CB   0  /* 18 constant buffers */
-#define SNX_VKB_SSBO 18 /* 16 global memory buffers */
-#define SNX_VKB_TEX  34 /* 32 combined image samplers */
-#define SNX_VKB_IMG  66 /* 8 storage images (compute) */
-#define SNX_VKB_RS   74 /* fragment: 1/resolution scale (SNX_RS) */
-#define SNX_VKB_FMT  75 /* compute: image format classes (SNX_FMT) */
-#define SNX_VKB_SMAP 76 /* graphics: storage-buffer page indices for aliased bindings */
+#define SNX_VKB_CB       0  /* 18 constant buffers */
+#define SNX_VKB_SSBO     18 /* 16 global memory buffers */
+#define SNX_VKB_TEX      34 /* 32 combined image samplers */
+#define SNX_VKB_IMG      66 /* 8 storage images (compute) */
+#define SNX_VKB_RS       74 /* fragment: 1/resolution scale (SNX_RS) */
+#define SNX_VKB_FMT      75 /* compute: image format classes (SNX_FMT) */
+#define SNX_VKB_SMAP     76 /* graphics: storage-buffer page indices for aliased bindings */
+#define SNX_VKB_IMGBUF   77 /* 8 storage texel buffers: surface operations on buffer images (compute) */
+#define SNX_VKB_TEXARRAY 85 /* SNX_TEX_ARRAY textures: the handles an indexed LDC loads (graphics) */
+#define SNX_VKB_END      86 /* one past the last binding */
+/* An indexed texture's handle is loaded by an LDC whose address takes a register: the shader picks one of
+   SNX_TEX_ARRAY handles, each (1 << shift) bytes after the one before, from cbuf_off on. ShTex.flags holds the shift
+   in bits 4-7. */
+#define SNX_TEX_ARRAY    256
+#define SNX_TEX_INDEXED  4
+/* set by the renderer: the device indexes sampled image arrays per invocation (Vulkan's non-uniform indexing) */
+extern int g_shader_texture_arrays;
+/* set by the renderer: tessellation and geometry shaders may write the point size
+   (shaderTessellationAndGeometryPointSize) */
+extern int g_shader_stage_point_size;
+/* in clip_enable: a later stage before rasterization follows this one (tessellation or geometry), and the last one
+   applies the depth mode and the clip distances */
+#define SNX_SH_NOT_LAST (1u << 31)
 int shader_vk_set(int stage);
 /* Direct SPIR-V translator. Returns NULL when the current opcode set cannot represent the program. */
 u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* word_count, int can_flush,

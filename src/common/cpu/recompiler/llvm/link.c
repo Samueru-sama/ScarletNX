@@ -71,12 +71,12 @@ void snx_link_insert(SnxLinkNames* names, const char* key, size_t value) {
         SnxLinkNames grown;
         grown.capacity = names->capacity ? names->capacity * 2 : 1024;
         grown.count = 0;
-        grown.keys = (char**)calloc(grown.capacity, sizeof(char*));
-        grown.values = (size_t*)calloc(grown.capacity, sizeof(size_t));
-        if (!grown.keys || !grown.values) {
+        grown.keys = (char**)calloc(grown.capacity, sizeof(char*) + sizeof(size_t)); /* the values follow */
+        if (!grown.keys) {
             fputs("out of memory\n", stderr);
             abort();
         }
+        grown.values = (size_t*)(grown.keys + grown.capacity);
         for (i = 0; i < names->capacity; ++i)
             if (names->keys[i]) {
                 size_t j = name_hash(names->keys[i]) & (grown.capacity - 1);
@@ -86,7 +86,6 @@ void snx_link_insert(SnxLinkNames* names, const char* key, size_t value) {
                 ++grown.count;
             }
         free(names->keys);
-        free(names->values);
         *names = grown;
     }
     for (i = name_hash(key) & (names->capacity - 1); names->keys[i]; i = (i + 1) & (names->capacity - 1))
@@ -105,6 +104,5 @@ void snx_link_names_free(SnxLinkNames* names) {
     size_t i;
     for (i = 0; i < names->capacity; ++i) free(names->keys[i]);
     free(names->keys);
-    free(names->values);
     memset(names, 0, sizeof(*names));
 }

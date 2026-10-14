@@ -18,6 +18,7 @@ int main(void) {
     check(depth24_unpack(0x29, texel, &stencil) == 0xAB1234 && stencil == 0x56, "Z24S8: stencil in the low byte");
     check(depth24_unpack(0x0E, texel, &stencil) == 0xAB1234 && stencil == 0x56, "G24R8 reads like Z24S8");
     check(depth24_unpack(0x2B, texel, &stencil) == 0x123456 && stencil == 0xAB, "S8Z24: depth in the low 24 bits");
+    check(depth24_unpack(0x0D, texel, &stencil) == 0x123456 && stencil == 0xAB, "G8R24 reads like S8Z24");
     stencil = 0xEE;
     check(depth24_unpack(0x2A, texel, &stencil) == 0x123456 && stencil == 0, "X8Z24: no stencil");
     check(depth24_unpack(0x29, 0xFFFFFF00u, &stencil) == 0xFFFFFF && !stencil, "Z24S8 far plane");

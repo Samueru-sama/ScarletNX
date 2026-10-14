@@ -85,7 +85,9 @@ else()
 endif()
 
 # SDL3 is either the system package or the pinned static source build (cmake/dependencies.cmake)
-target_link_libraries(snx_platform PRIVATE SDL3::SDL3)
+include("${PROJECT_SOURCE_DIR}/cmake/window_icon.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/build_info.cmake")
+target_link_libraries(snx_platform PRIVATE SDL3::SDL3 snx_window_icon snx_build_info)
 target_link_libraries(scarletnx PRIVATE SDL3::SDL3)
 
 if(BUILD_TESTING)

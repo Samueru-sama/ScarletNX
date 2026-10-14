@@ -286,6 +286,8 @@ extern int ops_ready;
 void ops_init(void);
 const Op* decode(u64 w);
 u32 bra_target(u64 w, u32 idx);
+/* whether the instruction w (decoded as op) writes general register reg, its whole destination range included */
+int shader_writes_reg(u64 w, int op, u32 reg);
 int flow_always(u64 w);
 int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets);
 #endif

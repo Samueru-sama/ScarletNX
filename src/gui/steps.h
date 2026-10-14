@@ -2,7 +2,6 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_GUI_STEPS_H
 #define SNX_GUI_STEPS_H
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -32,11 +31,11 @@ typedef struct {
     uint32_t serial;
     char line[256];
     size_t length;
-    bool gpu;
+    int gpu;
 } GuiSteps;
 void gui_steps_reset(GuiSteps* steps);
 void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now_ms);
-void gui_steps_finish(GuiSteps* steps, bool ok);
+void gui_steps_finish(GuiSteps* steps, int ok);
 /* how far the recompile is, 0 to 100; 100 once the game launches; -1 before anything says */
 int gui_steps_percent(const GuiSteps* steps);
 /* the latest max notes of a step, oldest first, into out; their count */

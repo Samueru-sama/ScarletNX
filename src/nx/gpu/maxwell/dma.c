@@ -24,6 +24,11 @@ static u8* dma_buf(u32 len) {
     if (!b) WARN_LIMIT(1, "dma: no memory for a line of %u bytes, copy left out\n", len);
     return b;
 }
+/* a line of a remap fill: each component, size bytes, the constant's low bytes */
+static void dma_fill(u8* b, u32 len, u32 size, u32 value) {
+    u32 i;
+    for (i = 0; i < len; i++) b[i] = (u8)(value >> (8 * (i % size)));
+}
 void dma_method(GpuChannel* ch, u32 m, u32 v) {
     m &= 0x1FF;
     ch->rdma[m] = v;
@@ -33,13 +38,18 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
     u32 pitch_in = r[0x104], pitch_out = r[0x105], line_len = r[0x106], lines = r[0x107];
     int src_linear = (v >> 7) & 1, dst_linear = (v >> 8) & 1, multi = (v >> 9) & 1, remap = (v >> 10) & 1;
     if (!multi) lines = 1;
-    u32 bpp = 1;
+    u32 bpp = 1, comp = 1;
+    /* every destination component CONST_A: a fill of that constant, the source unread. Games clear buffers this way
+       (Eden fills them too) */
+    int fill = remap && (r[0x1C2] & 0x7777) == 0x4444;
     if (remap) {
         u32 rc = r[0x1C2];
-        u32 comp = ((rc >> 16) & 3) + 1, csz = ((rc >> 20) & 3) + 1;
-        bpp = comp * csz;
+        u32 csz = ((rc >> 20) & 3) + 1;
+        comp = ((rc >> 16) & 3) + 1;
+        bpp = comp * (fill ? ((rc >> 24) & 3) + 1 : csz);
         line_len *= bpp;
     }
+    if (fill) src_linear = 1; /* the constant stands for a linear source */
     /* bl params: dst 0x1C3.., src 0x1CA.. */
     u32 dbh = (r[0x1C3] >> 4) & 15, dw = r[0x1C4], dh = r[0x1C5], dd = r[0x1C6];
     (void)dd;
@@ -78,11 +88,6 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
         LOG_LIMIT(4, "dma: single-line copy with a block linear %s (launch %x), copied through the layout\n",
                   src_linear ? "destination" : "source", v);
     }
-    if (remap && (r[0x1C2] & 0x7777) == 0x4444) { /* every destination component is CONST_A: a fill, not a copy */
-        LOG_LIMIT(4,
-                  "dma: remap writes constant A (%x) to every component (remap %x), copied from the source instead\n",
-                  r[0x1C0], r[0x1C2]);
-    }
     LOG_LIMIT(
         6,
         "dma: %s->%s src=%llx dst=%llx pitch %u/%u len=%u lines=%u multi=%d remap=%d(%x) dst[bh=%u w=%u h=%u d=%u l=%u o=%x] src[bh=%u w=%u h=%u o=%x] launch=%x\n",
@@ -100,12 +105,13 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
     (void)sspan;
     if (src_linear && dst_linear) {
         u8* tmp = dma_buf(line_len);
+        if (tmp && fill) dma_fill(tmp, line_len, comp, r[0x1C0]);
         if (tmp && !multi) {
-            gmem_read(src, tmp, line_len);
+            if (!fill) gmem_read(src, tmp, line_len);
             gmem_write(dst, tmp, line_len);
         } else if (tmp) {
             for (u32 y = 0; y < lines; y++) {
-                gmem_read(src + (u64)y * pitch_in, tmp, line_len);
+                if (!fill) gmem_read(src + (u64)y * pitch_in, tmp, line_len);
                 gmem_write(dst + (u64)y * pitch_out, tmp, line_len);
             }
         }
@@ -116,8 +122,9 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
         u32 wb = dw * (remap ? bpp : 1);
         u8* buf = dma_buf(line_len);
         if (g_gpu_before_write) g_gpu_before_write(dst, dspan);
+        if (buf && fill) dma_fill(buf, line_len, comp, r[0x1C0]);
         for (u32 y = 0; buf && y < lines; y++) {
-            gmem_read(src + (u64)y * pitch_in, buf, line_len);
+            if (!fill) gmem_read(src + (u64)y * pitch_in, buf, line_len);
             for (u32 x = 0; x < line_len;) {
                 u32 xb = dx * (remap ? bpp : 1) + x, n = 16 - (xb & 15);
                 if (n > line_len - x) n = line_len - x;
@@ -134,8 +141,9 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
     } else if (src_linear && !dst_linear) {
         u32 wb = dw * (remap ? bpp : 1);
         u8* buf = dma_buf(line_len);
+        if (buf && fill) dma_fill(buf, line_len, comp, r[0x1C0]);
         for (u32 y = 0; buf && y < lines; y++) {
-            gmem_read(src + (u64)y * pitch_in, buf, line_len);
+            if (!fill) gmem_read(src + (u64)y * pitch_in, buf, line_len);
             /* bl keeps 16 byte groups contiguous, so copy per group not per byte (was ~11% in profiles) */
             for (u32 x = 0; x < line_len;) {
                 u32 xb = dx * (remap ? bpp : 1) + x, n = 16 - (xb & 15);

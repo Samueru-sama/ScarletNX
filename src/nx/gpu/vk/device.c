@@ -186,8 +186,10 @@ static int create_device(void) {
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
     g_vk_subgroup_stages =
         subgroup.subgroupSize >= 32 &&
-                (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT)) ==
-                    (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT)
+                (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
+                                                 VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)) ==
+                    (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
+                     VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
             ? subgroup.supportedStages
             : 0;
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
@@ -241,7 +243,10 @@ static int create_device(void) {
     WANT(shaderInt16);
     WANT(geometryShader);
     WANT(tessellationShader);
+    WANT(shaderTessellationAndGeometryPointSize);
 #undef WANT
+    /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
+    g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
     const char* ext[4];
     u32 next = 0;
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -285,7 +290,11 @@ static int create_device(void) {
                                             .samplerMirrorClampToEdge = q12.samplerMirrorClampToEdge,
                                             .timelineSemaphore = VK_TRUE,
                                             .shaderOutputViewportIndex = q12.shaderOutputViewportIndex,
-                                            .shaderOutputLayer = q12.shaderOutputLayer};
+                                            .shaderOutputLayer = q12.shaderOutputLayer,
+                                            .shaderSampledImageArrayNonUniformIndexing =
+                                                q12.shaderSampledImageArrayNonUniformIndexing};
+    /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
+    g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                             .pNext = &f12,
                                             .synchronization2 = VK_TRUE,

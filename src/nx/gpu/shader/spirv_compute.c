@@ -57,10 +57,11 @@ static int supported(u64 w, int op) {
         case O_MOV_R:
         case O_MOV_C: return B(w, 39, 4) == 1 || B(w, 39, 4) == 15;
         case O_MOV32I: return B(w, 12, 4) == 1 || B(w, 12, 4) == 15;
+        /* saturation, SHL's carry and rounding other than RN aren't translated here: the full translator gets them */
         case O_IADD_R:
         case O_IADD_C:
-        case O_IADD_I:
-        case O_IADD32I:
+        case O_IADD_I: return !B(w, 50, 1);
+        case O_IADD32I: return !B(w, 54, 1);
         case O_ISCADD_R:
         case O_ISCADD_C:
         case O_ISCADD_I: return 1;
@@ -72,14 +73,14 @@ static int supported(u64 w, int op) {
         case O_ISETP_I: return !B(w, 43, 1) && !B(w, 47, 1);
         case O_SHL_R:
         case O_SHL_C:
-        case O_SHL_I: return 1;
+        case O_SHL_I: return !B(w, 43, 1) && !B(w, 47, 1);
         case O_FMUL_R:
         case O_FMUL_C:
-        case O_FMUL_I: return B(w, 41, 3) == 0 && !B(w, 50, 1) && !B(w, 47, 1) && B(w, 44, 2) <= 1;
+        case O_FMUL_I: return B(w, 41, 3) == 0 && !B(w, 50, 1) && !B(w, 47, 1) && B(w, 44, 2) <= 1 && !B(w, 39, 2);
         case O_FFMA_R:
         case O_FFMA_RC:
         case O_FFMA_CR:
-        case O_FFMA_I: return !B(w, 50, 1) && !B(w, 47, 1) && B(w, 53, 2) <= 1;
+        case O_FFMA_I: return !B(w, 50, 1) && !B(w, 47, 1) && B(w, 53, 2) <= 1 && !B(w, 51, 2);
         case O_LDG:
         case O_STG: return B(w, 48, 3) >= 4 && B(w, 48, 3) <= 6;
         default: return 0;
@@ -194,8 +195,9 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
             tags[d] = B(w, 48, 2) == 1 ? 0 : tag_cbuf(B(w, 34, 5), B(w, 20, 14) * 4);
         else if (id == O_ISCADD_R && d < 255)
             tags[d] = B(w, 48, 2) == 1 ? 0 : b == 255 ? 0 : tags[b];
-        else if (id != O_IADD32I && d < 255 && id != O_LDG && id != O_STG && id != O_ISETP_R && id != O_ISETP_C &&
-                 id != O_ISETP_I)
+        else if (id == O_IADD32I && d < 255) /* an offset from a pointer stays in its buffer */
+            tags[d] = a == 255 || B(w, 55, 2) == 2 ? 0 : tags[a];
+        else if (d < 255 && id != O_LDG && id != O_STG && id != O_ISETP_R && id != O_ISETP_C && id != O_ISETP_I)
             tags[d] = 0;
         if (id == O_LDG || id == O_STG) {
             int gi = buffer_index(&meta, a == 255 ? 0 : tags[a]);
@@ -364,10 +366,10 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
                    id == O_FFMA_CR || id == O_FFMA_I) {
             int fma = id >= O_FFMA_R && id <= O_FFMA_I;
             u32 lhs = spv_emit_bitcast(&c->e, c->f, cr(c, a));
-            u32 rhs = fma && id == O_FFMA_CR   ? right(c, w, 1)
-                      : fma && id == O_FFMA_RC ? cr(c, B(w, 39, 8))
-                      : fma && id == O_FFMA_I  ? cu(c, (B(w, 20, 19) << 12) | (B(w, 56, 1) << 31))
-                                               : right(c, w, fma ? 0 : id - O_FMUL_R);
+            u32 rhs = fma && id == O_FFMA_CR             ? right(c, w, 1)
+                      : fma && id == O_FFMA_RC           ? cr(c, B(w, 39, 8))
+                      : id == O_FFMA_I || id == O_FMUL_I ? cu(c, (B(w, 20, 19) << 12) | (B(w, 56, 1) << 31))
+                                                         : right(c, w, fma ? 0 : id - O_FMUL_R);
             rhs = spv_emit_bitcast(&c->e, c->f, rhs);
             if (fma && B(w, 48, 1)) rhs = spv_emit_fnegate(&c->e, c->f, rhs);
             if (!fma && B(w, 48, 1)) rhs = spv_emit_fnegate(&c->e, c->f, rhs);
@@ -392,10 +394,11 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
             for (u32 k = 0; k < count; k++) {
                 u32 ix = k ? spv_emit_iadd_u32(&c->e, c->u, index, cu(c, k)) : index;
                 u32 ptr = spv_emit_storage_access_u32(&c->e, c->gbptr, c->gb[gi], c->zero, ix);
+                u32 r = d == 255 ? 255 : d + k; /* RZ stands for every register of a wide access */
                 if (id == O_LDG)
-                    cw(c, d + k, spv_emit_load(&c->e, c->u, ptr));
+                    cw(c, r, spv_emit_load(&c->e, c->u, ptr));
                 else
-                    spv_emit_store_u32(&c->e, ptr, cr(c, d + k));
+                    spv_emit_store_u32(&c->e, ptr, cr(c, r));
             }
         }
         if (merge) {

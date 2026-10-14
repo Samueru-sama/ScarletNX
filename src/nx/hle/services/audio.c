@@ -481,8 +481,6 @@ static void hwopus_destroy(SvcObj* o) {
     av_frame_free(&h->frame);
     free(h->in);
     free(h->fir);
-    free(h->hist);
-    free(h->x);
 #else
     (void)h;
 #endif
@@ -510,10 +508,11 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     h->frame = av_frame_alloc();
     h->step = 48000 / rate;
     h->taps = h->step > 1 ? 24 * h->step + 1 : 1;
-    h->fir = malloc(h->taps * sizeof(float));
-    h->hist = calloc((size_t)channels * h->taps, sizeof(float));
-    h->x = malloc((h->taps + OPUS_MAX_48K) * sizeof(float));
-    if (!h->dec || !h->pkt || !h->frame || !h->fir || !h->hist || !h->x) return 0;
+    /* one block: the filter, each channel's history, the work buffer */
+    h->fir = calloc((size_t)(channels + 2) * h->taps + OPUS_MAX_48K, sizeof(float));
+    if (!h->dec || !h->pkt || !h->frame || !h->fir) return 0;
+    h->hist = h->fir + h->taps;
+    h->x = h->hist + (size_t)channels * h->taps;
     if (h->step > 1) opus_fir(h->fir, h->taps, h->step);
     /* the OpusHead FFmpeg takes the layout from (RFC 7845): no pre-skip, the game trims that itself. Mapping family 0
        is one mono or stereo stream, 255 any number of streams with the mapping as given */

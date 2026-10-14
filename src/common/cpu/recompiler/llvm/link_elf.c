@@ -93,10 +93,11 @@ static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
         o->eh->e_shoff + (uint64_t)o->eh->e_shnum * sizeof(Elf64_Shdr) > input->size)
         return fail(l, "%s: not an x86-64 ELF relocatable object%s", input->name, "");
     o->sh = (const Elf64_Shdr*)(input->data + o->eh->e_shoff);
-    o->kind = (int*)calloc(o->eh->e_shnum, sizeof(int));
-    o->address = (uint64_t*)calloc(o->eh->e_shnum, sizeof(uint64_t));
-    o->position = (uint64_t*)calloc(o->eh->e_shnum, sizeof(uint64_t));
-    if (!o->kind || !o->address || !o->position) return fail(l, "out of memory%s%s", "", "");
+    /* one block, the 8-byte arrays first */
+    o->address = (uint64_t*)calloc(o->eh->e_shnum, 2 * sizeof(uint64_t) + sizeof(int));
+    if (!o->address) return fail(l, "out of memory%s%s", "", "");
+    o->position = o->address + o->eh->e_shnum;
+    o->kind = (int*)(o->position + o->eh->e_shnum);
     for (i = 0; i < o->eh->e_shnum; ++i) {
         const Elf64_Shdr* s = &o->sh[i];
         o->kind[i] = -1;
@@ -635,9 +636,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     rc = 0;
 done:
     for (i = 0; l.objs && i < count; ++i) {
-        free(l.objs[i].kind);
         free(l.objs[i].address);
-        free(l.objs[i].position);
     }
     free(l.objs);
     free(export_address);
