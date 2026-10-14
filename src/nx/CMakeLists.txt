@@ -151,6 +151,16 @@ if(BUILD_TESTING AND SNX_VULKAN)
     add_test(NAME shader_gbuf COMMAND snx-test-shader-gbuf)
 endif()
 
+# Maxwell BRX jump-table bounds and unresolved program tails
+if(BUILD_TESTING AND SNX_VULKAN)
+    add_executable(snx-test-shader-brx "${PROJECT_SOURCE_DIR}/tests/shader_brx.c")
+    target_link_libraries(snx-test-shader-brx PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-brx PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_brx COMMAND snx-test-shader-brx)
+endif()
+
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.
 if(BUILD_TESTING AND SNX_TEST_VULKAN AND SNX_VULKAN)
     add_executable(snx-test-vulkan "${PROJECT_SOURCE_DIR}/tests/vulkan_headless.c")
