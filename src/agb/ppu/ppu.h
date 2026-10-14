@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MPL-2.0
+   Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 /* the AGB display device: the LCD controller's registers and timing, and the PPU that draws the
    backgrounds and sprites of every scanline into the frame the host presents. */

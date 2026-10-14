@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MPL-2.0
+   Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 /* the AGB memory map: the console's address space and its mirrors, with the board's I/O window at 0x04000000 */
 #ifndef SNX_AGB_MEMORY_H

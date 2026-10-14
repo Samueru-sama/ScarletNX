@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MPL-2.0
+   Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 /* the AGB board: the console the recompiled ROM runs on. It holds the cartridge, the memory map and the
    devices behind the I/O registers. */

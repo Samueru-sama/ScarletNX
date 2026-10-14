@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MPL-2.0
+   Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 /* the AGB cartridge: the ROM image the board runs and the header at its start */
 #ifndef SNX_AGB_CARTRIDGE_H

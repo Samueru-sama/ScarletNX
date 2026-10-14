@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MPL-2.0
+   Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 /* scarletnx-agb: the AGB (Game Boy Advance) system type. It loads a GBA ROM onto the emulated board and reports
    what the board knows. The board is a stub: no CPU and no devices are emulated yet. */

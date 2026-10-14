@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: MPL-2.0
+   Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 /* the AGB BIOS as HLE: the console's software interrupts run as board routines instead of ROM code. The
    calls follow the GBA BIOS convention: arguments in r0 to r3, results in r0 to r3. */

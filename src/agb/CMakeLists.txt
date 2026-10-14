@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MPL-2.0
+# Copyright 2026 the mGBA contributors
 # Copyright 2026 the ScarletNX contributors
 # The AGB (Game Boy Advance) board runtime: the board emulation scarletnx-agb runs GBA ROMs on. The board library is
 # CPU-only and independent of the NX and GNU ABI runtimes; the executable is its entry point.
