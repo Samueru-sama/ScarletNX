@@ -95,6 +95,9 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkImageLayout zl =
         zt_ro ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    /* a read-only depth target keeps its contents: a store would write it at the end of the pass, which the read
+       access vk_surf_use records doesn't cover, and the next barrier wouldn't wait for it */
+    if (zt_ro) za.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
     if (zt) {
         if (zt_ro)
             vk_surf_use(cb, zt, zl,

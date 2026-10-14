@@ -542,16 +542,18 @@ static VkPipeline pipe_create(const PipeKey* k) {
                             VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
                             VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
                             VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
-                            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
                             VK_DYNAMIC_STATE_LINE_WIDTH,
                             VK_DYNAMIC_STATE_DEPTH_BIAS,
                             VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
                             VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
                             VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-                            VK_DYNAMIC_STATE_DEPTH_BOUNDS};
+                            VK_DYNAMIC_STATE_DEPTH_BOUNDS,
+                            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
+    /* the stride is set by vkCmdBindVertexBuffers2, which a draw without vertex buffers never calls: a pipeline without
+       bindings leaves it out (it is last) */
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                           .dynamicStateCount = sizeof dyn / sizeof dyn[0],
+                                           .dynamicStateCount = sizeof dyn / sizeof dyn[0] - (k->nbind ? 0 : 1),
                                            .pDynamicStates = dyn};
     VkFormat cf[8];
     for (u32 i = 0; i < k->ncolor; i++) cf[i] = (VkFormat)k->color[i];
