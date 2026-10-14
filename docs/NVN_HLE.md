@@ -1728,8 +1728,12 @@ per-queue limit is 8 MiB, with a 32 MiB global limit; dropped entries are
 reported. The first TotK cubemap batch contains all 65 control-owned macro
 38 packets. Its observed 12-word indexed-draw form now decodes index address,
 format, topology, count, and instance count; its six macro arguments are
-retained until their exact effects are established. This is an ordered input
-for a future direct renderer, not executable NVN draw state yet.
+retained until their exact effects are established. The submitting-thread
+register stream also identifies the 65 draws as depth writers to the 64×64
+target at `0x52cc10000`, matching the operation-aligned Maxwell readback.
+This is an ordered input for a future direct renderer, not executable NVN
+draw state yet. Shader registers cannot be inferred from direct pushbuffer
+writes alone: the preceding MME calls can change registers before a draw.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
