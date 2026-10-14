@@ -1439,6 +1439,18 @@ The scoped counter change preserved the sampled comparisons for Catherine
 (`0/921,600`), Scarlet (`0/518,400`), and Odyssey (`0/1,440,000`); Catherine and
 Odyssey require the opt-in zero-backing probe for these exact targets.
 
+The BRX program-length and table-clamp rules from [ScarletNX PR #98](https://github.com/scarletnx/ScarletNX/pull/98) now also run in
+this branch's shader translator. Offline compute write analysis and both QMD and
+direct NVN compute translation bound NVN shader reads by the blob's declared size;
+the surrounding 64 KiB GPU memory window can contain unrelated programs. A
+diagnostic whole-code translation of TotK's operation 886 found one writable
+storage slot and no storage images inside its declared blob, with the storage range
+disjoint from the query counter. That is not yet a safe query proof: without the
+live CBUF jump-table entries, a BRX target outside the scanned blob has not been
+excluded. Operation 886 therefore still invalidates the counter, and the 320×180
+producer comparison remains `57,600/57,600` differing pixels. Resolving its BRX
+destinations from ordered dispatch data is the next required step.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
