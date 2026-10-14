@@ -1750,6 +1750,12 @@ at each decoded raw draw. In the same TotK batch, all 65 depth draws have an
 observed attribute 0 and a valid stream 0 address/limit. This does not yet
 prove the other attributes read by each vertex shader or the constant-buffer
 bindings needed to execute the draw.
+For the observed 12-word indexed-draw form, the packet stream also snapshots
+up to 512 KiB of indices through checked GPU-page translations. All 65 draws
+in that TotK batch retained their index bytes (564,702 bytes total), so
+deferred direct replay can use the submitted geometry even if guest backing
+changes before its GPU callback. The 8 MiB per-queue and 32 MiB global packet
+budgets still apply; larger index ranges remain explicitly unsnapshotted.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

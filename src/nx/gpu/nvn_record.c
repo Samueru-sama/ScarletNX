@@ -220,6 +220,8 @@ typedef struct NvnControlPacket {
     struct NvnControlPacket* next;
     u64 gpu_va, cpu_address, list, visit, ordinal;
     u32 channel, control_offset, record_value, word_count, macro12_count, macro38_count;
+    u32 index_snapshot_size;
+    u8 index_snapshot_valid;
     u32 depth_registers[8];
     u8 depth_known;
     NvnRawVertexState vertex;
@@ -638,13 +640,37 @@ static int origin_entry_matches_list(const NvnDrawCommand* draw, u64 cpu, u64 by
            cpu < draw->source_command_high && bytes <= draw->source_command_high - cpu;
 }
 
+static int copy_gpu_pages(u64 address, void* destination, u64 size) {
+    for (u64 copied = 0; copied < size;) {
+        u64 page = address + copied, backing = gmmu_translate(page);
+        if (!backing) return 0;
+        u64 part = 0x1000 - (page & 0xfff);
+        if (part > size - copied) part = size - copied;
+        memcpy((u8*)destination + copied, GP(backing), (size_t)part);
+        copied += part;
+    }
+    return 1;
+}
+
 static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* range,
                                    u32 channel, u64 va, u64 cpu, u32 offset, u32 record_value,
                                    const u32* data, u32 words, u32 macro12_count, u32 macro38_count,
                                    const NvnOriginStream* stream) {
     const char* enabled = getenv("SNX_NVN_CONTROL_PACKETS");
     if (!enabled || strcmp(enabled, "1")) return;
-    u64 size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32);
+    NvnControlMacro38Draw draw;
+    u32 index_bytes = 0;
+    if (macro38_count == 1 && data && nvn_control_macro38_draw(data, words, &draw)) {
+        u32 element_size = draw.index_type == 0 ? 1 : draw.index_type == 1 ? 2 : 4;
+        if (draw.count <= (512u << 10) / element_size &&
+            draw.index_address <= UINT64_MAX - (u64)draw.count * element_size)
+            index_bytes = draw.count * element_size;
+    }
+    u64 size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32) + index_bytes;
+    if (size > (1u << 20)) {
+        index_bytes = 0;
+        size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32);
+    }
     if (!data || !words || size > (1u << 20) ||
         size > (8u << 20) - queue->control_packet_bytes ||
         size > (32u << 20) - control_packet_snapshot_bytes) {
@@ -667,6 +693,11 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
     memcpy(packet->depth_registers, stream->depth_registers, sizeof packet->depth_registers);
     if (macro38_count) packet->vertex = stream->vertex;
     memcpy(packet->words, data, (size_t)words * sizeof(u32));
+    if (index_bytes) {
+        packet->index_snapshot_valid = copy_gpu_pages(draw.index_address,
+            (u8*)packet->words + (u64)words * sizeof(u32), index_bytes);
+        packet->index_snapshot_size = packet->index_snapshot_valid ? index_bytes : 0;
+    }
     if (queue->control_packets_tail) queue->control_packets_tail->next = packet;
     else queue->control_packets = packet;
     queue->control_packets_tail = packet;
@@ -3262,6 +3293,8 @@ static void execute_nvn_batch(void* arg) {
         u32 ordered = 0, macro12 = 0, macro38 = 0, decoded_draws = 0, depth_state_known = 0, depth_writers = 0;
         u32 decoded_program_binds = 0, draws_with_program_pair = 0;
         u32 vertex_attr0_seen = 0, vertex_stream0_seen = 0;
+        u32 index_snapshots = 0;
+        u64 index_snapshot_bytes = 0;
         NvnProgramCursor cursors[16] = {0};
         u32 first_depth_writers = 0;
         u64 decoded_indices = 0;
@@ -3316,6 +3349,10 @@ static void execute_nvn_batch(void* arg) {
                 nvn_control_macro38_draw(packet->words, packet->word_count, &decoded)) {
                 decoded_draws++;
                 decoded_indices += decoded.count;
+                if (packet->index_snapshot_valid) {
+                    index_snapshots++;
+                    index_snapshot_bytes += packet->index_snapshot_size;
+                }
                 draws_with_program_pair += cursor && cursor->vertex_bound && cursor->fragment_bound;
                 vertex_attr0_seen += !!(packet->vertex.attrib_written & 1);
                 if ((packet->vertex.stream_written & 6) == 6 &&
@@ -3359,11 +3396,12 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u attr0=%u stream0=%u indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u attr0=%u stream0=%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
             batch->control_packet_count, ordered, macro12,
             (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
             macro38, decoded_draws, draws_with_program_pair,
             vertex_attr0_seen, vertex_stream0_seen,
+            index_snapshots, (unsigned long long)index_snapshot_bytes,
             (unsigned long long)decoded_indices, depth_state_known, depth_writers,
             (unsigned long long)first_depth_address, first_depth_width, first_depth_height,
             first_depth_writers,
