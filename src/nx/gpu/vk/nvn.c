@@ -1852,7 +1852,9 @@ static VkImageView raw_control_sample_view(const u32 tic[8], u64 address, u32 wi
             }
         if (!complete) {
             const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
-            if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address))
+            const char* cube_trace = getenv("SNX_NVN_CONTROL_TRACE_CUBE");
+            if ((trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address)) ||
+                (cube_trace && !strcmp(cube_trace, "1") && type == VK_IMAGE_VIEW_TYPE_CUBE))
                 LOG_LIMIT(1024, "nvn-control-sampled-coverage: address=%llx image=%u format=%x levels=%u layers=%u color=%llx/%llx depth=%llx/%llx seed=%llx/%llx written=%d\n",
                           (unsigned long long)address, i, image->format, image->levels,
                           image->layers, (unsigned long long)image->color_layers[0],
@@ -1878,7 +1880,9 @@ static VkImageView raw_control_sample_view(const u32 tic[8], u64 address, u32 wi
         return view;
     }
     const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
-    if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address))
+    const char* cube_trace = getenv("SNX_NVN_CONTROL_TRACE_CUBE");
+    if ((trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address)) ||
+        (cube_trace && !strcmp(cube_trace, "1") && type == VK_IMAGE_VIEW_TYPE_CUBE))
         LOG_LIMIT(1024, "nvn-control-sampled-image: address=%llx size=%ux%ux%u levels=%u type=%u format=%u candidates=%u/%u/%u\n",
                   (unsigned long long)address, width, height, layers, levels, type, format,
                   address_matches, shape_matches, covered_matches);
@@ -2097,8 +2101,9 @@ static int raw_depth_descriptors(const NvnControlShaderProbe* probe, VkSh* shade
                     view = vk_tex_bind_view(sampled, vk_tex_view_type(texture), descriptor->tic, num);
             }
             if (!view) {
-                LOG_LIMIT(8, "nvn-control-descriptor-texture-source: stage=%u index=%d address=%llx\n",
-                          stage, i, (unsigned long long)sampled_address);
+                LOG_LIMIT(8, "nvn-control-descriptor-texture-source: stage=%u index=%d address=%llx size=%ux%ux%u levels=%u type=%u format=%u\n",
+                          stage, i, (unsigned long long)sampled_address,
+                          width, height, layers, levels, type, format);
                 return 0;
             }
             VkSampler sampler = vk_tex_bind_sampler(descriptor->tsc, texture, num);
@@ -3455,6 +3460,34 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                          (g_vk.feat.depthBiasClamp || !command->polygon_offset[2])));
     int has_color = !!(command->color_target_mask & 1);
     int depth_only = !command->color_target_mask && command->depth_target_bound;
+    const char* trace_draw_size = getenv("SNX_NVN_TRACE_DRAW_SIZE");
+    if (trace_draw_size && has_color && command->color_target[0].width ==
+            (u32)strtoul(trace_draw_size, NULL, 0) &&
+        command->color_target[0].height == command->color_target[0].width &&
+        command->color_target[0].target == 8)
+        LOG_LIMIT(32, "nvn-shadow-cube-candidate: seq=%llu pipe=%d shader=%d/%d uniform=%d clip=%u primitive=%u indexed=%d fill=%d target=%d colors=%x depth=%d state=%x vp=%x sc=%x blend=%x/%x nbind=%u nattr=%u\n",
+                  (unsigned long long)command->sequence, !!pipeline, !!vertex, !!fragment,
+                  command->uniform_updates_complete, command->clip_enable_known,
+                  command->primitive, command->indexed, fill_polygon, command->target_complete,
+                  command->color_target_mask, command->depth_target_bound, command->color_state,
+                  command->viewport_known, command->scissor_known, key->blend[0].en,
+                  key->blend[0].mask, key->nbind, key->nattr);
+    if (trace_draw_size && has_color && command->color_target_mask == 0x3f &&
+        command->color_target[0].target == 8 && command->color_target[0].width == 16 &&
+        !command->color_target[0].view.base_level) {
+        const NvnTextureTarget* target = &command->color_target[0];
+        u32 nonzero = 0;
+        const u8* backing = target->storage_size <= (1u << 20)
+                                ? gmem_ptr_untracked(target->gpu_address, target->storage_size) : NULL;
+        if (backing)
+            for (u32 i = 0; i < target->storage_size; i++) nonzero += !!backing[i];
+        LOG_LIMIT(8, "nvn-shadow-cube-backing: seq=%llu address=%llx size=%u mapped=%d nonzero=%u fresh=%d unknown=%llu\n",
+                  (unsigned long long)command->sequence,
+                  (unsigned long long)target->gpu_address, target->storage_size,
+                  !!backing, nonzero, vk_rt_fresh_in(target->gpu_address,
+                      target->gpu_address + target->storage_size),
+                  (unsigned long long)command->last_unmodeled_write);
+    }
     if (!enabled || !pipeline || !vertex || !fragment || !command->uniform_updates_complete ||
         command->clip_enable_known != 1 ||
         (cbuf_mask & ~((1u << 18) - 1)) ||
@@ -4029,10 +4062,28 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     int cube_probe = has_color && cube_coverage && !strcmp(cube_coverage, "1") && !capture && !zero_seed &&
                      color->target == 8 && color_target->format == 0x3f &&
                      color->transfer_src && color_width <= 64 && color_height <= 64 &&
-                     !prior_covered && command->color_target_mask == 1 && !depth &&
+                     !prior_covered && (command->color_target_mask == 1 ||
+                                        command->color_target_mask == 0x3f) && !depth &&
                      !fragment->si.nimg && !vertex->si.gbuf_wmask && !fragment->si.gbuf_wmask &&
                      !key->blend[0].en && key->blend[0].mask == 15 &&
                      (fragment->si.sph[18] & 15) == 15;
+    u32 cube_probe_count = command->color_target_mask == 0x3f ? 6 : 1;
+    if (cube_probe && cube_probe_count == 6) {
+        u32 faces = 0;
+        for (u32 i = 0; i < 6; i++) {
+            const NvnTextureTarget* target = &command->color_target[i];
+            u32 layer = target->view.first_layer;
+            if (colors[i] != color || target->view.base_level != color_mip || layer >= 6 ||
+                (faces & (1u << layer)) || key->blend[i].en || key->blend[i].mask != 15 ||
+                ((fragment->si.sph[18] >> (i * 4)) & 15) != 15 ||
+                (color->color_layers[color_mip] & (1ull << layer))) {
+                cube_probe = 0;
+                break;
+            }
+            faces |= 1u << layer;
+        }
+        if (faces != 0x3f) cube_probe = 0;
+    }
     const char* full_probe_opt = getenv("SNX_NVN_SHADOW_FULL_PROBE");
     u32 full_probe_channels = color_target->format == 0x06 ? 1 :
                               color_target->format == 0x11 ? 3 : 15;
@@ -4120,10 +4171,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         }
     }
     if (cube_probe) {
-        /* A first draw may replace the complete face even when its guest backing is unknown.
-           If it leaves any RGB component untouched, this face stays untrusted. */
-        color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachments[0].clearValue.color = (VkClearColorValue){{0.5f, 0.5f, 0.5f, 1.0f}};
+        /* Certify each face independently after the draw replaces a known sentinel. */
+        for (u32 i = 0; i < cube_probe_count; i++) {
+            color_attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            color_attachments[i].clearValue.color = (VkClearColorValue){{0.5f, 0.5f, 0.5f, 1.0f}};
+        }
     }
     if (full_probe) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -4237,12 +4289,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                   (used_writable[i] ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT : 0);
     }
     vkCmdEndRendering(cb);
-    int cube_probe_full = 0;
+    u32 cube_probe_full_mask = 0;
     int full_probe_complete = 0;
     if (cube_probe || full_probe) {
         u64 bytes = (u64)color_width * color_height * color_format.bpp;
         VkBuffer readback;
-        u8* pixels = vk_readback_buffer(bytes, &readback);
+        u8* pixels = vk_readback_buffer(bytes * (cube_probe ? cube_probe_count : 1), &readback);
         if (pixels) {
             vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT,
                        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4251,54 +4303,62 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             color->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
             color->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
             color->access = VK_ACCESS_2_TRANSFER_READ_BIT;
-            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, color_mip, color_layer, 1},
-                                      .imageExtent = {color_width, color_height, 1}};
-            vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
+            u32 probe_count = cube_probe ? cube_probe_count : 1;
+            for (u32 probe_index = 0; probe_index < probe_count; probe_index++) {
+                u32 layer = cube_probe ? command->color_target[probe_index].view.first_layer : color_layer;
+                VkBufferImageCopy copy = {.bufferOffset = bytes * probe_index,
+                                          .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, color_mip, layer, 1},
+                                          .imageExtent = {color_width, color_height, 1}};
+                vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
+            }
             vk_finish();
             vk_readback_ready();
-            int complete = 1;
-            if (color_target->format == 0x06) {
-                const u16 sentinel = 0x6666;
-                for (u64 i = 0; i < bytes && complete; i += sizeof sentinel)
-                    if (!memcmp(pixels + i, &sentinel, sizeof sentinel)) complete = 0;
-            } else if (color_target->format == 0x25) {
-                const u8 sentinel[4] = {51, 102, 153, 204};
-                for (u64 i = 0; i < bytes && complete; i += 4)
-                    for (u32 component = 0; component < 4; component++)
-                        if (pixels[i + component] == sentinel[component]) {
+            for (u32 probe_index = 0; probe_index < probe_count; probe_index++) {
+                const u8* probe_pixels = pixels + bytes * probe_index;
+                int complete = 1;
+                if (color_target->format == 0x06) {
+                    const u16 sentinel = 0x6666;
+                    for (u64 i = 0; i < bytes && complete; i += sizeof sentinel)
+                        if (!memcmp(probe_pixels + i, &sentinel, sizeof sentinel)) complete = 0;
+                } else if (color_target->format == 0x25) {
+                    const u8 sentinel[4] = {51, 102, 153, 204};
+                    for (u64 i = 0; i < bytes && complete; i += 4)
+                        for (u32 component = 0; component < 4; component++)
+                            if (probe_pixels[i + component] == sentinel[component]) {
+                                complete = 0;
+                                break;
+                            }
+                } else if (color_target->format == 0x11 || color_target->format == 0x29) {
+                    const u8 sentinel[8] = {0x55, 0xb5, 0x55, 0xb9, 0x38, 0xba, 0x1c, 0xb3};
+                    u32 components = color_target->format == 0x11 ? 2 : 4;
+                    for (u64 i = 0; i < bytes && complete; i += color_format.bpp)
+                        for (u32 component = 0; component < components; component++)
+                            if (!memcmp(probe_pixels + i + component * 2, sentinel + component * 2, 2)) {
+                                complete = 0;
+                                break;
+                            }
+                } else {
+                    for (u64 i = 0; i < bytes; i += sizeof(u32)) {
+                        u32 packed;
+                        memcpy(&packed, probe_pixels + i, sizeof packed);
+                        u32 changed = packed ^ 0x701c0380u;
+                        if (!(changed & 0x7ffu) || !(changed & 0x3ff800u) || !(changed & 0xffc00000u)) {
                             complete = 0;
                             break;
                         }
-            } else if (color_target->format == 0x11 || color_target->format == 0x29) {
-                const u8 sentinel[8] = {0x55, 0xb5, 0x55, 0xb9, 0x38, 0xba, 0x1c, 0xb3};
-                u32 components = color_target->format == 0x11 ? 2 : 4;
-                for (u64 i = 0; i < bytes && complete; i += color_format.bpp)
-                    for (u32 component = 0; component < components; component++)
-                        if (!memcmp(pixels + i + component * 2, sentinel + component * 2, 2)) {
-                            complete = 0;
-                            break;
-                        }
-            } else {
-                for (u64 i = 0; i < bytes; i += sizeof(u32)) {
-                    u32 packed;
-                    memcpy(&packed, pixels + i, sizeof packed);
-                    u32 changed = packed ^ 0x701c0380u;
-                    if (!(changed & 0x7ffu) || !(changed & 0x3ff800u) || !(changed & 0xffc00000u)) {
-                        complete = 0;
-                        break;
                     }
                 }
-            }
-            if (full_probe) {
-                full_probe_complete = complete;
-                LOG_LIMIT(24, "nvn-shadow-full-probe: seq=%llu mip=%u complete=%d size=%ux%u format=%x\n",
-                          (unsigned long long)command->sequence, color_mip, complete,
-                          color_width, color_height, color_target->format);
-            } else {
-                cube_probe_full = complete;
-                LOG_LIMIT(24, "nvn-shadow-cube-coverage: seq=%llu mip=%u face=%u complete=%d size=%ux%u\n",
-                          (unsigned long long)command->sequence, color_mip, color_layer,
-                          complete, color_width, color_height);
+                if (full_probe) {
+                    full_probe_complete = complete;
+                    LOG_LIMIT(24, "nvn-shadow-full-probe: seq=%llu mip=%u complete=%d size=%ux%u format=%x\n",
+                              (unsigned long long)command->sequence, color_mip, complete, color_width, color_height,
+                              color_target->format);
+                } else {
+                    if (complete) cube_probe_full_mask |= 1u << probe_index;
+                    LOG_LIMIT(24, "nvn-shadow-cube-coverage: seq=%llu mip=%u face=%u complete=%d size=%ux%u\n",
+                              (unsigned long long)command->sequence, color_mip,
+                              command->color_target[probe_index].view.first_layer, complete, color_width, color_height);
+                }
             }
         }
     }
@@ -4395,8 +4455,10 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         attachment->guest_seed_layers[mip] &= ~(1ull << layer);
         int covered = (attachment->color_layers[mip] & (1ull << layer)) &&
                       attachment->subresource_sequence[mip][layer] > effective_unknown;
-        if (i == 0) covered = zero_seed || cube_probe_full || full_probe_complete ||
+        if (i == 0) covered = zero_seed || !!(cube_probe_full_mask & 1) || full_probe_complete ||
                               (capture ? capture_full : prior_covered);
+        else if (cube_probe && i < cube_probe_count)
+            covered = !!(cube_probe_full_mask & (1u << i));
         if (covered) {
             attachment->color_layers[mip] |= 1ull << layer;
             attachment->subresource_sequence[mip][layer] = command->sequence;

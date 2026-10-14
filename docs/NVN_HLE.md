@@ -1884,9 +1884,18 @@ the first-pass six-face result does not carry over automatically.
 On later passes, a 256×256 NVN shadow draw feeds a sampled control texture.
 The normal shadow path cannot certify that producer's whole image; its
 opt-in full-surface sentinel probe does certify it on TotK. Once enabled,
-the next rejected source is a cubemap whose mip/layer coverage is incomplete.
-Those producer and clear operations must be modeled in GPU order before
-color and repeated-frame parity are possible.
+the next rejected source is a 16×16, six-face, two-mip R11G11B10F cubemap.
+TotK renders its six faces as six color attachments in one draw. With
+`SNX_NVN_SHADOW_CUBE_COVERAGE=1`, HLE now clears and checks a sentinel on
+each attachment separately. In the observed first cubemap, the first draw
+fully replaces only two of six base faces; its six 8×8 mip-1 faces are fully
+replaced. Later cubemaps fully replace every face and mip. The first cube's
+four partial base faces still require a verified initial value. At the late
+semantic replay point, the guest backing reads zero but Maxwell already
+owns fresh render-target bytes there, so that zero cannot seed HLE. A
+pre-submit probe certifies zero before Maxwell writes, but replaying the draw
+at that point lacks the GPU clip state. Seed certification must be retained
+across those two points before this dependency can be marked covered.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

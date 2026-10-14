@@ -3458,6 +3458,8 @@ typedef struct NvnGpuBatch {
     NvnControlPacket* executed_cursor;
     u8 executed_started;
     u8 executed_seed_valid, executed_seed_zero;
+    u64 control_face;
+    u32 control_face_draws;
 } NvnGpuBatch;
 
 static _Thread_local NvnControlSubmit* executing_control_submit;
@@ -3911,6 +3913,34 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
+        if (batch->control_face) {
+            first_depth_address = 0;
+            first_depth_width = first_depth_height = first_depth_writers = 0;
+            for (u32 i = 0; i < pipeline_candidate_count; i++) {
+                const NvnControlPacket* packet = pipeline_candidates[i].packet;
+                if (!packet->register_snapshot_valid || packet->depth_known != 0xff ||
+                    !packet->depth_registers[5] || !packet->depth_registers[7]) continue;
+                const u8* registers = (const u8*)packet->words +
+                    (u64)packet->word_count * sizeof(u32) +
+                    packet->index_snapshot_reserved + packet->texture_snapshot_reserved;
+                u32 control, color[2];
+                memcpy(&control, registers + 0x487 * sizeof(u32), sizeof control);
+                u32 slot = (control >> 4) & 7;
+                memcpy(color, registers + (0x200 + slot * 0x10) * sizeof(u32), sizeof color);
+                if ((control & 15) != 1 || (((u64)color[0] << 32) | color[1]) != batch->control_face)
+                    continue;
+                u64 depth_address = ((u64)packet->depth_registers[0] << 32) |
+                                    packet->depth_registers[1];
+                if (!first_depth_address) {
+                    first_depth_address = depth_address;
+                    first_depth_width = packet->depth_registers[2];
+                    first_depth_height = packet->depth_registers[3];
+                }
+                first_depth_writers += depth_address == first_depth_address &&
+                    packet->depth_registers[2] == first_depth_width &&
+                    packet->depth_registers[3] == first_depth_height;
+            }
+        }
         NvnTextureTarget raw_depth_target = {0};
         u32 raw_depth_matches = 0;
         int raw_depth_resolved = first_depth_address &&
@@ -3946,12 +3976,13 @@ static void execute_nvn_batch(void* arg) {
                 sequence_batch_limit = (u32)requested;
         }
         int sequence_batch = sequence_opt && !strcmp(sequence_opt, "1") &&
-                             (pipeline_candidate_count >= 100 ||
+                             ((batch->control_face && batch->control_face_draws >= 10) ||
+                              pipeline_candidate_count >= 100 ||
                               (entry_replay_opt && !strcmp(entry_replay_opt, "1") &&
                                pipeline_candidate_count >= 10 && first_depth_width == 64 &&
                                first_depth_height == 64)) &&
                              sequence_batches < sequence_batch_limit;
-        u32 sequence_limit = pipeline_candidate_count;
+        u32 sequence_limit = batch->control_face ? batch->control_face_draws : pipeline_candidate_count;
         const char* sequence_limit_opt = getenv("SNX_NVN_CONTROL_DRAW_SEQUENCE_LIMIT");
         if (sequence_batch && sequence_limit_opt) {
             unsigned long requested = strtoul(sequence_limit_opt, NULL, 0);
@@ -3963,6 +3994,7 @@ static void execute_nvn_batch(void* arg) {
             post_semantic_target = raw_depth_target;
             post_semantic_probe = 1;
         }
+        u32 face_seen = 0;
         if (raw_depth_prepared && ((pipeline_opt && !strcmp(pipeline_opt, "1")) || sequence_batch) &&
             g_renderer->nvn_control_pipeline_probe)
             for (u32 i = 0; i < pipeline_candidate_count; i++) {
@@ -3999,6 +4031,9 @@ static void execute_nvn_batch(void* arg) {
                               (unsigned long long)color_address, color[2], color[3],
                               color[4], color[5], control, color_matches);
                 raw_color_draws_resolved += color_resolved;
+                int face_candidate = !batch->control_face || color_address == batch->control_face;
+                if (sequence_batch && !face_candidate) continue;
+                if (sequence_batch) face_seen++;
                 if (color_resolved)
                     raw_pipeline_ready += g_renderer->nvn_control_pipeline_probe(
                         &candidate->probe, &draw_color_target, &raw_depth_target,
@@ -4006,13 +4041,13 @@ static void execute_nvn_batch(void* arg) {
                 static u32 raw_draw_probe_attempts;
                 int single_draw = !sequence_batch && i == 0 && raw_draw_probe_attempts < 8 &&
                                   draw_opt && !strcmp(draw_opt, "1");
-                if (color_resolved && (single_draw || (sequence_batch && i < sequence_limit)) &&
+                if (color_resolved && (single_draw || (sequence_batch && face_seen <= sequence_limit)) &&
                     g_renderer->nvn_control_draw_probe) {
                     if (single_draw) raw_draw_probe_attempts++;
                     u32 experiment_flags = 0;
                     if (sequence_batch) {
                         experiment_flags = 1;
-                        if (i + 1 == sequence_limit) {
+                        if (face_seen == sequence_limit) {
                             u32 same_draws = 0;
                             for (u32 earlier = 0; earlier < i; earlier++)
                                 if (pipeline_candidates[earlier].index_count == candidate->index_count &&
@@ -4150,9 +4185,18 @@ static void execute_nvn_batch(void* arg) {
                 if ((command->color_target_mask & (1u << target)) &&
                     command->color_target[target].width == side &&
                     command->color_target[target].height == side)
-                    LOG_LIMIT(128, "nvn-draw-size: sequence=%llu target=%llx count=%u result=%x source-list=%llx\n",
+                    LOG_LIMIT(128, "nvn-draw-size: sequence=%llu slot=%u target=%llx format=%x storage=%x type=%u view=%x/%u/%u/%u/%u count=%u result=%x source-list=%llx\n",
                               (unsigned long long)command->sequence,
+                              target,
                               (unsigned long long)command->color_target[target].gpu_address,
+                              command->color_target[target].format,
+                              command->color_target[target].storage_format,
+                              command->color_target[target].target,
+                              command->color_target[target].view.flags,
+                              command->color_target[target].view.base_level,
+                              command->color_target[target].view.level_count,
+                              command->color_target[target].view.first_layer,
+                              command->color_target[target].view.layer_count,
                               command->count, result,
                               (unsigned long long)command->source_list);
         }
@@ -4360,6 +4404,8 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
                                     early->control_packets = remaining;
                                     early->control_packet_count = prefix_count;
                                     early->gpu_macro12_packets = prefix_macro12;
+                                    early->control_face = first_color;
+                                    early->control_face_draws = draw_count;
                                     memcpy(early->initial_cursors, segment_cursors,
                                            sizeof segment_cursors);
                                     previous->next = NULL;
@@ -4431,6 +4477,8 @@ void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
                     early->control_packets = remaining;
                     early->control_packet_count = remaining_count;
                     early->gpu_macro12_packets = remaining_macro12;
+                    early->control_face = first_color;
+                    early->control_face_draws = draw_count;
                     memcpy(early->initial_cursors, segment_cursors,
                            sizeof segment_cursors);
                     result->checkpoint[result->count++] = (NvnControlCheckpoint){
