@@ -319,8 +319,10 @@ Pitfalls:
 - Two uncovered images both read back as zero and compare equal. Check coverage before calling a comparison a match.
 - A probe that submits or finishes the queue changes what it measures. A readback after a draw once masked a missing
   descriptor, and a queue finish advanced the frame so that draws were skipped and the result looked better.
-- Bounded logs answer "maybe" when they wrap. The Maxwell write log (`maxwell3d.c`, 1,024 entries) answers "assume
-  dirty" for ranges older than it holds, which costs a content check. The probes treated that as a real write.
+- Bounded logs answer "maybe" when they wrap. The Maxwell write log (`maxwell3d.c`, 1,024 entries) answered "assume
+  dirty" for any range over 1 MiB once constant buffer updates wrapped it, every frame, and the probes treated that
+  as a real write. Writes are kept per page now (`gpu/maxwell/write_pages.c`), but a write of the same data still
+  counts as a write.
 - A zero texture handle (Scarlet binds many) may be an unused slot or a shader-visible null descriptor. Decide from
   the shader's texture use, not from the bind.
 - Run counts vary with timing even at the same frame limit. Treat them as samples, not coverage.

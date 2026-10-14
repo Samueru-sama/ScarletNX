@@ -456,7 +456,7 @@ void vk_rt_note_read(Surf* s) {
     static int said;
     if (said || s->gw == gpu_mem_generation()) return;
     if (!gpu_mem_dirty_since(s->gw, s->gva, rt_bytes(s))) {
-        s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check walks less of the write log */
+        s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check asks only about later writes */
         return;
     }
     said = 1;

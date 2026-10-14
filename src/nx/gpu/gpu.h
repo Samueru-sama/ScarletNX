@@ -110,6 +110,6 @@ void r3d_const_upload(GpuChannel* ch, u32 v, int last);
 void r3d_const_flush(GpuChannel* ch); /* writes the constant buffer data r3d_const_upload is holding */
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
              double sdy);
-u64 gpu_mem_generation(void); /* the last fully published GPU-side write-log generation */
+u64 gpu_mem_generation(void); /* the last fully published GPU-side write generation */
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz);
 #endif

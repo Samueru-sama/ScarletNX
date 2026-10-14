@@ -72,7 +72,7 @@ void (*g_gpu_mapping_end)(void);
 void gpu_signal_point(void) {
     if (g_gpu_before_write) g_gpu_before_write(0, 0);
 }
-/* gmem_write without the write log entry, for a caller that records the whole range once */
+/* gmem_write without recording the write, for a caller that records the whole range once */
 static void gmem_write_unlogged(u64 gva, const void* src, u64 size) {
     if (g_gpu_before_write && size) g_gpu_before_write(gva, size);
     const u8* s = src;

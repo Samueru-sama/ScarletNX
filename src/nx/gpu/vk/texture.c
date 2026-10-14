@@ -577,7 +577,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
         }
         /* the GPU front end wrote its memory (DMA, I2M, 2D, compute results): checked now, whatever the schedule
            below says, as writes within a frame have to show in the same frame. Not written: it still matches as of
-           now, which keeps the next check's walk of the write log short */
+           now, so the next check asks only about later writes */
         int fresh = 0;
         if (gpu_mem_dirty_since(t->gw, gva, t->size)) {
             fresh = 1;

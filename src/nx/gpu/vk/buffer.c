@@ -18,7 +18,7 @@
 typedef struct Vb {
     u64 start, len, hash, shash;
     u32 epoch, strict_epoch, chk_epoch, schk, stable, used;
-    u64 gw;    /* GPU-side write log position at the last check */
+    u64 gw;    /* GPU-side write generation at the last check */
     u64 frame; /* the staging frame buf/off point into, when not own */
     int own;   /* buf is this entry's own buffer */
     u32 wseen; /* write-tracking clock when it last matched memory */

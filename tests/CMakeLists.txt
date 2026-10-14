@@ -277,7 +277,7 @@ if(UNIX)
 endif()
 
 add_executable(snx-test-render-enable render_enable.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
 snx_test_target(snx-test-render-enable 23)
 add_test(NAME render_enable COMMAND snx-test-render-enable)
 
@@ -286,12 +286,12 @@ snx_test_target(snx-test-clear-flags 23)
 add_test(NAME clear_flags COMMAND snx-test-clear-flags)
 
 add_executable(snx-test-instance-array instance_array.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
 snx_test_target(snx-test-instance-array 23)
 add_test(NAME instance_array COMMAND snx-test-instance-array)
 
 add_executable(snx-test-draw-texture draw_texture.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/engines.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/maxwell3d.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
 snx_test_target(snx-test-draw-texture 23)
 add_test(NAME draw_texture COMMAND snx-test-draw-texture)
 
@@ -302,6 +302,10 @@ add_test(NAME etc2_decode COMMAND snx-test-etc2)
 add_executable(snx-test-depth-texel depth_texel.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/depth.c")
 snx_test_target(snx-test-depth-texel 23)
 add_test(NAME depth_texel COMMAND snx-test-depth-texel)
+
+add_executable(snx-test-write-pages write_pages.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/maxwell/write_pages.c")
+snx_test_target(snx-test-write-pages 23)
+add_test(NAME write_pages COMMAND snx-test-write-pages)
 
 if(UNIX)
     add_executable(snx-test-kernel-mutex kernel_mutex.c)
@@ -340,7 +344,7 @@ endif()
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode depth_texel nvn_command_gap nvn_control)
+    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode depth_texel write_pages nvn_command_gap nvn_control)
     if(TEST native_recompiler)
         list(APPEND snx_sanitized_tests native_recompiler)
     endif()

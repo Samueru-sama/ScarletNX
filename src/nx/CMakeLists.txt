@@ -39,7 +39,7 @@ snx_component(video gpu/video/host1x.c gpu/video/nvdec.c gpu/video/vic.c)
 target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec)
-snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/maxwell3d.c gpu/renderer.c
+snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/maxwell3d.c gpu/maxwell/write_pages.c gpu/renderer.c
               gpu/nvn_trace.c)
 
 set(platform runtime/platform/plat.c runtime/platform/unattended.c runtime/platform/backend/sdl3.c)
