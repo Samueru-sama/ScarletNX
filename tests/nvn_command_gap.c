@@ -63,6 +63,12 @@ int main(void) {
     const u32 counter_packet[] = {0x200406c0, 6, 0x22ad0000, 1, 2};
     const u32 puller_acquire[] = {0x20040004, 6, 0x22ad0000, 1, 1};
     const u32 puller_release[] = {0x20040004, 6, 0x22ad0000, 1, 2};
+    const u32 puller_release_flush[] = {0x20040004, 5, 0x31ca660, 0, 0x01000002,
+                                        0x800003e0};
+    const u32 upload_nop[] = {0x200408e1, 6, 0x22ad0000, 0, 0x12345678,
+                              0x8000068b};
+    const u32 nonzero_flush[] = {0x800103e0};
+    const u32 nonzero_nop[] = {0x8001068b};
     const u32 other_subchannel[] = {0x60012904, 0x31};
     const u32 upload_before_draw[] = {0x200408e1, 6, 0x22ad0000, 0, 0x12345678,
                                       0xa0050e38, 4, 6, 0x22ad0d90, 1, 1656};
@@ -76,6 +82,14 @@ int main(void) {
     assert(nvn_command_gap_staged_writes(upload_packet, 5, 0));
     assert(nvn_command_gap_staged_writes(report_packet, 5, 0));
     assert(nvn_command_gap_staged_writes(puller_release, 5, 0));
+    assert(nvn_command_gap_staged_writes(puller_release_flush, 6, 0));
+    assert(nvn_command_gap_staged_writes(upload_nop, 6, 0));
+    assert(nvn_command_gap_no_writes(puller_release_flush + 5, 1));
+    assert(nvn_command_gap_no_writes(upload_nop + 5, 1));
+    assert(!nvn_command_gap_no_writes(nonzero_flush, 1));
+    assert(!nvn_command_gap_no_writes(nonzero_nop, 1));
+    assert(!nvn_command_gap_staged_writes(nonzero_flush, 1, 0));
+    assert(!nvn_command_gap_staged_writes(nonzero_nop, 1, 0));
     assert(nvn_command_gap_staged_writes(upload_before_draw, 11, 1));
     assert(!nvn_command_gap_staged_writes(other_subchannel_before_draw, 8, 1));
     assert(!nvn_command_gap_staged_writes(other_subchannel, 2, 0));

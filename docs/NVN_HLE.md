@@ -1498,8 +1498,13 @@ modeled when that draw is staged separately. It also accepts bounded
 constant-buffer uploads, puller releases, and query writes when the existing
 parser resolves their addresses and stages every write in order. Other
 subchannels, unrecognized methods, incomplete addresses, and malformed
-packets still fail this proof. TotK's observed list has other unsafe gaps, so
-its boundary marker remains.
+packets still fail this proof. The observed zero-valued tiled-cache flush and
+PIPE_NOP methods are now classified as no-content operations; nonzero values
+remain unclassified. TotK's 3,443-operation opaque list now passes the complete
+command-memory proof, with its prefix, gaps, and tail all known. The first
+256×256 `RGBA16F` target still matches at all 65,536 pixels; this list fix has
+not yet made the later 320×180 draw eligible, so other write markers or missing
+resource coverage still need investigation.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
