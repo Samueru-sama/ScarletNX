@@ -1744,6 +1744,12 @@ depth draws are present and decoded, with zero dropped packets. Every one of
 those 65 draws has preceding program binds in this captured batch. Program
 binding, vertex input, uniforms, and MME state still need to become executable
 direct draw commands before this can replace the Maxwell path.
+The packet stream also snapshots direct writes to Maxwell's 32 vertex
+attribute descriptors, 16 vertex streams, stream limits, and instance flags
+at each decoded raw draw. In the same TotK batch, all 65 depth draws have an
+observed attribute 0 and a valid stream 0 address/limit. This does not yet
+prove the other attributes read by each vertex shader or the constant-buffer
+bindings needed to execute the draw.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

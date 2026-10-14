@@ -204,6 +204,15 @@ typedef struct NvnControlRange {
     u8 seen_offset;
     u64 words[];
 } NvnControlRange;
+typedef struct {
+    u32 attrib[32];
+    u32 stream[16][4];
+    u32 limit[16][2];
+    u32 instanced[16];
+    u32 attrib_written, limit_written;
+    u64 stream_written;
+    u16 instanced_written;
+} NvnRawVertexState;
 /* Submission order, rather than control-record order, defines execution. A record may be
    submitted repeatedly or after an earlier record in the same list. Keep a bounded copy of
    each control-owned entry while the guest backing is still valid. */
@@ -213,6 +222,7 @@ typedef struct NvnControlPacket {
     u32 channel, control_offset, record_value, word_count, macro12_count, macro38_count;
     u32 depth_registers[8];
     u8 depth_known;
+    NvnRawVertexState vertex;
     u32 words[];
 } NvnControlPacket;
 typedef struct {
@@ -258,6 +268,7 @@ static ReplayQueue replay_queues[REPLAY_QUEUE_SLOTS];
 static u64 control_snapshot_bytes;
 static u64 control_packet_snapshot_bytes;
 static int descriptor_replay;
+static int raw_vertex_capture;
 static int readable_range(u64 addr, u64 size);
 static void record_control_range(ReplayQueue* queue, const NvnOp* op, u64 list, u64 visit) {
     const char* coverage = getenv("SNX_NVN_CONTROL_COVERAGE");
@@ -446,7 +457,11 @@ static NvnList* list_slot(u64 key, int create) {
     return &lists[home];
 }
 
-void nvn_record_enable_descriptor_replay(void) { descriptor_replay = 1; }
+void nvn_record_enable_descriptor_replay(void) {
+    descriptor_replay = 1;
+    const char* packets = getenv("SNX_NVN_CONTROL_PACKETS");
+    raw_vertex_capture = packets && !strcmp(packets, "1");
+}
 void nvn_record_enable_shader_transport(void) { shader_transport = 1; }
 void nvn_record_enable_clear_execute(void) { clear_execute = 1; }
 void nvn_record_enable_copy_execute(void) { copy_execute = 1; }
@@ -493,6 +508,7 @@ typedef struct {
     u8 clip_enable, clip_known;
     u32 depth_registers[8]; /* address hi/lo, width, height, format, enabled, test, write */
     u8 depth_known;
+    NvnRawVertexState vertex;
     u8 active, known;
 } NvnOriginStream;
 static NvnOriginStream origin_streams[128];
@@ -529,6 +545,9 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
     if (method == 0) {
         if (sub == 0 && stream->classes[sub] && stream->classes[sub] != (value & 0xffff)) {
             stream->depth_known = 0;
+            stream->vertex.attrib_written = stream->vertex.limit_written = 0;
+            stream->vertex.stream_written = 0;
+            stream->vertex.instanced_written = 0;
         }
         stream->classes[sub] = value & 0xffff;
     }
@@ -541,6 +560,26 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
                 stream->depth_known |= (u8)(1u << i);
                 break;
             }
+        if (raw_vertex_capture) {
+            NvnRawVertexState* vertex = &stream->vertex;
+            if (method >= 0x458 && method < 0x478) {
+                u32 index = method - 0x458;
+                vertex->attrib[index] = value;
+                vertex->attrib_written |= 1u << index;
+            } else if (method >= 0x700 && method < 0x740) {
+                u32 index = method - 0x700;
+                vertex->stream[index / 4][index % 4] = value;
+                vertex->stream_written |= 1ull << index;
+            } else if (method >= 0x7c0 && method < 0x7e0) {
+                u32 index = method - 0x7c0;
+                vertex->limit[index / 2][index % 2] = value;
+                vertex->limit_written |= 1u << index;
+            } else if (method >= 0x620 && method < 0x630) {
+                u32 index = method - 0x620;
+                vertex->instanced[index] = value;
+                vertex->instanced_written |= (u16)(1u << index);
+            }
+        }
     }
     if (method == 0x544 && (stream->classes[sub] == 0xb197 || (sub == 0 && !stream->classes[sub]))) {
         stream->clip_enable = value & 0xff;
@@ -587,6 +626,9 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
             stream->known = 0;
             stream->clip_known = 0;
             stream->depth_known = 0;
+            stream->vertex.attrib_written = stream->vertex.limit_written = 0;
+            stream->vertex.stream_written = 0;
+            stream->vertex.instanced_written = 0;
         }
     }
 }
@@ -623,6 +665,7 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
                                  .macro12_count = macro12_count, .macro38_count = macro38_count,
                                  .depth_known = stream->depth_known};
     memcpy(packet->depth_registers, stream->depth_registers, sizeof packet->depth_registers);
+    if (macro38_count) packet->vertex = stream->vertex;
     memcpy(packet->words, data, (size_t)words * sizeof(u32));
     if (queue->control_packets_tail) queue->control_packets_tail->next = packet;
     else queue->control_packets = packet;
@@ -700,6 +743,9 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             stream->known = 0;
             stream->clip_known = 0;
             stream->depth_known = 0;
+            stream->vertex.attrib_written = stream->vertex.limit_written = 0;
+            stream->vertex.stream_written = 0;
+            stream->vertex.instanced_written = 0;
         }
         if (queue) {
             int matched_control = 0;
@@ -3215,6 +3261,7 @@ static void execute_nvn_batch(void* arg) {
         u64 previous = 0;
         u32 ordered = 0, macro12 = 0, macro38 = 0, decoded_draws = 0, depth_state_known = 0, depth_writers = 0;
         u32 decoded_program_binds = 0, draws_with_program_pair = 0;
+        u32 vertex_attr0_seen = 0, vertex_stream0_seen = 0;
         NvnProgramCursor cursors[16] = {0};
         u32 first_depth_writers = 0;
         u64 decoded_indices = 0;
@@ -3270,6 +3317,15 @@ static void execute_nvn_batch(void* arg) {
                 decoded_draws++;
                 decoded_indices += decoded.count;
                 draws_with_program_pair += cursor && cursor->vertex_bound && cursor->fragment_bound;
+                vertex_attr0_seen += !!(packet->vertex.attrib_written & 1);
+                if ((packet->vertex.stream_written & 6) == 6 &&
+                    (packet->vertex.limit_written & 3) == 3) {
+                    u64 start = ((u64)packet->vertex.stream[0][1] << 32) |
+                                packet->vertex.stream[0][2];
+                    u64 end = ((u64)packet->vertex.limit[0][0] << 32) |
+                              packet->vertex.limit[0][1];
+                    vertex_stream0_seen += start && end >= start;
+                }
                 if (packet->depth_known == 0xff) {
                     depth_state_known++;
                     if (packet->depth_registers[5] && packet->depth_registers[7]) {
@@ -3303,10 +3359,11 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u attr0=%u stream0=%u indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
             batch->control_packet_count, ordered, macro12,
             (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
             macro38, decoded_draws, draws_with_program_pair,
+            vertex_attr0_seen, vertex_stream0_seen,
             (unsigned long long)decoded_indices, depth_state_known, depth_writers,
             (unsigned long long)first_depth_address, first_depth_width, first_depth_height,
             first_depth_writers,
