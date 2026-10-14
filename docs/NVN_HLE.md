@@ -1590,6 +1590,12 @@ or guest-texture-wait traces appeared through sequence 51,663. Cubemap pixel
 parity remains unproven. The face probe synchronously reads back each candidate
 and remains diagnostic until its cost is measured.
 
+Semantic texture lookup now checks cached image backing on the first use of
+each new batch. This retires a sampled shadow image if guest CPU or GPU writes
+changed its pool bytes, even when no new NVN attachment lookup occurred. The
+TotK cube chain remained sampleable without pending or guest-wait traces in a
+40-second headless run with this coherence check enabled.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

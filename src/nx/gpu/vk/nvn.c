@@ -1043,6 +1043,7 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
             !(levels == 1 && image->levels > 1
                   ? (alt ? image->base_view_alt : image->base_view)
                   : (alt ? image->sampled_view_alt : image->sampled_view))) continue;
+        shadow_check_backing(image);
         /* One native layer and one guest layer, with no mip or format reinterpretation. Revisit a guest-seeded
            slice on every lookup so the texture loader can observe subsequent guest writes. */
         if (sequence && levels == 1 && layers == 2 && image->levels == 1 && !alt &&
