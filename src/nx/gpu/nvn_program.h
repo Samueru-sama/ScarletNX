@@ -29,5 +29,7 @@ void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* cal
 /* 1 = live configured program, 0 = unknown/finalized, -1 = live but no successful shader setup. */
 int nvn_program_check(u64 program);
 int nvn_program_snapshot(u64 program, NvnProgramSnapshot* out);
+/* True only for a current compute blob with a fully bounded NVN storage write set. */
+int nvn_program_compute_write_slots(u64 code_address, u16* slots);
 void nvn_program_report(void);
 #endif

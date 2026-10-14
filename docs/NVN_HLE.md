@@ -1415,9 +1415,13 @@ still invalidate the counter.
 
 The same 320×180 producer image still differs at all 57,600 pixels. A later compute
 dispatch at operation 886 makes the released counter unknown again; later clears
-against the same target then execute conservatively. The next step is a trustworthy
-compute write-set proof, including shader writes and storage/image bindings, before
-retaining that counter across the dispatch. The native GPU's skipped clears are a
+against the same target then execute conservatively. Replay now caches bounded compute
+write sets from program setup, verifies that the code bytes have not changed, and
+invalidates only reports overlapping writable storage ranges. Missing bindings,
+images, untranslated operations, and shaders with an unresolved dynamic branch still
+fall back to invalidating all reports. This scopes other observed TotK dispatches but
+does not certify operation 886: its shader has a `BRX` at instruction 125 whose
+destinations depend on a runtime jump table. The native GPU's skipped clears remain a
 regression target, not a license to skip unknown conditions globally.
 
 The opt-in dispatch trace identifies operation 886's compute program as code blob
@@ -1425,9 +1429,12 @@ The opt-in dispatch trace identifies operation 886's compute program as code blo
 and bound), it has no bound images, and the QMD shader analysis observes one writable
 global buffer at `0x622db0000` (58,848 bytes). That range is separate from the
 conditional counter near `0x5031ca960`. Replay still invalidates the counter at
-this dispatch because the CPU-side condition decision cannot yet use the GPU-thread
-shader write-set analysis. A scoped dispatch rule must transport that analysis in
-queue order and fall back to invalidation if it is unavailable or incomplete.
+this dispatch because a translation without the branch table cannot prove every
+reachable write. `SNX_NVN_OPERATION_TRACE=1` with the target address filter shows five
+semantic draws and five enabled clears on the first producer visit; the last two
+clears run after the draws and wipe the direct target. The next proof needs to resolve
+the `BRX` jump table from the dispatch's captured constant-buffer data, or use a
+conservative whole-code write analysis that covers every possible destination.
 The scoped counter change preserved the sampled comparisons for Catherine
 (`0/921,600`), Scarlet (`0/518,400`), and Odyssey (`0/1,440,000`); Catherine and
 Odyssey require the opt-in zero-backing probe for these exact targets.

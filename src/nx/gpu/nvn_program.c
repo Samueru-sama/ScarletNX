@@ -5,6 +5,7 @@
 #include "gpu/gpu.h"
 #ifdef SNX_VULKAN
 #include "gpu/shader/shader.h"
+#include "gpu/shader/translator.h"
 #include "gpu/nvn_shader.h"
 #include "gpu/vk/spirv.h"
 #endif
@@ -32,7 +33,165 @@ static u64 shader_translate_ok, shader_translate_failed, shader_translate_unknow
 #ifdef SNX_VULKAN
 static PMutex translate_lock = PMUTEX_INIT;
 static u64 translated_codes[8192];
+typedef struct {
+    u64 address, hash;
+    u32 size;
+    u16 writes;
+    u8 state; /* 0 available, 1 queued, 2 certified */
+} ComputeWrites;
+#define COMPUTE_WRITES_SLOTS 4096
+static ComputeWrites compute_writes[COMPUTE_WRITES_SLOTS];
+static PMutex compute_writes_lock = PMUTEX_INIT;
 static void shader_translate_probe(void* ptr);
+
+static ComputeWrites* compute_writes_slot(u64 address, int create) {
+    u32 home = (u32)((address >> 4) * 2654435761u) & (COMPUTE_WRITES_SLOTS - 1);
+    for (u32 i = 0; i < COMPUTE_WRITES_SLOTS; i++) {
+        ComputeWrites* slot = &compute_writes[(home + i) & (COMPUTE_WRITES_SLOTS - 1)];
+        if (slot->address == address) return slot;
+        if (!slot->address) {
+            if (create) slot->address = address;
+            return create ? slot : NULL;
+        }
+    }
+    return NULL;
+}
+
+static u64 compute_writes_hash(const u8* code, u32 size) {
+    u64 hash = 1469598103934665603ull;
+    for (u32 i = 0; i < size; i++) hash = (hash ^ code[i]) * 1099511628211ull;
+    return hash;
+}
+
+/* Translate with the same 80-byte SPH prefix as the NVN QMD path. A BRX needs live CBUF
+   jump-table words, so program-setup analysis never certifies a shader containing one. */
+static void analyze_compute_writes(void* ptr) {
+    u64 address = *(u64*)ptr;
+    free(ptr);
+    u32 header[2] = {0};
+    gmem_read_code(address, header, sizeof header);
+    u32 size = header[1], length = 0;
+    u16 writes = 0;
+    u64 hash = 0;
+    int certified = 0;
+    int bounded = 0, mapped = 0, branch = -1, unsupported = -1, images = -1, buffers = -1;
+    const char* branch_name = "";
+    if (header[0] == 0x12345679 && size >= 0x80 && size <= NVN_SHADER_CODE_MAX &&
+        address <= UINT64_MAX - 0x100 - NVN_SHADER_CODE_MAX) {
+        u8* code = malloc(NVN_SHADER_CODE_MAX + 80);
+        if (code) {
+            memset(code, 0, 80);
+            gmem_read_code(address + 0x100, code + 80, NVN_SHADER_CODE_MAX);
+            bounded = mapped = !!gmem_ptr_untracked(address + 0x100, size);
+            int (*old)(u32, u32, u32*) = g_shader_cb_read;
+            g_shader_cb_read = NULL;
+            shader_hash(code, NVN_SHADER_CODE_MAX + 80, &length);
+            bounded &= length >= 80 && length <= size + 80;
+            for (u32 i = 11; bounded && i < length / 8; i++) {
+                if (!IDX_OK(i)) continue;
+                const Op* op = decode(((const u64*)code)[i]);
+                if (op && (op->id == O_BRX || op->id == O_CAL || op->id == O_JMP)) {
+                    bounded = 0;
+                    branch = (int)i;
+                    branch_name = op->name;
+                }
+            }
+            if (bounded) {
+                ShaderInfo info = {.cs_local = {1, 1, 1}};
+                char* glsl = shader_to_glsl(code, NVN_SHADER_CODE_MAX + 80, ST_CS, &info);
+                unsupported = info.unsupported;
+                images = info.nimg;
+                buffers = info.ngbuf;
+                if (glsl && !info.unsupported && !info.nimg && info.ngbuf <= 16) {
+                    certified = 1;
+                    for (u32 i = 0; i < (u32)info.ngbuf; i++) {
+                        if (!(info.gbuf_wmask & (1u << i))) continue;
+                        u32 offset = info.gbuf_cbuf_off[i];
+                        if (offset < 0x310 || offset >= 0x410 || ((offset - 0x310) & 15)) {
+                            certified = 0;
+                            break;
+                        }
+                        writes |= (u16)(1u << ((offset - 0x310) / 16));
+                    }
+                    if (certified) hash = compute_writes_hash(code + 80, size);
+                }
+                free(glsl);
+            }
+            g_shader_cb_read = old;
+            free(code);
+        }
+    }
+    const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
+    if (trace && !strcmp(trace, "1"))
+        LOG("nvn-compute-analysis: code=%llx magic=%08x size=%x length=%x mapped=%d bounded=%d branch=%d/%s unsupported=%d images=%d buffers=%d writes=%04x certified=%d\n",
+            (unsigned long long)address, header[0], size, length, mapped, bounded, branch, branch_name, unsupported, images, buffers,
+            writes, certified);
+    pm_lock(&compute_writes_lock);
+    ComputeWrites* slot = compute_writes_slot(address, 0);
+    if (slot && slot->state == 1) {
+        slot->hash = hash;
+        slot->size = size;
+        slot->writes = writes;
+        slot->state = certified ? 2 : 0;
+    }
+    pm_unlock(&compute_writes_lock);
+}
+
+static void queue_compute_writes(u64 address) {
+    if (!address || address > UINT64_MAX - 0x100 - NVN_SHADER_CODE_MAX) return;
+    const u8* header = gmem_ptr_untracked(address, 8);
+    u32 magic = 0, size = 0;
+    if (!header) return;
+    memcpy(&magic, header, sizeof magic);
+    memcpy(&size, header + 4, sizeof size);
+    if (magic != 0x12345679 || size < 0x80 || size > NVN_SHADER_CODE_MAX) return;
+    const u8* code = gmem_ptr_untracked(address + 0x100, size);
+    if (!code) return;
+    u64 hash = compute_writes_hash(code, size);
+    pm_lock(&compute_writes_lock);
+    ComputeWrites* slot = compute_writes_slot(address, 1);
+    int queued = slot &&
+                 (!slot->state || (slot->state == 2 && (slot->size != size || slot->hash != hash)));
+    if (queued) slot->state = 1;
+    pm_unlock(&compute_writes_lock);
+    if (!queued) return;
+    u64* owned = malloc(sizeof *owned);
+    if (!owned) {
+        pm_lock(&compute_writes_lock);
+        slot = compute_writes_slot(address, 0);
+        if (slot && slot->state == 1) slot->state = 0;
+        pm_unlock(&compute_writes_lock);
+        return;
+    }
+    *owned = address;
+    gpu_call(analyze_compute_writes, owned);
+}
+
+int nvn_program_compute_write_slots(u64 address, u16* slots) {
+    if (!address || !slots) return 0;
+    const u8* header = gmem_ptr_untracked(address, 8);
+    u32 magic = 0, size = 0;
+    if (!header) return 0;
+    memcpy(&magic, header, sizeof magic);
+    memcpy(&size, header + 4, sizeof size);
+    if (magic != 0x12345679 || size < 0x80 || size > NVN_SHADER_CODE_MAX ||
+        address > UINT64_MAX - 0x100 - size) return 0;
+    const u8* code = gmem_ptr_untracked(address + 0x100, size);
+    if (!code) return 0;
+    u64 hash = compute_writes_hash(code, size);
+    pm_lock(&compute_writes_lock);
+    ComputeWrites* slot = compute_writes_slot(address, 0);
+    int valid = slot && slot->state == 2 && slot->size == size && slot->hash == hash;
+    if (valid) *slots = slot->writes;
+    const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
+    if (trace && !strcmp(trace, "1"))
+        LOG("nvn-compute-writes: code=%llx size=%x state=%u analyzed-size=%x writes=%04x hash-match=%d valid=%d\n",
+            (unsigned long long)address, size, slot ? slot->state : 0,
+            slot ? slot->size : 0, slot ? slot->writes : 0,
+            slot && slot->hash == hash, valid);
+    pm_unlock(&compute_writes_lock);
+    return valid;
+}
 
 static int reserve_shader_slot(void) {
     u32 count = __atomic_load_n(&shader_translate_queued, __ATOMIC_RELAXED);
@@ -117,6 +276,11 @@ static void shader_translate_probe(void* ptr) {
 }
 #else
 void nvn_program_translate_async(u64 code_address) { (void)code_address; }
+int nvn_program_compute_write_slots(u64 address, u16* slots) {
+    (void)address;
+    (void)slots;
+    return 0;
+}
 #endif
 
 void nvn_program_enable_translation(void) { shader_translate_enabled = 1; }
@@ -178,6 +342,10 @@ void nvn_program_before(const CPU* c, const char* name, NvnProgramCall* call) {
 }
 
 void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* call) {
+#ifdef SNX_VULKAN
+    u64 analyze[NVN_PROGRAM_MAX_SHADERS] = {0};
+    u32 analyze_count = 0;
+#endif
     pm_lock(&lock);
     if (!strcmp(name, "nvnProgramInitialize")) {
         if (!c->x[0]) {
@@ -225,6 +393,10 @@ void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* cal
                 for (u32 i = 0; i < call->shader_count; i++) {
                     if (!call->refs[i].code_candidate) zero_code_addresses++;
                     if (!call->refs[i].control_candidate) zero_control_addresses++;
+#ifdef SNX_VULKAN
+                    if (getenv("SNX_NVN_SHADOW_DISPATCH") && analyze_count < NVN_PROGRAM_MAX_SHADERS)
+                        analyze[analyze_count++] = call->refs[i].code_candidate;
+#endif
                 }
             } else if (call->shader_count > NVN_PROGRAM_MAX_SHADERS) {
                 refs_oversized++;
@@ -235,6 +407,9 @@ void nvn_program_after(const CPU* c, const char* name, const NvnProgramCall* cal
         }
     }
     pm_unlock(&lock);
+#ifdef SNX_VULKAN
+    for (u32 i = 0; i < analyze_count; i++) queue_compute_writes(analyze[i]);
+#endif
 }
 
 int nvn_program_check(u64 program) {

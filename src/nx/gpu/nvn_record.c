@@ -709,6 +709,27 @@ static int replay_query_scope_draw(const NvnDrawCommand* draw, const ReplayState
     return 1;
 }
 
+static int replay_query_scope_dispatch(const ReplayState* state, ReplayQueue* queue) {
+    const NvnProgramSnapshot* program = &state->program[5].snapshot;
+    u16 writes = 0;
+    if (!(state->program_bound & (1u << 5)) || !program->generation || !program->refs_known ||
+        program->shader_count != 1 || state->image_bound[5] ||
+        state->storage_bound[5] != state->storage_known[5] ||
+        !nvn_program_compute_write_slots(program->refs[0].code_candidate, &writes) ||
+        (writes & ~state->storage_known[5])) return 0;
+    for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+        if (!(writes & (1u << slot))) continue;
+        const NvnBufferRange* range = &state->storage[5][slot].range;
+        if (!range->address || !range->size || range->size > (16u << 20)) return 0;
+    }
+    for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++)
+        if (writes & (1u << slot)) {
+            const NvnBufferRange* range = &state->storage[5][slot].range;
+            replay_query_forget_overlapping(queue, range->address, range->size);
+        }
+    return 1;
+}
+
 static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue, int require_real_reports) {
     if (state->render_condition_active == 1) return state->render_enabled;
     if (state->render_condition_active != 2 || !queue ||
@@ -719,6 +740,12 @@ static int replay_render_enabled(const ReplayState* state, ReplayQueue* queue, i
     if (!lhs || !rhs || !lhs->known || !rhs->known) return 1; /* unknown: retain the draw */
     if (require_real_reports && (!lhs->real_report || !rhs->real_report)) return 1;
     return state->render_condition_mode ? lhs->value != rhs->value : lhs->value == rhs->value;
+}
+
+static int replay_target_operation_trace(u64 address) {
+    const char* enabled = getenv("SNX_NVN_OPERATION_TRACE");
+    const char* filter = getenv("SNX_NVN_SHADOW_COMPARE_ADDRESS");
+    return enabled && !strcmp(enabled, "1") && filter && address && strtoull(filter, NULL, 0) == address;
 }
 
 static const NvnStorageSeed* replay_storage_seed(ReplayQueue* queue, NvnBufferRange range) {
@@ -906,8 +933,11 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
         const NvnOp* op = &list->ops[i];
         NvnTextureTarget query_clear_target = {0};
         int query_clear_scoped = 0, query_draw_scoped = 0;
+        int query_dispatch_scoped = queue && op->kind == OP_DISPATCH &&
+            !strcmp(op->name, "nvnCommandBufferDispatchCompute") &&
+            replay_query_scope_dispatch(state, queue);
         if (queue &&
-            (op->kind == OP_DISPATCH || op->kind == OP_OTHER ||
+            ((op->kind == OP_DISPATCH && !query_dispatch_scoped) || op->kind == OP_OTHER ||
              (op->kind == OP_TRANSFER && strcmp(op->name, "nvnCommandBufferUpdateUniformBuffer") &&
               strcmp(op->name, "nvnInlinedMemoryWrite"))))
             replay_query_forget_reports(queue);
@@ -1126,6 +1156,12 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     &state->targets.color_target[clear->index],
                     !!(state->targets.color_resolved & (1u << clear->index)), &target);
                 if (result == NVN_TARGET_RESOLVED) {
+                    if (replay_target_operation_trace(target.gpu_address))
+                        LOG("nvn-target-op: visit=%llu op=%u kind=clear-color enabled=%d condition=%u/%llx sequence=%llu\n",
+                            (unsigned long long)visit, i, !render_clear_disabled,
+                            state->render_condition_active,
+                            (unsigned long long)state->render_condition_address,
+                            (unsigned long long)(queue ? queue->next_sequence : 0));
                     query_clear_target = target;
                     query_clear_scoped = 1;
                     replay_color_target_resolved++;
@@ -1449,7 +1485,18 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                    !strcmp(op->name, "nvnCommandBufferDrawElementsInstanced")) {
             /* Only real, fully observed query reports can prove a conditional draw disabled.
                An estimated counter or a value seeded from later guest memory cannot. */
-            if (queue && !replay_render_enabled(state, queue, 1)) continue;
+            int draw_enabled = !queue || replay_render_enabled(state, queue, 1);
+            for (u32 target = 0; target < state->targets.count && target < 8; target++)
+                if (state->targets.color[target] &&
+                    (state->targets.color_resolved & (1u << target)) &&
+                    replay_target_operation_trace(state->targets.color_target[target].gpu_address))
+                    LOG("nvn-target-op: visit=%llu op=%u kind=draw enabled=%d condition=%u/%llx count=%llu sequence=%llu\n",
+                        (unsigned long long)visit, i, draw_enabled,
+                        state->render_condition_active,
+                        (unsigned long long)state->render_condition_address,
+                        (unsigned long long)op->args[2],
+                        (unsigned long long)(queue ? queue->next_sequence : 0));
+            if (!draw_enabled) continue;
             NvnDrawCommand draw = {0};
             draw.source_list = handle;
             draw.source_visit = visit;
@@ -1920,14 +1967,14 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                     (unsigned long long)state->texture[5][1],
                     (unsigned long long)state->texture[5][2],
                     (unsigned long long)state->texture[5][3]);
-                LOG("nvn-dispatch-replay: seq=%llu op=%u name=%s args=%llx,%llx,%llx,%llx,%llx program=%llx code=%llx refs=%d uniforms=%04x storage=%04x/%04x images=%02x local=%ux%ux%u shared=%u known=%d u0=%llx/%llu u1=%llx/%llu u2=%llx/%llu u3=%llx/%llu\n",
+                LOG("nvn-dispatch-replay: seq=%llu op=%u name=%s args=%llx,%llx,%llx,%llx,%llx program=%llx code=%llx refs=%d uniforms=%04x storage=%04x/%04x images=%02x query-scope=%d local=%ux%ux%u shared=%u known=%d u0=%llx/%llu u1=%llx/%llu u2=%llx/%llu u3=%llx/%llu\n",
                     (unsigned long long)(queue ? queue->last_unmodeled_write : 0), i, op->name,
                     (unsigned long long)op->args[0], (unsigned long long)op->args[1],
                     (unsigned long long)op->args[2], (unsigned long long)op->args[3],
                     (unsigned long long)op->args[4], (unsigned long long)program->handle,
                     (unsigned long long)program->snapshot.refs[0].code_candidate,
                     program->snapshot.refs_known, state->uniform_bound[5], state->storage_known[5],
-                    state->storage_bound[5], state->image_bound[5],
+                    state->storage_bound[5], state->image_bound[5], query_dispatch_scoped,
                     dispatch.local[0], dispatch.local[1], dispatch.local[2], dispatch.shared_size,
                     dispatch.control_known,
                     (unsigned long long)state->uniform[5][0].address,
@@ -2864,6 +2911,9 @@ static void execute_nvn_batch(void* arg) {
         }
         if (clear_seq < copy_seq && clear_seq < draw_seq && clear_seq < dispatch_seq) {
             int result = g_renderer->nvn_clear(&batch->clears->commands[clear++]);
+            if (replay_target_operation_trace(batch->clears->commands[clear - 1].target.gpu_address))
+                LOG("nvn-target-execute: sequence=%llu kind=clear result=%d\n",
+                    (unsigned long long)batch->clears->commands[clear - 1].sequence, result);
             if (result > 0) {
                 __atomic_fetch_add(&clear_issued, 1, __ATOMIC_RELAXED);
                 const NvnTextureTarget* target = &batch->clears->commands[clear - 1].target;
@@ -2890,6 +2940,13 @@ static void execute_nvn_batch(void* arg) {
             continue;
         }
         int result = g_renderer->nvn_draw_prepare(&batch->draws->commands[draw++]);
+        if (getenv("SNX_NVN_OPERATION_TRACE"))
+            for (u32 target = 0; target < 8; target++)
+                if ((batch->draws->commands[draw - 1].color_target_mask & (1u << target)) &&
+                    replay_target_operation_trace(batch->draws->commands[draw - 1].color_target[target].gpu_address))
+                    LOG("nvn-target-execute: sequence=%llu kind=draw result=%x count=%u\n",
+                        (unsigned long long)batch->draws->commands[draw - 1].sequence, result,
+                        batch->draws->commands[draw - 1].count);
         if (result & NVN_DRAW_PREPARED)
             __atomic_fetch_add(&draw_prepared, 1, __ATOMIC_RELAXED);
         else
