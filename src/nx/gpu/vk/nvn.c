@@ -45,8 +45,10 @@ typedef struct {
     u64 shadow_draw_stamp;
     int image_was_written; /* guest backing cannot replace an incomplete NVN image */
     u64 guest_gpu_generation, guest_checked_batch;
+    u64 guest_mapping_hash;
     u32 guest_write_clock;
     const u8* guest_host;
+    u8 guest_pages_tracked;
     VkImage image;
     VkImageView sampled_view, base_view, sampled_view_alt, base_view_alt;
     VkFormat alt_format;
@@ -126,13 +128,42 @@ static void mark_modeled_unknown(u64 marker, u64 prior) {
     modeled_unknown_marker = marker;
 }
 
+/* A guest image can span discontiguous physical pages. Track each mapped page instead of treating the
+   absence of one contiguous host pointer as a write on every subsequent batch. */
+static int shadow_check_guest_pages(const NvnImage* image, u32 since, u64* mapping_hash) {
+    u64 hash = 1469598103934665603ull;
+    int written = 0;
+    for (u64 offset = 0; offset < image->storage_size;) {
+        u64 address = image->address + offset;
+        u64 size = 0x1000 - (address & 0xfff);
+        if (size > image->storage_size - offset) size = image->storage_size - offset;
+        const u8* host = gmem_ptr_untracked(address, size);
+        if (!host) return -1;
+        hash = (hash ^ (u64)(uintptr_t)host) * 1099511628211ull;
+        int dirty = vk_written_since(host, size, since);
+        if (dirty < 0) return -1;
+        written |= dirty;
+        offset += size;
+    }
+    *mapping_hash = hash;
+    return written;
+}
+
 static void shadow_record_backing(NvnImage* image) {
     if (!cross_batch_enabled()) return;
     image->guest_host = gmem_ptr_untracked(image->address, image->storage_size);
+    image->guest_pages_tracked = 0;
     image->guest_checked_batch = batch_serial;
-    if (!image->guest_host || vk_written_since(image->guest_host, image->storage_size, vk_ww_now()) < 0) {
-        image->guest_host = NULL;
-        return;
+    if (image->guest_host) {
+        if (vk_written_since(image->guest_host, image->storage_size, vk_ww_now()) < 0) {
+            image->guest_host = NULL;
+            return;
+        }
+    } else {
+        u64 mapping_hash = 0;
+        if (shadow_check_guest_pages(image, vk_ww_now(), &mapping_hash) < 0) return;
+        image->guest_mapping_hash = mapping_hash;
+        image->guest_pages_tracked = 1;
     }
     image->guest_write_clock = vk_ww_now();
     image->guest_gpu_generation = gpu_mem_generation();
@@ -142,16 +173,27 @@ static void shadow_check_backing(NvnImage* image) {
     if (!cross_batch_enabled()) return;
     if (image->guest_checked_batch == batch_serial) return;
     image->guest_checked_batch = batch_serial;
-    const u8* host = gmem_ptr_untracked(image->address, image->storage_size);
-    int gpu_dirty = image->guest_host && host == image->guest_host &&
-                    gpu_mem_dirty_since(image->guest_gpu_generation, image->address, image->storage_size);
-    int cpu_dirty = image->guest_host && host == image->guest_host && !gpu_dirty &&
-                    vk_written_since(host, image->storage_size, image->guest_write_clock) != 0;
-    if (!image->guest_host || host != image->guest_host || gpu_dirty || cpu_dirty) {
+    int valid = image->guest_host || image->guest_pages_tracked;
+    int gpu_dirty = valid && gpu_mem_dirty_since(image->guest_gpu_generation, image->address,
+                                                  image->storage_size);
+    int cpu_dirty = 0;
+    if (valid && !gpu_dirty) {
+        if (image->guest_pages_tracked) {
+            u64 mapping_hash = 0;
+            int changed = shadow_check_guest_pages(image, image->guest_write_clock, &mapping_hash);
+            cpu_dirty = changed != 0 || mapping_hash != image->guest_mapping_hash;
+        } else {
+            const u8* host = gmem_ptr_untracked(image->address, image->storage_size);
+            cpu_dirty = host != image->guest_host ||
+                        vk_written_since(host, image->storage_size, image->guest_write_clock) != 0;
+        }
+    }
+    if (!valid || gpu_dirty || cpu_dirty) {
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
         memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         image->guest_host = NULL;
+        image->guest_pages_tracked = 0;
         return;
     }
     image->guest_write_clock = vk_ww_now();
@@ -265,6 +307,7 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
             if (target->storage_size > image->storage_size) {
                 image->storage_size = target->storage_size;
                 image->guest_host = NULL;
+                image->guest_pages_tracked = 0;
             }
             shadow_check_backing(image);
             return image;
@@ -673,7 +716,9 @@ static void shadow_invalidate_backing(const NvnTextureTarget* target) {
         memset(image->depth_layers, 0, sizeof image->depth_layers);
         memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         image->image_was_written = 1;
+        image->last_batch = batch_serial;
         image->guest_host = NULL;
+        image->guest_pages_tracked = 0;
     }
 }
 
@@ -715,7 +760,9 @@ static void shadow_invalidate_attachment(const NvnTextureTarget* target) {
             memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
         }
         image->image_was_written = 1;
+        image->last_batch = batch_serial;
         image->guest_host = NULL;
+        image->guest_pages_tracked = 0;
     }
 }
 
@@ -1022,8 +1069,15 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
         if (pending && image->image && image->image_was_written && image->address == address &&
             (!descriptor->memory_pool ||
              (image->pool == descriptor->memory_pool &&
-              image->pool_generation == descriptor->memory_pool_generation)))
-            *pending = 1;
+              image->pool_generation == descriptor->memory_pool_generation))) {
+            shadow_check_backing(image);
+            int covered = 0;
+            for (u32 level = 0; level < image->levels; level++)
+                covered |= !!(image->color_layers[level] | image->depth_layers[level]);
+            /* A modeled write in this batch may still be ahead of the guest GPU replay. Once an older
+               shadow loses all coverage, let the guest texture loader resolve its current source. */
+            if (image->last_batch == batch_serial || covered) *pending = 1;
+        }
         VkImageViewType image_type = image->target == 8   ? VK_IMAGE_VIEW_TYPE_CUBE
                                      : image->target == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
                                                           : VK_IMAGE_VIEW_TYPE_2D;
@@ -3315,7 +3369,9 @@ static int scope_storage_writes(const NvnDrawCommand* command, const VkSh* verte
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
         memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
+        image->last_batch = batch_serial;
         image->guest_host = NULL;
+        image->guest_pages_tracked = 0;
     }
     return 1;
 }
@@ -3362,7 +3418,9 @@ int vk_nvn_memory_write(const NvnMemoryWriteCommand* command) {
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
         memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
+        image->last_batch = batch_serial;
         image->guest_host = NULL;
+        image->guest_pages_tracked = 0;
     }
     for (u32 i = 0; i < NVN_SHADOW_STORAGE_SLOTS; i++)
         if (invalidate_storage[i]) shadow_storage[i].invalid = 1;
