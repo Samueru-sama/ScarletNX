@@ -403,6 +403,10 @@ static int fp1(SnxJit* j, SnxU32 w, size_t index) {
 
 /* FCMP without a NaN, and without a denormal when FZ is set (flushing it sets IDC): the host comparison gives the
    flags, and no FPSR bit changes */
+/* a denormal: exponent 0 and a nonzero fraction (zero has exponent 0 too, and flushing it changes nothing) */
+static V denormal(SnxJit* j, const Shape* s, V bits) {
+    return jit_land(j, jit_lnot(j, exponent_in(j, s, bits, 1, s->emax)), jit_lnot(j, is_zero(j, s, bits)));
+}
 static V compare_fast(SnxJit* j, V a, V b, unsigned width, V* ok) {
     Shape s;
     V fa, fb, nan, flush, nzcv;
@@ -410,9 +414,7 @@ static V compare_fast(SnxJit* j, V a, V b, unsigned width, V* ok) {
     fa = jit_val(j, to_float(j, &s, a));
     fb = jit_val(j, to_float(j, &s, b));
     nan = jit_lor(j, NE(fa, fa), NE(fb, fb));
-    flush = jit_land(
-        j, flush_to_zero(j),
-        jit_lor(j, jit_lnot(j, exponent_in(j, &s, a, 1, 0xFFFF)), jit_lnot(j, exponent_in(j, &s, b, 1, 0xFFFF))));
+    flush = jit_land(j, flush_to_zero(j), jit_lor(j, denormal(j, &s, a), denormal(j, &s, b)));
     *ok = jit_val(j, jit_lnot(j, jit_lor(j, nan, flush)));
     nzcv = jit_sel(j, LT(fa, fb), K32(8), K32(2));
     return jit_sel(j, EQ(fa, fb), K32(6), nzcv);

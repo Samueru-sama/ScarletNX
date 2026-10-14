@@ -427,23 +427,29 @@ static int fp1(SnxIr* ir, SnxU32 w, size_t index) {
     return 1;
 }
 
+/* a denormal: exponent 0 and a nonzero fraction (zero has exponent 0 too, and flushing it changes nothing) */
+static V lane_denormal(SnxIr* ir, const Shape* s, V bits) {
+    return LLVMBuildAnd(B, LLVMBuildNot(B, lane_exponent_in(ir, s, bits, 1, s->emax), ""),
+                        LLVMBuildNot(B, lane_zero(ir, s, bits), ""), "");
+}
+
 /* FCMP without a NaN, and without a denormal when FZ is set (flushing it sets IDC): the host comparison gives the
-   flags, and no FPSR bit changes */
+   flags, and no FPSR bit changes. Zeros compare as IEEE says, equal whatever their signs, with FZ or without */
 static V compare_fast(SnxIr* ir, V a, V b, unsigned width, V* ok) {
     Shape s;
     V fa, fb, nan_a, nan_b, flush, nzcv;
     shape(ir, width, 1, &s);
-    fa = LLVMBuildBitCast(B, ir_cast(ir, a, s.it, 0), s.ft, "");
-    fb = LLVMBuildBitCast(B, ir_cast(ir, b, s.it, 0), s.ft, "");
+    a = ir_cast(ir, a, s.it, 0);
+    b = ir_cast(ir, b, s.it, 0);
+    fa = LLVMBuildBitCast(B, a, s.ft, "");
+    fb = LLVMBuildBitCast(B, b, s.ft, "");
     nan_a = LLVMBuildFCmp(B, LLVMRealUNO, fa, fa, "");
     nan_b = LLVMBuildFCmp(B, LLVMRealUNO, fb, fb, "");
     flush = LLVMBuildAnd(
         B,
         LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, ir_cpu_load(ir, ir->t_i32, ir_off_fpcr()), i32c(ir, 1u << 24), ""),
                       i32c(ir, 0), ""),
-        LLVMBuildOr(B, LLVMBuildNot(B, exponent_in(ir, &s, ir_cast(ir, a, s.it, 0), 1, 0xFFFF), ""),
-                    LLVMBuildNot(B, exponent_in(ir, &s, ir_cast(ir, b, s.it, 0), 1, 0xFFFF), ""), ""),
-        "");
+        LLVMBuildOr(B, lane_denormal(ir, &s, a), lane_denormal(ir, &s, b), ""), "");
     *ok = LLVMBuildNot(B, LLVMBuildOr(B, LLVMBuildOr(B, nan_a, nan_b, ""), flush, ""), "");
     nzcv = LLVMBuildSelect(B, LLVMBuildFCmp(B, LLVMRealOLT, fa, fb, ""), i32c(ir, 8), i32c(ir, 2), "");
     return LLVMBuildSelect(B, LLVMBuildFCmp(B, LLVMRealOEQ, fa, fb, ""), i32c(ir, 6), nzcv, "");
