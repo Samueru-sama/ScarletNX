@@ -23,7 +23,7 @@ Method:
 3. For ioctls and devices: the ioctl number, the structure written and read, and the checks on the result.
 4. For anything sized or indexed by a value from the runtime: where that value comes from and the bounds it
    assumes.
-5. Compare with what `runtime/` currently does (`grep -rn` the service, command or ioctl) and with Switchbrew if
+5. Compare with what `src/` currently does (`grep -rn` the service, command or ioctl) and with Switchbrew if
    you know the page.
 
 Report what the code expects, as a list with the addresses that show each point, then the differences from the

@@ -7,14 +7,15 @@ description: "Implement or fix a high-level-emulated Switch service or device (I
 
 ## Where
 
-- `runtime/kernel/ipc.c`: dispatch and the helpers: `in32(c, off)`/`in64` read the request's raw data, `out32`/`out64`/
+- `src/nx/hle/kernel/ipc.c`: dispatch and the helpers: `in32(c, off)`/`in64` read the request's raw data, `out32`/`out64`/
   `out8` append to the reply, `buf_in`/`buf_out` give a buffer of either kind (A or X in, B or C out, which "Auto"
   commands mix), `out_obj` returns a new session object, `out_copy_h`/`out_move_h` return handles.
-- `runtime/hle/`: one file per service family (`sm.c`, `am.c`, `set.c`, `time.c`, `acc.c`, `audio.c`, and `misc.c` for
+- `src/nx/hle/services/`: one file per service family (`sm.c`, `am.c`, `set.c`, `time.c`, `acc.c`, `audio.c`, and `misc.c` for
   the small ones), one `*_disp` per service and one per interface object. `services.c` registers them all with
   `svc_register("name", ctor)`, and `services_int.h` declares what the files share.
-- `hle/hid.c` (input and its shared memory), `hle/fs.c`, `hle/vi.c` (display, binder), `hle/nvdrv.c` (nvhost devices),
-  `video/` (host1x channels, NVDEC, VIC), `hle/audren.c` (`audren_update`), `hle/pl.c` (shared fonts).
+- In `services/`: `hid.c` (input and its shared memory), `vi.c` (display, binder), `nvdrv.c` (nvhost devices),
+  `audren.c` (`audren_update`), `pl.c` (shared fonts). `src/nx/hle/filesystem/fs.c`, and `src/nx/gpu/video/`
+  (host1x channels, NVDEC, VIC).
 - `svcobj_new("IName", dispatch, sizeof(State))` gives an object with zeroed state in `o->data`.
 
 ## Procedure

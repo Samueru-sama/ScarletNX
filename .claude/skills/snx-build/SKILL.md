@@ -127,8 +127,8 @@ install tree. A new package means a new `install(...)` line for its license in `
 
 ## Formatting
 
-`scripts/format.sh` before committing, `--check` to see what is off. It covers the C and C++ under `runtime/` and
-`tools/`, the Python up to two folders deep and `.claude/hooks/`. It needs clang-format 23 exactly (another version
+`scripts/format.sh` before committing, `--check` to see what is off. It covers the C and C++ under `src/`,
+`tools/` and `tests/`, the Python up to two folders deep and `.claude/hooks/`. It needs clang-format 23 exactly (another version
 formats differently and would reformat every file) and fetches ruff through `uvx`.
 
 ## Never delegate builds to subagents

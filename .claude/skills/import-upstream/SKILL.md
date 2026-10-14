@@ -20,7 +20,7 @@ description: "Bring a new MZ Labs SwitchRecomp release into this fork: import th
    `cmake/dependencies.cmake` instead (`snx-build` skill). If it added a new top-level Windows toolchain folder, add it to the excludes in
    `scripts/import-upstream.sh` and `.gitignore`.
 5. **Rebuild and verify.** Build (`cmake --preset default && cmake --build --preset default`), and run the game
-   (`snx-run`, a few runs). If the port changed the recompiler, anything in `runtime/abi/` or `SNX_ABI`, recompile the
+   (`snx-run`, a few runs). If the port changed the recompiler, anything in `src/common/cpu/aarch64/` or `SNX_ABI`, recompile the
    game first.
 6. **Open the PR** once verified, and update docs/ROADMAP.md if the release changed what is done or planned.
 

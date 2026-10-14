@@ -44,7 +44,7 @@ The loop terminates in exactly one way: you reach step 11, its predicate says st
 - `/code-audit branch` — audit current branch vs main
 - `/code-audit staged` — audit staged changes only
 - `/code-audit PR` or `/code-audit PR #123` — audit a pull request
-- `/code-audit runtime/video/nvdec.c runtime/hle/nvdrv.c` — audit specific files
+- `/code-audit src/nx/gpu/video/nvdec.c src/nx/hle/services/nvdrv.c` — audit specific files
 
 If `<scope>` is provided, use it directly — do not ask the user to clarify. If omitted, default to uncommitted changes.
 
@@ -97,7 +97,7 @@ Write `.claude/audit-state.json` (relative to the repo root / cwd — this exact
   "inventory_files": 57,
   "complete": false,
   "findings": [
-    {"id": "F1", "sev": "HIGH", "file": "runtime/hle/nvdrv.c:42", "status": "open", "raised_pass": 1}
+    {"id": "F1", "sev": "HIGH", "file": "src/nx/hle/services/nvdrv.c:42", "status": "open", "raised_pass": 1}
   ]
 }
 ```
@@ -140,8 +140,8 @@ Common audit-time patterns in this repo (C runtime, Python recompiler):
 | Find every use of a struct field | `ast-grep --pattern '$X.field' --lang c runtime` and `ast-grep --pattern '$X->field' --lang c runtime` |
 | Find every guard that only logs | `grep -rn -A2 'WARN(\|LOG(' runtime` and check each is followed by a `return` or other exit |
 | Find a guest address squeezed into 32 bits | `ast-grep --pattern '(u32)$X' --lang c runtime`, then check whether `$X` is a guest address or pointer |
-| Find every syncpoint id not from `syncpt_alloc()` | `grep -rn 'syncpt' runtime/video runtime/hle/nvdrv.c runtime/gpu` |
-| Find every service command a file answers | `grep -n 'case [0-9]*:' runtime/hle/am.c` (or the service's file) (each answer must match what the SDK caller reads, see the `snx-service` skill) |
+| Find every syncpoint id not from `syncpt_alloc()` | `grep -rn 'syncpt' src/nx/gpu src/nx/hle/services/nvdrv.c` |
+| Find every service command a file answers | `grep -n 'case [0-9]*:' src/nx/hle/services/am.c` (or the service's file) (each answer must match what the SDK caller reads, see the `snx-service` skill) |
 | Find every TODO/FIXME/HACK marker | `grep -rn 'TODO\|FIXME\|HACK\|XXX' runtime scarletnx tools scripts` |
 | Find a stale comment claim (e.g. "below 192") | `grep -rn "below 192" runtime` |
 | Find AI-ism punctuation in user-facing text | `grep -rn '—' README.md ROADMAP.md <changed user-facing files>`; then check for clause-joining `;` and stand-in ` - ` (exclude code comments and backticked code) |
@@ -255,8 +255,8 @@ When a finding offers two legitimate remedies (the finding itself says "either X
 Before an edit that calls a function, method, constant, enumerator, logging category, or CMake function you have not already opened here, Grep or Read its declaration first. One command:
 
 ```
-grep -rnw 'syncpt_alloc' runtime                       # does this function exist?
-grep -nE '^[A-Za-z_].*\(' runtime/kernel/ipc.h               # a module's API surface is its header
+grep -rnw 'syncpt_alloc' src                        # does this function exist?
+grep -nE '^[A-Za-z_].*\(' src/nx/hle/kernel/ipc.h   # a module's API surface is its header
 ```
 
 Then check the SEMANTICS, not just the spelling: `buf_in` and `buf_a` both return an input buffer, but `buf_in` also takes the pointer (X) buffer the SDK uses for small inputs. Picking the wrong one compiles and reads nothing.
@@ -301,7 +301,7 @@ tools/run_game.py Catherine --runs 3 --dump work/Catherine
 - The runtime builds with Clang's default warnings only, and a warning doesn't fail the build, so a clean-looking build says little. Build a changed file once with more warnings on (its line from `build/default/compile_commands.json`, with `-Wall -Wextra -fsyntax-only`) and check none come from the change.
 - A fix for a crash or a race is run until the evidence is statistical: the crash rate before and after, with the run counts, goes in the commit message.
 - Memory-safety fixes also get an AddressSanitizer build and a run. The runtime links as C++ (VMA), so the flag goes on the C, C++ and link lines, and the build stays out of `games/`: `cmake --preset default -B build/asan -DSNX_DEPLOY=OFF -DCMAKE_C_FLAGS=-fsanitize=address -DCMAKE_CXX_FLAGS=-fsanitize=address -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address && cmake --build build/asan`, then from `games/`: `../build/asan/scarletnx --game=Catherine --seconds=60`.
-- The game module only needs recompiling (`scripts/recomp.py`) when `scarletnx/codegen.py`, `a64.py`, `nxloader.py`, `module.py`, the module's flags in `toolchain.py`, or anything in `runtime/abi/` changed.
+- The game module only needs recompiling (`build/default/scarletnx -r work/<Game> <Game>`) when `src/common/cpu/recompiler/` (codegen and both backends), `src/common/cpu/aarch64/` (templates and the ABI), `src/nx/loader/`, or the module's flags in `src/nx/runtime/driver/toolchain.c` changed.
 
 ### 7. Diff Review Before Commit
 

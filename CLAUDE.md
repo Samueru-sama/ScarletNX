@@ -28,7 +28,9 @@ file holds the rules sessions get wrong and points to the skills that carry the 
   license). A new file starts with `SPDX-License-Identifier: GPL-3.0-or-later` and the fork's copyright line. Code
   under GPL-3.0, GPL-2.0-or-later (yuzu, suyu, sudachi, Citron, Eden), LGPL, MIT, BSD, ISC, zlib or Apache 2.0 can
   be ported, keeping its copyright lines and naming where it came from (Ryujinx is MIT). GPL-2.0-only code can't be.
-  Switchbrew and the SDK's own behavior, read from the disassembly, are the primary references.
+  Switchbrew and the SDK's own behavior, read from the disassembly, are the primary references, with Atmosphère
+  (Mesosphère's kernel, Stratosphère's services) as the reference for how Horizon behaves. It is GPL-2.0-only, so
+  it is read, never ported.
 - **Formatting:** `scripts/format.sh` before committing (clang-format 23, ruff). It only changes whitespace, and
   the whole history is formatted, so an unformatted file shows up as noise in every diff. Third-party code
   (the packages in `.cache/cpm`) is never formatted.
@@ -74,16 +76,16 @@ silently. Bumping `SNX_ABI` makes the runtime refuse every module built before i
 
 | Area | Files |
 | --- | --- |
-| C90 host driver (`src/nx/runtime/driver/`) | `driver.c` (dispatch), `extract.c` (XCI/NSP), `recompile.c` (AOT workflow/data), `loader.c` (NSO/NRO, metadata), `codegen.c` (functions, and their C for the interpreter and gnuabi) + `a64.c` + `a64_templates.inc` (the instructions' C), `toolchain.c` (runtime deploy build, shader prebuild), `common.c` (host APIs); `--backend=llvm` (default): `src/common/cpu/recompiler/llvm/` (IR emitters, ELF/COFF linkers, `rtlib.c`) + `src/nx/loader/module_llvm.c`; `--backend=gcc` (optional, DEC Alpha EV67): `src/common/cpu/recompiler/gccjit/` + `src/nx/loader/module_gccjit.c` |
+| C90 host driver (`src/nx/runtime/driver/`) | `driver.c` (dispatch), `extract.c` (XCI/NSP), `recompile.c` (AOT workflow/data), `toolchain.c` (runtime deploy build, shader prebuild); `src/nx/loader/loader.c` (NSO/NRO, metadata), `src/common/cpu/recompiler/codegen.c` (functions, and their C for the interpreter and gnuabi) + `src/common/cpu/aarch64/a64.c` + `a64_templates.inc` (the instructions' C), `src/common/utilities/common.c` (host APIs); `--backend=llvm` (default): `src/common/cpu/recompiler/llvm/` (IR emitters, ELF/COFF linkers, `rtlib.c`) + `src/nx/loader/module_llvm.c`; `--backend=gcc` (optional, DEC Alpha EV67): `src/common/cpu/recompiler/gccjit/` + `src/nx/loader/module_gccjit.c` |
 | Generated-code ABI | `src/common/cpu/aarch64/`: `cpu.h` (with `SNX_ABI`), `cpu_helpers.c` (compiled into each game module, with the topic files it includes from `helpers/`: `fp.c`, `integer.c`, `simd.c`, `crypto.c`, `simd_mem.c`) |
-| Startup | `src/nx/runtime/`: `main.c` (startup, loading the game module), `options.c` (the .ini), `clock.c` (guest time), `rtapi.c` (what the game module calls), `crash.c`, `present.c` (vi's CPU-side present), `loader.c`, `entry.c` |
-| Kernel and memory | `src/nx/hle/kernel/`: `kernel.c` (handles, waits, events), `thread.c` (threads, the per-core lock), `sync.c` (mutexes, condition variables, address arbitration, WaitSynchronization), `svc.c` (the SVC dispatch), `svc_mem.c` (memory SVCs, GetInfo), `debug.c` (backtraces, dumps), `mem.c`, `ipc.c` (helpers `in32`, `out32`, `buf_in`, `buf_out`, `out_obj`...) |
-| Services | `src/nx/hle/services/`: one file per service family (`sm.c`, `am.c`, `set.c`, `time.c`, `acc.c`, `audio.c` (hwopus decodes with FFmpeg), `misc.c` for the small ones, `services.c` registers them), `audren.c` (the audio renderer's update), `pl.c` (shared fonts), `hid.c`, `fs.c`, `vi.c`, `nvdrv.c` (nvhost devices, syncpoints) |
-| GPU | `src/nx/gpu/`: `gpu.c` (GPFIFO, the GPU thread), `maxwell/` (`engines.c` (3D engine methods), `mme.c` (macros), `compute.c`, `fermi2d.c`, `dma.c`, `maxwell3d.c`, `write_pages.c`: the last GPU-side write to each page), `renderer.h` (the `Renderer` table for Vulkan, `g_renderer`), `renderer.c` (shared renderer state), `shader/` (Maxwell to SPIR-V: `shader.c` handles program hashing and flow, `decode.c` the instruction table, `spirv_translate.c` and `spirv_compute.c` emit stages, `corpus.c` records shaders), `texture/` (`astc.c`, the CPU reference for tests, `etc2.c`, `depth.c`: packed depth/stencil texels), `nvn_trace.c` (`SNX_NVN_TRACE`: the NVN functions a game resolves and calls), `nvn_control.c` and `nvn_command_gap.c` (decoders of NVN's macro calls and Maxwell methods' write effects, built into their tests; `docs/NVN_HLE.md`) |
+| Startup | `src/nx/runtime/`: `main.c` (startup, loading the game module), `options.c` (the .ini), `clock.c` (guest time), `rtapi.c` (what the game module calls), `crash.c`, `present.c` (vi's CPU-side present), `loader.c`, `entry.c`, `startup.c` (switches parsed before loading), `gdbstub.c` |
+| Kernel and memory | `src/nx/hle/kernel/`: `kernel.c` (handles, waits, events), `thread.c` (threads, the per-core lock), `sync.c` (mutexes, condition variables, address arbitration, WaitSynchronization), `debug.c` (backtraces, dumps), `ipc.c` (helpers `in32`, `out32`, `buf_in`, `buf_out`, `out_obj`...); `src/nx/hle/svc/`: `svc.c` (the SVC dispatch), `svc_mem.c` (memory SVCs, GetInfo); `src/nx/memory/mem.c` |
+| Services | `src/nx/hle/services/`: one file per service family (`sm.c`, `am.c`, `set.c`, `time.c`, `acc.c`, `audio.c` (hwopus decodes with FFmpeg), `misc.c` for the small ones, `services.c` registers them), `audren.c` (the audio renderer's update), `pl.c` (shared fonts), `hid.c`, `vi.c`, `ldr.c`, `network/` (bsd, nifm, dns), `nvdrv.c` (nvhost devices, syncpoints); `src/nx/hle/filesystem/` (`fs.c`, `fs_tree.c`) |
+| GPU | `src/nx/gpu/`: `gpu.c` (GPFIFO, the GPU thread), `maxwell/` (`engines.c` 3D engine methods, `mme.c` macros, `compute.c`, `fermi2d.c`, `dma.c`, `maxwell3d.c`, `write_pages.c`: the last GPU-side write to each page), `renderer.h` (the `Renderer` table for Vulkan, `g_renderer`), `renderer.c` (shared renderer state), `shader/` (Maxwell to SPIR-V: `shader.c` handles program hashing and flow, `decode.c` the instruction table, `spirv_translate.c` and `spirv_compute.c` emit stages through `spirv_emit.c`, `corpus.c` records shaders), `texture/` (`astc.c` CPU reference for tests, `etc2.c`, `depth.c`: packed depth/stencil texels), `nvn_trace.c` (`SNX_NVN_TRACE`: the NVN functions a game resolves and calls), `nvn_control.c` and `nvn_command_gap.c` (decoders of NVN's macro calls and Maxwell methods' write effects, built into their tests; `docs/NVN_HLE.md`) |
 | Vulkan renderer | `src/nx/gpu/vk/`: `vk.h` (lists the parts), `device.c` (instance, device, queues, swapchain, VMA), `cmd.c` (frames in flight, staging), `surface.c` and `format.c` (render targets, formats), `texture.c` (textures, samplers), `astc.c` (ASTC compute uploads), `buffer.c` (guest memory as buffers), `pipeline.c` (shader modules, pipelines), `render.c` (rendering passes, clears, draws), `compute.c` (compute on the compute queue, results landing in guest memory), `renderer.c` (its side of the renderer interface, presenting), `vma.cpp` (VMA's implementation); Vulkan-Headers, volk and VMA are CPM packages (`cmake/dependencies.cmake`) |
 | Shader corpus | `SNX_SHADER_CORPUS=dir` records each translated shader; `build/<dir>/snx-shaderc dir --validate` translates it directly to SPIR-V and validates it with `spirv-val`, which must be on PATH (`--out DIR` from two builds, diffed, shows a translator change kept the output) |
 | Video | `src/nx/gpu/video/`: `host1x.c` (IOVA, ioctls, a channel per nvdrv NVDEC or VIC fd, each NVDEC one with its own decoder), `nvdec.c` (H.264 with FFmpeg's libavcodec, the picture written into the surface its job names), `vic.c` (composes from those surfaces in guest memory) |
-| Platform | `src/nx/runtime/platform/`: `plat.c` (logging, fatal), `plat_posix.c` and `plat_win32.c` (threads, locks, time, memory, files per OS), `profiler_win32.c`, `runtime.rc` and `runtime.manifest` (the Windows UTF-8 code page), `unattended.c` (scripted input, timed exit, screenshots, shared by both backends), `backend/` (`sdl3.c` on Linux and Windows, `headless.c`) |
+| Platform | `src/nx/runtime/platform/`: `plat.c` (logging, fatal), `plat_posix.c` and `plat_win32.c` (threads, locks, time, memory, files per OS), `profiler_win32.c`, `runtime.rc` and `runtime.manifest` (the Windows UTF-8 code page), `unattended.c` (scripted input, timed exit, screenshots, shared by both backends), `backend/sdl3.c` (Linux and Windows, windowed or headless) |
 
 The NX runtime components are CMake object libraries in `src/nx/CMakeLists.txt`: `core`, `kernel`, `hle`, `video`,
 `gpu`, `platform`, `shader` and `vk`. Game modules compile the ABI helpers separately. Includes are written
@@ -105,6 +107,15 @@ Skills in `.claude/skills/`:
 Agents in `.claude/agents/`, to keep disassembly and logs out of the main context:
 - `crash-triage` (read-only): symbolizes and disassembles a crash, and reports the mechanism with its evidence.
 - `sdk-scout` (read-only): works out what a game or SDK function does and expects from the runtime.
+
+Domain experts in `.claude/agents/experts/`, for consulting, design or implementation (the prompt says which, and
+whether the agent may build and run: only one at a time can):
+- `snx-c-expert`: ISO C, undefined behavior, `__atomic` and the memory model, C90 as #142 requires, LLP64.
+- `snx-kernel-expert`: the Horizon kernel (SVCs, threads, sync, memory) and the Linux and Windows kernels under it.
+- `snx-arm64-expert`: exact ARMv8-A userspace (EL0) semantics for the recompiler's templates and IR emitters.
+- `snx-emu-expert`: how Ryujinx, the yuzu family, Citra, Cemu and others solved a problem, with the license of the code.
+- `snx-vulkan-expert`: Vulkan 1.3 and SPIR-V, synchronization, lifetimes, Maxwell state onto Vulkan.
+- `snx-perf-expert`: profiling and judging optimizations with perf, bpftrace, heaptrack and llvm-mca.
 
 ## Git
 

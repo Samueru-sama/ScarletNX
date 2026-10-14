@@ -19,7 +19,7 @@ Method:
 3. Find the faulting instruction and walk its base register back: where it was loaded from, what wrote that memory,
    what the caller passed. Follow the chain until it reaches something the runtime supplies (an IPC reply, an
    ioctl's output, shared memory, a value from a device) or a table the game sized from such a value.
-4. Read `runtime/` code only for the runtime's side of the link you reached (`grep -rn` the service or ioctl).
+4. Read `src/` code only for the runtime's side of the link you reached (`grep -rn` the service or ioctl).
 
 Report:
 - The chain, one link per line: address, instruction, what it reads or computes, and how you know (read in the
