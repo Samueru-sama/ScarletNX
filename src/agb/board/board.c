@@ -23,15 +23,20 @@ void agb_board_destroy(AgbBoard* board) {
 }
 
 uint16_t agb_io_read16(AgbBoard* board, uint32_t address) {
-    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1);
-    if (offset * 2 <= 0x5F) return agb_ppu_read(board, offset * 2);
+    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (byte <= 0x5F) return agb_ppu_read(board, byte);
+    if (byte >= 0x60 && byte <= 0xA7) return agb_apu_read(board, byte);
     return board->io[offset];
 }
 
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value) {
-    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1);
-    if (offset * 2 <= 0x5F) {
-        agb_ppu_write(board, offset * 2, value);
+    uint32_t offset = (address >> 1) & (AGB_IO_COUNT - 1), byte = offset * 2;
+    if (byte <= 0x5F) {
+        agb_ppu_write(board, byte, value);
+        return;
+    }
+    if (byte >= 0x60 && byte <= 0xA7) {
+        agb_apu_write(board, byte, value);
         return;
     }
     board->io[offset] = value;

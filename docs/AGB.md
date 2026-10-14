@@ -25,8 +25,7 @@ The board is under construction, piece by piece:
 | Cartridge and ROM header | done: header parsing and validation |
 | Memory map | done: every region and mirror, the I/O window as plain storage |
 | HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
-| PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending, drawn a
-| scanline at a time |
+| PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending |
 | APU (audio) | not yet |
 | Keypad (HID) | not yet |
 | CPU, DMA, timers, interrupts | not yet |

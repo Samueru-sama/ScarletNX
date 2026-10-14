@@ -5,6 +5,7 @@
    devices behind the I/O registers. */
 #ifndef SNX_AGB_BOARD_H
 #define SNX_AGB_BOARD_H
+#include "../apu/apu.h"
 #include "../cartridge/cartridge.h"
 #include "../ppu/ppu.h"
 #include "memory.h"
@@ -16,6 +17,7 @@ typedef struct AgbBoard {
     AgbCartridge cartridge;
     AgbMemory memory;
     AgbPpu ppu;
+    AgbApu apu;
     uint16_t io[AGB_IO_COUNT]; /* the I/O register file; devices claim registers here */
     int has_cartridge;
 } AgbBoard;
