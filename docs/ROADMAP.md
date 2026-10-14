@@ -26,11 +26,7 @@ Commands: [development](DEVELOPMENT.md).
 
 Port upstream releases manually to retain independent component layouts.
 
-NVN HLE remains exploratory: Catherine requests 468 exports and uses ~178. Submitted NVN shaders, clears, and a
-narrow Catherine draw slice can now execute through opt-in host probes, while the displayed frame still uses guest
-Maxwell command decoding.
-The [NVN HLE investigation](NVN_HLE.md) records the resource path and the remaining image-coherence and
-whole-submission migration boundaries.
-Keep guest Maxwell command decoding as a supported GPU mode. Once direct NVN can execute a whole
-submission independently, expose a per-game choice between it and the emulated mode; the current
-opt-in probes run alongside Maxwell and are not yet that choice.
+The GPU is emulated by decoding the Maxwell command buffers NVN writes. NVN already writes a draw as one short macro
+call, so handling NVN's API calls directly would save little. Faster rendering will come from running known macros
+natively and from cheaper work per draw, with the Maxwell decoder kept as the base. `SNX_NVN_TRACE=1` lists the NVN
+functions a game calls. The [NVN HLE notes](NVN_HLE.md) record what the investigation found about NVN.

@@ -43,6 +43,12 @@ python3 tools/disasm.py work/Game cf34240 cf343c0
   Summary: exit, PC/symbol (`--dump`), frames/FPS. Unknown args pass through, e.g. `--fps_limit=0`.
 - Guest VAs: hex; disasm function queries: substrings. Disasm requires `llvm-objcopy` + `llvm-objdump`.
   `--log=2`: verbose; Windows `--profile=1`: `profile.txt` every 10 s.
+- `SNX_GPU_TRACE_TARGET=0x5acf62e00[:bytes]`: logs (`gpu-trace-target:`) every clear and draw that writes a render
+  target starting in that GPU address range, with its size, draw count and shader addresses. One byte when no size
+  is given. It finds what produced a wrong intermediate target.
+- `SNX_NVN_TRACE=1`: logs each NVN function the game resolves (`nvn: NAME -> ADDRESS`), each queue call's GPFIFO
+  submissions, and at exit the call count of every function used (`nvn-used:`). Calls by direct branch are counted
+  only in a game recompiled with `--hook-direct-calls`. [NVN_HLE.md](NVN_HLE.md) has what the traces have shown.
 
 ## Shaders
 
