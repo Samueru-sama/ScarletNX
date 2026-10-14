@@ -1604,7 +1604,7 @@ source; a write in the current batch remains pending until replay can safely
 use it.
 
 `SNX_NVN_SHADOW_FULL_PROBE=1` tests an otherwise uncovered, unblended
-`RGBA8`, `RG16F`, `RGBA16F`, or `R11G11B10F` color draw up to 512×512 pixels. It clears only the
+`R16`, `RGBA8`, `RG16F`, `RGBA16F`, or `R11G11B10F` color draw up to 512×512 pixels. It clears only the
 shadow color attachment to a distinct per-component sentinel, reads it back
 after the draw, and certifies coverage only if every component at every pixel
 changed. Feedback, writable shader storage, and partial color masks are
@@ -1617,6 +1617,14 @@ source compared pixel-exact with Maxwell (0/65,536 differing pixels), and the
 formerly blocked 1280×720 draw issued. A later covered 1280×720 `RGBA8`
 target also compared pixel-exact (0/921,600 differing pixels). These are
 intermediate targets, not presented-frame parity.
+
+TotK also draws a 192×192 `R16` target followed by a 96×96 `R16` target
+that samples it. The `R16` probe uses a `0x6666` clear sentinel and requires
+every pixel to replace it. Both first draws pass that test, so the direct
+path can sample the 192×192 image and certify the 96×96 result. A filtered
+post-submit comparisons match Maxwell at 0/36,864 pixels for the 192×192
+target and 0/9,216 pixels for the 96×96 target. Raw cubemap color replay still depends on descriptor updates in GPU
+execution order; these producer results do not establish cubemap parity.
 
 The same per-component probe now certifies a TotK 80×45 `RGBA8` draw. That
 allows the following six draws, which alternate between two 80×45 targets, to
@@ -1874,6 +1882,13 @@ diagnostic source bridge makes that single draw's **color and depth both
 match 0/4,096 pixels different**. The bridge proves the missing producer;
 it is not a direct NVN parity result. A complete path must capture descriptor
 state in draw order and render that source without borrowing Maxwell's image.
+
+The opt-in `R16` coverage probe now produces the upstream 192×192 and 96×96
+images in the NVN path, with both results matching Maxwell pixel-for-pixel.
+This removes one producer dependency, but the raw first-face replay can still
+reject its submitted texture descriptors before GPU-side writes update the
+handle bank. Live descriptor refresh at a later checkpoint is only diagnostic;
+the recorder still needs execution-order descriptor state.
 
 On later passes, a 256×256 NVN shadow draw feeds a sampled control texture.
 The normal shadow path cannot certify that producer's whole image; its

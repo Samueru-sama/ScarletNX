@@ -4091,6 +4091,20 @@ static void execute_nvn_batch(void* arg) {
             continue;
         }
         int result = g_renderer->nvn_draw_prepare(&batch->draws->commands[draw++]);
+        const char* trace_draw_size = getenv("SNX_NVN_TRACE_DRAW_SIZE");
+        if (trace_draw_size) {
+            u32 side = (u32)strtoul(trace_draw_size, NULL, 0);
+            const NvnDrawCommand* command = &batch->draws->commands[draw - 1];
+            for (u32 target = 0; target < 8; target++)
+                if ((command->color_target_mask & (1u << target)) &&
+                    command->color_target[target].width == side &&
+                    command->color_target[target].height == side)
+                    LOG_LIMIT(128, "nvn-draw-size: sequence=%llu target=%llx count=%u result=%x source-list=%llx\n",
+                              (unsigned long long)command->sequence,
+                              (unsigned long long)command->color_target[target].gpu_address,
+                              command->count, result,
+                              (unsigned long long)command->source_list);
+        }
         if (getenv("SNX_NVN_OPERATION_TRACE"))
             for (u32 target = 0; target < 8; target++)
                 if ((batch->draws->commands[draw - 1].color_target_mask & (1u << target)) &&

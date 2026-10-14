@@ -3799,9 +3799,29 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             if ((color_feedback || depth_feedback) && !view) return 0;
             semantic_sampled += view != VK_NULL_HANDLE;
             if (!view) {
-                if (pending) return 0;
+                const char* trace_draw_size = getenv("SNX_NVN_TRACE_DRAW_SIZE");
+                int trace_source = trace_draw_size && command->color_target[0].width ==
+                    (u32)strtoul(trace_draw_size, NULL, 0) &&
+                    command->color_target[0].height == command->color_target[0].width;
+                if (pending) {
+                    if (trace_source)
+                        LOG_LIMIT(32, "nvn-shadow-source-skip: seq=%llu target=%llx stage=%u index=%d source=%llx pending=1 shape=%d size=%ux%u\n",
+                                  (unsigned long long)command->sequence,
+                                  (unsigned long long)command->color_target[0].gpu_address,
+                                  stage, tex_index, (unsigned long long)sampled_address,
+                                  semantic_shape, sampled_width, sampled_height);
+                    return 0;
+                }
                 Surf* sampled = vk_tex_from_tic_guest(descriptor->tic);
-                if (!sampled) return 0;
+                if (!sampled) {
+                    if (trace_source)
+                        LOG_LIMIT(32, "nvn-shadow-source-skip: seq=%llu target=%llx stage=%u index=%d source=%llx pending=0 shape=%d size=%ux%u\n",
+                                  (unsigned long long)command->sequence,
+                                  (unsigned long long)command->color_target[0].gpu_address,
+                                  stage, tex_index, (unsigned long long)sampled_address,
+                                  semantic_shape, sampled_width, sampled_height);
+                    return 0;
+                }
                 /* A distinct Maxwell target can still supply a sampled input while its NVN
                    producer is being modeled. Bound attachments require the snapshot above. */
                 if (command->depth_target_bound && sampled->gva == depth_target->gpu_address) return 0;
@@ -4012,19 +4032,20 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                      !key->blend[0].en && key->blend[0].mask == 15 &&
                      (fragment->si.sph[18] & 15) == 15;
     const char* full_probe_opt = getenv("SNX_NVN_SHADOW_FULL_PROBE");
+    u32 full_probe_channels = color_target->format == 0x06 ? 1 :
+                              color_target->format == 0x11 ? 3 : 15;
     int full_probe = has_color && full_probe_opt && !strcmp(full_probe_opt, "1") && !capture && !zero_seed &&
                     (color->target == 1 || color->target == 4) &&
-                    (color_target->format == 0x11 || color_target->format == 0x25 ||
+                    (color_target->format == 0x06 || color_target->format == 0x11 ||
+                     color_target->format == 0x25 ||
                      color_target->format == 0x29 || color_target->format == 0x3f) &&
                     color->transfer_src && color_width <= 512 && color_height <= 512 &&
                     !prior_covered && command->color_target_mask == 1 &&
                     !color_feedback_view[0] && !fragment->si.nimg &&
                     !vertex->si.gbuf_wmask && !fragment->si.gbuf_wmask &&
                     !key->blend[0].en &&
-                    (key->blend[0].mask & (color_target->format == 0x11 ? 3 : 15)) ==
-                        (color_target->format == 0x11 ? 3 : 15) &&
-                    (fragment->si.sph[18] & (color_target->format == 0x11 ? 3 : 15)) ==
-                        (color_target->format == 0x11 ? 3 : 15);
+                    (key->blend[0].mask & full_probe_channels) == full_probe_channels &&
+                    (fragment->si.sph[18] & full_probe_channels) == full_probe_channels;
     if (zero_seed) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -4104,7 +4125,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
     }
     if (full_probe) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachments[0].clearValue.color = color_target->format == 0x25
+        color_attachments[0].clearValue.color = color_target->format == 0x06
+            ? (VkClearColorValue){{0.4f, 0.0f, 0.0f, 0.0f}}
+            : color_target->format == 0x25
             ? (VkClearColorValue){{0.2f, 0.4f, 0.6f, 0.8f}}
             : color_target->format == 0x11
             ? (VkClearColorValue){{-0.333251953125f, -0.66650390625f, 0.0f, 0.0f}}
@@ -4232,7 +4255,11 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             vk_finish();
             vk_readback_ready();
             int complete = 1;
-            if (color_target->format == 0x25) {
+            if (color_target->format == 0x06) {
+                const u16 sentinel = 0x6666;
+                for (u64 i = 0; i < bytes && complete; i += sizeof sentinel)
+                    if (!memcmp(pixels + i, &sentinel, sizeof sentinel)) complete = 0;
+            } else if (color_target->format == 0x25) {
                 const u8 sentinel[4] = {51, 102, 153, 204};
                 for (u64 i = 0; i < bytes && complete; i += 4)
                     for (u32 component = 0; component < 4; component++)

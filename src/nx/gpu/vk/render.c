@@ -218,6 +218,15 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n); /* may record uploads: before anything is opened */
+    const char* trace_small = getenv("SNX_GPU_TRACE_RT_SIZE");
+    if (trace_small) {
+        u32 side = (u32)strtoul(trace_small, NULL, 0);
+        for (u32 i = 0; i < n; i++)
+            if (rt[i] && rt[i]->w == side && rt[i]->h == side)
+                LOG_LIMIT(128, "gpu-target-clear-size: target=%llx value=%x color=%08x,%08x,%08x,%08x\n",
+                          (unsigned long long)rt[i]->gva, v,
+                          r[0x360], r[0x361], r[0x362], r[0x363]);
+    }
     const char* control_depth_clear = getenv("SNX_NVN_CONTROL_TRACE_DEPTH_CLEAR");
     if (control_depth_clear && vk_nvn_control_probe_armed() && zt &&
         zt->gva == strtoull(control_depth_clear, NULL, 0))
@@ -1086,6 +1095,16 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
+    const char* trace_size = getenv("SNX_GPU_TRACE_RT_SIZE");
+    if (trace_size) {
+        u32 side = (u32)strtoul(trace_size, NULL, 0);
+        for (u32 i = 0; i < n; i++)
+            if (rt[i] && rt[i]->w == side && rt[i]->h == side)
+                LOG_LIMIT(128, "gpu-target-draw-size: target=%llx slot=%u count=%u indexed=%d vs=%llx fs=%llx mask=%x\n",
+                          (unsigned long long)rt[i]->gva, i, count, indexed,
+                          (unsigned long long)(code + r[0x811]),
+                          (unsigned long long)(code + r[0x851]), r[0x680]);
+    }
     const char* trace_target = getenv("SNX_GPU_TRACE_RT_ADDRESS");
     if (trace_target) {
         u64 address = strtoull(trace_target, NULL, 0);
