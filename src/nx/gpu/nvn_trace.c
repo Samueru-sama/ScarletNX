@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* SNX_NVN_TRACE=1: the NVN functions a game resolves through nvnBootstrapLoader and nvnDeviceGetProcAddress, how
-   often each is called, and how many GPFIFO submissions each queue call makes. The wrappers replace the functions'
-   entries in the recompiler's dispatch table, so they see calls through it (function pointers, which is how NVN is
-   called) but not direct branches, unless the game module was recompiled with --hook-direct-calls: the counts are
-   lower bounds otherwise. The original functions always run, so the GPU path is unchanged. */
+   often each is called, and how many GPFIFO submissions (by any thread) happen during each queue call. The wrappers
+   replace the functions' entries in the recompiler's dispatch table, so they see calls through it (function pointers,
+   which is how NVN is called) but not direct branches, unless the game module was recompiled with
+   --hook-direct-calls: the counts are lower bounds otherwise. The original functions always run, so the GPU path is
+   unchanged. */
 #include "gpu/nvn_trace.h"
 #include "gpu/gpu.h"
 #include "runtime/loader.h"
@@ -68,7 +69,12 @@ static NvProc* proc_find(u64 addr) {
 
 static void proc_trace(CPU* c, u64 entry) {
     NvProc* p = proc_find(entry);
-    if (!p) fatal("nvn: a trace wrapper runs for a function it never registered (%llx)", (unsigned long long)entry);
+    if (!p) { /* generated code reads g_disp without ordering: on a weakly ordered host the lock gives it */
+        pm_lock(&procs_lock);
+        p = proc_find(entry);
+        pm_unlock(&procs_lock);
+        if (!p) fatal("nvn: a trace wrapper runs for a function it never registered (%llx)", (unsigned long long)entry);
+    }
     __atomic_fetch_add(&p->calls, 1, __ATOMIC_RELAXED);
     if (!p->queue_op) {
         p->original(c, entry);
@@ -113,7 +119,13 @@ static void trace_proc(u64 addr, const char* name) {
 static void getproc_trace(CPU* c, u64 entry) {
     char name[128];
     int valid = read_name(c->x[1], name); /* nvnDeviceGetProcAddress(device, name) */
-    getproc_original(c, entry);
+    GuestFn original = __atomic_load_n(&getproc_original, __ATOMIC_ACQUIRE);
+    if (!original) { /* as in proc_trace: the lock orders a host where g_disp's plain load doesn't */
+        pm_lock(&procs_lock);
+        original = getproc_original;
+        pm_unlock(&procs_lock);
+    }
+    original(c, entry);
     if (!valid) return;
     LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
     trace_proc(c->x[0], name);
@@ -125,13 +137,16 @@ static void bootstrap_trace(CPU* c, u64 entry) {
     bootstrap_original(c, entry);
     if (!valid) return;
     LOG("nvn: %s -> %llx\n", name, (unsigned long long)c->x[0]);
-    if (strcmp(name, "nvnDeviceGetProcAddress")) return;
+    if (strcmp(name, "nvnDeviceGetProcAddress")) {
+        trace_proc(c->x[0], name);
+        return;
+    }
     u64 resolver = c->x[0];
     if (resolver < g_code_lo || resolver >= g_code_hi || (resolver & 3)) return;
     pm_lock(&procs_lock);
     GuestFn* slot = &g_disp[(resolver - g_code_lo) / 4];
     if (*slot && *slot != getproc_trace) {
-        getproc_original = *slot;
+        __atomic_store_n(&getproc_original, *slot, __ATOMIC_RELEASE);
         __atomic_store_n(slot, getproc_trace, __ATOMIC_RELEASE);
     }
     pm_unlock(&procs_lock);

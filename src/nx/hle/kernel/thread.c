@@ -79,8 +79,7 @@ static PMutex g_core_lk;
 static PCond g_core_cv[NCORES];
 static KThread* g_core_owner[NCORES];
 static KThread* g_core_wait[NCORES]; /* the threads waiting for each core, linked by core_next */
-static int
-    g_core_best[NCORES]; /* the best (lowest) priority waiting, 64 when none: core_preempt and core_yield read it
+static int g_core_best[NCORES]; /* the best (lowest) priority waiting, 64 when none: core_preempt and core_yield read it
                                    unlocked */
 static u64 g_core_ticket;
 /* the holder of core k is asked to let go (CPU.poll, which generated code checks on every backward branch and the
@@ -271,8 +270,8 @@ void kernel_run_main(u64 entry, u64 stack_size, int prio, int core) {
 }
 
 /* svcExitProcess. exit() would run the atexit handlers and tear the runtime down while the other guest threads still
-   run in it, so the process ends at once, the way main.c ends it when the window closes (with the hints and the
-   renderer's pipeline cache saved first, as there) */
+   run in it, so the process ends at once, the way main.c ends it when the window closes (after snx_save_before_exit,
+   as there) */
 void process_exit(int code) {
     snx_save_before_exit();
     LOG("The game exited (code %d)\n", code);

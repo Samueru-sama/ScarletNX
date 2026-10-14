@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+/* What a span of Maxwell methods writes, checked against packets captured from Tears of the Kingdom
+   (tests/nvn_command_gap.c). A "gap" is the words an NVN command buffer holds between two calls the investigation
+   observed (docs/NVN_HLE.md): inlined NVN writes them. "The caller must stage" means a user that wants to replay the
+   span instead of decoding it has to apply those writes itself. Only the tests build this today */
 #ifndef SNX_NVN_COMMAND_GAP_H
 #define SNX_NVN_COMMAND_GAP_H
 #include "cpu/aarch64/cpu.h"
@@ -34,8 +38,8 @@ int nvn_command_gap_no_writes(const u32* words, u32 count);
 
 /* Extract bounded guest-memory writes in packet order. The caller retains state across adjacent cursor gaps.
    Returns zero if the packets, address state, or output capacity are incomplete; on failure state is unchanged. */
-int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState* state,
-                                  NvnGapMemoryWrite* writes, u32 capacity, u32* write_count);
+int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState* state, NvnGapMemoryWrite* writes,
+                                  u32 capacity, u32* write_count);
 
 /* Recognize one complete indexed draw packet at the end of a command-buffer cursor gap. */
 int nvn_command_gap_indexed_draw(const u32* words, u32 count, NvnGapIndexedDraw* out);

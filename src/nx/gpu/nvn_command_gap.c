@@ -37,13 +37,11 @@ static int method_no_write(u32 subchannel, u32 method, u32 value) {
         return method == 0x2 || (method >= 0x4 && method <= 0x6) ||
                (method == 0x7 && ((value & 0x1f) == 1 || (value & 0x1f) == 4));
     return !subchannel && ((method >= 0x8e0 && method <= 0x8e3) ||
-                           (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0) ||
-                           method == 0x544 || method == 0x701 || method == 0x702 ||
-                           method == 0x7c0 || method == 0x7c1 ||
+                           (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0) || method == 0x544 ||
+                           method == 0x701 || method == 0x702 || method == 0x7c0 || method == 0x7c1 ||
                            /* Zero-valued tiled-cache flush and PIPE_NOP change no logical backing bytes.
                               Other values remain unclassified. */
-                           ((method == 0x3e0 || method == 0x68b) && !value) ||
-                           (method >= 0x6c0 && method <= 0x6c2) ||
+                           ((method == 0x3e0 || method == 0x68b) && !value) || (method >= 0x6c0 && method <= 0x6c2) ||
                            (method == 0x6c3 && (value & 3) == 1));
 }
 
@@ -68,15 +66,17 @@ typedef struct {
 static void emit_memory_write(MemoryScan* scan, u64 address, u32 size, u8 kind) {
     if (scan->invalid) return;
     if (kind == NVN_GAP_WRITE_CBUF && scan->count && scan->last_kind == kind &&
-        scan->last_address <= UINT64_MAX - scan->last_size &&
-        scan->last_address + scan->last_size == address && scan->last_size <= (16u << 20) - size) {
+        scan->last_address <= UINT64_MAX - scan->last_size && scan->last_address + scan->last_size == address &&
+        scan->last_size <= (16u << 20) - size) {
         scan->last_size += size;
         if (scan->writes) scan->writes[scan->count - 1].size = scan->last_size;
         return;
     }
-    if (scan->count == scan->capacity) { scan->invalid = 1; return; }
-    if (scan->writes)
-        scan->writes[scan->count] = (NvnGapMemoryWrite){.address = address, .size = size, .kind = kind};
+    if (scan->count == scan->capacity) {
+        scan->invalid = 1;
+        return;
+    }
+    if (scan->writes) scan->writes[scan->count] = (NvnGapMemoryWrite){.address = address, .size = size, .kind = kind};
     scan->count++;
     scan->last_address = address;
     scan->last_size = size;
@@ -85,11 +85,26 @@ static void emit_memory_write(MemoryScan* scan, u64 address, u32 size, u8 kind) 
 
 static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* context) {
     MemoryScan* scan = context;
-    if (method == 0x4) { scan->state.puller_high = value; scan->state.puller_known |= 1; return; }
-    if (method == 0x5) { scan->state.puller_low = value; scan->state.puller_known |= 2; return; }
-    if (method == 0x6) { scan->state.puller_payload = value; scan->state.puller_known |= 4; return; }
+    if (method == 0x4) {
+        scan->state.puller_high = value;
+        scan->state.puller_known |= 1;
+        return;
+    }
+    if (method == 0x5) {
+        scan->state.puller_low = value;
+        scan->state.puller_known |= 2;
+        return;
+    }
+    if (method == 0x6) {
+        scan->state.puller_payload = value;
+        scan->state.puller_known |= 4;
+        return;
+    }
     if (method == 0x7 && (value & 0x1f) == 2) {
-        if ((scan->state.puller_known & 3) != 3) { scan->invalid = 1; return; }
+        if ((scan->state.puller_known & 3) != 3) {
+            scan->invalid = 1;
+            return;
+        }
         u64 address = ((u64)(scan->state.puller_high & 0xff) << 32) | scan->state.puller_low;
         emit_memory_write(scan, address, (value & (1u << 24)) ? 4 : 16, NVN_GAP_WRITE_PULLER);
         if (!scan->invalid && scan->writes) {
@@ -99,21 +114,48 @@ static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* conte
         return;
     }
     if (subchannel) return;
-    if (!method) { scan->state.query_known = scan->state.cbuf_known = 0; return; }
-    if (method >= 0xe00) { scan->state.query_known = scan->state.cbuf_known = 0; return; }
+    if (!method) {
+        scan->state.query_known = scan->state.cbuf_known = 0;
+        return;
+    }
+    if (method >= 0xe00) {
+        scan->state.query_known = scan->state.cbuf_known = 0;
+        return;
+    }
     switch (method) {
-        case 0x6c0: scan->state.query_high = value; scan->state.query_known |= 1; return;
-        case 0x6c1: scan->state.query_low = value; scan->state.query_known |= 2; return;
-        case 0x6c2: scan->state.query_sequence = value; scan->state.query_known |= 4; return;
-        case 0x8e1: scan->state.cbuf_high = value; scan->state.cbuf_known |= 1; return;
-        case 0x8e2: scan->state.cbuf_low = value; scan->state.cbuf_known |= 2; return;
-        case 0x8e3: scan->state.cbuf_offset = value; scan->state.cbuf_known |= 4; return;
+        case 0x6c0:
+            scan->state.query_high = value;
+            scan->state.query_known |= 1;
+            return;
+        case 0x6c1:
+            scan->state.query_low = value;
+            scan->state.query_known |= 2;
+            return;
+        case 0x6c2:
+            scan->state.query_sequence = value;
+            scan->state.query_known |= 4;
+            return;
+        case 0x8e1:
+            scan->state.cbuf_high = value;
+            scan->state.cbuf_known |= 1;
+            return;
+        case 0x8e2:
+            scan->state.cbuf_low = value;
+            scan->state.cbuf_known |= 2;
+            return;
+        case 0x8e3:
+            scan->state.cbuf_offset = value;
+            scan->state.cbuf_known |= 4;
+            return;
         case 0x6c3:
             if ((value & 3) == 0 || (value & 3) == 2) {
-                if ((scan->state.query_known & 3) != 3) { scan->invalid = 1; return; }
+                if ((scan->state.query_known & 3) != 3) {
+                    scan->invalid = 1;
+                    return;
+                }
                 u64 address = ((u64)(scan->state.query_high & 0xff) << 32) | scan->state.query_low;
-                u32 size = (value & 3) == 0 ? ((value & ((1u << 4) | (1u << 28))) ? 4 : 16)
-                                            : ((value & (1u << 28)) ? 4 : 16);
+                u32 size =
+                    (value & 3) == 0 ? ((value & ((1u << 4) | (1u << 28))) ? 4 : 16) : ((value & (1u << 28)) ? 4 : 16);
                 emit_memory_write(scan, address, size, NVN_GAP_WRITE_QUERY);
                 if (!scan->invalid && scan->writes) {
                     NvnGapMemoryWrite* write = &scan->writes[scan->count - 1];
@@ -133,19 +175,31 @@ static void scan_memory_write(u32 subchannel, u32 method, u32 value, void* conte
         default: break;
     }
     if (method >= 0x8e4 && method <= 0x8f3) {
-        if (scan->state.cbuf_known != 7) { scan->invalid = 1; return; }
-        if (scan->state.cbuf_offset > UINT32_MAX - 4) { scan->invalid = 1; return; }
+        if (scan->state.cbuf_known != 7) {
+            scan->invalid = 1;
+            return;
+        }
+        if (scan->state.cbuf_offset > UINT32_MAX - 4) {
+            scan->invalid = 1;
+            return;
+        }
         u64 base = ((u64)scan->state.cbuf_high << 32) | scan->state.cbuf_low;
-        if (base > UINT64_MAX - scan->state.cbuf_offset) { scan->invalid = 1; return; }
+        if (base > UINT64_MAX - scan->state.cbuf_offset) {
+            scan->invalid = 1;
+            return;
+        }
         u64 address = base + scan->state.cbuf_offset;
-        if (address > UINT64_MAX - 4) { scan->invalid = 1; return; }
+        if (address > UINT64_MAX - 4) {
+            scan->invalid = 1;
+            return;
+        }
         emit_memory_write(scan, address, 4, NVN_GAP_WRITE_CBUF);
         scan->state.cbuf_offset += 4;
     }
 }
 
-int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState* state,
-                                  NvnGapMemoryWrite* writes, u32 capacity, u32* write_count) {
+int nvn_command_gap_memory_writes(const u32* words, u32 count, NvnGapMemoryState* state, NvnGapMemoryWrite* writes,
+                                  u32 capacity, u32* write_count) {
     if (!state || !write_count || (capacity && !writes)) return 0;
     MemoryScan scan = {.state = *state, .capacity = capacity};
     if (!nvn_command_gap_methods(words, count, scan_memory_write, &scan) || scan.invalid) return 0;
@@ -195,8 +249,8 @@ int nvn_command_gap_modeled_indexed_draw(const u32* words, u32 count) {
 static void check_staged_write(u32 subchannel, u32 method, u32 value, void* context) {
     if (method_no_write(subchannel, method, value)) return;
     if ((method == 0x7 && (value & 0x1f) == 2) ||
-        (!subchannel && ((method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2)) ||
-                         (method >= 0x8e4 && method <= 0x8f3))))
+        (!subchannel &&
+         ((method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2)) || (method >= 0x8e4 && method <= 0x8f3))))
         return;
     *(int*)context = 0;
 }
@@ -224,7 +278,8 @@ static void scan_macro_data3(u32 subchannel, u32 method, u32 value, void* contex
     MacroData3Scan* scan = context;
     if (scan->invalid) return;
     if (!subchannel && method == scan->macro_method) {
-        if (scan->phase || scan->found) scan->invalid = 1;
+        if (scan->phase || scan->found)
+            scan->invalid = 1;
         else {
             scan->packet.macro_argument = value;
             scan->phase = 1;
@@ -246,8 +301,8 @@ static void scan_macro_data3(u32 subchannel, u32 method, u32 value, void* contex
 int nvn_command_gap_macro_data3(const u32* words, u32 count, u32 macro_method, NvnGapMacroData3* out) {
     if (!out || macro_method < 0xe00 || macro_method > 0xfff) return 0;
     MacroData3Scan scan = {.macro_method = macro_method};
-    if (!nvn_command_gap_methods(words, count, scan_macro_data3, &scan) ||
-        !scan.found || scan.phase || scan.invalid) return 0;
+    if (!nvn_command_gap_methods(words, count, scan_macro_data3, &scan) || !scan.found || scan.phase || scan.invalid)
+        return 0;
     *out = scan.packet;
     return 1;
 }

@@ -214,9 +214,9 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x0E:
             /* G24R8 with R UINT and G, B, A UNORM is depth and stencil (Eden's format table reads it as S8_UINT_D24_UNORM,
                like Z24S8); other component types stay unsupported */
-            if ((w0 & 0x3ffffu) == 0x24a0eu) {
+            if ((w0 & 0x7ffffu) == 0x24a0eu) {
                 VkFmt r = vk_zt_format(0x14);
-                r.bpp = 4; /* S8D24 guest storage, even when the host uses D32F S8. */
+                r.bpp = 4; /* four-byte G24R8 guest storage, even when the host uses D32F S8 */
                 return r;
             }
             break;

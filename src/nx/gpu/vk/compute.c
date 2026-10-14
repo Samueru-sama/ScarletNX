@@ -299,8 +299,7 @@ static CsPipe* cs_pipe(const u8* code, u32 lx, u32 ly, u32 lz, u32 shm) {
             if (width == 2 && spv[at + 1] == 10) {
                 free(spv);
                 spv = NULL;
-                snprintf(p->si.first_unsupported, sizeof p->si.first_unsupported,
-                         "shaderFloat64 is unavailable");
+                snprintf(p->si.first_unsupported, sizeof p->si.first_unsupported, "shaderFloat64 is unavailable");
                 break;
             }
             at += width;
@@ -550,8 +549,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
                 cs_abandon_binding(originals);
                 return;
             }
-            VkImageView v = t && !t->f.depth ? vk_tex_bind_view(t, want, tic, st->flags & 1 ? 1 : 0)
-                                               : VK_NULL_HANDLE;
+            VkImageView v = t && !t->f.depth ? vk_tex_bind_view(t, want, tic, st->flags & 1 ? 1 : 0) : VK_NULL_HANDLE;
             VkImageLayout sampled_layout =
                 p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             if (v)

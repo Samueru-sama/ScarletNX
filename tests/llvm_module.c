@@ -5,7 +5,8 @@
    backend in small chunks (calls cross units). Every module runs it from the same state, AOT and through its
    interpreter; every register, the flags, FP state, stack memory and the SVC calls must match the LLVM AOT run.
    CPU.poll is set when each run starts: the AOT code must call rt->poll at the loop's backward branch, resuming at
-   its head (the interpreter polls on any taken branch).
+   its head (the interpreter polls on any taken branch). A second LLVM module built with --hook-direct-calls must run
+   the same, with main's BL to func reaching func through CPU.disp, where a wrapper counts it.
      llvm_module SCARLETNX REPO CLANG [BACKEND...]
    llvm always, the others named after CLANG too (gcc). */
 #include "common.h"
@@ -67,15 +68,22 @@ typedef struct {
     Calls calls;
     int polls; /* rt->poll calls, and c->pc at the first */
     u64 poll_pc;
+    int watched; /* calls through the dispatch entry run() wrapped */
 } Run;
 static Run* current;
+static GuestFn watched_entry;
+static void watch(CPU* c, u64 e) {
+    ++current->watched;
+    watched_entry(c, e);
+}
 /* the runtime takes the thread off its core here, then gives it back: once, the flag cleared */
 static void on_poll(CPU* c) {
     if (!current->polls++) current->poll_pc = c->pc;
     c->poll = 0;
 }
 
-static int run(const char* path, const unsigned char* image, int interp, Run* out) {
+/* watch_at: an offset in the image whose dispatch entry counts its calls (0: none) */
+static int run(const char* path, const unsigned char* image, int interp, u64 watch_at, Run* out) {
     typedef const SnxModule* (*ModuleFn)(void);
     ModuleFn get;
     const SnxModule* mod;
@@ -103,6 +111,11 @@ static int run(const char* path, const unsigned char* image, int interp, Run* ou
     out->cpu.disp = (GuestFn*)calloc((size_t)(mod->code_hi - mod->code_lo) / 4, sizeof(GuestFn));
     memcpy(memory + mod->mods[0].base, image, IMAGE);
     for (i = 0; i < mod->nentries; ++i) out->cpu.disp[(mod->entry_addr[i] - mod->code_lo) / 4] = mod->entry_fn[i];
+    if (watch_at) {
+        GuestFn* slot = &out->cpu.disp[(mod->mods[0].base + watch_at - mod->code_lo) / 4];
+        watched_entry = *slot;
+        if (watched_entry) *slot = watch;
+    }
     out->cpu.mem = memory;
     out->cpu.rt = &rt;
     out->cpu.code_lo = mod->code_lo;
@@ -135,10 +148,10 @@ static int same(const Run* a, const Run* b) {
 
 int main(int argc, char** argv) {
     static const char* backends[8] = {"llvm"};
-    static Run runs[8][2];
+    static Run runs[8][2], hooked, unhooked;
     int nbackends = 1;
     unsigned char image[IMAGE];
-    char *root, *input, *self, *out[8], *module[8], *text = NULL;
+    char *root, *input, *self, *out[9], *module[9], *text = NULL;
     const char* args[24];
     int b, k, interp;
     size_t i;
@@ -160,8 +173,8 @@ int main(int argc, char** argv) {
     input = snx_path_join(root, "program.nro");
     self = snx_executable(argv[0]);
     check(!snx_write_file(input, image, sizeof(image)), "write NRO");
-    for (b = 0; b < nbackends; ++b) {
-        out[b] = snx_path_join(root, backends[b]);
+    for (b = 0; b <= nbackends; ++b) { /* the last: LLVM again, with --hook-direct-calls */
+        out[b] = snx_path_join(root, b < nbackends ? backends[b] : "llvm-hooked");
 #ifdef _WIN32
         module[b] = snx_path_join(out[b], "Program_code.dll");
 #else
@@ -181,19 +194,27 @@ int main(int argc, char** argv) {
         args[k++] = "--chunk";
         args[k++] = "4";
         args[k++] = "--backend";
-        args[k++] = backends[b];
+        args[k++] = b < nbackends ? backends[b] : "llvm";
+        if (b == nbackends) args[k++] = "--hook-direct-calls";
         args[k++] = "-q";
         args[k] = NULL;
         if (snx_run(args, root, NULL, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
-            fprintf(stderr, "%s build failed\n", backends[b]);
+            fprintf(stderr, "%s build failed\n", b < nbackends ? backends[b] : "hooked llvm");
             check(0, "build");
         }
         free(text);
         text = NULL;
+        if (b == nbackends) break;
         for (interp = 0; interp < 2; ++interp)
-            check(!run(module[b], image, interp, &runs[b][interp]), interp ? "interpreter run" : "AOT run");
+            check(!run(module[b], image, interp, 0, &runs[b][interp]), interp ? "interpreter run" : "AOT run");
     }
+    /* func, which main's BL at 0x90 calls on each pass of the loop */
+    check(!run(module[0], image, 0, 0xE8, &unhooked) && !run(module[nbackends], image, 0, 0xE8, &hooked),
+          "hooked and unhooked runs");
+    check(same(&runs[0][0], &hooked), "the --hook-direct-calls module runs the same");
+    check(!unhooked.watched && hooked.watched > 0,
+          "a direct BL reaches its function through CPU.disp only with --hook-direct-calls");
     check(runs[0][0].cpu.pc == 0 && runs[0][0].calls.count == 1 && runs[0][0].calls.imm[0] == 7 &&
               !runs[0][0].calls.undefined,
           "the program returns to 0 after one SVC #7");

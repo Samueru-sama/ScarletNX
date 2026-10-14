@@ -222,8 +222,8 @@ static int tex_upload(Surf* t) {
                     }
                     reg[nreg++] = (VkBufferImageCopy){
                         .bufferOffset = off,
-                        .imageSubresource = {aspect ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, l,
-                                             layer, 1},
+                        .imageSubresource = {aspect ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, l, layer,
+                                             1},
                         .imageExtent = {lw, lh, ld}};
                 }
                 free(lin);
@@ -566,7 +566,8 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
             t->bd != bd || t->pitch != pitch || t->layer_size != stride)
             continue;
         t->last_used = g_vk_present;
-        /* an upload that ran out of memory or staging is tried again, at most once a frame */
+        /* an upload that ran out of memory or staging (here, or a re-upload below) is tried again once a frame. A
+           texture is only returned whole */
         if (!t->upload_valid) {
             if (t->checked != g_vk_present) {
                 t->checked = g_vk_present;
@@ -591,7 +592,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
                 t->checked = g_vk_present;
                 if (wr && !fresh) tex_rehash(t);
                 t->wseen = wnow + 1; /* this scan's marks are stamped with the clock after wnow */
-                return t;
+                return t->upload_valid ? t : NULL;
             }
         }
         /* without it: often at first, backing off while the texture stays the same, within a per-frame budget */
@@ -604,7 +605,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
                 t->checked = g_vk_present;
                 if (vk_sample_hash(gva, t->size) == t->shash) {
                     t->next_check = g_vk_present + 20 + ((u32)(gva >> 9) & 7);
-                    return t;
+                    return t->upload_valid ? t : NULL;
                 }
                 t->stable = 0;
             }
@@ -622,7 +623,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
                 t->next_check = g_vk_present + (t->stable < 4 ? 4 : t->stable < 12 ? 8 : 20) + ((u32)(gva >> 9) & 3);
             }
         }
-        return t;
+        return t->upload_valid ? t : NULL;
     }
     if (!format_samples(f.vk)) return NULL;
     Surf* t = tex_create(gva, w, h, layers, d3, ilevels, vt, f, fkey, bl, bh, bd, pitch, stride);

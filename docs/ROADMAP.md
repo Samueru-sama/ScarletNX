@@ -29,4 +29,4 @@ Port upstream releases manually to retain independent component layouts.
 The GPU is emulated by decoding the Maxwell command buffers NVN writes. NVN already writes a draw as one short macro
 call, so handling NVN's API calls directly would save little. Faster rendering will come from running known macros
 natively and from cheaper work per draw, with the Maxwell decoder kept as the base. `SNX_NVN_TRACE=1` lists the NVN
-functions a game calls. The [NVN HLE notes](NVN_HLE.md) record what the investigation found about NVN.
+functions a game calls. The [NVN reference](NVN_HLE.md) records what an earlier investigation into handling NVN directly found.

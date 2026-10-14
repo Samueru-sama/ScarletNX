@@ -12,7 +12,7 @@ Odyssey ("Odyssey") and Pokémon Scarlet ("Scarlet").
 
 ## Status and direction
 
-**The Maxwell decoder renders. Direct NVN will share it: shared decoder, then replace.** NVN command memory already
+**The Maxwell decoder renders, and any faster path builds on it: the MME is what to replace (below).** NVN command memory already
 is a Maxwell pushbuffer, so a second front end that reinterprets NVN calls would decode the same words twice. A
 disassembly study of the command-buffer functions found how little each call writes:
 
@@ -20,17 +20,17 @@ disassembly study of the command-buffer functions found how little each call wri
 | --- | --- |
 | `nvnCommandBufferDrawArrays` | 4: one MME macro call, header `0xa0030e32`, then mode, first, count |
 | `nvnCommandBufferDrawElements` | 6: header `0xa0050e38`, then mode, index address high and low, index type, count |
-| `nvnCommandBufferBindTexture` | 3 to 5 (12 to 20 bytes): an IMMD macro call `0x80000e0e \| stage << 16`, optionally `0x8000068b`, then `0x200208e3`, `id*8 + 0x20`, handle |
+| `nvnCommandBufferBindTexture` | 4 or 5 (Catherine): an IMMD macro call `0x80000e0e \| table[stage] << 16` (a per-stage value from an SDK table), `0x8000068b` when the command buffer's byte `+0x6c` is set, then `0x200208e3`, `id*8 + 0x20`, handle |
 
 Replacing command-buffer calls with host code therefore saves almost no guest CPU time. The hot path worth replacing
-is the MME: native implementations of known macros, chosen by a hash of the macro's uploaded code (slot numbers are
-assigned by the SDK's macro upload, so a slot number alone identifies nothing). The decoders in `nvn_control.c` and
-`nvn_command_gap.c`, with the packets captured in their tests, are the specification for those macros. An unknown hash
-keeps the MME interpreter.
+is the MME. A native implementation of a known macro would be chosen by a hash of the macro's uploaded code (slot
+numbers are assigned by the SDK's macro upload, so a slot number alone identifies nothing), and an unknown hash would
+keep the interpreter. None exists yet. `nvn_control.c` decodes the arguments of two macros and `nvn_command_gap.c`
+classifies what methods write, both checked against packets captured in their tests.
 
 ### Why semantic replay was abandoned
 
-The investigation built about 13,000 lines of opt-in probes: a recorder of NVN calls, a replay of those calls on the
+The investigation built about 14,000 lines of opt-in probes: a recorder of NVN calls, a replay of those calls on the
 GPU thread, a second Vulkan renderer with its own image cache, and pixel comparisons against the Maxwell path. It
 reached byte-exact intermediate targets in all four titles, but the approach could not become a renderer:
 
@@ -63,15 +63,16 @@ draws that write a render target starting in that range, and replaced the older 
 
 The SDK exports `nvnBootstrapLoader`, which returns a guest function pointer for an NVN function name. With
 `SNX_NVN_TRACE=1`, `nvn_trace.c` replaces that function's entry in the recompiler's dispatch table `g_disp`, then the
-entry of the `nvnDeviceGetProcAddress` pointer it returns, then the entry of every address either resolves. The
+entry of the `nvnDeviceGetProcAddress` pointer it returns, then the entry of every address either of them resolves. The
 wrappers count calls and always call the original, so rendering is unchanged.
 
 | Log line | Meaning |
 | --- | --- |
 | `nvn: NAME -> ADDRESS` | a name resolved through either loader |
 | `nvn-submit: queue=... count=... lists=... first=...` | an `nvnQueueSubmitCommands` call and its first list handle |
-| `nvn-NAME: GPFIFO submissions during call=N` | GPFIFO submissions made inside one queue call (`SubmitCommands`, `Flush`, `FenceSync`, `PresentTexture`, `WaitSync`) |
+| `nvn-nvnQueue...: GPFIFO submissions during call=N` | GPFIFO submissions, by any thread, while one queue call ran (`SubmitCommands`, `Flush`, `FenceSync`, `PresentTexture`, `WaitSync`) |
 | `nvn-used: NAME COUNT` | at exit, the calls to each address that was called |
+| `nvn: N resolved addresses, M called` | at exit, the totals |
 
 Limits:
 
@@ -122,12 +123,13 @@ buffer's chunk fields (next section).
 | chunk CPU base | `+0x50` | `+0x30` |
 | chunk GPU base | `+0x60` | `+0x58` |
 | recording flag (byte) | `+0x68` | `+0x11` |
+| space check enabled, BindTexture's `0x68b` word (bytes) | `+0x6d`, `+0x6c` | not observed |
 | reserve margin in words | `+0x70` (u32) | `+0x16` (u8) |
 
 The GPU address of a cursor is chunk GPU base + (cursor - chunk CPU base). TotK caps each range at `0x7ffffc` bytes.
 
 Command functions are all inlined copies with no shared reserve helper. Each checks whether cursor + n*4 exceeds the
-limit and if so calls a slow path (Catherine `0xd141f20`, TotK `0xd15a754`). The slow path calls the memory callback
+limit (Catherine checks only when the command buffer's byte `+0x6d` is set) and if so calls a slow path (Catherine `0xd141f20`, TotK `0xd15a754`). The slow path calls the memory callback
 (event 0 for command memory, 1 for control memory), expects it to call `AddCommandMemory` or `AddControlMemory`, and
 asserts if the space is still short.
 
@@ -193,7 +195,7 @@ passes float bits (Scarlet passes `0x3f800000`), which reach the Maxwell clear r
 | Compute | magic `0x12345679` with the declared code size at `+4`, 0x100 bytes before the code. The QMD's program address is the code, so it is the NVN candidate + 0x100. Local workgroup size and shared memory come from the NVN control object |
 
 - **VertexA and VertexB:** NVN dual vertex programs put the position in VertexA (slot 0) and the varyings in VertexB.
-  In Catherine, a program reference named only VertexA and VertexB was at the next 0x200-byte code slot. Using
+  In Catherine, a program reference named only VertexA, and VertexB was at the next 0x200-byte code slot. Using
   VertexA alone produced alpha zero.
 - **Embedded CBUF 1:** compiler-generated constant bank 1 sits in the code section after the program. A header size of
   `0x190` put it at offset `0x200`, and `0x210` at `0x300`. Both matched the Maxwell bank 1 bindings.
@@ -271,8 +273,7 @@ RGBA8 storage (Odyssey) is a format reinterpretation of one image, not a second 
 
 ## Per-device and per-submission state
 
-- **Depth mode** belongs to the device, not the draw. Scarlet's first comparison only matched once draws used the
-  device's `[0, 1]` or `[-1, 1]` mapping instead of always `[-1, 1]`.
+- **Depth mode** belongs to the device, not the draw: draws use the device's `[0, 1]` or `[-1, 1]` mapping.
 - **Window origin** cannot come from the device getter. Catherine's getter reports upper left from startup while the
   register changes between the first and second submission, written by the queue tail. Its value matters at the
   command segment's position in the submission.
@@ -291,7 +292,7 @@ RGBA8 storage (Odyssey) is a format reinterpretation of one image, not a second 
 | A render-target alias of an 8×8 cubemap mip is padded to a 16×8 surface (64-byte GOB rows). The importer accepts that shape and copies the logical extent | `vk/texture.c` `tex_take_drawn` |
 | Depth-only D16 and D32F textures import from render targets through the depth aspect | `vk/texture.c` |
 | Four-byte packed depth/stencil uploads: G24R8 (`0x0e`) and Z24S8 (`0x29`) keep stencil in the low byte, X8Z24 (`0x2a`) and S8Z24 (`0x2b`) depth in the low 24 bits | `vk/texture.c` |
-| A BRX jump table's IMNMX clamp, SHL and LDC are found up to 32 instructions back. TotK has the LDC at instruction 93 and the BRX at 125 | `shader/shader.c` `brx_table_count` |
+| A BRX resolves its jump table when the LDC is up to 64 instructions back, with only a short list of instructions that don't write the index register in between and no control flow before it. TotK has the LDC at instruction 93 and the BRX at 125 | `shader/shader.c` `brx_far_ldc` |
 | Compute code is bounded by the NVN header's declared size (magic `0x12345679` at code - 0x100), so an unresolved BRX cannot scan into neighboring programs | `vk/compute.c` |
 | Storage results are read back from host-cached memory | `vk/buffer.c`, `vk/cmd.c` |
 
@@ -299,12 +300,12 @@ RGBA8 storage (Odyssey) is a format reinterpretation of one image, not a second 
 
 Techniques that worked:
 
-- **Verify an interception against the original.** Running the SDK function on a copy of the CPU state and comparing
-  every register proved the `GetTextureHandle` replacement exact over tens of thousands of calls.
+- **Verify a replaced function against the original.** Run the SDK function on a copy of the CPU state and compare
+  every register with the replacement's result.
 - **Byte-compare a GPFIFO entry with command memory** to find which list or pool it came from. Translate GPU addresses
   to CPU addresses before concluding two ranges are separate, since they live in different address spaces.
-- **Read back at the operation, not at the present.** An operation-aligned depth readback found TotK's 305 missing
-  depth pixels after present-time comparisons had pointed elsewhere.
+- **Read back at the operation, not at the present.** A readback at the present describes the frame's last use of an
+  address, not the operation in question.
 - **Prove coverage with a sentinel.** Clear to an unusual value per component, draw, and accept a target as fully
   written only if every component of every pixel changed.
 - **Trace the executed MME** to learn a macro's arguments, rather than guessing from the call site.
@@ -318,8 +319,8 @@ Pitfalls:
 - Two uncovered images both read back as zero and compare equal. Check coverage before calling a comparison a match.
 - A probe that submits or finishes the queue changes what it measures. A readback after a draw once masked a missing
   descriptor, and a queue finish advanced the frame so that draws were skipped and the result looked better.
-- Bounded logs must report when they wrap. A 1,024-entry write history wrapped between checks and falsely invalidated
-  images.
+- Bounded logs answer "maybe" when they wrap. The Maxwell write log (`maxwell3d.c`, 1,024 entries) answers "assume
+  dirty" for ranges older than it holds, which costs a content check. The probes treated that as a real write.
 - A zero texture handle (Scarlet binds many) may be an unused slot or a shader-visible null descriptor. Decide from
   the shader's texture use, not from the bind.
 - Run counts vary with timing even at the same frame limit. Treat them as samples, not coverage.

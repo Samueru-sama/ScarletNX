@@ -143,18 +143,27 @@ static int brx_far_ldc(const u64* w, u32 i, u32 ra) {
             for (u32 p = 11; p < j; p++) {
                 if (!IDX_OK(p)) continue;
                 const Op* prior = decode(w[p]);
-                if (!prior || is_term(prior->id) || prior->id == O_CAL || prior->id == O_SSY ||
-                    prior->id == O_PBK || prior->id == O_PCNT || prior->id == O_PRET ||
-                    prior->id == O_PEXIT || prior->id == O_BPT)
+                if (!prior || is_term(prior->id) || prior->id == O_CAL || prior->id == O_SSY || prior->id == O_PBK ||
+                    prior->id == O_PCNT || prior->id == O_PRET || prior->id == O_PEXIT || prior->id == O_BPT)
                     return -1;
             }
             return (int)j;
         }
         switch (op->id) {
-            case O_NOP: case O_STG: case O_ISETP_I: break; /* no general-register result */
-            case O_FMUL32I: case O_MUFU: case O_FMNMX_I: case O_MOV32I:
-            case O_RRO_R: case O_FFMA_R: case O_FADD_R: case O_ICMP_CR:
-            case O_FMUL_R: case O_MOV_R: case O_FADD_I:
+            case O_NOP:
+            case O_STG:
+            case O_ISETP_I: break; /* no general-register result */
+            case O_FMUL32I:
+            case O_MUFU:
+            case O_FMNMX_I:
+            case O_MOV32I:
+            case O_RRO_R:
+            case O_FFMA_R:
+            case O_FADD_R:
+            case O_ICMP_CR:
+            case O_FMUL_R:
+            case O_MOV_R:
+            case O_FADD_I:
                 if (B(w[j], 0, 8) == ra) return -1;
                 break;
             default: return -1;

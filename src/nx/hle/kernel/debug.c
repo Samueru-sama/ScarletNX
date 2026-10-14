@@ -3,8 +3,9 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* debugging output: guest symbols, backtraces, unresolved calls, register and thread dumps, and the lookup of an
-   exported name (kernel_find_symbol_exact). These run from the crash handler too, where a fault while reading guest
-   memory would end the report: every read is checked first */
+   exported name (kernel_find_symbol_exact). The dumps run from the crash handler too, where a fault while reading
+   guest memory would end the report: every read they make is checked first. The startup lookup relies on each string
+   table's check at load */
 #include "hle/kernel/kernel_int.h"
 /* [a, a+n) is mapped game memory, safe to read */
 static int mapped(u64 a, u64 n) {
@@ -58,7 +59,7 @@ typedef struct {
 } GSym;
 static GSym* g_gsyms;
 static int g_ngsyms;
-static u64 g_gstr[16], g_gstrsz[16]; /* each module's string table and its size (0: unknown) */
+static u64 g_gstr[16], g_gstrsz[16]; /* each module's string table and its size (0: unknown, or not mapped at load) */
 static u64 gsym_name(const GSym* g) { return g_gstr[g->mod] + g->name_off; } /* the name's guest address */
 static int gsym_cmp(const void* a, const void* b) {
     u64 x = ((const GSym*)a)->addr, y = ((const GSym*)b)->addr;
@@ -133,9 +134,12 @@ static const char* gsym(u64 a) {
             hi = mid - 1;
     }
     if (best < 0 || a - g_gsyms[best].addr > 0x20000) return o;
-    u64 name = gsym_name(&g_gsyms[best]);
-    if (!mapped(name, 1)) return o;
-    snprintf(o, 200, " <%.150s+%llx>", (const char*)GP(name), (unsigned long long)(a - g_gsyms[best].addr));
+    const GSym* g = &g_gsyms[best];
+    u64 name = gsym_name(g), strsz = g_gstrsz[g->mod];
+    /* the name is read up to 150 bytes: inside its string table up to the table's end, else only if mapped */
+    int max = strsz && g->name_off < strsz ? (int)(strsz - g->name_off < 150 ? strsz - g->name_off : 150) : 150;
+    if ((!strsz || g->name_off >= strsz) && !mapped(name, 150)) return o;
+    snprintf(o, 200, " <%.*s+%llx>", max, (const char*)GP(name), (unsigned long long)(a - g->addr));
     return o;
 }
 static void guest_backtrace(CPU* c) {

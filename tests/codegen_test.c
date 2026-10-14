@@ -308,24 +308,23 @@ done:
     free(output);
 }
 
-/* --hook-direct-calls: a BL to a recompiled function becomes a call through CPU.disp (CALLDYN), where runtime wrappers
-   can see it; without the option it stays a direct call of the function */
-static char* emit_text(SnxCodegen* codegen, const SnxFunction* function) {
-    FILE* file = tmpfile();
+/* the C snx_codegen_emit writes for function, read back from a file in directory */
+static char* emit_text(const char* directory, SnxCodegen* codegen, const SnxFunction* function) {
+    char* path = snx_path_join(directory, "hook.c");
+    FILE* file = path ? snx_fopen(path, "wb") : NULL;
     char* text = NULL;
-    long size;
-    if (!file) return NULL;
-    snx_codegen_emit(file, codegen, function);
-    size = ftell(file);
-    if (size >= 0 && !fseek(file, 0, SEEK_SET) && (text = calloc(1, (size_t)size + 1)) != NULL &&
-        fread(text, 1, (size_t)size, file) != (size_t)size) {
-        free(text);
-        text = NULL;
+    size_t size;
+    if (file) {
+        snx_codegen_emit(file, codegen, function);
+        if (!fclose(file)) text = (char*)snx_read_file(path, &size);
     }
-    fclose(file);
+    free(path);
     return text;
 }
-static void hook_test(void) {
+
+/* --hook-direct-calls: a BL to a recompiled function becomes a call through CPU.disp (CALLDYN), where runtime wrappers
+   can see it; without the option it stays a direct call of the function */
+static void hook_test(const char* directory) {
     static const SnxU32 words[] = {0x94000002UL,  /* BL +8 */
                                    0xD65F03C0UL,  /* RET */
                                    0xD65F03C0UL}; /* RET: the called function */
@@ -335,7 +334,7 @@ static void hook_test(void) {
     SnxCodegen codegen;
     SnxFde range;
     const SnxFunction* function;
-    char *direct, *hooked;
+    char *direct, *hooked, call[64], dispatch[64];
     size_t i;
     for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
     setup_program(&program, &module, image, sizeof(image));
@@ -343,18 +342,19 @@ static void hook_test(void) {
     range.size = 8;
     module.fde = &range;
     module.fde_count = 1;
+    /* the call site's two forms; the entry check (CALLDYN(e)) and the dispatcher (CALLDYN(c->pc)) dispatch too, so the
+       target's literal tells the call apart */
+    sprintf(call, "F_%lX(c,", (unsigned long)(SNX_CODE_BASE + 8));
+    sprintf(dispatch, "CALLDYN(%lu)", (unsigned long)(SNX_CODE_BASE + 8));
     check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the hooked call");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && snx_codegen_function(&codegen, SNX_CODE_BASE + 8), "caller and callee are functions");
     if (function) {
-        direct = emit_text(&codegen, function);
+        direct = emit_text(directory, &codegen, function);
         codegen.hook_direct_calls = 1;
-        hooked = emit_text(&codegen, function);
-        /* the call site; every function's dispatcher also ends in CALLDYN(c->pc) */
-        check(direct && strstr(direct, "F_8000008(c,") && !strstr(direct, "CALLDYN(134217736)"),
-              "a direct call stays direct");
-        check(hooked && strstr(hooked, "CALLDYN(134217736)") && !strstr(hooked, "F_8000008(c,"),
-              "a hooked call goes through CPU.disp");
+        hooked = emit_text(directory, &codegen, function);
+        check(direct && strstr(direct, call) && !strstr(direct, dispatch), "a direct call stays direct");
+        check(hooked && strstr(hooked, dispatch) && !strstr(hooked, call), "a hooked call goes through CPU.disp");
         free(direct);
         free(hooked);
     }
@@ -471,8 +471,8 @@ int main(int argc, char** argv) {
     if (!directory) return 1;
     decoder_test();
     analysis_test();
-    hook_test();
     large_range_test();
+    hook_test(directory);
     semantics_test(argv[1], argv[2], directory);
     poll_test(argv[1], argv[2], directory);
     check(!snx_remove_tree(directory), "remove codegen test directory");

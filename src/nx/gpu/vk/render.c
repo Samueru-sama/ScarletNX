@@ -216,9 +216,13 @@ static int trace_target(const Surf* s) {
         read = 1;
         const char* v = getenv("SNX_GPU_TRACE_TARGET");
         if (v) {
-            char* end;
+            char *end, *size_end = NULL;
             lo = strtoull(v, &end, 0);
-            bytes = *end == ':' ? strtoull(end + 1, NULL, 0) : 1;
+            bytes = *end == ':' ? strtoull(end + 1, &size_end, 0) : 1;
+            if (end == v || (*end && *end != ':') || (size_end && (*size_end || size_end == end + 1)) || !bytes) {
+                WARN("SNX_GPU_TRACE_TARGET=%s isn't address[:bytes] (0x for hex): no trace\n", v);
+                bytes = 0;
+            }
         }
     }
     return bytes && s && s->gva >= lo && s->gva - lo < bytes;
@@ -235,13 +239,14 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(ch, rt, &zt, &n); /* may record uploads: before anything is opened */
+    read_targets(ch, rt, &zt, &n);      /* may record uploads: before anything is opened */
     for (u32 i = 0; mask && i < n; i++) /* the slot the clear takes is resolved below: every bound one is listed */
         if (trace_target(rt[i]))
-            LOG_LIMIT(64, "gpu-trace-target: color clear of slot %u, bound slot %u target=%llx %ux%u mask=%x "
-                          "value=%08x,%08x,%08x,%08x\n",
-                      slot, i, (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, mask, r[0x360], r[0x361],
-                      r[0x362], r[0x363]);
+            LOG_LIMIT(64,
+                      "gpu-trace-target: color clear of slot %u, bound slot %u target=%llx %ux%u mask=%x "
+                      "value=%08x,%08x,%08x,%08x\n",
+                      slot, i, (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, mask, r[0x360], r[0x361], r[0x362],
+                      r[0x363]);
     if ((v & 3) && trace_target(zt))
         LOG_LIMIT(64, "gpu-trace-target: clear depth target=%llx %ux%u depth=%d stencil=%d value=%g\n",
                   (unsigned long long)zt->gva, zt->w, zt->h, v & 1, (v >> 1) & 1, dz);
@@ -893,9 +898,10 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
         if (st->flags & 1) t = vk_tex_from_tic_raw(x->tic);
         if ((st->flags & 1) && !t) return VK_NULL_HANDLE;
         VkImageViewType want = vk_tex_view_type(st);
-        int num = st->flags & 1 ? 1
+        int num = st->flags & 1                                    ? 1
                   : st->shadow || !((s->si.tex_int_mask >> i) & 1) ? 0
-                  : ((s->si.tex_sint_mask >> i) & 1) ? 2 : 1;
+                  : ((s->si.tex_sint_mask >> i) & 1)               ? 2
+                                                                   : 1;
         VkImageView view = VK_NULL_HANDLE;
         VkImageLayout layout = s->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
@@ -1071,8 +1077,9 @@ retry:
     read_targets(ch, rt, &zt, &n);
     for (u32 i = 0; i < n; i++)
         if (trace_target(rt[i]))
-            LOG_LIMIT(64, "gpu-trace-target: draw color slot %u target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n",
-                      i, (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, count, indexed,
+            LOG_LIMIT(64,
+                      "gpu-trace-target: draw color slot %u target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n", i,
+                      (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, count, indexed,
                       (unsigned long long)(code + r[0x811]), (unsigned long long)(code + r[0x851]));
     if (trace_target(zt))
         LOG_LIMIT(64, "gpu-trace-target: draw depth target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n",

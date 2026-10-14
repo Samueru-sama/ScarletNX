@@ -30,8 +30,8 @@ typedef struct {
     VkFence done;
     u64 number;             /* submit number of the work guarded by done */
     int recording, pending; /* pending: submitted, fence not waited yet */
-    Ring stage; /* uploads and draw data, written by the CPU and read by the GPU */
-    Ring back;  /* storage results copied back by the GPU for the CPU to read (vk_stage_back) */
+    Ring stage;             /* uploads and draw data, written by the CPU and read by the GPU */
+    Ring back;              /* storage results copied back by the GPU for the CPU to read (vk_stage_back) */
     /* destroyed once this frame's work is done */
     Dead* dead;
     int ndead, capdead;
@@ -168,9 +168,8 @@ VkCommandBuffer vk_cmd(void) {
     return f->cb;
 }
 
-static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage,
-                      VmaAllocationCreateFlags flags, VmaMemoryUsage where, VkBuffer* buf, u64* off,
-                      VmaAllocation* mem) {
+static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags,
+                      VmaMemoryUsage where, VkBuffer* buf, u64* off, VmaAllocation* mem) {
     if (align < 16) align = 16;
     u64 at = (r->used + align - 1) & ~(align - 1);
     if (!r->buf || at + size > r->cap) {
@@ -183,9 +182,10 @@ static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags
         }
         u64 cap = r->cap ? r->cap * 2 : STAGE_MIN;
         while (cap < size) cap *= 2;
-        VkBufferCreateInfo bci = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = cap, .usage = usage,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+        VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                  .size = cap,
+                                  .usage = usage,
+                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         VmaAllocationCreateInfo aci = {.flags = flags | VMA_ALLOCATION_CREATE_MAPPED_BIT, .usage = where};
         VmaAllocationInfo info;
         if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &r->buf, &r->mem, &info))) {
