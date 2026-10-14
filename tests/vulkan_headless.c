@@ -50,24 +50,6 @@ static int check_viewport_orientation(void) {
     return 0;
 }
 
-static int check_tic_layout(void) {
-    u32 tic[8] = {0x58d7ff83, 0x22b50000, 0x00600006, 0x00070020,
-                  0xe88000ff, 0x800000ff, 0, 0};
-    int block_linear = 0;
-    u32 pitch = UINT32_MAX;
-    CHECK(vk_tex_tic_layout(tic, &block_linear, &pitch));
-    CHECK(block_linear && !pitch);
-    tic[2] = (tic[2] & ~(7u << 21)) | (1u << 21);
-    tic[3] = 384 / 32;
-    tic[4] = (tic[4] & ~0xffffu) | 31u;
-    tic[5] = (tic[5] & ~0xffffu) | 191u;
-    CHECK(vk_tex_tic_layout(tic, &block_linear, &pitch));
-    CHECK(!block_linear && pitch == 384);
-    tic[0] = 0;
-    CHECK(!vk_tex_tic_layout(tic, &block_linear, &pitch));
-    return 0;
-}
-
 /* Execute the direct writer's module, not only spirv-val's structural check. */
 static int check_direct_spirv(void) {
     size_t words = 0;
@@ -184,7 +166,6 @@ int main(int argc, char** argv) {
     video_init("Headless Vulkan fixture");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_viewport_orientation());
-    CHECK(!check_tic_layout());
     CHECK(!check_direct_spirv());
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */

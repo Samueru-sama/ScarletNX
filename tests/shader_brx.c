@@ -41,8 +41,8 @@ int main(void) {
     check(len == 20 * 8 && reads == 2, "clamped BRX reads only its two live table entries");
     u32 targets[64];
     reads = 0;
-    check(shader_brx_targets_bounded(code, 15, 64, targets, 64) == 2 && reads == 2,
-          "write analysis accepts a complete clamped BRX table");
+    check(shader_brx_targets(code, 15, 64, targets, 64) == 2 && reads == 2 && targets[0] == 19 && targets[1] == 19,
+          "a clamped BRX table gives exactly its two targets");
 
     reads = 0;
     invalid_second = 1;
@@ -56,8 +56,6 @@ int main(void) {
     code[13] |= 1ull << 49; /* LDC.B64 is not the compiler's jump-table shape */
     shader_hash((const u8*)code, sizeof code, &len);
     check(len == 20 * 8 && reads == 3, "non-B32 loads do not borrow the table clamp");
-    check(shader_brx_targets_bounded(code, 15, 64, targets, 64) < 0,
-          "write analysis rejects a table without a verified clamp");
 
     memset(code, 0, sizeof code);
     code[10] = SCHED;

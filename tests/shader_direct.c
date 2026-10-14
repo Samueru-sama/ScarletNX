@@ -61,8 +61,7 @@ int main(int argc, char** argv) {
     size_t words = 0;
     u32* spv = shader_to_spirv((const u8*)code, sizeof code, ST_FS, &info, &words, 1, 1, 1);
     if (!spv || info.stage != ST_FS || info.sph[18] != 15 || info.cbuf_mask != 1 || info.cbuf_max[0] != 16 ||
-        info.ntex != 2 || !info.tex[1].shadow || !(info.cbuf0_read_words[0] & 1u) ||
-        info.cbuf0_untracked_read) {
+        info.ntex != 2 || !info.tex[1].shadow) {
         free(spv);
         return 1;
     }

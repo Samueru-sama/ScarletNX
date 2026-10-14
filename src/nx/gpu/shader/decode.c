@@ -270,12 +270,6 @@ static int opcmp(const void* a, const void* b) {
     return y->bits - x->bits;
 }
 void ops_init(void) {
-    int expected = 0;
-    if (!__atomic_compare_exchange_n(&ops_ready, &expected, 1, 0, __ATOMIC_ACQ_REL,
-                                     __ATOMIC_ACQUIRE)) {
-        while (__atomic_load_n(&ops_ready, __ATOMIC_ACQUIRE) != 2) { }
-        return;
-    }
     int n = 0;
     for (; ops[n].pat; n++) {
         u64 m = 0, v = 0;
@@ -294,7 +288,7 @@ void ops_init(void) {
         ops[n].bits = bits;
     }
     qsort(ops, n, sizeof(Op), opcmp);
-    __atomic_store_n(&ops_ready, 2, __ATOMIC_RELEASE);
+    ops_ready = 1;
 }
 static const Op* op_nop;
 /* EXIT.FCSM_TR after VOTE.VTG is a hw cull exit; treat as NOP or the VS never writes position */

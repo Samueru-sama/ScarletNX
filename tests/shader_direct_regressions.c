@@ -200,8 +200,6 @@ static void fragment_storage_images(void) {
             check(info.img[0].kind == cases[i].kind && info.img[0].bindless && info.img[0].bl_cbuf == 2 &&
                       info.img[0].cbuf_off == 74,
                   "fragment storage image resolves its handle and integer format");
-            check((info.cbuf2_read_words[2] & (3u << 10)) == (3u << 10) && !info.cbuf2_untracked_read,
-                  "fragment storage image records both handle words");
             check(count_opcode(code, words, cases[i].opcode, 0xffffffffu) > 0,
                   "fragment storage image emits the write or atomic operation");
             if (cases[i].kind == 1)

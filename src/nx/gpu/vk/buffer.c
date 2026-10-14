@@ -114,7 +114,7 @@ void vk_buf_frame_done(u64 frame) {
                 fatal("Could not invalidate a graphics storage buffer after its frame completed");
             invalidated = o->mem;
         }
-        vk_write_changed(o->addr, o->ptr, o->org, o->size, 0);
+        vk_write_changed(o->addr, o->ptr, o->org, o->size);
         if (copy_stats_on()) {
             g_wb_outputs++;
             g_wb_bytes += o->size;
@@ -149,7 +149,7 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
         u64 at;
         VmaAllocation mem;
         u8* p = vk_stage_back(o->size, &back, &at, &mem);
-        if (!p) continue;
+        if (!p) break; /* out of memory: this result and the rest stay where the shader wrote them */
         if (n && (n == sizeof regions / sizeof *regions || o->buf != src || back != dst)) {
             vkCmdCopyBuffer(cb, src, dst, n, regions);
             n = 0;

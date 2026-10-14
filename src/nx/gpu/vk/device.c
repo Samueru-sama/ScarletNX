@@ -242,10 +242,9 @@ static int create_device(void) {
     WANT(geometryShader);
     WANT(tessellationShader);
 #undef WANT
-    const char* ext[5];
+    const char* ext[4];
     u32 next = 0;
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-    const char* index_uint8_ext = NULL;
     {
         u32 n = 0;
         vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &n, NULL);
@@ -254,10 +253,6 @@ static int create_device(void) {
         for (u32 i = 0; i < n; i++) {
             if (!strcmp(e[i].extensionName, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME)) g_vk.has_divisor = 1;
             if (!strcmp(e[i].extensionName, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME)) g_vk.has_border_color = 1;
-            if (!strcmp(e[i].extensionName, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME) && !index_uint8_ext)
-                index_uint8_ext = VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME;
-            if (!strcmp(e[i].extensionName, VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME))
-                index_uint8_ext = VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME;
         }
         free(e);
     }
@@ -265,8 +260,6 @@ static int create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
-    VkPhysicalDeviceIndexTypeUint8Features findex = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .pNext = &q12};
@@ -280,14 +273,9 @@ static int create_device(void) {
         *tail = &fbc;
         tail = &fbc.pNext;
     }
-    if (index_uint8_ext) {
-        *tail = &findex;
-        tail = &findex.pNext;
-    }
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
-    g_vk.has_index_uint8 = index_uint8_ext && findex.indexTypeUint8;
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .shaderDrawParameters = q11.shaderDrawParameters};
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
@@ -319,14 +307,6 @@ static int create_device(void) {
             .customBorderColorWithoutFormat = VK_TRUE};
         chain = &fbc;
         ext[next++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
-    }
-    if (g_vk.has_index_uint8) {
-        findex = (VkPhysicalDeviceIndexTypeUint8Features){
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES,
-            .pNext = chain,
-            .indexTypeUint8 = VK_TRUE};
-        chain = &findex;
-        ext[next++] = index_uint8_ext;
     }
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                               .pNext = chain,

@@ -31,10 +31,12 @@ int nvn_command_gap_methods(const u32* words, u32 length, NvnGapMethodVisitor vi
     return 1;
 }
 
+/* puller methods (below 0x40) act the same on every subchannel, as gpu.c decodes them; the rest are the 3D engine's */
 static int method_no_write(u32 subchannel, u32 method, u32 value) {
-    return !subchannel && (method == 0x2 || (method >= 0x4 && method <= 0x6) ||
-                           (method == 0x7 && ((value & 0x1f) == 1 || (value & 0x1f) == 4)) ||
-                           (method >= 0x8e0 && method <= 0x8e3) ||
+    if (method < 0x40)
+        return method == 0x2 || (method >= 0x4 && method <= 0x6) ||
+               (method == 0x7 && ((value & 0x1f) == 1 || (value & 0x1f) == 4));
+    return !subchannel && ((method >= 0x8e0 && method <= 0x8e3) ||
                            (method >= 0x904 && method <= 0x924 && ((method - 0x904) & 7) == 0) ||
                            method == 0x544 || method == 0x701 || method == 0x702 ||
                            method == 0x7c0 || method == 0x7c1 ||
@@ -192,9 +194,10 @@ int nvn_command_gap_modeled_indexed_draw(const u32* words, u32 count) {
 
 static void check_staged_write(u32 subchannel, u32 method, u32 value, void* context) {
     if (method_no_write(subchannel, method, value)) return;
-    if (!subchannel && ((method == 0x7 && (value & 0x1f) == 2) ||
-                        (method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2)) ||
-                        (method >= 0x8e4 && method <= 0x8f3))) return;
+    if ((method == 0x7 && (value & 0x1f) == 2) ||
+        (!subchannel && ((method == 0x6c3 && ((value & 3) == 0 || (value & 3) == 2)) ||
+                         (method >= 0x8e4 && method <= 0x8f3))))
+        return;
     *(int*)context = 0;
 }
 

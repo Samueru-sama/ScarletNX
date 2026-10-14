@@ -40,7 +40,7 @@ target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/maxwell3d.c gpu/renderer.c
-              gpu/nvn_trace.c gpu/nvn_hle.c gpu/nvn_record.c gpu/nvn_command_gap.c gpu/nvn_control.c gpu/nvn_uniform.c gpu/nvn_pool.c gpu/nvn_buffer.c gpu/nvn_texture.c gpu/nvn_sampler.c gpu/nvn_program.c gpu/nvn_shader.c gpu/nvn_alias.c gpu/nvn_descriptor.c gpu/nvn_sampler_descriptor.c)
+              gpu/nvn_trace.c)
 
 set(platform runtime/platform/plat.c runtime/platform/unattended.c runtime/platform/backend/sdl3.c)
 if(WIN32)
@@ -50,15 +50,12 @@ else()
 endif()
 snx_component(platform ${platform})
 
-set(components core kernel hle video gpu platform)
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
-              gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/spirv_emit.c)
-# volk uses SDL's loader for windows and loads Vulkan directly for headless runs
+                     gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/spirv_emit.c)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
-              gpu/vk/nvn.c gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c
-              gpu/vk/astc.c gpu/texture/etc2.c gpu/vk/vma.cpp
-              "${volk_SOURCE_DIR}/volk.c")
-list(APPEND components shader vk)
+                 gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c
+                 gpu/vk/astc.c gpu/texture/etc2.c gpu/texture/depth.c gpu/vk/vma.cpp "${volk_SOURCE_DIR}/volk.c")
+set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation)
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS -w)
 
@@ -104,6 +101,13 @@ if(BUILD_TESTING)
         target_link_libraries(snx-test-shader-direct-regressions PRIVATE Threads::Threads m)
     endif()
     add_test(NAME shader_direct_regressions COMMAND $<TARGET_FILE:snx-test-shader-direct-regressions>)
+    # Maxwell BRX jump tables: a far LDC, clamped and unresolved tables
+    add_executable(snx-test-shader-brx "${PROJECT_SOURCE_DIR}/tests/shader_brx.c")
+    target_link_libraries(snx-test-shader-brx PRIVATE snx_shader)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-brx PRIVATE Threads::Threads m)
+    endif()
+    add_test(NAME shader_brx COMMAND snx-test-shader-brx)
     find_program(SNX_SHADER_SPIRV_VAL spirv-val)
     find_program(SNX_SHADER_SPIRV_DIS spirv-dis)
     find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -113,16 +117,6 @@ if(BUILD_TESTING)
             --disassembler "${SNX_SHADER_SPIRV_DIS}"
             --regressions $<TARGET_FILE:snx-test-shader-direct-regressions>)
     endif()
-endif()
-
-# Maxwell BRX jump-table bounds and unresolved program tails
-if(BUILD_TESTING)
-    add_executable(snx-test-shader-brx "${PROJECT_SOURCE_DIR}/tests/shader_brx.c")
-    target_link_libraries(snx-test-shader-brx PRIVATE snx_shader)
-    if(NOT WIN32)
-        target_link_libraries(snx-test-shader-brx PRIVATE Threads::Threads m)
-    endif()
-    add_test(NAME shader_brx COMMAND snx-test-shader-brx)
 endif()
 
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.

@@ -907,7 +907,6 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     int position_used = 0, layer_output_used = 0, layer_input_used = 0;
     u8 cbuf_used[18] = {0};
     u32 cbuf_max[18] = {0};
-    ShaderInfo coverage = {0};
     ShTex textures[32] = {0};
     int texture_count = 0;
     ShaderInfo image_info = {0};
@@ -1162,11 +1161,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (a < 255) used[a] = 1;
             if (B(insn[i], 48, 3) == 5 && d + 1 < 255) used[d + 1] = 1;
             u32 bank = B(insn[i], 36, 5);
-            if (bank >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[bank] = 1;
             cbuf_max[bank] = 65536;
-            if (bank == 0) coverage.cbuf0_untracked_read = 1;
-            if (bank == 2) coverage.cbuf2_untracked_read = 1;
         }
         if (op->id == O_LDG || op->id == O_STG) {
             u32 count = B(insn[i], 48, 3) == 5 ? 2 : B(insn[i], 48, 3) >= 6 ? 4 : 1;
@@ -1295,13 +1291,6 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (idx >= 18) return direct_reject(si, "constant buffer index");
             cbuf_used[idx] = 1;
             if ((off | 15u) + 1 > cbuf_max[idx]) cbuf_max[idx] = (off | 15u) + 1;
-            if (idx == 0 || idx == 2) {
-                u32 word = off / 4;
-                if (idx == 0 && word < 416) coverage.cbuf0_read_words[word / 32] |= 1u << (word & 31);
-                else if (idx == 2 && word < 96) coverage.cbuf2_read_words[word / 32] |= 1u << (word & 31);
-                else if (idx == 0) coverage.cbuf0_untracked_read = 1;
-                else coverage.cbuf2_untracked_read = 1;
-            }
         }
         if (op->id == O_FSETP_R || op->id == O_FSETP_C || op->id == O_FSETP_I) {
             if (a < 255) used[a] = 1;
@@ -1441,16 +1430,6 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                 if (bindless) {
                     cbuf_used[bank] = 1;
                     if (off * 4 + 16 > cbuf_max[bank]) cbuf_max[bank] = ((off * 4) | 15u) + 1;
-                    if (bank == 0 || bank == 2) {
-                        u32 limit = bank == 0 ? 416 : 96;
-                        for (u32 word = off; word < off + 2; word++) {
-                            if (word < limit) {
-                                u32* bits = bank == 0 ? coverage.cbuf0_read_words : coverage.cbuf2_read_words;
-                                bits[word / 32] |= 1u << (word & 31);
-                            } else if (bank == 0) coverage.cbuf0_untracked_read = 1;
-                            else coverage.cbuf2_untracked_read = 1;
-                        }
-                    }
                 }
             } else {
                 int slot = 0;
@@ -1816,10 +1795,6 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (op != O_LDG) gbuf_wmask |= 1u << slot;
             cbuf_used[0] = 1;
             if ((descriptor | 15u) + 1 > cbuf_max[0]) cbuf_max[0] = (descriptor | 15u) + 1;
-            for (u32 word = descriptor / 4; word < descriptor / 4 + 3; word++) {
-                if (word < 416) coverage.cbuf0_read_words[word / 32] |= 1u << (word & 31);
-                else coverage.cbuf0_untracked_read = 1;
-            }
         }
         if (d < 255 && op != O_LDG && op != O_STG && op != O_RED && op != O_STL && op != O_AST &&
             op != O_PSETP && op != O_CSETP && op != O_R2P_R && op != O_R2P_C && op != O_R2P_I &&
@@ -4371,10 +4346,6 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     for (u32 i = 0; i < 32; i++)
         if (inputs_used[i]) next.in_mask |= 1u << i;
     memcpy(next.sph, sph, sizeof sph);
-    memcpy(next.cbuf0_read_words, coverage.cbuf0_read_words, sizeof next.cbuf0_read_words);
-    memcpy(next.cbuf2_read_words, coverage.cbuf2_read_words, sizeof next.cbuf2_read_words);
-    next.cbuf0_untracked_read = coverage.cbuf0_untracked_read;
-    next.cbuf2_untracked_read = coverage.cbuf2_untracked_read;
     *si = next;
     return result;
 }

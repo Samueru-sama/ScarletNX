@@ -4,7 +4,7 @@
    loader the window backend gives (SDL's), so nothing links against a Vulkan library.
 
    device.c    instance, device, queues, swapchain, memory allocator (VMA)
-   cmd.c       frames in flight: the command buffer being recorded, a staging ring, deferred destruction
+   cmd.c       frames in flight: the command buffer being recorded, staging and readback rings, deferred destruction
    format.c    guest render target and texture formats -> Vulkan formats
    surface.c   render targets by guest address (a table textures share), loads from and write-backs to guest memory
    writeback.c landing compute and graphics storage results in guest memory
@@ -24,55 +24,12 @@
 #define SNX_VK_H
 #include "cpu/aarch64/cpu.h"
 #include "gpu/gpu.h"
-#include "gpu/nvn_clear.h"
-#include "gpu/nvn_control.h"
-#include "gpu/nvn_copy.h"
-#include "gpu/nvn_draw.h"
-#include "gpu/nvn_dispatch.h"
-#include "gpu/nvn_memory_write.h"
 #include "volk.h"
 #include "vk_mem_alloc.h"
 #include "gpu/shader/shader.h"
 
 #define VK_FRAMES 2  /* frames in flight */
 #define VK_SC_MAX 16 /* swapchain images */
-
-int vk_nvn_clear(const NvnClearCommand* command);
-int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command);
-void vk_nvn_batch_begin(void);
-void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
-                                 NvnControlShaderProbeResult* result);
-int vk_nvn_control_depth_prepare(const NvnTextureTarget* target);
-int vk_nvn_control_pipeline_probe(const NvnControlShaderProbe* probe,
-                                   const NvnTextureTarget* color_target,
-                                   const NvnTextureTarget* depth_target,
-                                   const u32* registers, u32 primitive);
-u32 vk_nvn_control_buffer_probe(const NvnControlShaderProbe* probe, const u32* registers,
-                                 const u8* indices, u32 index_bytes, u32 index_count, u32 index_type);
-int vk_nvn_control_descriptor_probe(const NvnControlShaderProbe* probe,
-                                     const NvnTextureTarget* depth_target);
-int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
-                              const NvnTextureTarget* color_target,
-                              const NvnTextureTarget* depth_target, const u32* registers,
-                              const u8* indices, u32 index_bytes, u32 index_count,
-                              u32 index_type, u32 instances, u32 base_vertex,
-                              u32 base_instance, u32 experiment_flags);
-struct Surf;
-void vk_nvn_control_compare_probe(struct Surf* emulated_depth, u64 color_address,
-                                  u32 count, u32 base_vertex);
-void vk_control_faces_begin(const u64* color_addresses, u32 count);
-u32 vk_control_face_count(u64 color_address);
-int vk_nvn_control_probe_armed(void);
-int vk_render_vertex_format_supported(u32 raw_attribute);
-VkFormat vk_render_vertex_format(u32 raw_attribute);
-void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key);
-int vk_nvn_draw_prepare(const NvnDrawCommand* command);
-int vk_nvn_dispatch(const NvnDispatchCommand* command);
-int vk_nvn_memory_write(const NvnMemoryWriteCommand* command);
-int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipeline,
-                            const ShaderInfo** info);
-void vk_compute_shadow_compare(u64 address, u32 size, u64 code, const u8* bytes, int input);
-const u8* vk_nvn_compute_cbuf(u32 bank, u32* size);
 
 typedef struct {
     VkInstance instance;
@@ -98,7 +55,6 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;      /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int has_border_color; /* VK_EXT_custom_border_color */
-    int has_index_uint8;  /* VK_KHR_index_type_uint8 or VK_EXT_index_type_uint8 */
     int has_mirror_clamp; /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
 } VkState;
 extern VkState g_vk;
@@ -230,8 +186,7 @@ typedef struct Surf {
     SurfView sv[6];
     int nsv;
     u64 size, hash, shash;
-    int upload_valid; /* textures: every subresource initialized (packed depth/stencil still uses a fallback) */
-    int maxwell_imported; /* texture image contains a copy of an emulated render target */
+    int upload_valid; /* textures: every subresource was uploaded (a failed upload is retried) */
     u32 checked, next_check, stable, tfull;
     u32 wseen; /* write-tracking clock when it last matched memory */
     /* copies of regions of this render target for texture headers or feedback draws, one per size, linked through next
@@ -248,7 +203,6 @@ float vk_scf(float v); /* the same for viewport values */
 Surf* vk_rt(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch);
 Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layers, u64 layer_size, int volume);
 Surf* vk_rt_find(u64 gva);
-void vk_nvn_shadow_compare(void);
 Surf* vk_rt_snapshot(Surf* rt);                  /* copy a target so a draw can sample its contents while writing it */
 Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest presents from that memory */
 /* a render target read where its guest memory is (a texture, a present): keeps it from being evicted, and says
@@ -271,7 +225,6 @@ void vk_tex_note_writeback(Surf* s);
 void vk_rt_drawn(Surf* s);      /* a render target was drawn to (gpu/vk/render.c) */
 void vk_rt_drawn_full(Surf* s); /* a full clear or blit replaced every pixel */
 int vk_rt_drawn_fresh(Surf* s); /* no guest-memory write has replaced the target since its last draw */
-int vk_rt_fresh_in(u64 lo, u64 hi); /* a host-only target still owns bytes in this guest range */
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, hi), write up to max */
 void vk_rt_reload(u64 gva);
 /* textures share the surface table */
@@ -289,18 +242,12 @@ void vk_astc_upload(VkCommandBuffer cb, Surf* t, const u8* blocks, u32 w, u32 h,
 /* texture.c */
 Surf* vk_tex_from_tic(const u32* tic);
 Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes */
-Surf* vk_tex_from_tic_guest(const u32* tic); /* guest-backed input without Maxwell target imports */
-Surf* vk_tex_from_tic_guest_layer(const u32* tic, u32 layer); /* one array slice with an independent freshness check */
 /* a view of s as the shader declares it, sRGB or linear (color formats that have both), with a component mapping;
    VK_NULL_HANDLE when the image can't be viewed that way */
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers) */
 VkImageView vk_null_view(VkImageViewType type, int num);
 VkSampler vk_sampler(const u32* tsc);
-int vk_tex_tic_supported(const u32* tic);
-int vk_tex_tic_shadow(const u32* tic, u64* gva, u32* width, u32* height, u32* layers, u32* levels,
-                      VkImageViewType* view, VkFormat* format);
-int vk_tex_tic_layout(const u32* tic, int* block_linear, u32* pitch);
 void vk_tex_frame(void); /* a frame was presented: evicts what wasn't used for a while */
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */
@@ -336,8 +283,7 @@ void vk_buf_frame_done(u64 frame);
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame);
 void vk_buf_frame(void);
 /* Land GPU-written bytes only where guest memory still matches the shader's input snapshot. */
-void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size, int compute);
-void vk_nvn_shadow_note_guest_write(u64 addr, u32 size, u32 changed_bytes, int compute);
+void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */
 int vk_written_since(const u8* host, u64 len, u32 since);
@@ -355,15 +301,13 @@ typedef struct {
     u32 n;
 } VkCbReads;
 typedef int (*VkCbReader)(u32 idx, u32 off, u32* out);
-/* Scope a shader translation to the NVN-generated texture/image handle words in CBUF 2. Passing NULL clears it. */
-void vk_shader_set_nvn_handle_bank(const u32* words, const u8* known, u32 word_count);
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads);
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read); /* BRX tables through read */
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[7]; /* the key: vk_shader_get's masks */
+    u32 mask[5]; /* the key: vk_shader_get's masks */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -382,8 +326,7 @@ void vk_pipeline_init(void);
 /* the shader at gva (after a VertexA program at gva_a, or 0). The masks key integer inputs: attributes for the
    vertex stage, textures and render target outputs for the fragment stage. clip: the clip distances the 3D engine
    enables (vertex stage) */
-VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip,
-                    u32 img_int, u32 img_sint);
+VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip);
 /* the bound constant buffers per stage, which the translator also reads to resolve indirect branches */
 extern u64 g_vk_cb[5][18];
 extern u32 g_vk_cbsize[5][18];
@@ -391,7 +334,6 @@ typedef struct {
     VkShaderModule vs, fs;
     u32 topo_class; /* POINT_LIST, LINE_LIST or TRIANGLE_LIST: the topology is dynamic within its class */
     u32 polygon;
-    u32 depth_clamp;
     u32 nattr, nbind;
     struct {
         u32 loc, binding, format, offset;

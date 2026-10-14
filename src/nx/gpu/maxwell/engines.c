@@ -137,18 +137,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
         if (ch->mme_nparams < 0x10000) ch->mme_params[ch->mme_nparams++] = v;
         if (last) {
             ch->mme_active = 0;
-            u32 previous_color_mask = R3(0x680);
             mme_run(ch, ch->mme_index, ch->mme_params, ch->mme_nparams);
-            const char* color_macro_trace = getenv("SNX_NVN_TRACE_COLOR_MASK_MACRO");
-            if (color_macro_trace && !strcmp(color_macro_trace, "1") &&
-                previous_color_mask != R3(0x680))
-                LOG_LIMIT(64, "nvn-color-mask-macro: index=%u params=%u first=%08x,%08x,%08x,%08x mask=%08x/%08x\n",
-                          ch->mme_index, ch->mme_nparams,
-                          ch->mme_nparams > 0 ? ch->mme_params[0] : 0,
-                          ch->mme_nparams > 1 ? ch->mme_params[1] : 0,
-                          ch->mme_nparams > 2 ? ch->mme_params[2] : 0,
-                          ch->mme_nparams > 3 ? ch->mme_params[3] : 0,
-                          previous_color_mask, R3(0x680));
             ch->mme_nparams = 0;
         }
         return;

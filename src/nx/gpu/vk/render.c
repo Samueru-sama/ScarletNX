@@ -12,7 +12,6 @@
 #include <string.h>
 #include "runtime/options.h"
 #include "gpu/gpu.h"
-#include "gpu/nvn_record.h"
 #include "gpu/renderer.h"
 #include "gpu/shader/shader.h"
 #include "hle/services/nvdrv.h"
@@ -207,6 +206,24 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     return 1;
 }
 
+/* SNX_GPU_TRACE_TARGET=address[:bytes]: log the clears and draws that write a render target starting in [address,
+   address + bytes) (one byte without a size), to find what produced a wrong target. Read on first use: draws and
+   clears run on the GPU thread */
+static int trace_target(const Surf* s) {
+    static int read;
+    static u64 lo, bytes;
+    if (!read) {
+        read = 1;
+        const char* v = getenv("SNX_GPU_TRACE_TARGET");
+        if (v) {
+            char* end;
+            lo = strtoull(v, &end, 0);
+            bytes = *end == ':' ? strtoull(end + 1, NULL, 0) : 1;
+        }
+    }
+    return bytes && s && s->gva >= lo && s->gva - lo < bytes;
+}
+
 /* v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer */
 void vk_render_clear(GpuChannel* ch, u32 v) {
     u32* r = ch->r3d;
@@ -219,21 +236,15 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n); /* may record uploads: before anything is opened */
-    const char* trace_small = getenv("SNX_GPU_TRACE_RT_SIZE");
-    if (trace_small) {
-        u32 side = (u32)strtoul(trace_small, NULL, 0);
-        for (u32 i = 0; i < n; i++)
-            if (rt[i] && rt[i]->w == side && rt[i]->h == side)
-                LOG_LIMIT(128, "gpu-target-clear-size: target=%llx value=%x color=%08x,%08x,%08x,%08x\n",
-                          (unsigned long long)rt[i]->gva, v,
-                          r[0x360], r[0x361], r[0x362], r[0x363]);
-    }
-    const char* control_depth_clear = getenv("SNX_NVN_CONTROL_TRACE_DEPTH_CLEAR");
-    if (control_depth_clear && vk_nvn_control_probe_armed() && zt &&
-        zt->gva == strtoull(control_depth_clear, NULL, 0))
-        LOG_LIMIT(64, "nvn-control-gpu-depth-clear: draw=%llu value=%x depth=%g scissor=%x target=%llx\n",
-                  (unsigned long long)g_vk_drawn, v, dz, r[0x380],
-                  (unsigned long long)zt->gva);
+    for (u32 i = 0; mask && i < n; i++) /* the slot the clear takes is resolved below: every bound one is listed */
+        if (trace_target(rt[i]))
+            LOG_LIMIT(64, "gpu-trace-target: color clear of slot %u, bound slot %u target=%llx %ux%u mask=%x "
+                          "value=%08x,%08x,%08x,%08x\n",
+                      slot, i, (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, mask, r[0x360], r[0x361],
+                      r[0x362], r[0x363]);
+    if ((v & 3) && trace_target(zt))
+        LOG_LIMIT(64, "gpu-trace-target: clear depth target=%llx %ux%u depth=%d stencil=%d value=%g\n",
+                  (unsigned long long)zt->gva, zt->w, zt->h, v & 1, (v >> 1) & 1, dz);
     if (mask) {
         /* the slot is taken through RT_CONTROL's count and permutation, like draws do. Whether the hardware takes the
            target registers of that index directly isn't settled: the first clear where the two differ is logged */
@@ -471,16 +482,6 @@ static int vertex_format_ok(VkFormat f) {
     return r;
 }
 
-VkFormat vk_render_vertex_format(u32 raw_attribute) {
-    u32 size = (raw_attribute >> 21) & 0x3f;
-    u32 type = (raw_attribute >> 27) & 7;
-    return attr_format(size, type, raw_attribute >> 31);
-}
-
-int vk_render_vertex_format_supported(u32 raw_attribute) {
-    return vertex_format_ok(vk_render_vertex_format(raw_attribute));
-}
-
 /* bytes an attribute of a size code (bits 21-26) reads */
 static u32 attr_bytes(u32 size) {
     switch (size) {
@@ -546,7 +547,7 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
             if (f.sint) rs |= 1u << i;
         }
     }
-    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0);
+    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0);
     if (!s0) return s0;
     u32 tm = 0, ts = 0;
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
@@ -573,7 +574,7 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
         if (image && !!image->f.is_int != !!s0->si.img[i].bindless) rm |= 1u << (8 + i);
     }
     if (!tm && !rm) return s0;
-    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0, 0, 0);
+    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -987,29 +988,6 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
 
 /* ------------------------------------------------------------ draws */
 u64 g_vk_drawn, g_vk_skipped;
-static struct { u64 address; u32 draws; } g_control_faces[8];
-static u32 g_control_face_count;
-static int control_face_guest_zero(const Surf* target) {
-    if (!target || target->wgen != target->mem_wgen ||
-        !target->layer_size || target->layer_size > (1u << 20)) return 0;
-    const u8* guest = gmem_ptr_untracked(target->gva, target->layer_size);
-    if (!guest) return 0;
-    for (u64 i = 0; i < target->layer_size; i++)
-        if (guest[i]) return 0;
-    return 1;
-}
-void vk_control_faces_begin(const u64* color_addresses, u32 count) {
-    g_control_face_count = count < 8 ? count : 8;
-    for (u32 i = 0; i < g_control_face_count; i++) {
-        g_control_faces[i].address = color_addresses[i];
-        g_control_faces[i].draws = 0;
-    }
-}
-u32 vk_control_face_count(u64 color_address) {
-    for (u32 i = 0; i < g_control_face_count; i++)
-        if (g_control_faces[i].address == color_address) return g_control_faces[i].draws;
-    return 0;
-}
 
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
@@ -1053,18 +1031,6 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
                     u32 instances) {
     u32* r = ch->r3d;
     if (!count || !instances) return;
-    const char* trace_count = getenv("SNX_GPU_TRACE_DRAW_COUNT");
-    if (trace_count && strtoul(trace_count, NULL, 0) == count)
-        LOG_LIMIT(16, "gpu-draw-trace: count=%u indexed=%d topology=%u first=%u base-vertex=%u base-instance=%u instances=%u index-type=%x index-address=%llx depth=%x/%x/%x viewport=%08x/%08x/%08x/%08x\n",
-                  count, indexed, topology, first, base_vertex, base_instance, instances,
-                  r[0x5f6], (unsigned long long)(((u64)r[0x5f2] << 32) | r[0x5f3]),
-                  r[0x4b3], r[0x4ba], r[0x4c3],
-                  r[0x280], r[0x281], r[0x283], r[0x284]);
-    if (trace_count && strtoul(trace_count, NULL, 0) == count)
-        LOG_LIMIT(16, "gpu-draw-color-state: face=%llx mask=%x common=%x blend=%x clear=%08x,%08x,%08x,%08x\n",
-                  (unsigned long long)(((u64)r[0x200] << 32) | r[0x201]),
-                  r[0x680], r[0x3e4], r[0x4e0],
-                  r[0x360], r[0x361], r[0x362], r[0x363]);
     u32 initial_first = first, initial_count = count;
     int retries = 0;
 retry:
@@ -1091,13 +1057,11 @@ retry:
     }
     /* SetUserClipEnable (0x544): a clip distance the program writes clips only when its bit is set */
     VkSh* vs = vk_shader_get(code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                             r[0x544] & 0xFF, 0, 0);
+                             r[0x544] & 0xFF);
     TexRes fres[SH_MAXTEX];
     for (int i = 0; i < SH_MAXTEX; i++) fres[i].have = 0;
     VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres) : NULL;
-    /* Graphics storage-image writes still need image descriptors and writeback on this Maxwell path. Keep the
-       previous unsupported-shader behavior until those bindings are implemented. */
-    if (!vs || vs->failed || (fs && (fs->failed || fs->si.nimg))) {
+    if (!vs || vs->failed || (fs && fs->failed)) {
         g_vk_skipped++;
         return;
     }
@@ -1105,28 +1069,15 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
-    const char* trace_size = getenv("SNX_GPU_TRACE_RT_SIZE");
-    if (trace_size) {
-        u32 side = (u32)strtoul(trace_size, NULL, 0);
-        for (u32 i = 0; i < n; i++)
-            if (rt[i] && rt[i]->w == side && rt[i]->h == side)
-                LOG_LIMIT(128, "gpu-target-draw-size: target=%llx slot=%u count=%u indexed=%d vs=%llx fs=%llx mask=%x\n",
-                          (unsigned long long)rt[i]->gva, i, count, indexed,
-                          (unsigned long long)(code + r[0x811]),
-                          (unsigned long long)(code + r[0x851]), r[0x680]);
-    }
-    const char* trace_target = getenv("SNX_GPU_TRACE_RT_ADDRESS");
-    if (trace_target) {
-        u64 address = strtoull(trace_target, NULL, 0);
-        const char* trace_bytes = getenv("SNX_GPU_TRACE_RT_BYTES");
-        u64 bytes = trace_bytes ? strtoull(trace_bytes, NULL, 0) : 1;
-        for (u32 i = 0; i < n; i++)
-            if (rt[i] && rt[i]->gva >= address && rt[i]->gva - address < bytes)
-                LOG_LIMIT(16, "gpu-target-trace: target=%llx slot=%u count=%u indexed=%d topology=%u vs=%llx fs=%llx dimensions=%ux%u\n",
-                          (unsigned long long)rt[i]->gva, i, count, indexed, topology,
-                          (unsigned long long)(code + r[0x811]),
-                          (unsigned long long)(code + r[0x851]), rt[i]->w, rt[i]->h);
-    }
+    for (u32 i = 0; i < n; i++)
+        if (trace_target(rt[i]))
+            LOG_LIMIT(64, "gpu-trace-target: draw color slot %u target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n",
+                      i, (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, count, indexed,
+                      (unsigned long long)(code + r[0x811]), (unsigned long long)(code + r[0x851]));
+    if (trace_target(zt))
+        LOG_LIMIT(64, "gpu-trace-target: draw depth target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n",
+                  (unsigned long long)zt->gva, zt->w, zt->h, count, indexed, (unsigned long long)(code + r[0x811]),
+                  (unsigned long long)(code + r[0x851]));
     /* a color target the fragment shader samples but doesn't write (no output for it, or a write mask of 0) is drawn
        without: Tears of the Kingdom's lighting passes keep the whole G-buffer bound while they read some of it, which
        Maxwell allows, and Vulkan can't sample an attachment of the pass */
@@ -1549,18 +1500,6 @@ retry:
     }
     vkCmdPushConstants(cb, g_vk_playout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
 
-    const char* control_seed = getenv("SNX_NVN_CONTROL_EXECUTED_SEED");
-    if (control_seed && !strcmp(control_seed, "1") && indexed && zt && n && rt[0] &&
-        zt->w == 64 && zt->h == 64)
-        for (u32 i = 0; i < g_control_face_count; i++)
-            if (rt[0]->gva == g_control_faces[i].address && !g_control_faces[i].draws) {
-                int zero = control_face_guest_zero(rt[0]);
-                LOG_LIMIT(12, "nvn-control-guest-seed: color=%llx zero=%d generation=%u/%u bytes=%llu\n",
-                          (unsigned long long)rt[0]->gva, zero, rt[0]->wgen,
-                          rt[0]->mem_wgen, (unsigned long long)rt[0]->layer_size);
-                nvn_record_control_executed_seed(rt[0]->gva, zero);
-            }
-
     if (indexed) {
         vkCmdBindIndexBuffer(cb, ibuf, ioff, itype);
         /* quads made from guest indices keep the base vertex, quads made from vertex numbers have it in them */
@@ -1575,15 +1514,6 @@ retry:
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
     if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) zt->wgen++;
     g_vk_drawn++;
-    if (indexed && zt && n && rt[0] && zt->w == 64 && zt->h == 64)
-        for (u32 i = 0; i < g_control_face_count; i++)
-            if (rt[0]->gva == g_control_faces[i].address && g_control_faces[i].draws < UINT32_MAX) {
-                g_control_faces[i].draws++;
-                nvn_record_control_executed_draw(rt[0]->gva);
-            }
-    const char* control_compare = getenv("SNX_NVN_CONTROL_COMPARE_PROBE");
-    if (control_compare && !strcmp(control_compare, "1") && indexed && zt)
-        vk_nvn_control_compare_probe(zt, n && rt[0] ? rt[0]->gva : 0, count, base_vertex);
 }
 
 /* DRAW_TEXTURE (3D 0x420-0x42B, drawn when 0x42B is written): a texture's rectangle blitted onto color target 0, as

@@ -212,7 +212,8 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
             PICK(VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16_SINT,
                  VK_FORMAT_R16G16_UNORM, 4);
         case 0x0E:
-            /* G24R8 with an unsigned stencil byte and normalized depth: Scarlet's depth TIC. */
+            /* G24R8 with R UINT and G, B, A UNORM is depth and stencil (Eden's format table reads it as S8_UINT_D24_UNORM,
+               like Z24S8); other component types stay unsupported */
             if ((w0 & 0x3ffffu) == 0x24a0eu) {
                 VkFmt r = vk_zt_format(0x14);
                 r.bpp = 4; /* S8D24 guest storage, even when the host uses D32F S8. */
@@ -260,7 +261,8 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x45: return TA(10, 10, srgb);
         case 0x54: return TA(12, 10, srgb);
         case 0x46: return TA(12, 12, srgb);
-        /* S8D24 guest storage has four bytes per texel on every host depth format. */
+        /* Z24S8, X8Z24 and S8Z24: four bytes a texel in guest memory, whatever the host depth format's size (texture.c
+           unpacks each by where its depth bits are) */
         case 0x29:
         case 0x2A:
         case 0x2B: {

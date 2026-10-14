@@ -8,11 +8,11 @@
 #include "runtime/platform/log.h"
 #include "gpu/vk/vk.h"
 
-void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size, int compute) {
+void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     u8* dst = gmem_ptr(addr, size);
     u8* tmp = NULL;
     const u8* cur = dst;
-    u32 changed_bytes = 0;
+    int changed = 0;
     if (!cur) {
         tmp = malloc(size);
         if (!tmp) fatal("Out of memory landing a shader storage buffer");
@@ -34,11 +34,8 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size, int comp
             memcpy(dst + s, res + s, i - s);
         else
             gmem_write(addr + s, res + s, i - s);
-        changed_bytes += i - s;
+        changed = 1;
     }
     free(tmp);
-    if (changed_bytes) {
-        gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
-        vk_nvn_shadow_note_guest_write(addr, size, changed_bytes, compute);
-    }
+    if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
 }

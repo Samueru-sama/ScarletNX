@@ -176,10 +176,6 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
             }
             cb_used[idx] = 1;
             if ((off | 15u) + 1 > cb_max[idx]) cb_max[idx] = (off | 15u) + 1;
-            if (idx == 0 && off / 4 < 416) meta.cbuf0_read_words[off / 128] |= 1u << ((off / 4) & 31);
-            else if (idx == 0) meta.cbuf0_untracked_read = 1;
-            if (idx == 2 && off / 4 < 96) meta.cbuf2_read_words[off / 128] |= 1u << ((off / 4) & 31);
-            else if (idx == 2) meta.cbuf2_untracked_read = 1;
         }
         if (id == O_MOV_C && d < 255)
             tags[d] = tag_cbuf(B(w, 34, 5), B(w, 20, 14) * 4);
@@ -213,10 +209,6 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
             cb_used[0] = 1;
             u32 off = meta.gbuf_cbuf_off[gi];
             if ((off | 15u) + 1 > cb_max[0]) cb_max[0] = (off | 15u) + 1;
-            for (u32 word = off / 4; word < off / 4 + 3; word++) {
-                if (word < 416) meta.cbuf0_read_words[word / 32] |= 1u << (word & 31);
-                else meta.cbuf0_untracked_read = 1;
-            }
             if (id == O_STG) meta.gbuf_wmask |= 1u << gi;
             u32 count = B(w, 48, 3) == 5 ? 2 : B(w, 48, 3) == 6 ? 4 : 1;
             if (d != 255 && d + count > 255) {

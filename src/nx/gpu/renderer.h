@@ -6,12 +6,6 @@
 #define SNX_RENDERER_H
 #include "cpu/aarch64/cpu.h"
 #include "gpu/gpu.h"
-#include "gpu/nvn_clear.h"
-#include "gpu/nvn_control.h"
-#include "gpu/nvn_copy.h"
-#include "gpu/nvn_draw.h"
-#include "gpu/nvn_dispatch.h"
-#include "gpu/nvn_memory_write.h"
 
 typedef struct Renderer {
     const char* name;
@@ -22,35 +16,6 @@ typedef struct Renderer {
     int (*async_submit)(u64* e, u32 n, u32 syncpt, u32 incs);
     /* the 3D engine (maxwell3d.c) */
     void (*clear)(GpuChannel* ch, u32 v);
-    /* Opt-in semantic NVN probes. Guest GPFIFO rendering remains authoritative. */
-    void (*nvn_batch_begin)(void);
-    void (*nvn_control_shader_probe)(const NvnControlShaderProbe* probe,
-                                     NvnControlShaderProbeResult* result);
-    int (*nvn_control_depth_prepare)(const NvnTextureTarget* target);
-    int (*nvn_control_pipeline_probe)(const NvnControlShaderProbe* probe,
-                                      const NvnTextureTarget* color_target,
-                                      const NvnTextureTarget* depth_target,
-                                      const u32* registers, u32 primitive);
-    u32 (*nvn_control_buffer_probe)(const NvnControlShaderProbe* probe, const u32* registers,
-                                     const u8* indices, u32 index_bytes, u32 index_count, u32 index_type);
-    int (*nvn_control_descriptor_probe)(const NvnControlShaderProbe* probe,
-                                         const NvnTextureTarget* depth_target);
-    int (*nvn_control_draw_probe)(const NvnControlShaderProbe* probe,
-                                   const NvnTextureTarget* color_target,
-                                   const NvnTextureTarget* depth_target, const u32* registers,
-                                   const u8* indices, u32 index_bytes, u32 index_count,
-                                   u32 index_type, u32 instances, u32 base_vertex,
-                                   u32 base_instance, u32 experiment_flags);
-    void (*control_faces_begin)(const u64* color_addresses, u32 count);
-    u32 (*control_face_count)(u64 color_address);
-    void (*nvn_probe_initial_color)(u64 address, u32 size, u64 sequence, u64 queue_key, u64 prior_unmodeled_write,
-                                    int prior_writes_scoped);
-    int (*nvn_clear)(const NvnClearCommand* command);
-    int (*nvn_copy_buffer_texture)(const NvnCopyBufferTextureCommand* command);
-    /* NVN_DRAW_* result bits from gpu/nvn_draw.h. */
-    int (*nvn_draw_prepare)(const NvnDrawCommand* command);
-    int (*nvn_dispatch)(const NvnDispatchCommand* command);
-    int (*nvn_memory_write)(const NvnMemoryWriteCommand* command);
     void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                  u32 instances);
     void (*cb_bind)(GpuChannel* ch, int stage, u32 v);

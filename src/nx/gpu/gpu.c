@@ -5,7 +5,6 @@
 /* GM20B front end: guest memory through the GPU page table, GPFIFO, the puller (semaphores, syncpoints), I2M and the
    method dispatch to the engines (engines.c, maxwell3d.c, compute.c, fermi2d.c, dma.c). Drawing is the renderer's job. */
 #include "gpu/renderer.h"
-#include "gpu/nvn_record.h"
 #include "hle/services/nvdrv.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
@@ -389,62 +388,7 @@ static GpuChannel* chan_get(u32 id) {
     return c;
 }
 
-/* The direct NVN probe needs the SDK's internal CBUF 0, established before the first recorded command list.
-   If channels disagree, queue ownership is not known well enough to choose one. */
-int gpu_unique_cb0_binding(int stage, u64* address, u32* size, u64* generation) {
-    if (stage < 0 || stage >= 5 || !address || !size || !generation) return 0;
-    pm_lock(&g_gpulock);
-    u64 found_address = 0;
-    u32 found_size = 0;
-    u64 first_generation = UINT64_MAX;
-    int found = 0;
-    for (int i = 0; i < g_gpu.nchan; i++) {
-        const GpuChannel* ch = g_gpu.chan[i];
-        u64 a = ch->cb0_addr[stage];
-        u32 n = ch->cb0_size[stage];
-        if (!a || !n) continue;
-        if (found && (a != found_address || n != found_size)) {
-            pm_unlock(&g_gpulock);
-            return 0;
-        }
-        found_address = a;
-        found_size = n;
-        if (ch->cb0_generation[stage] < first_generation) first_generation = ch->cb0_generation[stage];
-        found = 1;
-    }
-    pm_unlock(&g_gpulock);
-    if (found) {
-        *address = found_address;
-        *size = found_size;
-        *generation = first_generation;
-    }
-    return found;
-}
-
-int gpu_unique_cb_offset_macro(u32 method, u32 argument, int stage, u32* byte_offset) {
-    if (!byte_offset || stage < 0 || stage >= 5 || method < 0xe00 || method > 0xffe || (method & 1)) return 0;
-    pm_lock(&g_gpulock);
-    u32 offset = 0;
-    int found = 0;
-    for (int i = 0; i < g_gpu.nchan; i++) {
-        const GpuChannel* ch = g_gpu.chan[i];
-        if (!ch->cb0_addr[stage] || !ch->cb0_size[stage]) continue;
-        u32 candidate = 0;
-        if (!mme_probe_cb_offset(ch, (method - 0xe00) / 2, argument, stage, &candidate) ||
-            (found && candidate != offset)) {
-            pm_unlock(&g_gpulock);
-            return 0;
-        }
-        offset = candidate;
-        found = 1;
-    }
-    pm_unlock(&g_gpulock);
-    if (found) *byte_offset = offset;
-    return found;
-}
-
 void gpu_channel_close(u32 channel) {
-    nvn_record_forget_gpu_channel(channel);
     pm_lock(&g_gpulock);
     for (int i = 0; i < g_gpu.nchan; i++)
         if (g_gpu.chan[i]->id == channel) {
@@ -457,17 +401,9 @@ void gpu_channel_close(u32 channel) {
     pm_unlock(&g_gpulock);
 }
 
-static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control) {
+static void gpu_submit_now(u64* e, u32 n, u32 channel) {
     pm_lock(&g_gpulock);
     GpuChannel* ch = chan_get(channel);
-    int track_faces = control->count && g_renderer->control_faces_begin && g_renderer->control_face_count;
-    if (track_faces) {
-        u64 addresses[NVN_CONTROL_SUBMIT_CHECKPOINTS];
-        for (u32 i = 0; i < control->count; i++) addresses[i] = control->checkpoint[i].color;
-        g_renderer->control_faces_begin(addresses, control->count);
-    } else if (g_renderer->control_faces_begin) g_renderer->control_faces_begin(NULL, 0);
-    nvn_record_control_execute_begin(control);
-    u32 next_checkpoint = 0;
     for (u32 k = 0; k < n; k++) {
         u64 ent = e[k];
         u64 va = ent & 0xFFFFFFFFFCull;
@@ -486,38 +422,10 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control
             run_pushbuffer(ch, tmp, words);
             free(tmp);
         }
-        while (next_checkpoint < control->count &&
-               (track_faces ? g_renderer->control_face_count(control->checkpoint[next_checkpoint].color) >=
-                                  control->checkpoint[next_checkpoint].draws
-                            : k >= control->checkpoint[next_checkpoint].entry_index)) {
-            NvnControlCheckpoint* checkpoint = &control->checkpoint[next_checkpoint++];
-            r3d_const_flush(ch);
-            r3d_pending_flush();
-            if (track_faces)
-                LOG("nvn-control-executed-face: color=%llx draws=%u/%u entry=%u/%u\n",
-                    (unsigned long long)checkpoint->color,
-                    g_renderer->control_face_count(checkpoint->color),
-                    checkpoint->draws, k + 1, n);
-            pm_unlock(&g_gpulock);
-            checkpoint->fn(checkpoint->arg);
-            checkpoint->arg = NULL;
-            pm_lock(&g_gpulock);
-            ch = chan_get(channel);
-        }
     }
     r3d_const_flush(ch);
     r3d_pending_flush();
     pm_unlock(&g_gpulock);
-    nvn_record_control_execute_begin(NULL);
-    while (next_checkpoint < control->count) {
-        NvnControlCheckpoint* checkpoint = &control->checkpoint[next_checkpoint++];
-        if (track_faces)
-            LOG("nvn-control-executed-face: color=%llx draws=%u/%u; running remaining probe at submit end\n",
-                (unsigned long long)checkpoint->color,
-                g_renderer->control_face_count(checkpoint->color), checkpoint->draws);
-        checkpoint->fn(checkpoint->arg);
-        checkpoint->arg = NULL;
-    }
 }
 
 /* Submissions run in order on a thread of their own, as on the console: the ioctl only queues them, and the fence
@@ -531,15 +439,11 @@ typedef struct {
     u32 expect;            /* the syncpoint value the job's fence promised */
     void (*fn)(void*);     /* or a call made in order with the submissions (vi's presents) */
     void* arg;
-    NvnControlSubmit control; /* optional NVN control checkpoints inside this GPFIFO job */
 } GpuJob;
 #define GPU_QUEUE 256
 static GpuJob g_q[GPU_QUEUE];
 static u32 g_qhead, g_qtail; /* jobs queued, jobs done */
 static PMutex g_qlock;
-/* Keep the submit-time NVN snapshot adjacent to its GPU job. A queue callback on another guest thread must not
-   overtake the job after its packets have been captured but before gpu_queue publishes it. */
-static PMutex g_submit_order_lock = PMUTEX_INIT;
 static PCond g_qcv;
 static int g_qthread;
 
@@ -552,11 +456,7 @@ static void gpu_run(GpuJob* j) {
         WARN(
             "gpu: a submission waited 2 s on the GPU thread for syncpoint %u to reach %u (it is at %u), and runs anyway\n",
             j->wait_id, j->wait_val, syncpt_read(j->wait_id));
-    if (j->control.pre_fn) {
-        j->control.pre_fn(j->control.pre_arg);
-        j->control.pre_arg = NULL;
-    }
-    gpu_submit_now(j->e, j->n, j->channel, &j->control);
+    gpu_submit_now(j->e, j->n, j->channel);
     gpu_signal_point();
     for (u32 i = 0; i < j->incs; i++) syncpt_incr(j->channel);
     /* a stream that increments less than its fence promised leaves whoever waits for the fence waiting 2 s */
@@ -599,32 +499,14 @@ static void gpu_queue(GpuJob j) {
 }
 volatile u64 g_gpu_submits;
 void gpu_submit(u64* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
-    pm_lock(&g_submit_order_lock);
     g_gpu_submits++;
-    nvn_record_observe_gpu_submit(e, n, channel);
-    NvnControlSubmit control = {0};
-    nvn_record_take_control_submit(n, &control);
-    if (!control.pre_fn && g_renderer->async_submit(e, n, channel, incs)) {
-        for (u32 i = 0; i < control.count; i++)
-            gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.checkpoint[i].fn,
-                               .arg = control.checkpoint[i].arg});
-        if (control.tail_fn)
-            gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.tail_fn, .arg = control.tail_arg});
-        pm_unlock(&g_submit_order_lock);
-        return;
-    }
+    if (g_renderer->async_submit(e, n, channel, incs)) return;
     GpuJob j = {malloc((u64)n * 8 + 8), n, channel, incs, wait_id, wait_val, expect, NULL, NULL};
     if (!j.e) fatal("Out of memory queueing a GPU submission");
     memcpy(j.e, e, (u64)n * 8);
-    j.control = control;
     gpu_queue(j);
-    if (control.tail_fn)
-        gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.tail_fn, .arg = control.tail_arg});
-    pm_unlock(&g_submit_order_lock);
 }
 void gpu_call(void (*fn)(void*), void* arg) {
     GpuJob j = {NULL, 0, 0, 0, ~0u, 0, 0, fn, arg};
-    pm_lock(&g_submit_order_lock);
     gpu_queue(j);
-    pm_unlock(&g_submit_order_lock);
 }

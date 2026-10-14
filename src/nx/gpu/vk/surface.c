@@ -372,7 +372,7 @@ void vk_surf_flush(Surf* s, const u8* original) {
         }
         guest_changed = memcmp(current, original, sz) != 0;
         free(current_copy);
-        vk_write_changed(gva, dst, original, (u32)sz, 0);
+        vk_write_changed(gva, dst, original, (u32)sz);
         free(tmp);
     } else if (tmp) {
         gmem_write(gva, tmp, sz);
@@ -534,27 +534,6 @@ int vk_rt_drawn_fresh(Surf* s) {
         return 0;
     if (s->draw_has_hash) return rt_mem_hash(s) == s->draw_hash;
     return vk_written_since(gmem_ptr_untracked(s->gva, size), size, s->draw_wseen) == 0;
-}
-int vk_rt_fresh_in(u64 lo, u64 hi) {
-    if (lo >= hi) return 1;
-    const u8* host = gmem_ptr_untracked(lo, hi - lo);
-    for (int k = 0; k < SURFH; k++)
-        for (Surf* s = g_surfh[k]; s; s = s->next) {
-            if (!s->is_rt) continue;
-            u64 size = rt_bytes(s);
-            if (size > UINT64_MAX - s->gva) continue;
-            int overlaps = s->gva < hi && s->gva + size > lo;
-            if (!overlaps && host) {
-                const u8* other = gmem_ptr_untracked(s->gva, size);
-                if (other) {
-                    uintptr_t first = (uintptr_t)host, second = (uintptr_t)other;
-                    overlaps = first <= second ? second - first < hi - lo : first - second < size;
-                }
-            }
-            if (!overlaps) continue;
-            if (vk_rt_drawn_fresh(s)) return 1;
-        }
-    return 0;
 }
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     int n = 0;

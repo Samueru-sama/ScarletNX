@@ -9,7 +9,6 @@
    thread reads their memory first. */
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "runtime/main.h"
 #include "runtime/options.h"
 #include "gpu/gpu.h"
@@ -88,125 +87,11 @@ static void vkr_clear(GpuChannel* ch, u32 v) {
     vk_render_clear(ch, v);
     vk_unlock();
 }
-static void vkr_nvn_batch_begin(void) {
-    vk_lock();
-    vk_nvn_batch_begin();
-    vk_unlock();
-}
-static void vkr_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
-                                         NvnControlShaderProbeResult* result) {
-    vk_lock();
-    vk_nvn_control_shader_probe(probe, result);
-    vk_unlock();
-}
-static int vkr_nvn_control_depth_prepare(const NvnTextureTarget* target) {
-    vk_lock();
-    int result = vk_nvn_control_depth_prepare(target);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_control_pipeline_probe(const NvnControlShaderProbe* probe,
-                                          const NvnTextureTarget* color_target,
-                                          const NvnTextureTarget* depth_target,
-                                          const u32* registers, u32 primitive) {
-    vk_lock();
-    int result = vk_nvn_control_pipeline_probe(probe, color_target, depth_target, registers, primitive);
-    vk_unlock();
-    return result;
-}
-static u32 vkr_nvn_control_buffer_probe(const NvnControlShaderProbe* probe, const u32* registers,
-                                        const u8* indices, u32 index_bytes, u32 index_count, u32 index_type) {
-    vk_lock();
-    u32 result = vk_nvn_control_buffer_probe(probe, registers, indices, index_bytes, index_count, index_type);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_control_descriptor_probe(const NvnControlShaderProbe* probe,
-                                             const NvnTextureTarget* depth_target) {
-    vk_lock();
-    int result = vk_nvn_control_descriptor_probe(probe, depth_target);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
-                                      const NvnTextureTarget* color_target,
-                                      const NvnTextureTarget* depth_target,
-                                      const u32* registers, const u8* indices,
-                                      u32 index_bytes, u32 index_count, u32 index_type,
-                                      u32 instances, u32 base_vertex, u32 base_instance,
-                                      u32 experiment_flags) {
-    vk_lock();
-    int result = vk_nvn_control_draw_probe(probe, color_target, depth_target,
-                                            registers, indices, index_bytes, index_count,
-                                            index_type, instances, base_vertex, base_instance,
-                                            experiment_flags);
-    vk_unlock();
-    return result;
-}
-static void vkr_nvn_probe_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key,
-                                        u64 prior_unmodeled_write, int prior_writes_scoped) {
-    vk_lock();
-    vk_compute_mem_need(address, size);
-    vk_buf_mem_need(address, size);
-    const u8* host = gmem_ptr_untracked(address, size);
-    u64 nonzero = 0;
-    if (host)
-        for (u32 i = 0; i < size; i++) nonzero += !!host[i];
-    int prior_target = vk_rt_fresh_in(address, address + size);
-    int certified = host && !nonzero && !prior_target && prior_writes_scoped;
-    if (certified) vk_nvn_seed_initial_color(address, size, sequence, queue_key);
-    LOG("nvn-shadow-target-pre-submit: addr=%llx size=%u mapped=%d nonzero=%llu prior-target=%d sequence=%llu prior-unmodeled=%llu scoped=%d certified=%d\n",
-        (unsigned long long)address, size, !!host, (unsigned long long)nonzero, prior_target,
-        (unsigned long long)sequence, (unsigned long long)prior_unmodeled_write,
-        prior_writes_scoped, certified);
-    vk_unlock();
-}
-static int vkr_nvn_clear(const NvnClearCommand* command) {
-    vk_lock();
-    int result = vk_nvn_clear(command);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command) {
-    vk_lock();
-    int result = vk_nvn_copy_buffer_texture(command);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_draw_prepare(const NvnDrawCommand* command) {
-    vk_lock();
-    int result = vk_nvn_draw_prepare(command);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_dispatch(const NvnDispatchCommand* command) {
-    vk_lock();
-    int result = vk_nvn_dispatch(command);
-    vk_unlock();
-    return result;
-}
-static int vkr_nvn_memory_write(const NvnMemoryWriteCommand* command) {
-    vk_lock();
-    int result = vk_nvn_memory_write(command);
-    vk_unlock();
-    return result;
-}
 static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 bv, u32 bi, u32 instances) {
     g_draws++;
     vk_lock();
     vk_render_draw(ch, indexed, topology, first, count, bv, bi, instances);
     vk_unlock();
-}
-static void vkr_control_faces_begin(const u64* color_addresses, u32 count) {
-    vk_lock();
-    vk_control_faces_begin(color_addresses, count);
-    vk_unlock();
-}
-static u32 vkr_control_face_count(u64 color_address) {
-    vk_lock();
-    u32 count = vk_control_face_count(color_address);
-    vk_unlock();
-    return count;
 }
 /* a constant buffer bound to a stage: v bit 0 valid, bits 4-8 the slot; address and size from 0x8E0-0x8E2 */
 static void vkr_cb_bind(GpuChannel* ch, int stage, u32 v) {
@@ -320,8 +205,6 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     vk_lock();
     vk_buf_writable_abort(); /* a draw abandoned during setup has no shader writes to land */
     vk_render_end();
-    const char* shadow_compare = getenv("SNX_NVN_SHADOW_COMPARE");
-    if (shadow_compare && !strcmp(shadow_compare, "1")) vk_nvn_shadow_compare();
     Surf* src = NULL;
     if (w && h && w <= g_vk.props.limits.maxImageDimension2D && h <= g_vk.props.limits.maxImageDimension2D) {
         src = vk_rt_for_cpu(cpu_addr, w, h);
@@ -544,21 +427,6 @@ const Renderer vk_renderer = {
     .start = vkr_start,
     .async_submit = vkr_async_submit,
     .clear = vkr_clear,
-    .nvn_batch_begin = vkr_nvn_batch_begin,
-    .nvn_control_shader_probe = vkr_nvn_control_shader_probe,
-    .nvn_control_depth_prepare = vkr_nvn_control_depth_prepare,
-    .nvn_control_pipeline_probe = vkr_nvn_control_pipeline_probe,
-    .nvn_control_buffer_probe = vkr_nvn_control_buffer_probe,
-    .nvn_control_descriptor_probe = vkr_nvn_control_descriptor_probe,
-    .nvn_control_draw_probe = vkr_nvn_control_draw_probe,
-    .control_faces_begin = vkr_control_faces_begin,
-    .control_face_count = vkr_control_face_count,
-    .nvn_probe_initial_color = vkr_nvn_probe_initial_color,
-    .nvn_clear = vkr_nvn_clear,
-    .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,
-    .nvn_draw_prepare = vkr_nvn_draw_prepare,
-    .nvn_dispatch = vkr_nvn_dispatch,
-    .nvn_memory_write = vkr_nvn_memory_write,
     .draw_texture = vkr_draw_texture,
     .draw = vkr_draw,
     .cb_bind = vkr_cb_bind,

@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* Frames in flight. Each frame has a command buffer that collects everything recorded until the next submit (a
    present or a readback), a staging ring for uploads and for data draws read directly (vertices, indices, constant
-   buffers), descriptor pools, and the resources to destroy once its work is done. Starting to record a frame waits
-   for its previous use to finish. */
+   buffers), a ring its storage results are copied back into for the CPU, descriptor pools, and the resources to
+   destroy once its work is done. Starting to record a frame waits for its previous use to finish. */
 #include <stdlib.h>
 #include "runtime/platform/log.h"
 #include "gpu/vk/vk.h"
@@ -176,9 +176,9 @@ static u8* ring_alloc(Frame* f, Ring* r, u64 size, u64 align, VkBufferUsageFlags
     if (!r->buf || at + size > r->cap) {
         /* a bigger buffer; the old one stays alive until this frame's work is done */
         if (r->buf) {
-            /* The submit only flushes the current ring. Flush a retired ring too:
-               earlier copies and ASTC dispatches still read its host writes. */
-            vmaFlushAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);
+            /* The submit only flushes the current staging ring. Flush a retired one too: earlier copies and ASTC
+               dispatches still read its host writes (the readback ring has none) */
+            if (r == &f->stage) vmaFlushAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);
             dead_push(f, (Dead){.buf = r->buf, .mem = r->mem});
         }
         u64 cap = r->cap ? r->cap * 2 : STAGE_MIN;

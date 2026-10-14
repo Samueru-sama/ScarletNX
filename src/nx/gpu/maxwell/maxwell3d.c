@@ -101,11 +101,6 @@ void r3d_const_flush(GpuChannel* ch) {
     ch->cb_n = 0;
 }
 void r3d_cb_bind(GpuChannel* ch, int stage, u32 v) {
-    if (stage >= 0 && stage < 5 && ((v >> 4) & 31) == 0) {
-        ch->cb0_addr[stage] = (v & 1) ? ((u64)ch->r3d[0x8E1] << 32) | ch->r3d[0x8E2] : 0;
-        ch->cb0_size[stage] = (v & 1) ? ch->r3d[0x8E0] : 0;
-        ch->cb0_generation[stage] = gpu_mem_generation();
-    }
     if (g_renderer_up) g_renderer->cb_bind(ch, stage, v);
 }
 int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
@@ -116,7 +111,7 @@ int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, d
 
 /* write log for GPU-side writes (cb_data, I2M, DMA, 2D, reports and shader writeback) so we can tell a range changed
    without rehashing it. Back-to-back writes (cb_data goes word by word) get merged. */
-#define GW_N 8192
+#define GW_N 1024
 static u64 g_gw_gen;      /* published after each complete write-log update */
 static u64 g_gw_phys_gen; /* latest shader writeback to a guest CPU page */
 static PMutex g_gwlock = PMUTEX_INIT;

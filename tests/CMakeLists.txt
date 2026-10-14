@@ -195,12 +195,8 @@ snx_test_target(snx-test-nvn-command-gap 23)
 add_test(NAME nvn_command_gap COMMAND snx-test-nvn-command-gap)
 
 add_executable(snx-test-nvn-control nvn_control.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_control.c")
-snx_test_target(snx-test-nvn-control 11)
+snx_test_target(snx-test-nvn-control 23)
 add_test(NAME nvn_control COMMAND snx-test-nvn-control)
-
-add_executable(snx-test-nvn-uniform nvn_uniform.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn_uniform.c")
-snx_test_target(snx-test-nvn-uniform 23)
-add_test(NAME nvn_uniform COMMAND snx-test-nvn-uniform)
 
 add_executable(snx-test-audio-out audio_out.c)
 snx_test_target(snx-test-audio-out 11)
@@ -239,6 +235,10 @@ add_executable(snx-test-etc2 etc2_decode.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/tex
 snx_test_target(snx-test-etc2 23)
 add_test(NAME etc2_decode COMMAND snx-test-etc2)
 
+add_executable(snx-test-depth-texel depth_texel.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/texture/depth.c")
+snx_test_target(snx-test-depth-texel 23)
+add_test(NAME depth_texel COMMAND snx-test-depth-texel)
+
 if(UNIX)
     add_executable(snx-test-kernel-mutex kernel_mutex.c)
     snx_test_target(snx-test-kernel-mutex 11)
@@ -276,7 +276,7 @@ endif()
 if(SNX_TEST_SANITIZERS AND WIN32)
     execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
         OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode)
+    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode depth_texel nvn_command_gap nvn_control)
     if(TEST native_recompiler)
         list(APPEND snx_sanitized_tests native_recompiler)
     endif()
