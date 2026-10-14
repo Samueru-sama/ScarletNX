@@ -126,20 +126,46 @@ void vk_buf_frame_done(u64 frame) {
     g_out_landing--;
     g_gfx_any = g_out != NULL;
 }
+/* At the frame's submit: its storage results are copied into host-cached memory (vk_stage_back), where landing them
+   compares bytes quickly. A result whose copy can't be allocated is read where the shader wrote it. */
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
-    for (GfxOut* o = g_out; o; o = o->next)
-        if (o->frame == frame) {
-            VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                  .srcStageMask =
-                                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                  .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                  .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-                                  .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
-            VkDependencyInfo d = {
-                .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
-            vkCmdPipelineBarrier2(cb, &d);
-            return;
+    GfxOut* first = g_out;
+    while (first && first->frame != frame) first = first->next;
+    if (!first) return;
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                          .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                          .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    vkCmdPipelineBarrier2(cb, &d);
+    /* consecutive results usually share both buffers: one copy command each run */
+    VkBufferCopy regions[64];
+    u32 n = 0;
+    VkBuffer src = VK_NULL_HANDLE, dst = VK_NULL_HANDLE;
+    for (GfxOut* o = first; o; o = o->next) {
+        if (o->frame != frame) continue;
+        VkBuffer back;
+        u64 at;
+        VmaAllocation mem;
+        u8* p = vk_stage_back(o->size, &back, &at, &mem);
+        if (!p) continue;
+        if (n && (n == sizeof regions / sizeof *regions || o->buf != src || back != dst)) {
+            vkCmdCopyBuffer(cb, src, dst, n, regions);
+            n = 0;
         }
+        src = o->buf;
+        dst = back;
+        regions[n++] = (VkBufferCopy){.srcOffset = o->off, .dstOffset = at, .size = o->size};
+        o->ptr = p;
+        o->mem = mem;
+    }
+    if (n) vkCmdCopyBuffer(cb, src, dst, n, regions);
+    b.srcStageMask |= VK_PIPELINE_STAGE_2_COPY_BIT;
+    b.srcAccessMask |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    b.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    b.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    vkCmdPipelineBarrier2(cb, &d);
 }
 static void wait_finish(int reason) {
     u64 t = copy_stats_on() ? plat_ns() : 0;

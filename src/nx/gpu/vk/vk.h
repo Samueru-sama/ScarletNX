@@ -122,6 +122,8 @@ VkCommandBuffer vk_cmd(void); /* the current frame's command buffer, begun on fi
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* As vk_stage, with the allocation for GPU-written data that must be invalidated after its frame fence. */
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation* mem);
+/* Host-cached memory for the current frame's GPU -> host copies, read after its fence once invalidated. */
+u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem);
 /* ends and submits the current frame's commands, waiting for wait (at wait_stage) and signaling signal, then starts
    the next frame. Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
