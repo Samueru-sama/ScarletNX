@@ -476,7 +476,8 @@ int vk_nvn_compute_pipeline(const NvnDispatchCommand* command, VkPipeline* pipel
     }
     static u8 code_buf[0x10000 + 80];
     memset(code_buf, 0, 80);
-    gmem_read_code(address + 0x100, code_buf + 80, 0x10000);
+    gmem_read_code(address + 0x100, code_buf + 80, header[1]);
+    memset(code_buf + 80 + header[1], 0, 0x10000 - header[1]);
     CsPipe* p = cs_pipe(code_buf, command->local[0], command->local[1], command->local[2],
                         command->shared_size);
     if (!p || p->failed) return 0;
