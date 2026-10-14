@@ -1465,6 +1465,15 @@ counter. The second zero clear is skipped, and the sampled 320×180 producer tar
 matches the emulated GPU at all 57,600 pixels. This establishes parity for that
 sampled target, not for the later passes or presented frame.
 
+The next TotK passes still expose incomplete texture dependencies. A 320×180
+multi-attachment pass feeding the 80×45 image cannot sample all of its sources;
+one chain reaches a 192×192 NVN `R16` attachment. Direct NVN rendering now maps
+format `0x06` to Vulkan `R16_UNORM` and accepts it as a color attachment. Its first
+headless readback issued a direct draw and matched the native 192×192 image at all
+36,864 pixels. That image is not certified as fully covered, and another TIC views
+the same backing as 256×256. The different view dimensions and earlier incomplete
+images remain prerequisites for this chain; the 80×45 pass is not yet certified.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

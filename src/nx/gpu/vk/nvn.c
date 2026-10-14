@@ -196,6 +196,7 @@ static VkFmt nvn_format(u32 format) {
         case 0x01: return (VkFmt){.vk = VK_FORMAT_R8_UNORM, .bpp = 1};            /* R8 */
         case 0x03: return (VkFmt){.vk = VK_FORMAT_R8_UINT, .bpp = 1, .is_int = 1}; /* R8UI */
         case 0x05: return (VkFmt){.vk = VK_FORMAT_R16_SFLOAT, .bpp = 2};          /* R16F */
+        case 0x06: return (VkFmt){.vk = VK_FORMAT_R16_UNORM, .bpp = 2};           /* R16 */
         case 0x0a: return (VkFmt){.vk = VK_FORMAT_R32_SFLOAT, .bpp = 4};          /* R32F */
         case 0x0b: return (VkFmt){.vk = VK_FORMAT_R32_UINT, .bpp = 4, .is_int = 1}; /* R32UI */
         case 0x0c: return (VkFmt){.vk = VK_FORMAT_R32_SINT, .bpp = 4, .is_int = 1, .sint = 1}; /* R32I */
@@ -2282,6 +2283,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         !(command->viewport_known & 1) ||
         !(command->scissor_known & 1) ||
         (command->color_target[0].format != 0x01 && command->color_target[0].format != 0x05 &&
+         command->color_target[0].format != 0x06 &&
          command->color_target[0].format != 0x0a && command->color_target[0].format != 0x25 &&
          command->color_target[0].format != 0x29 && command->color_target[0].format != 0x38 &&
          command->color_target[0].format != 0x3d && command->color_target[0].format != 0x3f) ||
