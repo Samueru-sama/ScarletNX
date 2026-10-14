@@ -592,6 +592,13 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
         stream->classes[sub] = value & 0xffff;
     }
     if (sub == 0 && (stream->classes[sub] == 0xb197 || !stream->classes[sub])) {
+        /* SDK macro 9 sets the color write masks. Its first argument carries the
+           four component nibbles for RT 0; the executed MME writes those low
+           sixteen bits to COLOR_MASK 0. Keep the submit snapshot in step. */
+        if (method == 0xe12) {
+            stream->registers.value[0x680] = value & 0xffff;
+            stream->registers.known[0x680 / 64] |= 1ull << (0x680 % 64);
+        }
         if (method < 0x1000) {
             stream->registers.value[method] = value;
             stream->registers.known[method / 64] |= 1ull << (method % 64);
@@ -3432,6 +3439,10 @@ u64 nvn_record_before(const CPU* c, const char* name) {
 }
 
 typedef struct {
+    u32 channel, vertex_offset, fragment_offset;
+    u8 used, vertex_bound, fragment_bound;
+} NvnProgramCursor;
+typedef struct {
     NvnClearBatch* clears;
     NvnCopyBatch* copies;
     NvnDrawBatch* draws;
@@ -3440,6 +3451,7 @@ typedef struct {
     NvnControlPacket* control_packets;
     u32 control_packet_count, control_packets_dropped;
     u64 gpu_macro12_packets;
+    NvnProgramCursor initial_cursors[16];
     NvnStorageSeed* storage_seeds;
     NvnUniformUpdate* uniform_updates;
 } NvnGpuBatch;
@@ -3465,15 +3477,38 @@ static void free_control_packets(NvnControlPacket* packet) {
         packet = next;
     }
 }
+static void refresh_control_packet_descriptors(NvnControlPacket* packet) {
+    if (!packet || packet->texture_snapshot_reserved !=
+                       32 * sizeof(NvnControlTextureDescriptor) ||
+        (packet->texture.known & 0x3f) != 0x3f || packet->texture.registers[5]) return;
+    u32 bank = packet->texture.registers[4] & 31;
+    if (bank >= 18 || !(packet->cbuf.known[1] & (1u << bank)) ||
+        !packet->cbuf.address[1][bank]) return;
+    u64 handle_bank = packet->cbuf.address[1][bank];
+    u64 tic_base = ((u64)packet->texture.registers[0] << 32) | packet->texture.registers[1];
+    u64 tsc_base = ((u64)packet->texture.registers[2] << 32) | packet->texture.registers[3];
+    NvnControlTextureDescriptor* descriptors = (NvnControlTextureDescriptor*)((u8*)packet->words +
+        (u64)packet->word_count * sizeof(u32) + packet->index_snapshot_reserved);
+    for (u32 slot = 0; slot < 32; slot++) {
+        NvnControlTextureDescriptor* descriptor = &descriptors[slot];
+        u64 handle_address = handle_bank + (8u + 2u * slot) * 4u;
+        if (handle_address < handle_bank ||
+            !copy_gpu_pages(handle_address, &descriptor->handle, sizeof descriptor->handle)) continue;
+        u32 handle = descriptor->handle;
+        u64 tic_offset = (u64)(handle & 0xfffff) * 32;
+        u64 tsc_offset = (u64)(handle >> 20) * 32;
+        if (tic_base > UINT64_MAX - tic_offset - 32 ||
+            tsc_base > UINT64_MAX - tsc_offset - 32 ||
+            !copy_gpu_pages(tic_base + tic_offset, descriptor->tic, sizeof descriptor->tic) ||
+            !copy_gpu_pages(tsc_base + tsc_offset, descriptor->tsc, sizeof descriptor->tsc)) continue;
+        packet->texture_snapshot_mask |= 1u << slot;
+    }
+}
 static int raw_registers_have(const u64 known[0x1000 / 64], const u16* methods, u32 count) {
     for (u32 i = 0; i < count; i++)
         if (!(known[methods[i] / 64] & (1ull << (methods[i] % 64)))) return 0;
     return 1;
 }
-typedef struct {
-    u32 channel, vertex_offset, fragment_offset;
-    u8 used, vertex_bound, fragment_bound;
-} NvnProgramCursor;
 typedef struct {
     NvnControlShaderProbe probe;
     const NvnControlPacket* packet;
@@ -3566,13 +3601,17 @@ static void execute_nvn_batch(void* arg) {
         u32 raster_registers = 0, depth_pipeline_registers = 0;
         u32 probe_texture_snapshot_ready = 0;
         u64 index_snapshot_bytes = 0;
-        NvnProgramCursor cursors[16] = {0};
+        NvnProgramCursor cursors[16];
+        memcpy(cursors, batch->initial_cursors, sizeof cursors);
         u32 first_depth_writers = 0;
         u64 decoded_indices = 0;
         u64 first_depth_address = 0;
         u32 first_depth_width = 0, first_depth_height = 0;
         const char* dump = getenv("SNX_NVN_CONTROL_PACKET_DUMP");
-        for (const NvnControlPacket* packet = batch->control_packets; packet; packet = packet->next) {
+        const char* descriptor_refresh = getenv("SNX_NVN_CONTROL_LIVE_DESCRIPTOR_REFRESH");
+        for (NvnControlPacket* packet = batch->control_packets; packet; packet = packet->next) {
+            if (descriptor_refresh && !strcmp(descriptor_refresh, "1") && packet->macro38_count)
+                refresh_control_packet_descriptors(packet);
             NvnProgramCursor* cursor = NULL;
             for (u32 i = 0; i < 16; i++)
                 if (cursors[i].used && cursors[i].channel == packet->channel) {
@@ -3850,11 +3889,19 @@ static void execute_nvn_batch(void* arg) {
         const char* sequence_opt = getenv("SNX_NVN_CONTROL_DRAW_SEQUENCE");
         const char* entry_replay_opt = getenv("SNX_NVN_CONTROL_ENTRY_REPLAY");
         static u32 sequence_batches;
+        u32 sequence_batch_limit = 1;
+        const char* sequence_batches_opt = getenv("SNX_NVN_CONTROL_SEQUENCE_BATCHES");
+        if (sequence_batches_opt) {
+            unsigned long requested = strtoul(sequence_batches_opt, NULL, 0);
+            if (requested && requested <= NVN_CONTROL_SUBMIT_CHECKPOINTS)
+                sequence_batch_limit = (u32)requested;
+        }
         int sequence_batch = sequence_opt && !strcmp(sequence_opt, "1") &&
                              (pipeline_candidate_count >= 100 ||
                               (entry_replay_opt && !strcmp(entry_replay_opt, "1") &&
                                pipeline_candidate_count >= 10 && first_depth_width == 64 &&
-                               first_depth_height == 64)) && !sequence_batches;
+                               first_depth_height == 64)) &&
+                             sequence_batches < sequence_batch_limit;
         u32 sequence_limit = pipeline_candidate_count;
         const char* sequence_limit_opt = getenv("SNX_NVN_CONTROL_DRAW_SEQUENCE_LIMIT");
         if (sequence_batch && sequence_limit_opt) {
@@ -4110,18 +4157,11 @@ static void execute_nvn_batch(void* arg) {
     free(batch);
 }
 
-void nvn_record_take_control_submit(u32 entry_count, void (**fn)(void*), void** arg,
-                                    void (**entry_fn)(void*), void** entry_arg,
-                                    u32* entry_index, u64* entry_color, u32* entry_draws) {
-    if (fn) *fn = NULL;
-    if (arg) *arg = NULL;
-    if (entry_fn) *entry_fn = NULL;
-    if (entry_arg) *entry_arg = NULL;
-    if (entry_index) *entry_index = 0;
-    if (entry_color) *entry_color = 0;
-    if (entry_draws) *entry_draws = 0;
+void nvn_record_take_control_submit(u32 entry_count, NvnControlSubmit* result) {
+    if (!result) return;
+    memset(result, 0, sizeof *result);
     const char* enabled = getenv("SNX_NVN_CONTROL_SUBMIT_REPLAY");
-    if (!fn || !arg || !enabled || strcmp(enabled, "1") || !descriptor_replay ||
+    if (!enabled || strcmp(enabled, "1") || !descriptor_replay ||
         !submit_queue_scope) return;
     pm_lock(&lock);
     ReplayQueue* queue = replay_queue_slot(submit_queue_scope);
@@ -4136,12 +4176,16 @@ void nvn_record_take_control_submit(u32 entry_count, void (**fn)(void*), void** 
         u32 remaining_count = queue->control_packet_count;
         u64 remaining_macro12 = queue->gpu_macro12_packets;
         const char* entry_mode = getenv("SNX_NVN_CONTROL_ENTRY_REPLAY");
-        if (entry_count && entry_fn && entry_arg && entry_index && entry_color && entry_draws && entry_mode &&
-            !strcmp(entry_mode, "1")) {
+        if (entry_count && entry_mode && !strcmp(entry_mode, "1")) {
             u64 first_color = 0;
             u32 draw_count = 0, prefix_count = 0, prefix_macro12 = 0;
+            u64 first_ordinal = queue->gpu_entries >= entry_count
+                ? queue->gpu_entries - entry_count + 1 : 0;
+            NvnProgramCursor scan_cursors[16] = {0};
+            NvnProgramCursor segment_cursors[16] = {0};
             NvnControlPacket* previous = NULL;
-            for (NvnControlPacket* packet = remaining; packet; packet = packet->next) {
+            int segment_valid = first_ordinal != 0;
+            for (NvnControlPacket* packet = remaining; segment_valid && packet; packet = packet->next) {
                 if (packet->macro38_count == 1 && packet->register_snapshot_valid) {
                     const u8* source = (const u8*)packet->words +
                         (u64)packet->word_count * sizeof(u32) +
@@ -4154,36 +4198,96 @@ void nvn_record_take_control_submit(u32 entry_count, void (**fn)(void*), void** 
                     u64 address = ((u64)color[0] << 32) | color[1];
                     if ((control & 15) == 1 && address) {
                         if (!first_color) first_color = address;
-                        else if (address != first_color && draw_count >= 10 && previous) {
-                            u64 first_ordinal = queue->gpu_entries >= entry_count
-                                ? queue->gpu_entries - entry_count + 1 : 0;
+                        else if (address != first_color && draw_count && previous) {
                             u64 due = previous->ordinal;
-                            if (first_ordinal && due >= first_ordinal &&
-                                due - first_ordinal < entry_count) {
+                            if (due >= first_ordinal && due - first_ordinal < entry_count &&
+                                result->count < NVN_CONTROL_SUBMIT_CHECKPOINTS) {
                                 NvnGpuBatch* early = calloc(1, sizeof *early);
                                 if (early) {
                                     early->control_packets = remaining;
                                     early->control_packet_count = prefix_count;
                                     early->gpu_macro12_packets = prefix_macro12;
+                                    memcpy(early->initial_cursors, segment_cursors,
+                                           sizeof segment_cursors);
                                     previous->next = NULL;
                                     remaining = packet;
                                     remaining_count -= prefix_count;
                                     remaining_macro12 -= prefix_macro12;
-                                    *entry_fn = execute_nvn_batch;
-                                    *entry_arg = early;
-                                    *entry_index = (u32)(due - first_ordinal);
-                                    *entry_color = first_color;
-                                    *entry_draws = draw_count;
-                                }
-                            }
+                                    result->checkpoint[result->count++] = (NvnControlCheckpoint){
+                                        .fn = execute_nvn_batch, .arg = early, .color = first_color,
+                                        .draws = draw_count, .entry_index = (u32)(due - first_ordinal)};
+                                    const char* draw_limit = getenv("SNX_NVN_CONTROL_EXECUTED_DRAW_LIMIT");
+                                    if (result->count == 1 && draw_limit) {
+                                        unsigned long requested = strtoul(draw_limit, NULL, 0);
+                                        if (requested && requested < draw_count)
+                                            result->checkpoint[0].draws = (u32)requested;
+                                    }
+                                    first_color = address;
+                                    draw_count = prefix_count = prefix_macro12 = 0;
+                                    previous = NULL;
+                                    memcpy(segment_cursors, scan_cursors,
+                                           sizeof segment_cursors);
+                                } else segment_valid = 0;
+                            } else segment_valid = 0;
+                        }
+                        if (segment_valid) draw_count++;
+                    }
+                }
+                if (packet->macro12_count) {
+                    NvnProgramCursor* cursor = NULL;
+                    for (u32 i = 0; i < 16; i++)
+                        if (scan_cursors[i].used && scan_cursors[i].channel == packet->channel) {
+                            cursor = &scan_cursors[i];
                             break;
                         }
-                        draw_count++;
+                    if (!cursor)
+                        for (u32 i = 0; i < 16; i++)
+                            if (!scan_cursors[i].used) {
+                                cursor = &scan_cursors[i];
+                                *cursor = (NvnProgramCursor){.used = 1, .channel = packet->channel};
+                                break;
+                            }
+                    NvnControlProgramBind binds[512];
+                    u32 bind_count = 0;
+                    int parsed = nvn_control_program_binds(packet->words, packet->word_count,
+                                                           binds, 512, &bind_count);
+                    if (cursor) {
+                        if (!parsed || bind_count != packet->macro12_count)
+                            cursor->vertex_bound = cursor->fragment_bound = 0;
+                        else for (u32 i = 0; i < bind_count; i++) {
+                            if (binds[i].selector == 1) {
+                                cursor->vertex_offset = binds[i].code_offset;
+                                cursor->vertex_bound = 1;
+                            } else if (binds[i].selector == 5) {
+                                cursor->fragment_offset = binds[i].code_offset;
+                                cursor->fragment_bound = 1;
+                            }
+                        }
                     }
                 }
                 prefix_count++;
                 prefix_macro12 += packet->macro12_count;
                 previous = packet;
+            }
+            if (segment_valid && first_color && draw_count && previous &&
+                result->count < NVN_CONTROL_SUBMIT_CHECKPOINTS &&
+                previous->ordinal >= first_ordinal &&
+                previous->ordinal - first_ordinal < entry_count) {
+                NvnGpuBatch* early = calloc(1, sizeof *early);
+                if (early) {
+                    early->control_packets = remaining;
+                    early->control_packet_count = remaining_count;
+                    early->gpu_macro12_packets = remaining_macro12;
+                    memcpy(early->initial_cursors, segment_cursors,
+                           sizeof segment_cursors);
+                    result->checkpoint[result->count++] = (NvnControlCheckpoint){
+                        .fn = execute_nvn_batch, .arg = early, .color = first_color,
+                        .draws = draw_count,
+                        .entry_index = (u32)(previous->ordinal - first_ordinal)};
+                    remaining = NULL;
+                    remaining_count = 0;
+                    remaining_macro12 = 0;
+                }
             }
         }
         batch->control_packets = remaining;
@@ -4195,8 +4299,8 @@ void nvn_record_take_control_submit(u32 entry_count, void (**fn)(void*), void** 
         queue->control_packet_count = queue->control_packet_bytes = queue->control_packets_dropped = 0;
         queue->gpu_macro12_packets = 0;
         if (batch->control_packets || batch->control_packets_dropped) {
-            *fn = execute_nvn_batch;
-            *arg = batch;
+            result->tail_fn = execute_nvn_batch;
+            result->tail_arg = batch;
         } else free(batch);
     }
     pm_unlock(&lock);

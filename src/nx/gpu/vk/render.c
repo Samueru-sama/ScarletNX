@@ -977,13 +977,20 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
 
 /* ------------------------------------------------------------ draws */
 u64 g_vk_drawn, g_vk_skipped;
-static u64 g_control_face_address;
-static u32 g_control_face_draws;
-void vk_control_face_begin(u64 color_address) {
-    g_control_face_address = color_address;
-    g_control_face_draws = 0;
+static struct { u64 address; u32 draws; } g_control_faces[8];
+static u32 g_control_face_count;
+void vk_control_faces_begin(const u64* color_addresses, u32 count) {
+    g_control_face_count = count < 8 ? count : 8;
+    for (u32 i = 0; i < g_control_face_count; i++) {
+        g_control_faces[i].address = color_addresses[i];
+        g_control_faces[i].draws = 0;
+    }
 }
-u32 vk_control_face_count(void) { return g_control_face_draws; }
+u32 vk_control_face_count(u64 color_address) {
+    for (u32 i = 0; i < g_control_face_count; i++)
+        if (g_control_faces[i].address == color_address) return g_control_faces[i].draws;
+    return 0;
+}
 
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
@@ -1034,6 +1041,11 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
                   r[0x5f6], (unsigned long long)(((u64)r[0x5f2] << 32) | r[0x5f3]),
                   r[0x4b3], r[0x4ba], r[0x4c3],
                   r[0x280], r[0x281], r[0x283], r[0x284]);
+    if (trace_count && strtoul(trace_count, NULL, 0) == count)
+        LOG_LIMIT(16, "gpu-draw-color-state: face=%llx mask=%x common=%x blend=%x clear=%08x,%08x,%08x,%08x\n",
+                  (unsigned long long)(((u64)r[0x200] << 32) | r[0x201]),
+                  r[0x680], r[0x3e4], r[0x4e0],
+                  r[0x360], r[0x361], r[0x362], r[0x363]);
     u32 initial_first = first, initial_count = count;
     int retries = 0;
 retry:
@@ -1522,9 +1534,10 @@ retry:
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
     if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) zt->wgen++;
     g_vk_drawn++;
-    if (indexed && zt && n && rt[0] && rt[0]->gva == g_control_face_address &&
-        zt->w == 64 && zt->h == 64 && g_control_face_draws < UINT32_MAX)
-        g_control_face_draws++;
+    if (indexed && zt && n && rt[0] && zt->w == 64 && zt->h == 64)
+        for (u32 i = 0; i < g_control_face_count; i++)
+            if (rt[0]->gva == g_control_faces[i].address && g_control_faces[i].draws < UINT32_MAX)
+                g_control_faces[i].draws++;
     const char* control_compare = getenv("SNX_NVN_CONTROL_COMPARE_PROBE");
     if (control_compare && !strcmp(control_compare, "1") && indexed && zt)
         vk_nvn_control_compare_probe(zt, n && rt[0] ? rt[0]->gva : 0, count, base_vertex);

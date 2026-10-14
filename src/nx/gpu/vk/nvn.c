@@ -88,8 +88,10 @@ static u64 shadow_draw_stamp;
 static u64 shadow_capture_target;
 static u32 shadow_capture_scissor[4];
 static u8* raw_probe_depth_pixels;
+static u8* raw_probe_color_pixels;
 static u64 raw_probe_depth_address;
 static u64 raw_probe_color_address;
+static VkFormat raw_probe_color_format;
 static u32 raw_probe_depth_width, raw_probe_depth_height, raw_probe_depth_count, raw_probe_depth_base;
 static u32 raw_probe_depth_compare_skip;
 static u64 raw_probe_depth_armed_draw;
@@ -147,10 +149,24 @@ static int shadow_check_guest_pages(const NvnImage* image, u32 since, u64* mappi
         u64 size = 0x1000 - (address & 0xfff);
         if (size > image->storage_size - offset) size = image->storage_size - offset;
         const u8* host = gmem_ptr_untracked(address, size);
-        if (!host) return -1;
+        if (!host) {
+            const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
+            if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == image->address))
+                LOG_LIMIT(128, "nvn-control-backing-page: image=%llx address=%llx offset=%llu size=%llu unmapped\n",
+                          (unsigned long long)image->address, (unsigned long long)address,
+                          (unsigned long long)offset, (unsigned long long)size);
+            return -1;
+        }
         hash = (hash ^ (u64)(uintptr_t)host) * 1099511628211ull;
         int dirty = vk_written_since(host, size, since);
-        if (dirty < 0) return -1;
+        if (dirty < 0) {
+            const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
+            if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == image->address))
+                LOG_LIMIT(128, "nvn-control-backing-page: image=%llx address=%llx offset=%llu size=%llu untracked\n",
+                          (unsigned long long)image->address, (unsigned long long)address,
+                          (unsigned long long)offset, (unsigned long long)size);
+            return -1;
+        }
         written |= dirty;
         offset += size;
     }
@@ -199,8 +215,8 @@ static void shadow_check_backing(NvnImage* image) {
     }
     if (!valid || gpu_dirty || cpu_dirty) {
         const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
-        if (trace && strtoull(trace, NULL, 0) == image->address)
-            LOG_LIMIT(16, "nvn-control-image-invalidate: address=%llx batch=%llu valid=%d gpu-dirty=%d cpu-dirty=%d covered=%llx/%llx guest-pages=%d\n",
+        if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == image->address))
+            LOG_LIMIT(1024, "nvn-control-image-invalidate: address=%llx batch=%llu valid=%d gpu-dirty=%d cpu-dirty=%d covered=%llx/%llx guest-pages=%d\n",
                       (unsigned long long)image->address, (unsigned long long)batch_serial,
                       valid, gpu_dirty, cpu_dirty,
                       (unsigned long long)image->color_layers[0],
@@ -1716,6 +1732,11 @@ static VkPipeline raw_depth_pipeline(const NvnControlShaderProbe* probe,
                    .color = {color.vk}, .depth = depth.vk,
                    .stencil = depth.stencil ? depth.vk : VK_FORMAT_UNDEFINED};
     u32 color_mask = registers[0x680];
+    const char* color_state = getenv("SNX_NVN_CONTROL_COLOR_STATE");
+    if (color_state && !strcmp(color_state, "1"))
+        LOG_LIMIT(16, "nvn-control-color-state: face=%llx mask=%x common=%x sph=%x blend=%x\n",
+                  (unsigned long long)color_address, color_mask,
+                  registers[0x3e4], shader[1]->si.sph[18], registers[0x4e0]);
     key.blend[0].mask = ((color_mask & 0xf) ? VK_COLOR_COMPONENT_R_BIT : 0) |
                         ((color_mask & 0xf0) ? VK_COLOR_COMPONENT_G_BIT : 0) |
                         ((color_mask & 0xf00) ? VK_COLOR_COMPONENT_B_BIT : 0) |
@@ -1831,8 +1852,8 @@ static VkImageView raw_control_sample_view(const u32 tic[8], u64 address, u32 wi
             }
         if (!complete) {
             const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
-            if (trace && strtoull(trace, NULL, 0) == address)
-                LOG_LIMIT(8, "nvn-control-sampled-coverage: address=%llx image=%u format=%x levels=%u layers=%u color=%llx/%llx depth=%llx/%llx seed=%llx/%llx written=%d\n",
+            if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address))
+                LOG_LIMIT(1024, "nvn-control-sampled-coverage: address=%llx image=%u format=%x levels=%u layers=%u color=%llx/%llx depth=%llx/%llx seed=%llx/%llx written=%d\n",
                           (unsigned long long)address, i, image->format, image->levels,
                           image->layers, (unsigned long long)image->color_layers[0],
                           (unsigned long long)image->color_layers[1],
@@ -1857,8 +1878,8 @@ static VkImageView raw_control_sample_view(const u32 tic[8], u64 address, u32 wi
         return view;
     }
     const char* trace = getenv("SNX_NVN_CONTROL_TRACE_TEXTURE");
-    if (trace && strtoull(trace, NULL, 0) == address)
-        LOG_LIMIT(16, "nvn-control-sampled-image: address=%llx size=%ux%ux%u levels=%u type=%u format=%u candidates=%u/%u/%u\n",
+    if (trace && (!strcmp(trace, "all") || strtoull(trace, NULL, 0) == address))
+        LOG_LIMIT(1024, "nvn-control-sampled-image: address=%llx size=%ux%ux%u levels=%u type=%u format=%u candidates=%u/%u/%u\n",
                   (unsigned long long)address, width, height, layers, levels, type, format,
                   address_matches, shape_matches, covered_matches);
     return VK_NULL_HANDLE;
@@ -2029,6 +2050,21 @@ static int raw_depth_descriptors(const NvnControlShaderProbe* probe, VkSh* shade
                 return 0;
             }
             const NvnControlTextureDescriptor* descriptor = &probe->texture_descriptors[slot];
+            const char* descriptor_trace = getenv("SNX_NVN_CONTROL_LIVE_DESCRIPTOR_PROBE");
+            if (descriptor_trace && !strcmp(descriptor_trace, "1") && stage == 1) {
+                u32 bank = probe->texture_cbuf_bank & 31, live_handle = 0;
+                int live = bank < 18 && (probe->cbuf_known[stage] & (1u << bank)) &&
+                           probe->cbuf_address[stage][bank] &&
+                           (u64)word * 4 + 4 <= probe->cbuf_size[stage][bank];
+                if (live) {
+                    u64 address = probe->cbuf_address[stage][bank] + (u64)word * 4;
+                    live = !!gmmu_translate(address) && !!gmmu_translate(address + 3);
+                    if (live) gmem_read(address, &live_handle, 4);
+                }
+                LOG_LIMIT(24, "nvn-control-live-descriptor: index=%d slot=%u handle=%08x/%08x live=%d tic=%08x,%08x\n",
+                          i, slot, descriptor->handle, live_handle, live,
+                          descriptor->tic[0], descriptor->tic[1]);
+            }
             u64 sampled_address = 0;
             u32 width, height, layers, levels;
             VkImageViewType type;
@@ -2053,8 +2089,9 @@ static int raw_depth_descriptors(const NvnControlShaderProbe* probe, VkSh* shade
                 if (!sampled && transition && source_bridge && !strcmp(source_bridge, "1")) {
                     sampled = vk_tex_from_tic(descriptor->tic);
                     if (sampled)
-                        LOG_LIMIT(8, "nvn-control-source-bridge: address=%llx\n",
-                                  (unsigned long long)sampled_address);
+                        LOG_LIMIT(8, "nvn-control-source-bridge: address=%llx size=%ux%u layers=%u levels=%u format=%u render-target=%d\n",
+                                  (unsigned long long)sampled_address, sampled->w, sampled->h,
+                                  sampled->layers, sampled->levels, sampled->f.vk, sampled->is_rt);
                 }
                 if (sampled)
                     view = vk_tex_bind_view(sampled, vk_tex_view_type(texture), descriptor->tic, num);
@@ -2107,6 +2144,14 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
                               const u8* indices, u32 index_bytes, u32 index_count,
                               u32 index_type, u32 instances, u32 base_vertex,
                               u32 base_instance, u32 experiment_flags) {
+#define CONTROL_DRAW_REJECT(reason) do { \
+    const char* trace = getenv("SNX_NVN_CONTROL_DRAW_REJECT"); \
+    if (trace && !strcmp(trace, "1")) \
+        LOG_LIMIT(32, "nvn-control-draw-reject: %s color=%llx count=%u base=%u\n", \
+                  reason, (unsigned long long)(color_target ? color_target->gpu_address : 0), \
+                  index_count, base_vertex); \
+    return 0; \
+} while (0)
     if (!probe || !color_target || !depth_target || !registers || !indices || !index_count ||
         !instances || index_type > 2 || (index_type == 0 && !g_vk.has_index_uint8) ||
         index_count > UINT32_MAX >> index_type ||
@@ -2115,20 +2160,20 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
         color_target->view.first_layer >= 64 || depth_target->view.first_layer >= 64 ||
         color_target->width != depth_target->width ||
         color_target->height != depth_target->height ||
-        registers[0x4e0] || registers[0x372]) return 0;
+        registers[0x4e0] || registers[0x372]) CONTROL_DRAW_REJECT("inputs");
     VkSh* shader[2];
     PipeKey key;
     VkPipeline pipeline = raw_depth_pipeline(probe, color_target, depth_target,
                                               registers, 4, shader, &key);
     if (!pipeline || !prepare_attachment(color_target, 0) ||
-        !prepare_attachment(depth_target, 1)) return 0;
+        !prepare_attachment(depth_target, 1)) CONTROL_DRAW_REJECT("pipeline-or-attachment");
     u64 frame = vk_frame_number();
     VkBuffer vertex_buffers[32] = {0};
     VkDeviceSize vertex_offsets[32] = {0}, vertex_strides[32] = {0};
     for (u32 i = 0; i < key.nattr; i++) {
         u32 location = key.attr[i].loc, binding = key.attr[i].binding;
         u32 raw = registers[0x458 + location], stream = raw & 31;
-        if (binding >= key.nbind || stream >= 16 || (raw & 0x40)) return 0;
+        if (binding >= key.nbind || stream >= 16 || (raw & 0x40)) CONTROL_DRAW_REJECT("attribute");
         u32 offset = (raw >> 7) & 0x3fff;
         u32 base = offset > g_vk.props.limits.maxVertexInputAttributeOffset ? offset : 0;
         u64 start = ((u64)registers[0x700 + stream * 4 + 1] << 32) |
@@ -2138,18 +2183,18 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
         if (!start || end < start || end - start >= (4u << 20) ||
             base > end - start ||
             !vk_buf_get_strict(start, end - start + 1, &vertex_buffers[binding],
-                               &vertex_offsets[binding])) return 0;
+                               &vertex_offsets[binding])) CONTROL_DRAW_REJECT("vertex-buffer");
         vertex_offsets[binding] += base;
         vertex_strides[binding] = registers[0x700 + stream * 4] & 0xfff;
     }
     VkBuffer index_buffer;
     u64 index_offset;
     u8* staged = vk_stage(index_bytes, vk_stage_align(), &index_buffer, &index_offset);
-    if (!staged) return 0;
+    if (!staged) CONTROL_DRAW_REJECT("index-stage");
     memcpy(staged, indices, index_bytes);
     VkDescriptorSet sets[2];
     if (!raw_depth_descriptors(probe, shader, depth_target, sets, 1) ||
-        frame != vk_frame_number()) return 0;
+        frame != vk_frame_number()) CONTROL_DRAW_REJECT("descriptors-or-frame");
     VkFmt color_format = nvn_format(color_target->format);
     VkFmt depth_format = nvn_format(depth_target->format);
     int full = 0;
@@ -2157,7 +2202,8 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
                                 VK_IMAGE_ASPECT_COLOR_BIT, &full);
     NvnImage* depth = image_for(depth_target, depth_format.vk,
                                 vk_aspect(&depth_format), &full);
-    if (!color || !depth || !color->attachment || !depth->attachment) return 0;
+    if (!color || !depth || !color->attachment || !depth->attachment)
+        CONTROL_DRAW_REJECT("images");
     int sequence = !!(experiment_flags & 1);
     int readback = !sequence || !!(experiment_flags & 2);
     if (sequence) {
@@ -2183,7 +2229,7 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
     VkImageView depth_view = shadow_attachment_view(depth, depth_format.vk,
                                                     depth_target->view.base_level,
                                                     depth_target->view.first_layer);
-    if (!color_view || !depth_view) return 0;
+    if (!color_view || !depth_view) CONTROL_DRAW_REJECT("attachment-view");
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT, color->stage, color->access,
@@ -2211,6 +2257,13 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
         .loadOp = clear_color ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .clearValue = {.color = {{0.5f, 0.0f, 0.5f, 1.0f}}}};
+    const char* register_clear = getenv("SNX_NVN_CONTROL_REGISTER_CLEAR");
+    if (clear_color && register_clear && !strcmp(register_clear, "1")) {
+        memcpy(&color_attachment.clearValue.color, &registers[0x360], 16);
+        LOG_LIMIT(8, "nvn-control-register-color-clear: color=%llx value=%08x,%08x,%08x,%08x\n",
+                  (unsigned long long)color_target->gpu_address,
+                  registers[0x360], registers[0x361], registers[0x362], registers[0x363]);
+    }
     VkRenderingAttachmentInfo depth_attachment = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
         .imageView = depth_view, .imageLayout = depth->layout,
@@ -2351,6 +2404,12 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
                 (unsigned long long)color_target->gpu_address,
                 (unsigned long long)differing,
                 (unsigned long long)(bytes / 4), first_pixel);
+            free(raw_probe_color_pixels);
+            raw_probe_color_pixels = malloc((size_t)bytes);
+            if (raw_probe_color_pixels) {
+                memcpy(raw_probe_color_pixels, pixels, (size_t)bytes);
+                raw_probe_color_format = color_format.vk;
+            }
             if (read_depth) {
                 u64 changed = 0;
                 u32 first_depth;
@@ -2406,15 +2465,17 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
               (unsigned long long)depth_target->gpu_address,
               index_count, base_vertex, instances);
     return 1;
+#undef CONTROL_DRAW_REJECT
 }
 
 void vk_nvn_control_compare_probe(Surf* emulated_depth, u64 color_address,
                                   u32 count, u32 base_vertex) {
-    static int compared;
+    static u64 compared_armed_draw = UINT64_MAX;
     static u32 swept;
     const char* sweep_opt = getenv("SNX_NVN_CONTROL_COMPARE_SWEEP");
     int sweep = sweep_opt && !strcmp(sweep_opt, "1");
-    if (compared || !raw_probe_depth_pixels || !emulated_depth ||
+    if (compared_armed_draw == raw_probe_depth_armed_draw ||
+        !raw_probe_depth_pixels || !emulated_depth ||
         emulated_depth->gva != raw_probe_depth_address ||
         emulated_depth->w != raw_probe_depth_width ||
         emulated_depth->h != raw_probe_depth_height ||
@@ -2426,12 +2487,22 @@ void vk_nvn_control_compare_probe(Surf* emulated_depth, u64 color_address,
         raw_probe_depth_compare_skip--;
         return;
     }
-    if (!sweep) compared = 1;
+    if (!sweep) compared_armed_draw = raw_probe_depth_armed_draw;
     else swept++;
     vk_render_end();
     u64 bytes = (u64)raw_probe_depth_width * raw_probe_depth_height * 4;
+    Surf* emulated_color = NULL;
+    if (raw_probe_color_pixels)
+        for (Surf* candidate = vk_surf_first(color_address); candidate; candidate = candidate->next)
+            if (candidate->is_rt && candidate->gva == color_address &&
+                candidate->w == raw_probe_depth_width &&
+                candidate->h == raw_probe_depth_height &&
+                candidate->f.vk == raw_probe_color_format) {
+                emulated_color = candidate;
+                break;
+            }
     VkBuffer readback;
-    u8* pixels = vk_readback_buffer(bytes, &readback);
+    u8* pixels = vk_readback_buffer(bytes * (1 + !!emulated_color), &readback);
     if (!pixels) return;
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, emulated_depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -2439,6 +2510,13 @@ void vk_nvn_control_compare_probe(Surf* emulated_depth, u64 color_address,
     VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
                               .imageExtent = {raw_probe_depth_width, raw_probe_depth_height, 1}};
     vkCmdCopyImageToBuffer(cb, emulated_depth->img, emulated_depth->layout, readback, 1, &copy);
+    if (emulated_color) {
+        vk_surf_use(cb, emulated_color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        copy.bufferOffset = bytes;
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vkCmdCopyImageToBuffer(cb, emulated_color->img, emulated_color->layout, readback, 1, &copy);
+    }
     VkMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                                 .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -2476,9 +2554,36 @@ void vk_nvn_control_compare_probe(Surf* emulated_depth, u64 color_address,
         (unsigned long long)(first % raw_probe_depth_width),
         (unsigned long long)(first / raw_probe_depth_width),
         raw_first, emulated_first);
+    if (emulated_color) {
+        u64 color_different = 0, color_first = bytes / 4;
+        u32 raw_color_first = 0, emulated_color_first = 0;
+        for (u64 pixel = 0; pixel < bytes / 4; pixel++) {
+            u32 raw, emulated;
+            memcpy(&raw, raw_probe_color_pixels + pixel * 4, 4);
+            memcpy(&emulated, pixels + bytes + pixel * 4, 4);
+            if (raw != emulated) {
+                if (color_first == bytes / 4) {
+                    color_first = pixel;
+                    raw_color_first = raw;
+                    emulated_color_first = emulated;
+                }
+                color_different++;
+            }
+        }
+        LOG("nvn-control-color-compare: color=%llx format=%u different=%llu/%llu first=%llu,%llu values=%08x/%08x\n",
+            (unsigned long long)color_address, raw_probe_color_format,
+            (unsigned long long)color_different, (unsigned long long)(bytes / 4),
+            (unsigned long long)(color_first % raw_probe_depth_width),
+            (unsigned long long)(color_first / raw_probe_depth_width),
+            raw_color_first, emulated_color_first);
+    } else if (raw_probe_color_pixels)
+        LOG("nvn-control-color-compare: color=%llx reference-unavailable format=%u\n",
+            (unsigned long long)color_address, raw_probe_color_format);
     if (!sweep) {
         free(raw_probe_depth_pixels);
         raw_probe_depth_pixels = NULL;
+        free(raw_probe_color_pixels);
+        raw_probe_color_pixels = NULL;
     }
 }
 

@@ -197,14 +197,14 @@ static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 c
     vk_render_draw(ch, indexed, topology, first, count, bv, bi, instances);
     vk_unlock();
 }
-static void vkr_control_face_begin(u64 color_address) {
+static void vkr_control_faces_begin(const u64* color_addresses, u32 count) {
     vk_lock();
-    vk_control_face_begin(color_address);
+    vk_control_faces_begin(color_addresses, count);
     vk_unlock();
 }
-static u32 vkr_control_face_count(void) {
+static u32 vkr_control_face_count(u64 color_address) {
     vk_lock();
-    u32 count = vk_control_face_count();
+    u32 count = vk_control_face_count(color_address);
     vk_unlock();
     return count;
 }
@@ -551,7 +551,7 @@ const Renderer vk_renderer = {
     .nvn_control_buffer_probe = vkr_nvn_control_buffer_probe,
     .nvn_control_descriptor_probe = vkr_nvn_control_descriptor_probe,
     .nvn_control_draw_probe = vkr_nvn_control_draw_probe,
-    .control_face_begin = vkr_control_face_begin,
+    .control_faces_begin = vkr_control_faces_begin,
     .control_face_count = vkr_control_face_count,
     .nvn_probe_initial_color = vkr_nvn_probe_initial_color,
     .nvn_clear = vkr_nvn_clear,

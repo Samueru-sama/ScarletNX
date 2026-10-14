@@ -1850,8 +1850,37 @@ the captured color face and runs the first 65-draw NVN segment after that face
 reaches its recorded count. On the TotK capture, the immediate 64×64 D32F
 readback then differs at **0/4,096 pixels**; both paths changed 305 pixels
 from the clear value. This confirms the first face at the correct execution
-point. The remaining faces, clears, and sampled-image producers still need
-ordered checkpoints before the entire cubemap pass can switch to direct NVN.
+point. Color output and sampled-image producers still need validation before
+the pass can switch to direct NVN.
+
+The checkpoint now splits a submission at each captured color-face transition,
+tracks executed draws for every face, and carries the shader program binds from
+one segment to the next. With `SNX_NVN_CONTROL_SEQUENCE_BATCHES=6`, the first
+TotK cubemap pass issues **65 + 12 + 11 + 29 + 50 + 44 = 211** NVN-owned draws.
+Each face's immediate 64×64 depth readback matches Maxwell at **0/4,096**
+different pixels; the six faces change 305, 2, 237, 942, 861, and 950 depth
+pixels respectively. These are depth comparisons at executed face boundaries,
+not color or whole-frame parity. The color comparison shows why: the probe's
+magenta clear differs from Maxwell's clear, and its submit-time register
+snapshot misses SDK macro 9's color-mask write. The capture now models that
+macro's observed low-16-bit mask effect. With a diagnostic register-color
+clear, the first isolated draw still differs at its two colored pixels while
+its two depth pixels match. Captured texture handles differ from live GPU
+handles at some checkpoints: GPU-side CBUF writes occur after submission.
+At the executed first-draw checkpoint, refreshing the guest descriptor bank
+finds the live handle, but its texture is a Maxwell-owned render target and
+the independent NVN path correctly declines it. Enabling the explicit
+diagnostic source bridge makes that single draw's **color and depth both
+match 0/4,096 pixels different**. The bridge proves the missing producer;
+it is not a direct NVN parity result. A complete path must capture descriptor
+state in draw order and render that source without borrowing Maxwell's image.
+
+On later passes, a 256×256 NVN shadow draw feeds a sampled control texture.
+The normal shadow path cannot certify that producer's whole image; its
+opt-in full-surface sentinel probe does certify it on TotK. Once enabled,
+the next rejected source is a cubemap whose mip/layer coverage is incomplete.
+Those producer and clear operations must be modeled in GPU order before
+color and repeated-frame parity are possible.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

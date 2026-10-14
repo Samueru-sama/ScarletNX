@@ -457,14 +457,16 @@ void gpu_channel_close(u32 channel) {
     pm_unlock(&g_gpulock);
 }
 
-static void gpu_submit_now(u64* e, u32 n, u32 channel,
-                           void (*entry_fn)(void*), void* entry_arg, u32 entry_index,
-                           u64 entry_color, u32 entry_draws) {
+static void gpu_submit_now(u64* e, u32 n, u32 channel, NvnControlSubmit* control) {
     pm_lock(&g_gpulock);
     GpuChannel* ch = chan_get(channel);
-    int track_face = entry_fn && entry_color && entry_draws &&
-                     g_renderer->control_face_begin && g_renderer->control_face_count;
-    if (track_face) g_renderer->control_face_begin(entry_color);
+    int track_faces = control->count && g_renderer->control_faces_begin && g_renderer->control_face_count;
+    if (track_faces) {
+        u64 addresses[NVN_CONTROL_SUBMIT_CHECKPOINTS];
+        for (u32 i = 0; i < control->count; i++) addresses[i] = control->checkpoint[i].color;
+        g_renderer->control_faces_begin(addresses, control->count);
+    }
+    u32 next_checkpoint = 0;
     for (u32 k = 0; k < n; k++) {
         u64 ent = e[k];
         u64 va = ent & 0xFFFFFFFFFCull;
@@ -483,16 +485,20 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel,
             run_pushbuffer(ch, tmp, words);
             free(tmp);
         }
-        if (entry_fn && (track_face ? g_renderer->control_face_count() >= entry_draws : k == entry_index)) {
+        while (next_checkpoint < control->count &&
+               (track_faces ? g_renderer->control_face_count(control->checkpoint[next_checkpoint].color) >=
+                                  control->checkpoint[next_checkpoint].draws
+                            : k >= control->checkpoint[next_checkpoint].entry_index)) {
+            NvnControlCheckpoint* checkpoint = &control->checkpoint[next_checkpoint++];
             r3d_const_flush(ch);
             r3d_pending_flush();
-            if (track_face)
+            if (track_faces)
                 LOG("nvn-control-executed-face: color=%llx draws=%u/%u entry=%u/%u\n",
-                    (unsigned long long)entry_color, g_renderer->control_face_count(),
-                    entry_draws, k + 1, n);
+                    (unsigned long long)checkpoint->color,
+                    g_renderer->control_face_count(checkpoint->color),
+                    checkpoint->draws, k + 1, n);
             pm_unlock(&g_gpulock);
-            entry_fn(entry_arg);
-            entry_fn = NULL;
+            checkpoint->fn(checkpoint->arg);
             pm_lock(&g_gpulock);
             ch = chan_get(channel);
         }
@@ -500,11 +506,13 @@ static void gpu_submit_now(u64* e, u32 n, u32 channel,
     r3d_const_flush(ch);
     r3d_pending_flush();
     pm_unlock(&g_gpulock);
-    if (entry_fn) {
-        if (track_face)
+    while (next_checkpoint < control->count) {
+        NvnControlCheckpoint* checkpoint = &control->checkpoint[next_checkpoint++];
+        if (track_faces)
             LOG("nvn-control-executed-face: color=%llx draws=%u/%u; running remaining probe at submit end\n",
-                (unsigned long long)entry_color, g_renderer->control_face_count(), entry_draws);
-        entry_fn(entry_arg);
+                (unsigned long long)checkpoint->color,
+                g_renderer->control_face_count(checkpoint->color), checkpoint->draws);
+        checkpoint->fn(checkpoint->arg);
     }
 }
 
@@ -519,11 +527,7 @@ typedef struct {
     u32 expect;            /* the syncpoint value the job's fence promised */
     void (*fn)(void*);     /* or a call made in order with the submissions (vi's presents) */
     void* arg;
-    void (*entry_fn)(void*); /* optional NVN control checkpoint inside this GPFIFO job */
-    void* entry_arg;
-    u32 entry_index;
-    u64 entry_color;
-    u32 entry_draws;
+    NvnControlSubmit control; /* optional NVN control checkpoints inside this GPFIFO job */
 } GpuJob;
 #define GPU_QUEUE 256
 static GpuJob g_q[GPU_QUEUE];
@@ -544,8 +548,7 @@ static void gpu_run(GpuJob* j) {
         WARN(
             "gpu: a submission waited 2 s on the GPU thread for syncpoint %u to reach %u (it is at %u), and runs anyway\n",
             j->wait_id, j->wait_val, syncpt_read(j->wait_id));
-    gpu_submit_now(j->e, j->n, j->channel, j->entry_fn, j->entry_arg,
-                   j->entry_index, j->entry_color, j->entry_draws);
+    gpu_submit_now(j->e, j->n, j->channel, &j->control);
     gpu_signal_point();
     for (u32 i = 0; i < j->incs; i++) syncpt_incr(j->channel);
     /* a stream that increments less than its fence promised leaves whoever waits for the fence waiting 2 s */
@@ -591,34 +594,24 @@ void gpu_submit(u64* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val,
     pm_lock(&g_submit_order_lock);
     g_gpu_submits++;
     nvn_record_observe_gpu_submit(e, n, channel);
-    void (*control_fn)(void*) = NULL;
-    void* control_arg = NULL;
-    void (*entry_fn)(void*) = NULL;
-    void* entry_arg = NULL;
-    u32 entry_index = 0;
-    u64 entry_color = 0;
-    u32 entry_draws = 0;
-    nvn_record_take_control_submit(n, &control_fn, &control_arg,
-                                   &entry_fn, &entry_arg, &entry_index, &entry_color, &entry_draws);
+    NvnControlSubmit control = {0};
+    nvn_record_take_control_submit(n, &control);
     if (g_renderer->async_submit(e, n, channel, incs)) {
-        if (entry_fn)
-            gpu_queue((GpuJob){.wait_id = ~0u, .fn = entry_fn, .arg = entry_arg});
-        if (control_fn)
-            gpu_queue((GpuJob){.wait_id = ~0u, .fn = control_fn, .arg = control_arg});
+        for (u32 i = 0; i < control.count; i++)
+            gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.checkpoint[i].fn,
+                               .arg = control.checkpoint[i].arg});
+        if (control.tail_fn)
+            gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.tail_fn, .arg = control.tail_arg});
         pm_unlock(&g_submit_order_lock);
         return;
     }
     GpuJob j = {malloc((u64)n * 8 + 8), n, channel, incs, wait_id, wait_val, expect, NULL, NULL};
     if (!j.e) fatal("Out of memory queueing a GPU submission");
     memcpy(j.e, e, (u64)n * 8);
-    j.entry_fn = entry_fn;
-    j.entry_arg = entry_arg;
-    j.entry_index = entry_index;
-    j.entry_color = entry_color;
-    j.entry_draws = entry_draws;
+    j.control = control;
     gpu_queue(j);
-    if (control_fn)
-        gpu_queue((GpuJob){.wait_id = ~0u, .fn = control_fn, .arg = control_arg});
+    if (control.tail_fn)
+        gpu_queue((GpuJob){.wait_id = ~0u, .fn = control.tail_fn, .arg = control.tail_arg});
     pm_unlock(&g_submit_order_lock);
 }
 void gpu_call(void (*fn)(void*), void* arg) {

@@ -60,8 +60,8 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
 struct Surf;
 void vk_nvn_control_compare_probe(struct Surf* emulated_depth, u64 color_address,
                                   u32 count, u32 base_vertex);
-void vk_control_face_begin(u64 color_address);
-u32 vk_control_face_count(void);
+void vk_control_faces_begin(const u64* color_addresses, u32 count);
+u32 vk_control_face_count(u64 color_address);
 int vk_nvn_control_probe_armed(void);
 int vk_render_vertex_format_supported(u32 raw_attribute);
 VkFormat vk_render_vertex_format(u32 raw_attribute);
