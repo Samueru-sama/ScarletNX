@@ -2258,15 +2258,16 @@ static void inst(Ctx* c, u32 idx, u64 w, const Op* op) {
         case O_TEX_B:
         case O_TLD4:
         case O_TLD:
+        case O_TLD_B:
         case O_TMML:
         case O_TXD: {
-            int eid = id == O_TEX_B ? O_TEX : id, bl = id == O_TEX_B;
+            int eid = id == O_TEX_B ? O_TEX : id == O_TLD_B ? O_TLD : id, bl = id == O_TEX_B || id == O_TLD_B;
             u32 blbank = 0, bloff = 0;
             u32 ty = B(w, 28, 3), mask = B(w, 31, 4), off = B(w, 36, 13);
             u32 cr = a, mr = B(w, 20, 8);
             if (bl) {
                 if (!track_handle(c, idx, mr, &blbank, &bloff)) {
-                    unsupported(c, "TEX.B (untracked handle)", w);
+                    unsupported(c, eid == O_TLD ? "TLD.B (untracked handle)" : "TEX.B (untracked handle)", w);
                     write_masked(c, d, mask ? mask : 15, "vec4(0.0)");
                     break;
                 }

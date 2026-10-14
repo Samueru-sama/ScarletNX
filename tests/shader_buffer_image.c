@@ -26,7 +26,7 @@ static void check(int ok, const char* what) {
 }
 /* MOV rd, c[bank][off]: where a bindless handle comes from */
 static u64 mov_c(u32 rd, u32 bank, u32 off) {
-    return 0x4C98078000000000ull | (u64)bank << 34 | (u64)(off / 4) << 20 | rd;
+    return 0x4C98078000070000ull | (u64)bank << 34 | (u64)(off / 4) << 20 | rd; /* predicate PT */
 }
 /* w with the bits at pos, n wide, set to v */
 static u64 with(u64 w, int pos, int n, u64 v) { return (w & ~(((1ull << n) - 1) << pos)) | v << pos; }

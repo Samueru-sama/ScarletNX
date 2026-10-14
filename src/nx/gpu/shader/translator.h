@@ -276,6 +276,7 @@ enum {
     O_LEPC,
     O_SETCRSPTR,
     O_GETCRSPTR,
+    O_TLD_B,
     O__COUNT
 };
 typedef struct {

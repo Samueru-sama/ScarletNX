@@ -159,6 +159,14 @@ if(BUILD_TESTING AND SNX_VULKAN)
     endif()
     set_target_properties(snx-test-shader-buffer-image PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME shader_buffer_image COMMAND snx-test-shader-buffer-image)
+    # and the bindless TLD
+    add_executable(snx-test-shader-tld-bindless "${PROJECT_SOURCE_DIR}/tests/shader_tld_bindless.c")
+    target_link_libraries(snx-test-shader-tld-bindless PRIVATE snx_shader snx_spirv)
+    if(NOT WIN32)
+        target_link_libraries(snx-test-shader-tld-bindless PRIVATE Threads::Threads m)
+    endif()
+    set_target_properties(snx-test-shader-tld-bindless PROPERTIES LINKER_LANGUAGE CXX)
+    add_test(NAME shader_tld_bindless COMMAND snx-test-shader-tld-bindless)
 endif()
 
 # Opt-in because normal unit-test runs need neither an ICD nor a GPU. All rendering uses the real runtime.
