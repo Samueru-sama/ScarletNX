@@ -1065,7 +1065,12 @@ static void tex_take_drawn(Surf* t) {
         u64 rem = off - (u64)layer * stride, lo = 0;
         for (u32 l = 0; l < t->levels && layer < t->layers; l++) {
             u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
-            if (rem == lo && s->w == lw && s->h == lh) {
+            /* Narrow block-linear cube mips occupy a full 64-byte GOB row in the render
+               target. Only the left lw texels belong to the logical texture mip. */
+            int padded_cube_row = t->type == VK_IMAGE_VIEW_TYPE_CUBE && t->bl && s->bl &&
+                                  s->f.vk == t->f.vk && s->w > lw &&
+                                  (u64)s->w * s->f.bpp == 64 && (u64)lw * t->f.bpp < 64;
+            if (rem == lo && (s->w == lw || padded_cube_row) && s->h == lh) {
                 if (!vk_rt_drawn_fresh(s)) break; /* newer guest memory at this address takes precedence */
                 vk_render_end();
                 VkCommandBuffer cb = vk_cmd();

@@ -1909,6 +1909,20 @@ pass's first three faces match, while its last three differ by 608, 33, and
 later consumer or another sampled input, and whole-frame parity is not yet
 established.
 
+A sampled-cube probe narrowed one later-pass mismatch. At the producer
+checkpoint, the HLE cube matches Maxwell's six render targets on both mips.
+At the first consumer draw, Maxwell's assembled sampled texture had skipped
+all six 8×8 mip-1 faces because each render-target alias exposes a padded
+16×8 surface. The texture importer now accepts that exact 64-byte GOB-row
+shape and copies the logical 8×8 extent. A consumer-time probe then measures
+0 different pixels across all twelve sampled face/mip subresources. This
+fixes the emulated GPU's sampled texture assembly; it does not by itself
+establish control-draw parity. A queue finish before a cube-consuming HLE
+draw removes the first two later-pass color mismatches in the observed run,
+whereas an additional graphics memory or image barrier and a submit without
+waiting do not. The required completion dependency remains under
+investigation; a queue-wide wait is too costly to use as the rendering fix.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
