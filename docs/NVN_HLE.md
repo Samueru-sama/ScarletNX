@@ -1451,6 +1451,13 @@ excluded. Operation 886 therefore still invalidates the counter, and the 320×18
 producer comparison remains `57,600/57,600` differing pixels. Resolving its BRX
 destinations from ordered dispatch data is the next required step.
 
+TotK's native QMD shader has a compiler-generated table load at instruction 93
+and a `BRX` at 125, farther apart than the translator's original eight-instruction
+lookup. A guarded straight-line lookup now finds its four CBUF1 entries and
+resolves targets 127, 135, 141, and 147 during shader translation. The offline
+query proof has no ordered CBUF1 snapshot, so this renderer improvement does not
+relax its BRX rejection.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

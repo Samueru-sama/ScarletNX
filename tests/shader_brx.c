@@ -6,6 +6,7 @@
 
 #define SCHED 0x001F8000FC0007E0ull
 #define EXIT  0xE30000000007000Full
+#define NOP   0x50B0000000070F00ull
 
 static int failures, reads, invalid_second;
 static void check(int ok, const char* what) {
@@ -62,6 +63,27 @@ int main(void) {
     code[15] = EXIT;
     shader_hash((const u8*)code, sizeof code, &len);
     check(len == 16 * 8, "unresolved BRX includes live code beyond an earlier exit");
+
+    u64 distant[64] = {0};
+    for (u32 i = 10; i <= 49; i++) distant[i] = (i - 10) % 4 ? NOP : SCHED;
+    distant[11] = 0x3820000000170b0bull; /* clamp R11 to two entries */
+    distant[12] = 0x3848000000270b0dull; /* SHL R13, R11, 2 */
+    distant[13] = 0xef94000000070d0dull; /* LDC.B32 R13, c[0][R13] */
+    distant[45] = 0xe250000000070d0full; /* BRX R13, 32 instructions after LDC */
+    distant[49] = EXIT;
+    g_shader_cb_read = table;
+    reads = 0;
+    shader_hash((const u8*)distant, sizeof distant, &len);
+    check(len == 50 * 8 && reads == 2, "straight-line distant LDC resolves clamped BRX");
+    distant[31] = 0x5c9807800ff7000dull; /* MOV R13, RZ invalidates the table value */
+    reads = 0;
+    shader_hash((const u8*)distant, sizeof distant, &len);
+    check(reads == 0, "a later write to the BRX register rejects distant LDC");
+    distant[31] = NOP;
+    distant[13] |= 1ull << 49;
+    reads = 0;
+    shader_hash((const u8*)distant, sizeof distant, &len);
+    check(reads == 0, "distant BRX needs a verified 32-bit table load");
     g_shader_cb_read = old;
     return failures ? 1 : 0;
 }

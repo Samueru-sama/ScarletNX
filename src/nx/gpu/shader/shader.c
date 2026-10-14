@@ -386,20 +386,66 @@ static int brx_table_count(const u64* w, u32 ldc, u32* count) {
     return 0;
 }
 
+/* A distant LDC is usable only when every path from entry executes it and the BRX
+   register stays intact. Keep this deliberately narrow: other instruction shapes
+   fall back to the unresolved-BRX path. */
+static int brx_far_ldc(const u64* w, u32 i, u32 ra) {
+    u32 first = i > 64 ? i - 64 : 11;
+    for (u32 j = i; j-- > first;) {
+        if (!IDX_OK(j)) continue;
+        const Op* op = decode(w[j]);
+        if (!op) return -1;
+        if (op->id == O_LDC && B(w[j], 0, 8) == ra) {
+            if (B(w[j], 48, 3) != 4 || B(w[j], 16, 3) != 7 || B(w[j], 19, 1)) return -1;
+            u32 count = 0;
+            if (!brx_table_count(w, j, &count)) return -1;
+            for (u32 p = 11; p < j; p++) {
+                if (!IDX_OK(p)) continue;
+                const Op* prior = decode(w[p]);
+                if (!prior || is_term(prior->id) || prior->id == O_CAL || prior->id == O_SSY ||
+                    prior->id == O_PBK || prior->id == O_PCNT || prior->id == O_PRET ||
+                    prior->id == O_PEXIT || prior->id == O_BPT)
+                    return -1;
+            }
+            return (int)j;
+        }
+        switch (op->id) {
+            case O_NOP: case O_STG: case O_ISETP_I: break; /* no general-register result */
+            case O_FMUL32I: case O_MUFU: case O_FMNMX_I: case O_MOV32I:
+            case O_RRO_R: case O_FFMA_R: case O_FADD_R: case O_ICMP_CR:
+            case O_FMUL_R: case O_MOV_R: case O_FADD_I:
+                if (B(w[j], 0, 8) == ra) return -1;
+                break;
+            default: return -1;
+        }
+    }
+    return -1;
+}
+
 /* BRX targets from its jump table (LDC nearby -> cbuf). -1 if the table cannot be bounded. */
 static int brx_targets(const u64* w, u32 i, u32 n, u32* out, int max) {
     if (!g_shader_cb_read) return -1;
     u32 ra = B(w[i], 8, 8);
     i32 imm = (i32)(B(w[i], 20, 24) << 8) >> 8;
+    u32 ldc = (u32)-1;
     for (u32 k = 1; k <= 8 && k < i; k++) {
         u32 j = i - k;
         if (!IDX_OK(j)) continue;
         const Op* o2 = decode(w[j]);
         if (!o2 || o2->id != O_LDC || B(w[j], 0, 8) != ra) continue;
-        u32 cidx = B(w[j], 36, 5);
-        i32 coff = (i32)(B(w[j], 20, 16) << 16) >> 16;
+        ldc = j;
+        break;
+    }
+    if (ldc == (u32)-1) {
+        int found = brx_far_ldc(w, i, ra);
+        if (found < 0) return -1;
+        ldc = (u32)found;
+    }
+    {
+        u32 cidx = B(w[ldc], 36, 5);
+        i32 coff = (i32)(B(w[ldc], 20, 16) << 16) >> 16;
         u32 table_count = 0;
-        int exact = brx_table_count(w, j, &table_count);
+        int exact = brx_table_count(w, ldc, &table_count);
         if (exact && table_count > (u32)max) return -1;
         int cnt = 0;
         for (u32 e = 0; e < (exact ? table_count : 64u) && cnt < max; e++) {
