@@ -3847,13 +3847,27 @@ static void execute_nvn_batch(void* arg) {
         const char* buffer_opt = getenv("SNX_NVN_CONTROL_BUFFER_PROBE");
         const char* descriptor_opt = getenv("SNX_NVN_CONTROL_DESCRIPTOR_PROBE");
         const char* draw_opt = getenv("SNX_NVN_CONTROL_DRAW_PROBE");
+        const char* sequence_opt = getenv("SNX_NVN_CONTROL_DRAW_SEQUENCE");
+        const char* entry_replay_opt = getenv("SNX_NVN_CONTROL_ENTRY_REPLAY");
+        static u32 sequence_batches;
+        int sequence_batch = sequence_opt && !strcmp(sequence_opt, "1") &&
+                             (pipeline_candidate_count >= 100 ||
+                              (entry_replay_opt && !strcmp(entry_replay_opt, "1") &&
+                               pipeline_candidate_count >= 10 && first_depth_width == 64 &&
+                               first_depth_height == 64)) && !sequence_batches;
+        u32 sequence_limit = pipeline_candidate_count;
+        const char* sequence_limit_opt = getenv("SNX_NVN_CONTROL_DRAW_SEQUENCE_LIMIT");
+        if (sequence_batch && sequence_limit_opt) {
+            unsigned long requested = strtoul(sequence_limit_opt, NULL, 0);
+            if (requested && requested < sequence_limit) sequence_limit = (u32)requested;
+        }
         if (raw_depth_prepared && pipeline_candidate_count && descriptor_opt &&
             !strcmp(descriptor_opt, "1") && g_renderer->nvn_control_descriptor_probe) {
             post_semantic_candidate = pipeline_candidates[0];
             post_semantic_target = raw_depth_target;
             post_semantic_probe = 1;
         }
-        if (raw_depth_prepared && pipeline_opt && !strcmp(pipeline_opt, "1") &&
+        if (raw_depth_prepared && ((pipeline_opt && !strcmp(pipeline_opt, "1")) || sequence_batch) &&
             g_renderer->nvn_control_pipeline_probe)
             for (u32 i = 0; i < pipeline_candidate_count; i++) {
                 const NvnControlPipelineCandidate* candidate = &pipeline_candidates[i];
@@ -3894,17 +3908,30 @@ static void execute_nvn_batch(void* arg) {
                         &candidate->probe, &draw_color_target, &raw_depth_target,
                         raw_registers, candidate->primitive);
                 static u32 raw_draw_probe_attempts;
-                if (i == 0 && raw_draw_probe_attempts < 8 && color_resolved &&
-                    draw_opt && !strcmp(draw_opt, "1") &&
+                int single_draw = !sequence_batch && i == 0 && raw_draw_probe_attempts < 8 &&
+                                  draw_opt && !strcmp(draw_opt, "1");
+                if (color_resolved && (single_draw || (sequence_batch && i < sequence_limit)) &&
                     g_renderer->nvn_control_draw_probe) {
-                    raw_draw_probe_attempts++;
+                    if (single_draw) raw_draw_probe_attempts++;
+                    u32 experiment_flags = 0;
+                    if (sequence_batch) {
+                        experiment_flags = 1;
+                        if (i + 1 == sequence_limit) {
+                            u32 same_draws = 0;
+                            for (u32 earlier = 0; earlier < i; earlier++)
+                                if (pipeline_candidates[earlier].index_count == candidate->index_count &&
+                                    pipeline_candidates[earlier].packet->words[10] == packet->words[10])
+                                    same_draws++;
+                            experiment_flags |= 2 | (same_draws << 8);
+                        }
+                    }
                     const u8* indices = (const u8*)packet->words +
                         (u64)packet->word_count * sizeof(u32);
                     raw_draws_issued += g_renderer->nvn_control_draw_probe(
                         &candidate->probe, &draw_color_target, &raw_depth_target,
                         raw_registers, indices, packet->index_snapshot_size,
                         candidate->index_count, candidate->index_type,
-                        packet->words[8], packet->words[10], packet->words[9]);
+                        packet->words[8], packet->words[10], packet->words[9], experiment_flags);
                 }
                 if (descriptor_opt && !strcmp(descriptor_opt, "1") &&
                     g_renderer->nvn_control_descriptor_probe)
@@ -3921,7 +3948,8 @@ static void execute_nvn_batch(void* arg) {
                     raw_index_buffers_ready += !!(buffers & 2);
                 }
             }
-        if (draw_opt && !strcmp(draw_opt, "1") && pipeline_candidate_count)
+            if (sequence_batch && raw_draws_issued) sequence_batches++;
+        if (((draw_opt && !strcmp(draw_opt, "1")) || sequence_batch) && pipeline_candidate_count)
             LOG("nvn-control-draw-probe-result: candidates=%u issued=%u\n",
                 pipeline_candidate_count, raw_draws_issued);
         LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u sequenced=%u/%llu paired-program-draws=%u mapped-shaders=%u valid-shaders=%u unique-shaders=%u shader-probe=%u/%x all-ready=%u resource-ready=%u cbmask=%x/%x cbbound=%x/%x tex=%u/%u texslots=%x/%x known=%u/%u handles=%x/%x descriptors=%x/%x snapshot-available=%x/%x snapshot-live-match=%x/%x shapes=%x/%x first-handle=%x texture-snapshots=%u/%x/%u registers=%u pipeline-regs=%u/%u/%u/%u img=%u/%u inputs=%x/%x/%x/%x attrib=%08x/%08x/%08x streams=%llu/%llu index=%u/%u color-control=%x color-target=%llx/%ux%u/%x color-resolved=%u/%u/%x first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu cbuf0-snapshots=%u indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u depth-target=%u/%u/%x/%u prepared=%u pipeline=%u color-draws=%u buffers=%u/%u descriptors-ready=%u dropped=%u\n",
@@ -4080,6 +4108,98 @@ static void execute_nvn_batch(void* arg) {
     free_storage_seeds(batch->storage_seeds);
     free_uniform_updates(batch->uniform_updates);
     free(batch);
+}
+
+void nvn_record_take_control_submit(u32 entry_count, void (**fn)(void*), void** arg,
+                                    void (**entry_fn)(void*), void** entry_arg,
+                                    u32* entry_index, u64* entry_color, u32* entry_draws) {
+    if (fn) *fn = NULL;
+    if (arg) *arg = NULL;
+    if (entry_fn) *entry_fn = NULL;
+    if (entry_arg) *entry_arg = NULL;
+    if (entry_index) *entry_index = 0;
+    if (entry_color) *entry_color = 0;
+    if (entry_draws) *entry_draws = 0;
+    const char* enabled = getenv("SNX_NVN_CONTROL_SUBMIT_REPLAY");
+    if (!fn || !arg || !enabled || strcmp(enabled, "1") || !descriptor_replay ||
+        !submit_queue_scope) return;
+    pm_lock(&lock);
+    ReplayQueue* queue = replay_queue_slot(submit_queue_scope);
+    if (!queue || queue->key != submit_queue_scope ||
+        (!queue->control_packets && !queue->control_packets_dropped)) {
+        pm_unlock(&lock);
+        return;
+    }
+    NvnGpuBatch* batch = calloc(1, sizeof *batch);
+    if (batch) {
+        NvnControlPacket* remaining = queue->control_packets;
+        u32 remaining_count = queue->control_packet_count;
+        u64 remaining_macro12 = queue->gpu_macro12_packets;
+        const char* entry_mode = getenv("SNX_NVN_CONTROL_ENTRY_REPLAY");
+        if (entry_count && entry_fn && entry_arg && entry_index && entry_color && entry_draws && entry_mode &&
+            !strcmp(entry_mode, "1")) {
+            u64 first_color = 0;
+            u32 draw_count = 0, prefix_count = 0, prefix_macro12 = 0;
+            NvnControlPacket* previous = NULL;
+            for (NvnControlPacket* packet = remaining; packet; packet = packet->next) {
+                if (packet->macro38_count == 1 && packet->register_snapshot_valid) {
+                    const u8* source = (const u8*)packet->words +
+                        (u64)packet->word_count * sizeof(u32) +
+                        packet->index_snapshot_reserved + packet->texture_snapshot_reserved;
+                    u32 control;
+                    memcpy(&control, source + 0x487 * sizeof(u32), sizeof control);
+                    u32 slot = (control >> 4) & 7;
+                    u32 color[2];
+                    memcpy(color, source + (0x200 + slot * 0x10) * sizeof(u32), sizeof color);
+                    u64 address = ((u64)color[0] << 32) | color[1];
+                    if ((control & 15) == 1 && address) {
+                        if (!first_color) first_color = address;
+                        else if (address != first_color && draw_count >= 10 && previous) {
+                            u64 first_ordinal = queue->gpu_entries >= entry_count
+                                ? queue->gpu_entries - entry_count + 1 : 0;
+                            u64 due = previous->ordinal;
+                            if (first_ordinal && due >= first_ordinal &&
+                                due - first_ordinal < entry_count) {
+                                NvnGpuBatch* early = calloc(1, sizeof *early);
+                                if (early) {
+                                    early->control_packets = remaining;
+                                    early->control_packet_count = prefix_count;
+                                    early->gpu_macro12_packets = prefix_macro12;
+                                    previous->next = NULL;
+                                    remaining = packet;
+                                    remaining_count -= prefix_count;
+                                    remaining_macro12 -= prefix_macro12;
+                                    *entry_fn = execute_nvn_batch;
+                                    *entry_arg = early;
+                                    *entry_index = (u32)(due - first_ordinal);
+                                    *entry_color = first_color;
+                                    *entry_draws = draw_count;
+                                }
+                            }
+                            break;
+                        }
+                        draw_count++;
+                    }
+                }
+                prefix_count++;
+                prefix_macro12 += packet->macro12_count;
+                previous = packet;
+            }
+        }
+        batch->control_packets = remaining;
+        batch->control_packet_count = remaining_count;
+        batch->control_packets_dropped = queue->control_packets_dropped;
+        batch->gpu_macro12_packets = remaining_macro12;
+        control_packet_snapshot_bytes -= queue->control_packet_bytes;
+        queue->control_packets = queue->control_packets_tail = NULL;
+        queue->control_packet_count = queue->control_packet_bytes = queue->control_packets_dropped = 0;
+        queue->gpu_macro12_packets = 0;
+        if (batch->control_packets || batch->control_packets_dropped) {
+            *fn = execute_nvn_batch;
+            *arg = batch;
+        } else free(batch);
+    }
+    pm_unlock(&lock);
 }
 
 static void flush_replay_queue(u64 command_buffer) {

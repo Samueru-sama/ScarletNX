@@ -133,11 +133,13 @@ static int vkr_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
                                       const NvnTextureTarget* depth_target,
                                       const u32* registers, const u8* indices,
                                       u32 index_bytes, u32 index_count, u32 index_type,
-                                      u32 instances, u32 base_vertex, u32 base_instance) {
+                                      u32 instances, u32 base_vertex, u32 base_instance,
+                                      u32 experiment_flags) {
     vk_lock();
     int result = vk_nvn_control_draw_probe(probe, color_target, depth_target,
                                             registers, indices, index_bytes, index_count,
-                                            index_type, instances, base_vertex, base_instance);
+                                            index_type, instances, base_vertex, base_instance,
+                                            experiment_flags);
     vk_unlock();
     return result;
 }
@@ -194,6 +196,17 @@ static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 c
     vk_lock();
     vk_render_draw(ch, indexed, topology, first, count, bv, bi, instances);
     vk_unlock();
+}
+static void vkr_control_face_begin(u64 color_address) {
+    vk_lock();
+    vk_control_face_begin(color_address);
+    vk_unlock();
+}
+static u32 vkr_control_face_count(void) {
+    vk_lock();
+    u32 count = vk_control_face_count();
+    vk_unlock();
+    return count;
 }
 /* a constant buffer bound to a stage: v bit 0 valid, bits 4-8 the slot; address and size from 0x8E0-0x8E2 */
 static void vkr_cb_bind(GpuChannel* ch, int stage, u32 v) {
@@ -538,6 +551,8 @@ const Renderer vk_renderer = {
     .nvn_control_buffer_probe = vkr_nvn_control_buffer_probe,
     .nvn_control_descriptor_probe = vkr_nvn_control_descriptor_probe,
     .nvn_control_draw_probe = vkr_nvn_control_draw_probe,
+    .control_face_begin = vkr_control_face_begin,
+    .control_face_count = vkr_control_face_count,
     .nvn_probe_initial_color = vkr_nvn_probe_initial_color,
     .nvn_clear = vkr_nvn_clear,
     .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,

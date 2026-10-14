@@ -56,9 +56,13 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
                               const NvnTextureTarget* depth_target, const u32* registers,
                               const u8* indices, u32 index_bytes, u32 index_count,
                               u32 index_type, u32 instances, u32 base_vertex,
-                              u32 base_instance);
+                              u32 base_instance, u32 experiment_flags);
 struct Surf;
-void vk_nvn_control_compare_probe(struct Surf* emulated_depth, u32 count, u32 base_vertex);
+void vk_nvn_control_compare_probe(struct Surf* emulated_depth, u64 color_address,
+                                  u32 count, u32 base_vertex);
+void vk_control_face_begin(u64 color_address);
+u32 vk_control_face_count(void);
+int vk_nvn_control_probe_armed(void);
 int vk_render_vertex_format_supported(u32 raw_attribute);
 VkFormat vk_render_vertex_format(u32 raw_attribute);
 void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key);

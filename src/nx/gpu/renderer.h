@@ -40,7 +40,9 @@ typedef struct Renderer {
                                    const NvnTextureTarget* depth_target, const u32* registers,
                                    const u8* indices, u32 index_bytes, u32 index_count,
                                    u32 index_type, u32 instances, u32 base_vertex,
-                                   u32 base_instance);
+                                   u32 base_instance, u32 experiment_flags);
+    void (*control_face_begin)(u64 color_address);
+    u32 (*control_face_count)(void);
     void (*nvn_probe_initial_color)(u64 address, u32 size, u64 sequence, u64 queue_key, u64 prior_unmodeled_write,
                                     int prior_writes_scoped);
     int (*nvn_clear)(const NvnClearCommand* command);

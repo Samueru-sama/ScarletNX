@@ -1826,6 +1826,33 @@ Maxwell path. Ordered execution of the entire list and validation of all its
 sampled-image producers remain necessary before selecting direct NVN
 rendering for this scene.
 
+An opt-in ordered control experiment (`SNX_NVN_CONTROL_DRAW_SEQUENCE=1`)
+renders consecutive captured draws into NVN-owned attachments, clearing each
+color face on first use and loading it thereafter. TotK issues all 211 draws
+in the initial captured group. The first 10, 50, and 65 draw prefixes each
+match a later Maxwell depth checkpoint exactly. Comparing by index count and
+base vertex alone is unreliable: those signatures repeat across cubemap faces
+and later frames. The experiment can restrict comparisons by raw color-face
+address, and an immediate comparison checks the Maxwell surface at the HLE
+callback.
+
+QueueFlush and even per-GPFIFO-submit callbacks occur too late to retain the
+first face's 64×64 Maxwell surface: the same GPU address names a 1280×720
+surface by then. An opt-in callback at the captured first-face entry boundary
+finds the 64×64 surface, but it is still clear when the HLE segment has drawn
+305 pixels. Capturing an entry on the submitting thread therefore does not
+identify the moment its draws execute. Direct replay must advance with the
+GPU thread's executed control methods, including depth clears and attachment
+changes, before this experiment can establish whole-list parity.
+
+The opt-in executed-face checkpoint counts completed indexed Maxwell draws to
+the captured color face and runs the first 65-draw NVN segment after that face
+reaches its recorded count. On the TotK capture, the immediate 64×64 D32F
+readback then differs at **0/4,096 pixels**; both paths changed 305 pixels
+from the clear value. This confirms the first face at the correct execution
+point. The remaining faces, clears, and sampled-image producers still need
+ordered checkpoints before the entire cubemap pass can switch to direct NVN.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

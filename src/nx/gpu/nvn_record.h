@@ -10,6 +10,10 @@ void nvn_record_after(const CPU* c, const char* name, u64 command_buffer, u64 ar
 void nvn_record_observe_depth_mode(u64 device, u32 mode);
 u64 nvn_record_submit_scope(u64 queue);
 void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel);
+/* In opt-in control replay, detach the packets captured for this submit as a GPU-thread callback. */
+void nvn_record_take_control_submit(u32 entry_count, void (**fn)(void*), void** arg,
+                                    void (**entry_fn)(void*), void** entry_arg,
+                                    u32* entry_index, u64* entry_color, u32* entry_draws);
 void nvn_record_forget_gpu_channel(u32 channel);
 void nvn_record_report(void);
 void nvn_record_enable_descriptor_replay(void);

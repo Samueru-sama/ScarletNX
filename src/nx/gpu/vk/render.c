@@ -218,6 +218,12 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n); /* may record uploads: before anything is opened */
+    const char* control_depth_clear = getenv("SNX_NVN_CONTROL_TRACE_DEPTH_CLEAR");
+    if (control_depth_clear && vk_nvn_control_probe_armed() && zt &&
+        zt->gva == strtoull(control_depth_clear, NULL, 0))
+        LOG_LIMIT(64, "nvn-control-gpu-depth-clear: draw=%llu value=%x depth=%g scissor=%x target=%llx\n",
+                  (unsigned long long)g_vk_drawn, v, dz, r[0x380],
+                  (unsigned long long)zt->gva);
     if (mask) {
         /* the slot is taken through RT_CONTROL's count and permutation, like draws do. Whether the hardware takes the
            target registers of that index directly isn't settled: the first clear where the two differ is logged */
@@ -971,6 +977,13 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
 
 /* ------------------------------------------------------------ draws */
 u64 g_vk_drawn, g_vk_skipped;
+static u64 g_control_face_address;
+static u32 g_control_face_draws;
+void vk_control_face_begin(u64 color_address) {
+    g_control_face_address = color_address;
+    g_control_face_draws = 0;
+}
+u32 vk_control_face_count(void) { return g_control_face_draws; }
 
 /* NVB197_SET_VIEWPORT_COORDINATE_SWIZZLE (0x0A18) can negate Y before the scale and offset. A negative Vulkan
    height implements the same mapping without changing texture coordinates or guest render-target contents.
@@ -1509,9 +1522,12 @@ retry:
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
     if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) zt->wgen++;
     g_vk_drawn++;
+    if (indexed && zt && n && rt[0] && rt[0]->gva == g_control_face_address &&
+        zt->w == 64 && zt->h == 64 && g_control_face_draws < UINT32_MAX)
+        g_control_face_draws++;
     const char* control_compare = getenv("SNX_NVN_CONTROL_COMPARE_PROBE");
     if (control_compare && !strcmp(control_compare, "1") && indexed && zt)
-        vk_nvn_control_compare_probe(zt, count, base_vertex);
+        vk_nvn_control_compare_probe(zt, n && rt[0] ? rt[0]->gva : 0, count, base_vertex);
 }
 
 /* DRAW_TEXTURE (3D 0x420-0x42B, drawn when 0x42B is written): a texture's rectangle blitted onto color target 0, as
