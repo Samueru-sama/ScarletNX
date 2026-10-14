@@ -272,6 +272,7 @@ VkSampler vk_sampler(const u32* tsc);
 int vk_tex_tic_supported(const u32* tic);
 int vk_tex_tic_shadow(const u32* tic, u64* gva, u32* width, u32* height, u32* layers, u32* levels,
                       VkImageViewType* view, VkFormat* format);
+int vk_tex_tic_layout(const u32* tic, int* block_linear, u32* pitch);
 void vk_tex_frame(void); /* a frame was presented: evicts what wasn't used for a while */
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */

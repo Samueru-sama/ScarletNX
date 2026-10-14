@@ -37,6 +37,9 @@ typedef struct {
     u32 width, height, levels, layers, target, format;
     u64 bytes;
     u32 storage_size;
+    i64 stride;
+    u32 storage_class;
+    u8 stride_known, storage_class_known;
     u64 last_batch;
     u64 shadow_draw_stamp;
     int image_was_written; /* guest backing cannot replace an incomplete NVN image */
@@ -253,7 +256,11 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
         if (image->pool == target->pool && image->address == target->gpu_address &&
             image->pool_generation == target->pool_generation && image->width == target->width &&
             image->height == target->height && image->levels == target->levels && image->layers == target->depth &&
-            image->target == target->storage_target && image->format == target->storage_format) {
+            image->target == target->storage_target && image->format == target->storage_format &&
+            image->stride_known == target->stride_known &&
+            (!image->stride_known || image->stride == target->stride) &&
+            image->storage_class_known == target->storage_class_known &&
+            (!image->storage_class_known || image->storage_class == target->storage_class)) {
             if (target->storage_size > image->storage_size) {
                 image->storage_size = target->storage_size;
                 image->guest_host = NULL;
@@ -363,6 +370,10 @@ static NvnImage* image_for(const NvnTextureTarget* target, VkFormat format, VkIm
     empty->format = target->storage_format;
     empty->bytes = bytes;
     empty->storage_size = target->storage_size;
+    empty->stride = target->stride;
+    empty->storage_class = target->storage_class;
+    empty->stride_known = target->stride_known;
+    empty->storage_class_known = target->storage_class_known;
     image_bytes += bytes;
     empty->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     empty->stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
@@ -960,6 +971,9 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
     VkFormat format;
     if (!vk_tex_tic_shadow(descriptor->tic, &address, &width, &height, &layers, &levels, &view_type, &format))
         return VK_NULL_HANDLE;
+    int block_linear;
+    u32 pitch;
+    if (!vk_tex_tic_layout(descriptor->tic, &block_linear, &pitch)) return VK_NULL_HANDLE;
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
         NvnImage* image = &images[i];
         if (pending && image->image && image->image_was_written && image->address == address &&
@@ -974,7 +988,10 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
             !image->image || !image->sampled ||
             image_type != view_type || image->layers != layers ||
             image->pool != descriptor->memory_pool || image->pool_generation != descriptor->memory_pool_generation ||
-            image->address != address || image->width != width || image->height != height)
+            image->address != address || image->width != width || image->height != height ||
+            (image->stride_known &&
+             (image->stride > 0 ? block_linear || (u64)image->stride != pitch
+                                : image->stride < 0 || !block_linear)))
             continue;
         VkFmt source = nvn_format(image->format);
         int alt = source.vk != format;

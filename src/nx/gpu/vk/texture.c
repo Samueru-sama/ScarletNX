@@ -532,6 +532,14 @@ int vk_tex_tic_shadow(const u32* tic, u64* gva, u32* width, u32* height, u32* la
     return 1;
 }
 
+int vk_tex_tic_layout(const u32* tic, int* block_linear, u32* pitch) {
+    TicHeader header = {0};
+    if (!tic_header(tic, &header)) return 0;
+    *block_linear = header.bl;
+    *pitch = header.pitch;
+    return 1;
+}
+
 int vk_tex_tic_supported(const u32* tic) {
     TicHeader header = {0};
     if (!tic_header(tic, &header)) return 0;

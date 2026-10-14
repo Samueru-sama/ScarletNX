@@ -1474,6 +1474,16 @@ headless readback issued a direct draw and matched the native 192×192 image at 
 the same backing as 256×256. The different view dimensions and earlier incomplete
 images remain prerequisites for this chain; the 80×45 pass is not yet certified.
 
+The same-address R16 alias has distinct physical layouts: the observed 192×192
+NVN target reports a 384-byte row stride and 73,728-byte storage size, while
+the later 256×256 TIC is block-linear. The shadow image cache now includes the
+NVN stride and storage class in its identity, and an exact-shape TIC sample
+requires a matching pitch-linear or block-linear layout before it can reuse a
+shadow image. This prevents a false semantic match, but it does not yet merge
+the partial R16 target into the differently tiled TIC backing. That requires
+tracked per-byte ownership and a layout conversion, including unchanged bytes
+from the existing backing.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
