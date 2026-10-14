@@ -539,9 +539,24 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     CsPipe* p = fe->p;
     if (!p || fe->addr != pa || fe->epoch != g_vk_epoch || fe->lx != lx || fe->ly != ly || fe->lz != lz ||
         fe->shm != shm || !vk_cb_reads_hold(&p->cbr, cs_cb_read)) {
-        static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
+        static u8 code_buf[0x10000 + 80]; /* compute programs have no SPH: 80 zero bytes stand in for one */
+        u32 code_size = 0x10000;
+        /* NVN places a size header immediately before its code. Adjacent programs can otherwise
+           look like a live tail to an unresolved BRX scan. Other QMD clients keep the full window. */
+        if (pa >= 0x100) {
+            const u8* header = gmem_ptr_untracked(pa - 0x100, 8);
+            if (header) {
+                u32 magic, declared;
+                memcpy(&magic, header, sizeof magic);
+                memcpy(&declared, header + 4, sizeof declared);
+                if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+                    gmem_ptr_untracked(pa, declared))
+                    code_size = declared;
+            }
+        }
         memset(code_buf, 0, 80);
-        gmem_read_code(pa, code_buf + 80, 0x10000);
+        gmem_read_code(pa, code_buf + 80, code_size);
+        memset(code_buf + 80 + code_size, 0, 0x10000 - code_size);
         p = cs_pipe(code_buf, lx, ly, lz, shm);
         *fe = (typeof(fc[0])){pa, g_vk_epoch, lx, ly, lz, shm, p};
     }
