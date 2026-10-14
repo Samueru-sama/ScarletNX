@@ -200,7 +200,8 @@ typedef struct {
 typedef struct NvnControlRange {
     struct NvnControlRange* next;
     u64 list, visit, after_sequence;
-    u32 qwords;
+    u32 qwords, last_offset;
+    u8 seen_offset;
     u64 words[];
 } NvnControlRange;
 typedef struct {
@@ -213,6 +214,7 @@ typedef struct {
     u64 gpu_macro_packets_outside_draw_span, gpu_macro38_packets_outside_draw_span;
     u64 gpu_macro38_control_matched;
     u64 gpu_macro38_hazards_applied;
+    u64 gpu_control_rewinds, gpu_control_repeats;
     NvnControlRange* control_ranges;
     u16 control_range_count;
     u64 color_probe_seen[128];
@@ -262,6 +264,8 @@ static void record_control_range(ReplayQueue* queue, const NvnOp* op, u64 list, 
     range->visit = visit;
     range->after_sequence = 0;
     range->qwords = (u32)(size / 8);
+    range->last_offset = 0;
+    range->seen_offset = 0;
     memcpy(range->words, source, (size_t)size);
     range->next = queue->control_ranges;
     queue->control_ranges = range;
@@ -612,11 +616,25 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
                 queue->gpu_macro_packets_outside_draw_span += stream->macro_packets - macros_before;
                 queue->gpu_macro38_packets_outside_draw_span += stream->macro38_packets - macro38_before;
                 if (stream->macro38_packets != macro38_before && cpu)
-                    for (const NvnControlRange* range = queue->control_ranges; range; range = range->next) {
+                    for (NvnControlRange* range = queue->control_ranges; range; range = range->next) {
                         u32 offset = 0, record_value = 0;
                         if (!nvn_control_find_gpu_entry(range->words, range->qwords,
                                                         va, cpu, &offset, &record_value)) continue;
                         queue->gpu_macro38_control_matched += stream->macro38_packets - macro38_before;
+                        if (range->seen_offset) {
+                            queue->gpu_control_rewinds += offset < range->last_offset;
+                            queue->gpu_control_repeats += offset == range->last_offset;
+                        }
+                        range->last_offset = offset;
+                        range->seen_offset = 1;
+                        const char* order_trace = getenv("SNX_NVN_CONTROL_ORDER");
+                        if (order_trace && !strcmp(order_trace, "1") && queue->draws &&
+                            queue->draws->count >= 100 && queue->draws->count <= 130)
+                            LOG_LIMIT(256, "nvn-control-order: ordinal=%llu list=%llx visit=%llu offset=%u gpu=%llx words=%u record=%u\n",
+                                (unsigned long long)queue->gpu_entries,
+                                (unsigned long long)range->list,
+                                (unsigned long long)range->visit,
+                                offset, (unsigned long long)va, words, record_value);
                         if (range->after_sequence && queue->draws) {
                             for (u32 i = 0; i < queue->draws->count; i++) {
                                 NvnDrawCommand* draw = &queue->draws->commands[i];
@@ -3196,7 +3214,7 @@ static void flush_replay_queue(u64 command_buffer) {
     if (queue && queue->key == command_buffer) {
         const char* coverage = getenv("SNX_NVN_GPU_COVERAGE");
         if (coverage && !strcmp(coverage, "1") && queue->gpu_entries)
-            LOG("nvn-gpu-coverage: queue=%llx entries=%llu draw-span=%llu outside-macros=%llu outside-macro38=%llu control-owned-macro38=%llu control-hazards=%llu control-ranges=%u draws=%u\n",
+            LOG("nvn-gpu-coverage: queue=%llx entries=%llu draw-span=%llu outside-macros=%llu outside-macro38=%llu control-owned-macro38=%llu control-hazards=%llu control-rewinds=%llu control-repeats=%llu control-ranges=%u draws=%u\n",
                 (unsigned long long)command_buffer,
                 (unsigned long long)queue->gpu_entries,
                 (unsigned long long)queue->gpu_entries_in_draw_span,
@@ -3204,12 +3222,15 @@ static void flush_replay_queue(u64 command_buffer) {
                 (unsigned long long)queue->gpu_macro38_packets_outside_draw_span,
                 (unsigned long long)queue->gpu_macro38_control_matched,
                 (unsigned long long)queue->gpu_macro38_hazards_applied,
+                (unsigned long long)queue->gpu_control_rewinds,
+                (unsigned long long)queue->gpu_control_repeats,
                 queue->control_range_count,
                 queue->draws ? queue->draws->count : 0);
         queue->gpu_entries = queue->gpu_entries_in_draw_span = 0;
         queue->gpu_macro_packets_outside_draw_span = queue->gpu_macro38_packets_outside_draw_span = 0;
         queue->gpu_macro38_control_matched = 0;
         queue->gpu_macro38_hazards_applied = 0;
+        queue->gpu_control_rewinds = queue->gpu_control_repeats = 0;
         while (queue->control_ranges) {
             NvnControlRange* next = queue->control_ranges->next;
             control_snapshot_bytes -= sizeof(NvnControlRange) + (u64)queue->control_ranges->qwords * 8;

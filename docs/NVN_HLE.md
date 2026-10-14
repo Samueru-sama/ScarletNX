@@ -1713,6 +1713,13 @@ against a cleared shadow depth image. This opt-in conservative mode suppresses
 the first TotK cube-face comparison and reduces direct draw coverage. It does
 not execute the raw macro draws, and it is not a parity result.
 
+`SNX_NVN_CONTROL_ORDER=1` logs the submission ordinal and control-record
+offset for matched packets. TotK's offsets rise within one secondary-list
+execution, then repeat or return to an earlier offset in the same recorded
+list visit. The GPFIFO submission order and multiplicity, rather than a set
+of unique control descriptors, must drive a future direct decoder. The
+coverage report also counts these offset repeats and rewinds.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
