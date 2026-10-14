@@ -1,24 +1,12 @@
-/* SwitchRecomp - Copyright 2026 MZ Labs
-   Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
-   any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
-   This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* what the shader translator's files in gpu/shader share */
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_TRANSLATOR_H
 #define SNX_TRANSLATOR_H
-#include <string.h>
-#include <ctype.h>
 #include "gpu/shader/shader.h"
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
-
 #define B(v, lo, n) ((u32)(((v) >> (lo)) & ((1ull << (n)) - 1)))
-/* text */
-typedef struct {
-    char* p;
-    size_t n, cap;
-} Sb;
-/* opcode table */
 enum {
     O_NONE = 0,
     O_FADD_R,
@@ -183,8 +171,10 @@ enum {
     O_TEX_B,
     O_TEXS,
     O_TLD,
+    O_TLD_B,
     O_TLDS,
     O_TLD4,
+    O_TLD4_B,
     O_TLD4S,
     O_TXQ,
     O_TXQ_B,
@@ -285,84 +275,17 @@ typedef struct {
     u64 mask, val;
     int bits;
 } Op;
-/* context */
 typedef struct {
     const u64* w;
-    u32 nwords;
-    ShaderInfo* si;
-    int stage;
-    Sb out;
-    Sb decl;
-    u8 used_reg[256];
-    u8 used_pred[8];
-    int uses_cc;
-    u8 in_used[32], out_used[32];
-    int uses_local, uses_shared, uses_img_raw;
-    int uses_draw_params; /* Vulkan: gl_BaseInstanceARB */
     u8 leader[65536 / 8];
-    int max_idx;
-    int has_flow;
-    int indent;
-    u16 gtag[256];     /* reg -> the c0 offset / 16 + 1 of the global buffer base it holds (gbuf_tag), 0 none */
-    u8 tgt[65536 / 8]; /* branch targets (BRA/SSY/PBK/PCNT and BRX table) */
-    u32* pop_tgt;      /* static stack resolution: target of each SYNC/BRK/CONT (0 = unreachable) */
-    int stk_static;    /* 1 if SSY/PBK/PCNT got resolved statically (no stack array emitted) */
-    int uses_crs;      /* the dynamic CRS stack is used */
-    u8 wtag[256];      /* 1: reg = IPA(position.w), 2: reg = RCP of that (same block only) */
-    int tag_r, tag_v;  /* label set by the current instruction */
-    int nest;          /* structured mode: inside an if, so don't label anything (doesn't dominate the rest) */
-    u8 bl2;            /* track_handle found a split handle: its second read */
-    u32 bl2_bank, bl2_off;
-    int uses_shadow_lod; /* depth compare with an explicit LOD or bias on an array or cube texture */
+    u32* pop_tgt;
 } Ctx;
 #define IDX_OK(i)    ((i) >= 11 && ((i) - 10) % 4 != 0)
-/* the CRS stack token SSY/PBK/PCNT push (and SYNC/BRK/CONT pop down to): 0 SSY, 1 PBK, 2 PCNT */
 #define CRS_KIND(id) ((id) == O_SSY || (id) == O_SYNC ? 0 : (id) == O_PBK || (id) == O_BRK ? 1 : 2)
-
-/* shader.c */
-void sb_put(Sb* s, const char* t);
-void sb_f(Sb* s, const char* f, ...);
-char* T(const char* f, ...);
-char* R(Ctx* c, u32 r);
-char* RF(Ctx* c, u32 r);
-char* P(Ctx* c, u32 p);
-char* PN(Ctx* c, u32 p, int neg);
-char* CB(Ctx* c, u32 idx, u32 off);
-char* CBF(Ctx* c, u32 idx, u32 off);
-void emitl(Ctx* c, const char* f, ...);
-void setr(Ctx* c, u32 r, const char* e);
-void setrf(Ctx* c, u32 r, const char* e);
-void setp(Ctx* c, u32 p, const char* e);
-const char* bop(u32 op, const char* a, const char* b);
-void setp2(Ctx* c, u32 pa, u32 pb, u32 bo, const char* t, const char* pc);
-u32 cb_idx(u64 w);
-u32 cb_off(u64 w);
-u16 gbuf_tag(Ctx* c, u64 w);
-u16 gbuf_tag_off(Ctx* c, u32 idx, u32 off);
-int gbuf_use(Ctx* c, u16 tag); /* the tag's buffer index, taken now if it is new; -1 when there is none or no room */
-char* imm20f(u64 w);
-char* imm20i(u64 w);
-char* imm32(u64 w);
-char* imm32f(u64 w);
-char* opB(Ctx* c, u64 w, int kind);
-char* opBf(Ctx* c, u64 w, int kind);
-char* fneg_abs(const char* e, int neg, int abs);
-char* fsat(const char* e, int sat);
-const char* fcmp_expr(u32 op, const char* a, const char* b);
-const char* icmp_expr(u32 op, const char* a, const char* b, int sgn);
-
-/* decode.c */
 extern int ops_ready;
 void ops_init(void);
 const Op* decode(u64 w);
-
-/* translate.c */
-const char* samp_type(int type, int array, int shadow);
 u32 bra_target(u64 w, u32 idx);
 int flow_always(u64 w);
-const char* flow_cond(Ctx* c, u64 w);
-u32 lmem_words(Ctx* c);
-void emit_tracked(Ctx* c, u32 idx, u64 w, const Op* op);
-void exit_epilogue(Ctx* c);
-
+int shader_resolve_crs(const u64* words, u32 count, u32* pop_targets);
 #endif

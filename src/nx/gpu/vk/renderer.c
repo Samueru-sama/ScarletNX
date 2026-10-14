@@ -27,15 +27,25 @@ static u32 g_last_x, g_last_y, g_last_w, g_last_h;
 static u32 g_last_transform;
 static void vkr_before_write(u64 gva, u64 size) {
     vk_buf_before_write(gva, size);
+    if (size)
+        vk_gfx_image_mem_need(gva, size);
+    else
+        vk_gfx_image_land();
     vk_compute_before_write(gva, size);
+}
+static void vkr_gfx_mem_need(u64 gva, u64 size) {
+    vk_buf_mem_need(gva, size);
+    vk_gfx_image_mem_need(gva, size);
 }
 static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     vk_lock();
     if (full) {
         vk_buf_land_map();
+        vk_gfx_image_land();
         vk_compute_land();
     } else {
         vk_buf_mem_need_map(gva, size);
+        vk_gfx_image_mem_need(gva, size);
         vk_compute_mem_need(gva, size);
     }
 }
@@ -160,6 +170,7 @@ static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, in
 }
 static void vkr_rt_flush(u64 gva) {
     vk_lock();
+    vk_gfx_image_mem_need(gva, 1);
     vk_rt_flush(gva);
     vk_unlock();
 }
@@ -180,10 +191,12 @@ static void vkr_dispatch(GpuChannel* ch, const u32* q, u64 code) {
 /* Pending shader results land before the stream signals or waits. */
 static void vkr_before_syncwait(void) {
     vk_buf_land_syncwait();
+    vk_gfx_image_land();
     vk_compute_land();
 }
 static void vkr_stream_incr(u32 id) {
     vk_buf_land();
+    vk_gfx_image_land();
     vk_compute_land();
     syncpt_incr(id);
 }
@@ -485,7 +498,7 @@ const Renderer vk_renderer = {
     .rt_reload = vkr_rt_reload,
     .dispatch = vkr_dispatch,
     .cs_mem_need = vk_compute_mem_need,
-    .gfx_mem_need = vk_buf_mem_need,
+    .gfx_mem_need = vkr_gfx_mem_need,
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
     .present_buffer = vkr_present_buffer,

@@ -286,7 +286,7 @@ GuiUsage gui_process_usage(GuiProcess* process) {
     free(samples);
     return usage;
 }
-void gui_process_destroy(GuiProcess* process) {
+void gui_process_terminate(GuiProcess* process) {
     if (!process) return;
     if (process->pid) {
         /* Freeze the session before killing it, so a compiler cannot fork a new
@@ -305,11 +305,14 @@ void gui_process_destroy(GuiProcess* process) {
             for (size_t i = 0; i < count; ++i)
                 if (samples[i].session == process->pid) kill(samples[i].pid, SIGKILL);
         free(samples);
-        if (!process->exited) {
-            kill(process->pid, SIGKILL);
-            while (waitpid(process->pid, NULL, 0) < 0 && errno == EINTR) {}
-        }
+        if (!process->exited) kill(process->pid, SIGKILL);
     }
+}
+void gui_process_destroy(GuiProcess* process) {
+    if (!process) return;
+    gui_process_terminate(process);
+    if (process->pid && !process->exited)
+        while (waitpid(process->pid, NULL, 0) < 0 && errno == EINTR) {}
     if (process->output >= 0) close(process->output);
     free(process);
 }

@@ -2,8 +2,7 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* the unattended-run options, shared by the SDL3 and headless backends: they had a copy each, and the copies had
-   drifted apart (headless ignored script and press_len, SDL3 ignored shot_every) */
+/* Unattended-run options for both windowed and headless execution through the SDL3 backend. */
 #include "runtime/platform/unattended.h"
 #include "runtime/main.h"
 #include "runtime/rtapi.h"
@@ -59,7 +58,7 @@ int unattended_ini(const char* k, const char* v) {
     else if (!strcmp(k, "frames"))
         g_maxframes = atoi(v);
     else if (!strcmp(k, "shot")) {
-        /* the old string is kept: headless takes its numbered shots on the presenting thread */
+        /* Keep the screenshot prefix for numbered shots on the presenting thread. */
         char* s = strdup(v);
         if (s) g_shot = s[0] ? s : NULL;
     } else if (!strcmp(k, "shot_every"))

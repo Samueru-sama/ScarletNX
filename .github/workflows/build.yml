@@ -13,11 +13,11 @@ permissions:
   contents: read
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
-# recompiler's code generator (required, cmake/llvm.cmake). The Windows job starts from a bare runner and gets every
-# tool from scripts/bootstrap.ps1, the way a Windows user does; llvm-mingw has no LLVM libraries, so its recompiler
-# builds no game modules for now. The third-party
-# libraries come from CPM.cmake at configure time; their downloads are cached between runs (.cache/cpm), one cache per
-# job since each job fetches a different set. The artifacts are what `cmake --install` puts in place: the binaries
+# recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
+# and LLVM's development libraries come from one compatible toolchain. FFmpeg, Vulkan and SDL3 are built from the
+# pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg. Downloads are cached in
+# .cache/cpm, one cache per job since each job fetches a different set. The artifacts are what `cmake --install` puts
+# in place: the binaries
 # with the licenses that go with them.
 jobs:
   linux:
@@ -43,11 +43,11 @@ jobs:
       - name: Build the SDL3 fallback without a system package
         run: |
           cmake --preset default -B build/sdl-fallback -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
-            -DSNX_DEPLOY=OFF -DSNX_H264=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF
+            -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF
           cmake --build build/sdl-fallback --target scarletnx
-      - name: Build the headless backend too
+      - name: Build SDL3 with headless Vulkan tests
         run: |
-          cmake --preset default -B build/headless -DSNX_BACKEND=headless -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON
+          cmake --preset default -B build/headless -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON
           cmake --build build/headless
       - name: Test headless Vulkan and NX runtime
         run: ctest --test-dir build/headless -R '^(vulkan_headless|nx_runtime_homebrew)$' --output-on-failure
@@ -121,56 +121,104 @@ jobs:
             dist/appinfo
 
   windows:
-    name: Windows
+    name: Windows (Clang + LLVM)
     runs-on: windows-2025-vs2026
     timeout-minutes: 90
     defaults:
       run:
-        shell: pwsh
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
           key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
-      # bootstrap.ps1 skips every tool already unpacked at its pinned hash
-      - uses: actions/cache@v5
+      # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build.
+      - name: Install Clang, LLVM development files and FFmpeg build tools
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
-          path: |
-            deps/tools
-            !deps/tools/downloads
-          key: tools-${{ hashFiles('scripts/bootstrap.ps1') }}
-      - name: Install the toolchain
-        run: .\scripts\bootstrap.ps1
-      - name: Build the runtime
+          msystem: CLANG64
+          update: true
+          path-type: strict
+          install: >-
+            git
+            make
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-llvm
+            mingw-w64-clang-x86_64-lld
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-nasm
+            mingw-w64-clang-x86_64-pkgconf
+            mingw-w64-clang-x86_64-python
+            mingw-w64-clang-x86_64-spirv-tools
+      - name: Check required dependencies
         run: |
-          . .\scripts\env.ps1 -Isolated
-          cmake --preset default
-          if ($LASTEXITCODE) { exit 1 }
-          cmake --build --preset default
-          if ($LASTEXITCODE) { exit 1 }
+          set -euo pipefail
+          clang --version
+          llvm-config --version
+          test -f "$(llvm-config --includedir)/llvm-c/Core.h"
+          test -d "$(llvm-config --libdir)"
+          llvm-config --libs core native passes target analysis
+          make --version
+          nasm --version
+          spirv-val --version
+          spirv-dis --version
+      - name: Build the runtime and pinned dependencies
+        run: |
+          set -euo pipefail
+          cmake --preset default \
+            -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
+            -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
+            -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
+            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_GCCJIT=OFF
+          cmake --build --preset default --parallel 4
           cmake --install build/default --prefix stage
-          if ($LASTEXITCODE) { exit 1 }
       - name: Check the native driver
         run: |
-          . .\scripts\env.ps1 -Isolated
-          build\default\scarletnx.exe --help > $null
-          if ($LASTEXITCODE) { exit 1 }
-          build\default\scarletnx.exe --extract --help > $null
-          if ($LASTEXITCODE) { exit 1 }
-          build\default\scarletnx.exe --recompile --help > $null
-          if ($LASTEXITCODE) { exit 1 }
+          set -euo pipefail
+          build/default/scarletnx.exe --help > /dev/null
+          build/default/scarletnx.exe --extract --help > /dev/null
+          build/default/scarletnx.exe --recompile --help > /dev/null
       - name: Test native tooling and indexed filesystems
         run: |
-          . .\scripts\env.ps1 -Isolated
+          set -euo pipefail
           ctest --test-dir build/default --output-on-failure
-          if ($LASTEXITCODE) { exit 1 }
+      - name: Bundle runtime DLLs and licenses
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Follow imports recursively so the artifact works without MSYS2 on PATH.
+          # Windows system DLLs are supplied by Windows, never copied from the runner.
+          binaries=(stage/bin/*.exe stage/bin/*.dll)
+          for ((i = 0; i < ${#binaries[@]}; ++i)); do
+            imports=$(llvm-objdump -p "${binaries[i]}")
+            while IFS= read -r dll; do
+              source="$MINGW_PREFIX/bin/$dll"
+              destination="stage/bin/$dll"
+              if [[ -f "$source" && ! -f "$destination" ]]; then
+                cp "$source" "$destination"
+                binaries+=("$destination")
+              fi
+            done < <(printf '%s\n' "$imports" | awk '/DLL Name:/ { sub(/\r$/, "", $3); print $3 }')
+          done
+          mkdir -p stage/share/licenses/msys2
+          cp -R "$MINGW_PREFIX/share/licenses/." stage/share/licenses/msys2/
+          pacman -Q > stage/share/licenses/msys2/build-packages.txt
+      - name: Check the artifact without the toolchain on PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "$(Resolve-Path stage/bin);$env:SystemRoot\System32;$env:SystemRoot"
+          & .\stage\bin\scarletnx.exe --help
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v7
         with:
           name: scarletnx-windows
           path: stage
+          if-no-files-found: error
 
-  # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with that commit's AppImage.
+  # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with Linux and Windows builds.
   # A newer push cancels a release still running, so an older commit never publishes last
   release:
     name: Nightly release
@@ -191,6 +239,19 @@ jobs:
         uses: pkgforge-dev/make-nightly-appimage-release@17cbe90fc0796286e424619a54a82a3a880efe4c # v1.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download the Windows build
+        uses: actions/download-artifact@v8
+        with:
+          name: scarletnx-windows
+          path: windows
+      - name: Package the Windows nightly
+        run: |
+          cd windows
+          zip -r ../ScarletNX-windows-x86_64.zip .
+      - name: Publish the Windows nightly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload nightly ScarletNX-windows-x86_64.zip --repo "$GITHUB_REPOSITORY" --clobber
       # The GPL asks for the way to the source next to the binary
       - name: Say where the source is
         env:
@@ -198,4 +259,6 @@ jobs:
         run: |
           gh release edit nightly --repo "$GITHUB_REPOSITORY" --notes "Built from commit $GITHUB_SHA, whose source is at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$GITHUB_SHA.
 
-          The third-party libraries built into the runtime are fetched from the release archives that cmake/dependencies.cmake lists at that commit, each checked against the SHA-256 written next to it. The AppImage also bundles libraries from Arch Linux packages. The licenses of everything it holds are in its share/licenses folder, with the list of those packages in share/licenses/bundled-packages.txt."
+          The third-party libraries built into the runtime are fetched from the release archives that cmake/dependencies.cmake lists at that commit, each checked against the SHA-256 written next to it. The AppImage also bundles libraries from Arch Linux packages. Its licenses are in share/licenses, with the package list in share/licenses/bundled-packages.txt.
+
+          ScarletNX-windows-x86_64.zip contains the Windows build, its required runtime DLLs and licenses under share/licenses. The MSYS2 build environment's package versions are recorded in share/licenses/msys2/build-packages.txt."

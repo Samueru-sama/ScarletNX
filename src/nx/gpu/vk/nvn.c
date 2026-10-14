@@ -1395,8 +1395,8 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
                     image_int |= 1u << k;
                     if (format.sint) image_sint |= 1u << k;
                 }
-                if (shader->si.img[k].number_type &&
-                    (format.vk != VK_FORMAT_R32_UINT || shader->si.img[k].number_type != 1)) {
+                if (shader->si.img[k].kind &&
+                    (format.vk != VK_FORMAT_R32_UINT || shader->si.img[k].kind != 1)) {
                     images_known = 0;
                     break;
                 }
@@ -2390,7 +2390,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         const u32 word = fragment->si.img[k].cbuf_off;
         if (fragment->si.img[k].type != 3 || !fragment->si.img[k].bindless ||
             fragment->si.img[k].bl_cbuf != 2 ||
-            fragment->si.img[k].number_type != 1 || word < 72 || ((word - 72) & 1) ||
+            fragment->si.img[k].kind != 1 || word < 72 || ((word - 72) & 1) ||
             (word - 72) / 2 >= NVN_DRAW_IMAGE_SLOTS)
             return 0;
         u32 slot = (word - 72) / 2;

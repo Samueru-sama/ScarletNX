@@ -234,12 +234,13 @@ GuiUsage gui_process_usage(GuiProcess* process) {
     process->measured = true;
     return usage;
 }
+void gui_process_terminate(GuiProcess* process) {
+    if (process && process->job) TerminateJobObject(process->job, 1);
+}
 void gui_process_destroy(GuiProcess* process) {
     if (!process) return;
-    if (process->job) {
-        TerminateJobObject(process->job, 1);
-        CloseHandle(process->job);
-    }
+    gui_process_terminate(process);
+    if (process->job) CloseHandle(process->job);
     if (process->process) {
         WaitForSingleObject(process->process, INFINITE);
         CloseHandle(process->process);

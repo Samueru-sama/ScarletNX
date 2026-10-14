@@ -52,7 +52,8 @@ certificate that every semantic difference was found.
 
 ## Executed evidence
 
-See `tests/shader_differential/README.md` for reproduction and model limitations.
+This section records a historical audit of the removed text translator. Its differential harness was retired with
+that translator; the figures below describe the old implementation.
 
 - Built ScarletNX's production shader C sources and selected unmodified Eden
   visitors/IR sources with Clang 21.1.5 and UBSan.

@@ -6,7 +6,7 @@
 option(SNX_GCCJIT "Build the recompiler's libgccjit backend when libgccjit is found" ON)
 set(SNX_GCCJIT_ROOT "" CACHE PATH "A prefix holding lib/gcc/<triple>/<version>/{include/libgccjit.h,libgccjit.so}")
 set(SNX_GCCJIT_FOUND OFF)
-if(SNX_GCCJIT AND SNX_LLVM_FOUND)
+if(SNX_GCCJIT)
     set(snx_gccjit_hints)
     foreach(prefix "${SNX_GCCJIT_ROOT}" "${SNX_GCCJIT_ROOT}/usr" /usr /usr/local)
         if(prefix)

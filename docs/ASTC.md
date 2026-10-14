@@ -1,7 +1,7 @@
 # ASTC compute uploads
 
-`src/nx/gpu/texture/astc.comp` ports the integer LDR decoder from `astc.c` to
-GLSL 450. Each invocation decodes one 128-bit block. Workgroups contain 32
+`src/nx/gpu/texture/astc.spvasm` contains the SPIR-V implementation of the integer LDR decoder from `astc.c`.
+Each invocation decodes one 128-bit block. Workgroups contain 32
 invocations. The shader requires only core storage buffers and 32-bit integers.
 HDR endpoint modes retain the reference decoder's magenta error behavior.
 This is a port, not a new ASTC conformance implementation.
@@ -39,7 +39,7 @@ check. Other decoding behavior intentionally follows the reference.
 
 ## Rebuild the shader
 
-Use glslangValidator 12.0.0 and SPIRV-Tools (tested with 2023.1):
+Use SPIRV-Tools (`spirv-as` and `spirv-val`):
 
 ```sh
 python3 scripts/build-astc-shader.py
@@ -47,10 +47,8 @@ python3 scripts/build-astc-shader.py --check
 python3 scripts/build-astc-shader.py --spv astc.spv
 ```
 
-The script compiles for Vulkan 1.1, validates the binary with `spirv-val`, and
-embeds its words in a C header. `--check` compares regenerated output against the
-checked-in header. Compiler upgrades may change the binary and should be reviewed
-and regenerated explicitly.
+The script assembles for Vulkan 1.1, validates the binary, and embeds its words in a C header.
+`--check` compares regenerated output against the checked-in header.
 
 ## Standalone tests
 
@@ -78,7 +76,7 @@ ring growth.
 
 Verification performed in the development container:
 
-- GLSL compilation, SPIR-V validation and embedded-header reproducibility passed.
+- SPIR-V assembly, validation and embedded-header reproducibility passed.
 - 86 Vulkan differential cases passed on Mesa 22.3.6 llvmpipe, with the Khronos
   validation layer and synchronization validation enabled. Zero validation errors.
 - Changed Vulkan C translation units passed Clang 15 syntax checks using Vulkan

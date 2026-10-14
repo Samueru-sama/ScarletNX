@@ -9,7 +9,10 @@
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
 #include "gpu/vk/vk.h"
-#include "gpu/vk/spirv.h"
+
+int g_vk_preserve_infnan;
+int g_vk_flush_denorm;
+VkShaderStageFlags g_vk_subgroup_stages;
 
 VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
@@ -176,15 +179,23 @@ static int create_device(void) {
         return 0;
     }
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
-    VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+    VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+    VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
+                                              .pNext = &subgroup};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
+    g_vk_subgroup_stages =
+        subgroup.subgroupSize >= 32 &&
+                (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT)) ==
+                    (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT)
+            ? subgroup.supportedStages
+            : 0;
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* 32 bit alone: a device whose denorm modes can't differ per width would need 16 and 64 bit declared too */
     g_vk_flush_denorm = p12.shaderDenormFlushToZeroFloat32 &&
                         p12.denormBehaviorIndependence != VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
-    if (!g_vk_preserve_infnan)
-        WARN("vulkan: this GPU can't keep infinities and NaNs in shaders, which some games' lighting needs\n");
+    if (!g_vk_preserve_infnan || !g_vk_flush_denorm)
+        WARN("vulkan: some direct shaders require FP32 float controls unavailable on this GPU\n");
 
     /* compute gets a queue of its own: of a compute-only family, or else a second one of the graphics family */
     int second = g_vk.compute_family == g_vk.gfx_family && gfx_queues >= 2;
@@ -279,8 +290,7 @@ static int create_device(void) {
     g_vk.has_index_uint8 = index_uint8_ext && findex.indexTypeUint8;
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .shaderDrawParameters = q11.shaderDrawParameters};
-    /* also where the device has them: the mirror-once address mode (texture.c), and gl_Layer from vertex shaders
-       (shader.c's GL_ARB_shader_viewport_layer_array) */
+    /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
     g_vk.has_mirror_clamp = q12.samplerMirrorClampToEdge;
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .pNext = &f11,

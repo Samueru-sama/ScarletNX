@@ -8,6 +8,7 @@
 #include "gpu/vk/vk.h"
 #include "memory/mem.h"
 #include "runtime/platform/backend.h"
+#include "spirv_emitter_fixture.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,107 @@ static int check_viewport_orientation(void) {
     return 0;
 }
 
+/* Execute the direct writer's module, not only spirv-val's structural check. */
+static int check_direct_spirv(void) {
+    size_t words = 0;
+    u32* code = snx_test_spirv_compute(&words);
+    VkShaderModuleCreateInfo smi = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * sizeof(u32), .pCode = code};
+    VkShaderModule module;
+    CHECK(vkCreateShaderModule(g_vk.dev, &smi, NULL, &module) == VK_SUCCESS);
+    free(code);
+    VkDescriptorSetLayoutBinding binding = {.binding = 0,
+                                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                            .descriptorCount = 1,
+                                            .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+    VkDescriptorSetLayoutCreateInfo dli = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &binding};
+    VkDescriptorSetLayout dlayout;
+    CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &dli, NULL, &dlayout) == VK_SUCCESS);
+    VkPipelineLayoutCreateInfo pli = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dlayout};
+    VkPipelineLayout playout;
+    CHECK(vkCreatePipelineLayout(g_vk.dev, &pli, NULL, &playout) == VK_SUCCESS);
+    VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                                                 .module = module,
+                                                 .pName = "main"},
+                                       .layout = playout};
+    VkPipeline pipeline;
+    CHECK(vkCreateComputePipelines(g_vk.dev, VK_NULL_HANDLE, 1, &pci, NULL, &pipeline) == VK_SUCCESS);
+    vkDestroyShaderModule(g_vk.dev, module, NULL);
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                             .size = sizeof(u32),
+                             .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+    VmaAllocationCreateInfo ai = {.flags =
+                                      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VkBuffer buffer;
+    VmaAllocation memory;
+    VmaAllocationInfo allocation;
+    CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &buffer, &memory, &allocation) == VK_SUCCESS);
+    *(u32*)allocation.pMappedData = 0;
+    CHECK(vmaFlushAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                      .maxSets = 1,
+                                      .poolSizeCount = 1,
+                                      .pPoolSizes = &pool_size};
+    VkDescriptorPool pool;
+    CHECK(vkCreateDescriptorPool(g_vk.dev, &dpi, NULL, &pool) == VK_SUCCESS);
+    VkDescriptorSetAllocateInfo dsi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                       .descriptorPool = pool,
+                                       .descriptorSetCount = 1,
+                                       .pSetLayouts = &dlayout};
+    VkDescriptorSet set;
+    CHECK(vkAllocateDescriptorSets(g_vk.dev, &dsi, &set) == VK_SUCCESS);
+    VkDescriptorBufferInfo dbi = {buffer, 0, sizeof(u32)};
+    VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                  .dstSet = set,
+                                  .dstBinding = 0,
+                                  .descriptorCount = 1,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                  .pBufferInfo = &dbi};
+    vkUpdateDescriptorSets(g_vk.dev, 1, &write, 0, NULL);
+    VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                   .queueFamilyIndex = g_vk.gfx_family};
+    VkCommandPool cpool;
+    CHECK(vkCreateCommandPool(g_vk.dev, &cpi, NULL, &cpool) == VK_SUCCESS);
+    VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                       .commandPool = cpool,
+                                       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                       .commandBufferCount = 1};
+    VkCommandBuffer cmd;
+    CHECK(vkAllocateCommandBuffers(g_vk.dev, &cbi, &cmd) == VK_SUCCESS);
+    VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    CHECK(vkBeginCommandBuffer(cmd, &begin) == VK_SUCCESS);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, playout, 0, 1, &set, 0, NULL);
+    vkCmdDispatch(cmd, 1, 1, 1);
+    VkMemoryBarrier2 barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                                .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(cmd, &dependency);
+    CHECK(vkEndCommandBuffer(cmd) == VK_SUCCESS);
+    VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
+    CHECK(vkQueueSubmit(g_vk.gfx, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS);
+    CHECK(vkQueueWaitIdle(g_vk.gfx) == VK_SUCCESS);
+    CHECK(vmaInvalidateAllocation(g_vk.vma, memory, 0, VK_WHOLE_SIZE) == VK_SUCCESS);
+    CHECK(*(u32*)allocation.pMappedData == 42);
+    vkDestroyCommandPool(g_vk.dev, cpool, NULL);
+    vkDestroyDescriptorPool(g_vk.dev, pool, NULL);
+    vmaDestroyBuffer(g_vk.vma, buffer, memory);
+    vkDestroyPipeline(g_vk.dev, pipeline, NULL);
+    vkDestroyPipelineLayout(g_vk.dev, playout, NULL);
+    vkDestroyDescriptorSetLayout(g_vk.dev, dlayout, NULL);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const u32 w = 32, h = 16;
     const u64 address = 4096;
@@ -64,6 +166,7 @@ int main(int argc, char** argv) {
     video_init("Headless Vulkan fixture");
     CHECK(g_opt_headless && g_renderer_up && g_vk.dev && !g_vk.surface && !g_vk.swapchain && !g_vk.sc_count);
     CHECK(!check_viewport_orientation());
+    CHECK(!check_direct_spirv());
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */
     vkCreateSwapchainKHR = NULL;

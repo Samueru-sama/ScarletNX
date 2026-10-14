@@ -5,11 +5,7 @@
 #include "runtime/cli.h"
 #include <stdio.h>
 
-#ifdef SNX_HEADLESS_ONLY
-int g_opt_headless = 1;
-#else
 int g_opt_headless;
-#endif
 int g_opt_gdb, g_opt_gdb_stop;
 
 int snx_startup_options(int argc, char** argv) {
@@ -23,11 +19,7 @@ int snx_startup_options(int argc, char** argv) {
             return 2;
         }
     }
-#ifdef SNX_HEADLESS_ONLY
-    g_opt_headless = 1;
-#else
     g_opt_headless = !!(flags & SNX_HEADLESS);
-#endif
     g_opt_gdb = !!(flags & SNX_GDB);
     g_opt_gdb_stop = !!(flags & SNX_STOP);
     return 0;

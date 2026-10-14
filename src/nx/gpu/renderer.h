@@ -65,7 +65,8 @@ extern const Renderer* g_renderer;
 /* shared state (gpu/renderer.c) */
 extern int g_renderer_up; /* the renderer started */
 extern u64 g_draws;
-extern _Atomic int g_cs_any;  /* compute results are pending somewhere */
-extern _Atomic int g_gfx_any; /* graphics storage-buffer results are pending somewhere */
+extern _Atomic int g_cs_any;      /* compute results are pending somewhere */
+extern _Atomic int g_gfx_any;     /* graphics storage-buffer results are pending somewhere */
+extern _Atomic int g_gfx_img_any; /* graphics storage-image results are pending somewhere */
 
 #endif

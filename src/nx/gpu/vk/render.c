@@ -14,8 +14,10 @@
 #include "gpu/gpu.h"
 #include "gpu/renderer.h"
 #include "gpu/shader/shader.h"
+#include "hle/services/nvdrv.h"
 #include "runtime/platform/log.h"
 #include "gpu/vk/vk.h"
+#include "gpu/vk/internal_spv.h"
 
 static struct {
     Surf* rt[8];
@@ -168,20 +170,13 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     static VkShaderModule vs, fs[8][3];
     const VkFmt* f = &g_rp.rt[slot]->f;
     int num = f->is_int ? (f->sint ? 2 : 1) : 0;
-    if (!vs)
-        vs = vk_module("#version 450\n#extension GL_ARB_shader_viewport_layer_array : require\n"
-                       "layout(push_constant) uniform PC { int layer; };\n"
-                       "void main(){ vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n"
-                       "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); gl_Layer = layer; }\n",
-                       ST_VS);
+    if (!vs) vs = vk_module_spv(snx_clear_vs_spv, sizeof snx_clear_vs_spv / sizeof *snx_clear_vs_spv);
     if (!fs[slot][num]) {
-        static const char* ty[3] = {"vec4", "uvec4", "ivec4"};
-        char src[256];
-        snprintf(src, sizeof src,
-                 "#version 450\nlayout(push_constant) uniform PC { layout(offset=16) %s c; };\n"
-                 "layout(location=%u) out %s o;\nvoid main(){ o = c; }\n",
-                 ty[num], slot, ty[num]);
-        fs[slot][num] = vk_module(src, ST_FS);
+        static const u32* words[3] = {snx_clear_fs_float_spv, snx_clear_fs_uint_spv, snx_clear_fs_sint_spv};
+        static const size_t count[3] = {sizeof snx_clear_fs_float_spv / sizeof *snx_clear_fs_float_spv,
+                                        sizeof snx_clear_fs_uint_spv / sizeof *snx_clear_fs_uint_spv,
+                                        sizeof snx_clear_fs_sint_spv / sizeof *snx_clear_fs_sint_spv};
+        fs[slot][num] = vk_module_spv_location(words[num], count[num], slot);
     }
     if (!vs || !fs[slot][num]) return 0;
     PipeKey k;
@@ -541,6 +536,16 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
         }
     }
     rm &= s0->si.sph[18] ? 0xFF : 0;
+    u64 tic_base = ((u64)r[0x55D] << 32) | r[0x55E];
+    for (int i = 0; i < s0->si.nimg; i++) {
+        if (s0->si.img[i].kind == 1) continue; /* atomics require an unsigned integer image */
+        ShTex handle_info = {
+            .cbuf_off = s0->si.img[i].cbuf_off, .bindless = s0->si.img[i].bindless, .bl_cbuf = s0->si.img[i].bl_cbuf};
+        u32 handle = tex_handle(4, r[0x982], &handle_info), tic[8];
+        gmem_read(tic_base + (handle & 0xFFFFF) * 32ull, tic, sizeof tic);
+        Surf* image = vk_tex_from_tic(tic);
+        if (image && !!image->f.is_int != !!s0->si.img[i].bindless) rm |= 1u << (8 + i);
+    }
     if (!tm && !rm) return s0;
     return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0, 0, 0);
 }
@@ -569,7 +574,10 @@ VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, int 
         m[0] = m[1] = m[2] = VK_COMPONENT_SWIZZLE_R;
         m[3] = VK_COMPONENT_SWIZZLE_ONE;
     }
-    VkComponentMapping map = {m[0], m[1], m[2], m[3]};
+    VkComponentMapping map = t->fkey & (1u << 30)
+                                 ? (VkComponentMapping){VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO,
+                                                        VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE}
+                                 : (VkComponentMapping){m[0], m[1], m[2], m[3]};
     return vk_tex_view(t, want, (tic[4] >> 22) & 1, &map);
 }
 
@@ -649,6 +657,113 @@ typedef struct {
     VkDescriptorImageInfo ii[SNX_VKB_SMAP + 1];
     u32 n;
 } DescWrites;
+
+typedef struct {
+    Surf* surf;
+    u8* original;
+    u32 size;
+    u64* pages;
+    size_t npages;
+} GfxImageOut;
+static GfxImageOut* g_img_out;
+static size_t g_img_count, g_img_cap;
+static _Thread_local int g_img_landing;
+_Atomic int g_gfx_img_any;
+
+static int image_page_cmp(const void* a, const void* b) {
+    u64 x = *(const u64*)a, y = *(const u64*)b;
+    return (x > y) - (x < y);
+}
+static int image_pending(Surf* surf) {
+    for (size_t i = 0; i < g_img_count; i++)
+        if (g_img_out[i].surf == surf) return 1;
+    return 0;
+}
+static void image_record(Surf* surf, u8* original, u32 size) {
+    if (image_pending(surf)) {
+        free(original);
+        return;
+    }
+    if (g_img_count == g_img_cap) {
+        size_t cap = g_img_cap ? g_img_cap * 2 : 8;
+        GfxImageOut* next = realloc(g_img_out, cap * sizeof *next);
+        if (!next) fatal("Out of memory recording graphics storage image");
+        g_img_out = next;
+        g_img_cap = cap;
+    }
+    size_t max_pages = (size_t)(((surf->gva & 4095) + (u64)size + 4095) >> 12);
+    u64* pages = malloc(max_pages * sizeof *pages);
+    if (!pages) fatal("Out of memory recording graphics storage image pages");
+    size_t npages = 0;
+    u64 first = surf->gva & ~4095ull;
+    for (size_t i = 0; i < max_pages; i++) {
+        u64 cpu = gmmu_translate(first + (u64)i * 4096);
+        if (cpu) pages[npages++] = cpu >> 12;
+    }
+    qsort(pages, npages, sizeof *pages, image_page_cmp);
+    g_img_out[g_img_count++] = (GfxImageOut){surf, original, size, pages, npages};
+    g_gfx_img_any = 1;
+}
+static int image_overlaps(const GfxImageOut* out, u64 gva, u64 size) {
+    if (!size) return 0;
+    u64 base = out->surf->gva;
+    if (gva >= base ? gva - base < out->size : base - gva < size) return 1;
+    u64 first = gva & ~4095ull, last = (gva + size - 1) & ~4095ull;
+    for (u64 at = first; at <= last; at += 4096) {
+        u64 cpu = gmmu_translate(at), page = cpu >> 12;
+        if (cpu && bsearch(&page, out->pages, out->npages, sizeof page, image_page_cmp)) return 1;
+        if (last - at < 4096) break;
+    }
+    return 0;
+}
+static void image_flush_at(size_t index) {
+    GfxImageOut out = g_img_out[index];
+    vk_surf_flush(out.surf, out.original);
+    if (out.surf->mem_wgen != out.surf->wgen) fatal("Cannot write back graphics storage image");
+    free(out.original);
+    free(out.pages);
+    memmove(g_img_out + index, g_img_out + index + 1, (g_img_count - index - 1) * sizeof *g_img_out);
+    g_img_count--;
+    g_gfx_img_any = g_img_count != 0;
+}
+void vk_gfx_image_mem_need(u64 gva, u64 size) {
+    if (!g_gfx_img_any || g_img_landing || !size) return;
+    vk_lock();
+    g_img_landing = 1;
+    for (size_t i = 0; i < g_img_count;)
+        if (image_overlaps(&g_img_out[i], gva, size))
+            image_flush_at(i);
+        else
+            i++;
+    g_img_landing = 0;
+    vk_unlock();
+}
+void vk_gfx_image_land(void) {
+    if (!g_gfx_img_any || g_img_landing) return;
+    vk_lock();
+    g_img_landing = 1;
+    while (g_img_count) image_flush_at(0);
+    g_img_landing = 0;
+    vk_unlock();
+}
+
+typedef struct {
+    Surf* surf[8];
+    u8* original[8];
+    u32 size[8];
+    int n;
+} DrawImages;
+static void draw_images_discard(DrawImages* images) {
+    for (int i = 0; i < images->n; i++) free(images->original[i]);
+    images->n = 0;
+}
+static void draw_images_commit(DrawImages* images) {
+    for (int i = 0; i < images->n; i++) {
+        images->surf[i]->wgen++;
+        if (images->original[i]) image_record(images->surf[i], images->original[i], images->size[i]);
+    }
+    images->n = 0;
+}
 static void dw_buffer(DescWrites* d, VkDescriptorSet set, u32 binding, VkDescriptorType type, VkBuffer b, u64 off,
                       u64 range) {
     d->bi[binding] = (VkDescriptorBufferInfo){b, off, range};
@@ -680,9 +795,10 @@ static void draw_storage_read(VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
             b->size = 16;
             if (cb0) {
                 u32 v[3];
-                gmem_read(cb0 + sh[s]->si.gbuf_cbuf_off[i], v, 12);
+                int pointer_only = stage == 0 && sh[s]->si.gbuf_cbuf_off[i] == 0xb0;
+                gmem_read(cb0 + sh[s]->si.gbuf_cbuf_off[i], v, pointer_only ? 8 : 12);
                 b->addr = ((u64)v[1] << 32) | v[0];
-                b->size = v[2];
+                b->size = pointer_only ? 16 : v[2];
             }
             if (!b->size) b->size = 16;
             if (b->size > (16u << 20)) b->size = 16u << 20;
@@ -695,7 +811,7 @@ static void draw_storage_read(VkDrawStorage* draw, VkSh* vs, VkSh* fs) {
 /* a stage's descriptor set: constant buffers, storage buffers, textures. *zt_ro is set when it samples the depth
    target, which the pass then binds read-only. res: textures fs_get_keyed resolved for this stage, or NULL */
 static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                 TexRes* res, const VkDrawStorage* draw) {
+                                 TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
     u32* r = ch->r3d;
     VkDescriptorSet set = vk_desc_alloc(g_vk_dslayout[shader_vk_set(stage)]);
     if (!set) return VK_NULL_HANDLE;
@@ -746,10 +862,15 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
             tex_resolve(ch, handle, x);
         }
         Surf* t = x->t;
+        if (st->flags & 2) return VK_NULL_HANDLE;
+        if (st->flags & 1) t = vk_tex_from_tic_raw(x->tic);
+        if ((st->flags & 1) && !t) return VK_NULL_HANDLE;
         VkImageViewType want = vk_tex_view_type(st);
-        int num = st->shadow || !((s->si.tex_int_mask >> i) & 1) ? 0 : ((s->si.tex_sint_mask >> i) & 1) ? 2 : 1;
+        int num = st->flags & 1 ? 1
+                  : st->shadow || !((s->si.tex_int_mask >> i) & 1) ? 0
+                  : ((s->si.tex_sint_mask >> i) & 1) ? 2 : 1;
         VkImageView view = VK_NULL_HANDLE;
-        VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkImageLayout layout = s->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         /* sampling the depth target needs it read-only: no depth writes, and no stencil writes on either face */
         int sten_w = zt && zt->f.stencil && r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)));
         int depth_ro = t && t == zt && !r[0x4BA] && !sten_w;
@@ -768,8 +889,7 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         } else if (view)
-            vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_SAMPLED_STAGES,
-                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else
             view = vk_null_view(want, st->shadow ? 3 : num);
         if (!view) return VK_NULL_HANDLE;
@@ -783,6 +903,57 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
                                             .descriptorCount = 1,
                                             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                             .pImageInfo = &d.ii[b]};
+    }
+    for (int i = 0; i < s->si.nimg; i++) {
+        const u32 bank = s->si.img[i].bindless ? s->si.img[i].bl_cbuf : tcb;
+        u64 cba = bank < 18 ? g_vk_cb[stage][bank] : 0;
+        if (!cba || !images) return VK_NULL_HANDLE;
+        u32 handle = gmem_r32(cba + (u64)s->si.img[i].cbuf_off * 4);
+        u64 tic_base = ((u64)r[0x55D] << 32) | r[0x55E];
+        u32 tic[8];
+        gmem_read(tic_base + (handle & 0xFFFFF) * 32ull, tic, sizeof tic);
+        Surf* surf = vk_tex_from_tic(tic);
+        u64 size = vk_surf_guest_size(surf);
+        int kind = s->si.img[i].kind;
+        if (!surf || !surf->storage_capable || !vk_surf_can_writeback(surf) || surf->levels != 1 ||
+            surf->depth3d != 1 || s->si.img[i].type != 3 || size == 0 || size > UINT32_MAX ||
+            (kind ? surf->f.vk != VK_FORMAT_R32_UINT : surf->f.is_int) || is_target(surf, rt, zt, n)) {
+            LOG_LIMIT(4,
+                      "vulkan: unsupported fragment storage image (draw skipped): %s handle %08x image %p format %u "
+                      "raw %d integer %d storage %d levels %u depth %u size %llu target %d\n",
+                      kind == 1 ? "atomic" : "store", handle, (void*)surf, surf ? surf->f.vk : 0,
+                      surf ? surf->f.raw : 0, surf ? surf->f.is_int : 0, surf ? surf->storage_capable : 0,
+                      surf ? surf->levels : 0, surf ? surf->depth3d : 0, (unsigned long long)size,
+                      surf ? is_target(surf, rt, zt, n) : 0);
+            return VK_NULL_HANDLE;
+        }
+        VkComponentMapping identity = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+        VkImageView view = vk_tex_view(surf, VK_IMAGE_VIEW_TYPE_2D, 0, &identity);
+        if (!view) return VK_NULL_HANDLE;
+        int seen = 0;
+        for (int j = 0; j < images->n; j++)
+            if (images->surf[j] == surf) seen = 1;
+        if (!seen) {
+            u8* original = malloc((size_t)size);
+            if (!original) return VK_NULL_HANDLE;
+            gmem_read(surf->gva, original, size);
+            images->original[images->n] = original;
+        } else
+            images->original[images->n] = NULL;
+        images->surf[images->n] = surf;
+        images->size[images->n] = (u32)size;
+        images->n++;
+        vk_surf_use(vk_cmd(), surf, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        u32 binding = SNX_VKB_IMG + (u32)i;
+        d.ii[binding] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+        d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                            .dstSet = set,
+                                            .dstBinding = binding,
+                                            .descriptorCount = 1,
+                                            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                            .pImageInfo = &d.ii[binding]};
     }
     if (d.n) vkUpdateDescriptorSets(g_vk.dev, d.n, d.w, 0, NULL);
     return set;
@@ -1084,9 +1255,11 @@ retry:
         return;
     }
     int zt_ro = 0;
-    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, &storage);
-    VkDescriptorSet fset = fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, fres, &storage) : VK_NULL_HANDLE;
+    DrawImages images = {0};
+    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, &storage, NULL);
+    VkDescriptorSet fset = fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, fres, &storage, &images) : VK_NULL_HANDLE;
     if (!vset || (fs && !fset)) {
+        draw_images_discard(&images);
         g_vk_skipped++;
         return;
     }
@@ -1101,7 +1274,10 @@ retry:
         u64 avail = (iend - ia + 1) / isz;
         LOG_LIMIT(1, "vulkan: a draw reads indices %u..%u of an index buffer of %llu (cut there)\n", first,
                   first + count - 1, (unsigned long long)avail);
-        if (first >= avail) return;
+        if (first >= avail) {
+            draw_images_discard(&images);
+            return;
+        }
         count = (u32)(avail - first);
     }
     if ((topology == 7 || (indexed && ifmt == 0)) && count > (1u << 24)) {
@@ -1118,7 +1294,10 @@ retry:
         const u8* src = NULL;
         if (indexed) src = gmem_ptr(ia + (u64)first * isz, (u64)count * isz);
         u32* idx = (u32*)vk_stage((u64)nq * 24 + 4, vk_stage_align(), &ibuf, &ioff);
-        if (!idx) return;
+        if (!idx) {
+            draw_images_discard(&images);
+            return;
+        }
         for (u32 q = 0; q < nq; q++) {
             u32 v[4];
             for (int j = 0; j < 4; j++) {
@@ -1142,7 +1321,10 @@ retry:
         if (ifmt == 0) { /* 8-bit indices need an extension: widen them */
             const u8* src = gmem_ptr(ia + first, count);
             u16* o = (u16*)vk_stage((u64)count * 2, vk_stage_align(), &ibuf, &ioff);
-            if (!o) return;
+            if (!o) {
+                draw_images_discard(&images);
+                return;
+            }
             for (u32 j = 0; j < count; j++) {
                 u8 v = 0;
                 if (src)
@@ -1157,32 +1339,42 @@ retry:
             u64 bytes = (u64)count * isz;
             if (restart && ri != ones && count <= (1u << 24)) { /* the guest's restart index becomes Vulkan's */
                 u8* o = vk_stage(bytes, vk_stage_align(), &ibuf, &ioff);
-                if (!o) return;
+                if (!o) {
+                    draw_images_discard(&images);
+                    return;
+                }
                 gmem_read(ia + (u64)first * isz, o, bytes);
                 for (u32 j = 0; j < count; j++)
                     if (isz == 2 && ((u16*)o)[j] == ri)
                         ((u16*)o)[j] = 0xFFFF;
                     else if (isz == 4 && ((u32*)o)[j] == ri)
                         ((u32*)o)[j] = 0xFFFFFFFFu;
-            } else if (!vk_buf_get(ia + (u64)first * isz, bytes, &ibuf, &ioff))
+            } else if (!vk_buf_get(ia + (u64)first * isz, bytes, &ibuf, &ioff)) {
+                draw_images_discard(&images);
                 return;
+            }
             itype = isz == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
         }
     }
 
     VkPipeline pipe = vk_pipeline_get(&k);
     if (!pipe) {
+        draw_images_discard(&images);
         g_vk_skipped++;
         return;
     }
     /* A guest read while preparing descriptors can land an older graphics output and submit this frame. Rebuild
        descriptors and staged inputs in the new frame before recording the draw. */
     if (setup_frame != vk_frame_number()) {
+        draw_images_discard(&images);
         if (++retries < 4) goto retry;
         g_vk_skipped++;
         return;
     }
-    if (!render_begin(rt, zt, n, zt_ro)) return;
+    if (!render_begin(rt, zt, n, zt_ro)) {
+        draw_images_discard(&images);
+        return;
+    }
     VkCommandBuffer cb = vk_cmd();
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     VkDescriptorSet sets[2] = {vset, fset};
@@ -1190,7 +1382,10 @@ retry:
     if (k.nbind) vkCmdBindVertexBuffers2(cb, 0, k.nbind, vbuf, voff, NULL, vstride);
 
     VkViewport vp = vk_render_viewport(r);
-    if (!(vp.width > 0) || !(vp.height != 0)) return; /* no area: nothing is drawn (and Vulkan takes none) */
+    if (!(vp.width > 0) || !(vp.height != 0)) {
+        draw_images_discard(&images);
+        return; /* no area: nothing is drawn (and Vulkan takes none) */
+    }
     vkCmdSetViewportWithCount(cb, 1, &vp);
     VkRect2D sc = {{0, 0}, g_rp.ext};
     if (r[0x380] & 1) {
@@ -1279,6 +1474,7 @@ retry:
     } else
         vkCmdDraw(cb, count, instances, first, base_instance);
     vk_buf_writable_commit();
+    draw_images_commit(&images);
     if (fs)
         for (u32 i = 0; i < n; i++)
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
@@ -1314,28 +1510,30 @@ void vk_render_draw_texture(GpuChannel* ch) {
         return;
     }
     Surf* d = rt[0];
-    if (t->f.depth || d->f.depth || t->f.is_int != d->f.is_int || !format_has(t->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
-        !format_has(d->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+    if (t->f.depth || d->f.depth || t->f.is_int != d->f.is_int ||
+        !format_has(t->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !format_has(d->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
         LOG_LIMIT(1, "vulkan: a draw texture between formats %d and %d can't be blitted (not drawn)\n", (int)t->f.vk,
                   (int)d->f.vk);
         return;
     }
     /* in the images' pixels: a target is scaled, and a texture made from one is too */
     float tsx = (float)t->sw / (float)t->w, tsy = (float)t->sh / (float)t->h;
-    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .srcOffsets = {{(i32)(sx0 * tsx), (i32)(sy0 * tsy), 0}, {(i32)(sx1 * tsx), (i32)(sy1 * tsy), 1}},
-                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                     .dstOffsets = {{(i32)vk_scf(x0), (i32)vk_scf(y0), 0}, {(i32)vk_scf(x0 + w), (i32)vk_scf(y0 + h), 1}}};
-    int linear = (x.tsc[1] & 3) == 2 && !t->f.is_int &&
-                 format_has(t->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+    VkImageBlit b = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .srcOffsets = {{(i32)(sx0 * tsx), (i32)(sy0 * tsy), 0}, {(i32)(sx1 * tsx), (i32)(sy1 * tsy), 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .dstOffsets = {{(i32)vk_scf(x0), (i32)vk_scf(y0), 0}, {(i32)vk_scf(x0 + w), (i32)vk_scf(y0 + h), 1}}};
+    int linear =
+        (x.tsc[1] & 3) == 2 && !t->f.is_int && format_has(t->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
     vk_render_end(); /* blits happen outside rendering passes */
     vk_rt_note_read(t);
     VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
     vk_surf_use(cb, d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    vkCmdBlitImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
-                   linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    vkCmdBlitImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                   &b, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     d->wgen++;
     vk_rt_drawn(d);
     d->last_used = g_vk_present;

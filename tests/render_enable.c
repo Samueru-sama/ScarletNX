@@ -108,7 +108,10 @@ static int drawn(void) {
 static void expect(int want, const char* what) {
     int got = drawn();
     if (got != want) {
-        fprintf(stderr, "FAIL: %s: %s\n", what, got < 0 ? "the draw and the clear disagree" : got ? "drawn" : "skipped");
+        fprintf(stderr, "FAIL: %s: %s\n", what,
+                got < 0 ? "the draw and the clear disagree"
+                : got   ? "drawn"
+                        : "skipped");
         failures++;
     }
 }

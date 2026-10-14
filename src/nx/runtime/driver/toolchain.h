@@ -9,5 +9,4 @@ typedef struct {
     int target_win, quiet;
 } SnxCompileOptions;
 char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet);
-int snx_prebuild_shaders(const SnxPaths* paths, const char* romfs, const char* outdir, int quiet);
 #endif

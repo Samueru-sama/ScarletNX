@@ -183,11 +183,9 @@ static int audren_disp(SvcObj* o, IpcCtx* c) {
             /* AudioRendererParameter: voice count at 0x10, sink count 0x14, effect count 0x18 */
             u64 sz = 0x4000;
             u32 voices = in32(c, 0x10), sinks = in32(c, 0x14), effects = in32(c, 0x18);
-            sz += (u64)voices * 0x400 + (u64)sinks * 0x200 + (u64)effects * 0x800;
-            /* This is still an estimate. A multi-megabyte floor made the SDK place its config
-               beyond Scarlet's mapped audio work area even though it opened the renderer. */
-            if (sz < 0x20000) sz = 0x20000;
-            /* The SDK passes this to svcCreateTransferMemory, which requires whole pages. */
+            sz += (u64)voices * 0x400 + sinks * 0x200 + effects * 0x800;
+            /* The SDK allocates this beside its renderer config. An oversized estimate can place that config
+               outside the pages it mapped. Transfer memory requires whole pages. */
             out64(c, (sz + 0xFFF) & ~0xFFFull);
             return 0;
         }
@@ -429,7 +427,7 @@ static int audout_disp(SvcObj* o, IpcCtx* c) {
 }
 SvcObj* new_audout(void) { return svcobj_new("audout:u", audout_disp, 0); }
 
-/* hwopus: Opus packets decoded with FFmpeg's Opus decoder, part of the FFmpeg build SNX_H264 brings in.
+/* hwopus: Opus packets decoded with FFmpeg's Opus decoder, required by every NX runtime build.
    The commands are the ones the SDK's nn::codec client in the game sends (SDK 6.5: manager 0 to 3, decoder 8 and 9),
    read from its disassembly, and Switchbrew's hwopus page and Ryujinx (MIT, Ryujinx.HLE Services/Audio
    HardwareOpusDecoderManager) for the older decode commands and the ones newer SDKs add.
@@ -499,7 +497,7 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     (void)streams;
     (void)stereo;
     (void)map;
-    LOG_LIMIT(1, "hwopus: this build has no Opus decoder (FFmpeg comes with SNX_H264)\n");
+    LOG_LIMIT(1, "hwopus: this test fixture has no Opus decoder\n");
     return 0;
 #else
     if (rate != 48000 && rate != 24000 && rate != 16000 && rate != 12000 && rate != 8000) return 0;

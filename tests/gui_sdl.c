@@ -12,20 +12,61 @@ static void key(App* app, SDL_Keycode code) {
     assert(SDL_PushEvent(&e));
     while (SDL_PollEvent(&e)) event(app, &e);
 }
-static void finish(App* app) {
+static void red_text(App* app, int row, const char* prompt) {
+    /* Verify the exact text and its bright red glyphs in the real renderer. */
+    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    assert(image);
+    for (int i = 0; prompt[i]; ++i)
+        for (int y = 0; y < 16; ++y)
+            for (int x = 0; x < 8; ++x) {
+                Uint8 r, g, b, a;
+                assert(SDL_ReadSurfacePixel(image, ((i + 1) * 8 + x) * app->scale, (row * 16 + y) * app->scale, &r, &g,
+                                            &b, &a));
+                bool ink = (gui_vga_font[(unsigned char)prompt[i] * 16 + y] & (0x80 >> x)) != 0;
+                assert(r == (ink ? 255 : 0) && g == 0 && b == 0);
+            }
+    SDL_DestroySurface(image);
+}
+static void finish(App* app, int status) {
+    assert(app->menu.running && !app->finished && !app->aborting && !app->abnormal_exit);
+    int selected = app->menu.selected;
     Uint64 until = SDL_GetTicks() + 10000;
     while (app->menu.running && SDL_GetTicks() < until) {
         pump(app);
         render(app);
         SDL_Delay(5);
     }
-    assert(!app->menu.running && app->menu.view == GUI_LOAD_NONE);
-    assert(strstr(app->message, "status 0"));
-    assert(app->has_output);
+    assert(!app->menu.running && app->finished && app->menu.view == GUI_LOAD_NONE);
+    char expected[80];
+    snprintf(expected, sizeof(expected),
+             status ? "Program ended abnormally (status %d)." : "Driver exited with status %d.", status);
+    assert(!strcmp(app->message, expected) && app->abnormal_exit == (status != 0));
+    assert(app->has_output && app->log_top == 4);
+    red_text(app, 3, "Press [ESC] to return to menu");
+    if (status) red_text(app, 1, expected);
     for (int i = 0; i < 3; ++i) pump(app);
-    assert(!app->menu.running); /* No automatic restart. */
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_SPACE);
+    assert(!app->menu.running && app->finished && app->menu.selected == selected);
+    key(app, SDLK_ESCAPE);
+    assert(!app->menu.running && !app->finished && app->menu.view == GUI_LOAD_NONE);
+    assert(!app->menu.quit && !app->message[0] && app->has_output);
+    assert(app->menu.selected == selected && app->menu.fullscreen);
+    render(app);
+    assert(app->log_top == 16);
+}
+static int SDLCALL hang(void* unused) {
+    (void)unused;
+    for (;;) SDL_Delay(100);
 }
 int main(int argc, char** argv) {
+    if (argc > 1 && strstr(argv[1], "hang in join")) {
+        SDL_Thread* thread = SDL_CreateThread(hang, "hung worker", NULL);
+        assert(thread && !snx_write_file(argv[1], "ready", 5));
+        SDL_WaitThread(thread, NULL); /* Never returns. ESC must kill, not request a graceful exit. */
+        return 1;
+    }
     if (argc == 2 && !strcmp(argv[1], "--fullscreen")) {
         puts("prepared game stdout");
         fputs("prepared game stderr\n", stderr);
@@ -53,7 +94,7 @@ int main(int argc, char** argv) {
         free(data);
         puts("driver stdout");
         fputs("driver stderr\n", stderr);
-        return 0;
+        return nx ? 0 : 7; /* Both successful and failed drivers need ESC acknowledgement. */
     }
     App app;
     assert(initialize(&app));
@@ -107,7 +148,7 @@ int main(int argc, char** argv) {
     e.drop.data = input;
     event(&app, &e);
     assert(app.menu.running);
-    finish(&app);
+    finish(&app, 0);
     key(&app, SDLK_DOWN);
     key(&app, SDLK_SPACE);
     assert(app.menu.selected == GUI_LINUX && app.menu.view == GUI_LOAD_OPTIONS);
@@ -118,11 +159,46 @@ int main(int argc, char** argv) {
     event(&app, &e);
     free(quoted);
     assert(app.menu.running);
-    finish(&app);
+    finish(&app, 7);
     size_t size;
     unsigned char* runs = snx_read_file(input, &size);
     assert(runs && size == 1 && runs[0] == '2');
     free(runs);
+
+    char* hung = snx_path_join(temporary, "hang in join.elf");
+    assert(!snx_write_file(hung, "", 0));
+    launch(&app, snx_strdup(hung), false);
+    Uint64 until = SDL_GetTicks() + 5000;
+    bool ready = false;
+    while (SDL_GetTicks() < until) {
+        unsigned char* data = snx_read_file(hung, &size);
+        ready = data && size == 5 && !memcmp(data, "ready", 5);
+        free(data);
+        pump(&app);
+        if (ready) break;
+        SDL_Delay(5);
+    }
+    assert(ready && app.menu.running);
+    render(&app);
+    red_text(&app, 3, "Press [ESC] to abort and return to menu");
+    int selected = app.menu.selected;
+    key(&app, SDLK_DOWN);
+    key(&app, SDLK_RETURN);
+    assert(app.menu.running && app.menu.selected == selected);
+    Uint64 started = SDL_GetTicks();
+    key(&app, SDLK_ESCAPE);
+    assert(app.aborting && SDL_GetTicks() - started < 1000);
+    key(&app, SDLK_ESCAPE); /* Repeated ESC while reaping is harmless. */
+    while (app.menu.running && SDL_GetTicks() - started < 2000) {
+        pump(&app);
+        SDL_Delay(5);
+    }
+    assert(!app.menu.running && !app.finished && !app.aborting && !app.menu.quit);
+    assert(app.menu.view == GUI_LOAD_NONE && app.abnormal_exit);
+    assert(!strcmp(app.message, "Program ended abnormally (force-terminated by ESC)."));
+    render(&app);
+    red_text(&app, app.log_top - 4, app.message);
+    free(hung);
 
     /* Browser: missing/empty directories, filtering, page controls and both
        launch paths. Reopening refreshes the directory rather than caching it. */
@@ -183,7 +259,7 @@ int main(int argc, char** argv) {
     assert(app.browser.page == 0 && app.browser.selected == 1);
     key(&app, SDLK_RETURN); /* native prepared game, not another extraction */
     assert(app.menu.running);
-    finish(&app);
+    finish(&app, 0);
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RETURN);
     key(&app, SDLK_DOWN);
@@ -191,7 +267,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RETURN); /* Linux selection still uses the GNUABI driver */
     assert(app.menu.running);
-    finish(&app);
+    finish(&app, 0);
     key(&app, SDLK_RETURN);
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RETURN);

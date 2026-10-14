@@ -22,6 +22,9 @@ int gui_process_read(GuiProcess* process, char* buffer, size_t size);
 /* True only after the driver AND its descendants have exited. */
 bool gui_process_finished(GuiProcess* process, int* status);
 GuiUsage gui_process_usage(GuiProcess* process);
+/* Force-kill the owned process tree without waiting for exit or pipe EOF.
+   Keep reading and polling finished before reusing the process. */
+void gui_process_terminate(GuiProcess* process);
 /* Closing the window terminates the owned process tree and reaps the driver. */
 void gui_process_destroy(GuiProcess* process);
 #endif

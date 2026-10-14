@@ -14,9 +14,19 @@ int shader_corpus_save(const char* dir, const u8* code, u32 len, u32 max_bytes, 
     char path[1024];
     snprintf(path, sizeof path, "%s/%016llx_%d.snxs", dir, (unsigned long long)key, stage);
     FILE* f = fopen(path, "rb");
-    if (f) { /* already there */
+    if (f) { /* A previous process may have stopped while writing this entry. */
+        CorpusHeader old;
+        int complete = fread(&old, sizeof old, 1, f) == 1 && !memcmp(old.magic, "SNXS", 4) && old.version == 1 &&
+                       old.si_size == sizeof(ShaderInfo) && old.stage == (u32)stage && old.len == len &&
+                       old.max_bytes == max_bytes;
+        if (complete) {
+            if (fseek(f, 0, SEEK_END) != 0)
+                complete = 0;
+            else
+                complete = ftell(f) == (long)(sizeof old + sizeof *si + len);
+        }
         fclose(f);
-        return 1;
+        if (complete) return 1;
     }
     f = fopen(path, "wb");
     if (!f) return 0;
@@ -35,11 +45,13 @@ u8* shader_corpus_load(const char* path, u32* max_bytes, int* stage, ShaderInfo*
         h.si_size == sizeof(ShaderInfo) && h.stage <= ST_CS && h.len <= h.max_bytes && h.max_bytes <= (1u << 20) &&
         fread(si, sizeof *si, 1, f) == 1) {
         code = calloc(1, h.max_bytes);
-        if (fread(code, 1, h.len, f) != h.len) {
+        if (!code || fread(code, 1, h.len, f) != h.len) {
             free(code);
             code = NULL;
         } else {
-            *max_bytes = h.max_bytes;
+            /* The capture already records the complete runtime-discovered program length. Limit offline scans
+               to that length when its BRX table cannot be read from the original constant buffer. */
+            *max_bytes = h.len;
             *stage = (int)h.stage;
         }
     }

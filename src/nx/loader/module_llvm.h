@@ -15,7 +15,7 @@ typedef struct {
     const char* keep_ir; /* when set, each unit's IR is saved there as .ll */
 } SnxLlvmBuild;
 
-/* 0 on success. Available when the recompiler was built with SNX_WITH_LLVM */
+/* 0 on success. LLVM is a required recompiler dependency. */
 int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build);
 /* The libgccjit backend's entry point: reserved, it reports that it isn't implemented */
 int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build);

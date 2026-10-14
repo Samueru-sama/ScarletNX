@@ -11,7 +11,6 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | --- | --- |
 | FFmpeg | LGPL-2.1-or-later |
 | hactool / bundled mbedtls / cJSON / ConvertUTF | ISC / Apache 2.0 / MIT / Unicode license |
-| glslang | BSD, MIT, Apache 2.0 and GPL with the Bison exception |
 | Vulkan-Headers | Apache 2.0 |
 | volk / Vulkan Memory Allocator | MIT |
 | SDL3 | zlib |

@@ -186,10 +186,10 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
                 LOG_LIMIT(4, "gpu: 3D syncpoint action %x without bit 20, not incremented\n", v);
             }
             break;
-        case 0x674: r3d_clear(ch, v); break; /* ClearBuffers */
-        case 0x556: /* SetRenderEnableC: the mode */
+        case 0x674: r3d_clear(ch, v); break;                     /* ClearBuffers */
+        case 0x556:                                              /* SetRenderEnableC: the mode */
         case 0x651: ch->render_off = !render_enabled(ch); break; /* the override */
-        case 0x42B: r3d_draw_texture(ch); break; /* DRAW_TEXTURE: its last word starts it */
+        case 0x42B: r3d_draw_texture(ch); break;                 /* DRAW_TEXTURE: its last word starts it */
         case 0x6C3: query_get(ch, ch->r3d, 0x6C0, v); break;
         case 0x585: { /* END: flush */
             u32 topo = R3(0x586) & 0xFFFF;
@@ -224,7 +224,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             R3(0x35E) = 0;
             break;
         }
-        case 0x485: /* VERTEX_ARRAY_INSTANCE_FIRST: vertices first .. first + count - 1 now, as instance 0 */
+        case 0x485:   /* VERTEX_ARRAY_INSTANCE_FIRST: vertices first .. first + count - 1 now, as instance 0 */
         case 0x486: { /* _SUBSEQUENT: the same range again, as the next instance. Word: first 0-15, count 16-27,
                          topology 28-31 */
             u32 first = v & 0xFFFF, count = (v >> 16) & 0xFFF, topo = (v >> 28) & 0xF, bi = R3(0x50E);

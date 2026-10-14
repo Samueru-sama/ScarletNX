@@ -3,7 +3,7 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* ASTC LDR 2D decoder, written from the Khronos spec.
-   CPU reference for tests. Vulkan uploads use astc.comp. */
+   CPU reference for tests. Vulkan uploads use the assembled SPIR-V shader. */
 #include "gpu/texture/astc.h"
 #include <string.h>
 #include <stdlib.h>

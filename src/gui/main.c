@@ -28,10 +28,11 @@ typedef struct {
     char message[512];
     int cols, rows, scale, log_top;
     Uint64 sampled;
-    bool has_output;
+    bool has_output, finished, aborting, abnormal_exit;
 } App;
 static const char* const items[] = {"Load Switch NSP/XCI/NRO", "Load Linux ARM ELF", "Fullscreen", "Exit"};
-static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255}, muted = {160, 170, 180, 255};
+static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255}, muted = {160, 170, 180, 255},
+                       red = {255, 0, 0, 255};
 
 static SDL_Texture* create_font(SDL_Renderer* renderer) {
     SDL_Surface* surface = SDL_CreateSurface(128, 256, SDL_PIXELFORMAT_RGBA32);
@@ -70,17 +71,17 @@ static void layout(App* app) {
     if (app->scale < 1) app->scale = 1;
     app->cols = SDL_min(width / (8 * app->scale), GUI_MAX_COLS);
     app->rows = SDL_min(height / (16 * app->scale), GUI_MAX_ROWS);
-    app->log_top = app->menu.running ? 4 : app->menu.view != GUI_LOAD_NONE ? 18 : 16;
+    app->log_top = app->menu.running || app->finished ? 4 : app->menu.view != GUI_LOAD_NONE ? 18 : 16;
     gui_browser_resize(&app->browser, (size_t)SDL_max(1, app->rows - 10));
     int log_rows = SDL_max(1, app->rows - app->log_top - 4);
     gui_console_resize(&app->console, SDL_max(1, app->cols - 2), log_rows);
 }
 static void render(App* app) {
     layout(app);
-    SDL_SetRenderDrawColor(app->renderer, 10, 12, 20, 255);
+    SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 255); /* Always OLED black */
     SDL_RenderClear(app->renderer);
     text(app, 1, 0, "ScarletNX", yellow);
-    if (app->menu.view == GUI_LOAD_GAMES && !app->menu.running) {
+    if (app->menu.view == GUI_LOAD_GAMES && !app->menu.running && !app->finished) {
         text(app, 1, 1, "Up/Down: select. Enter/Space: open. Left/Right or PgUp/PgDown: page.", normal);
         text(app, 1, 2, app->games_dir, muted);
         text(app, 1, 3, "Back [ESC]", app->browser.selected == 0 ? yellow : normal);
@@ -96,7 +97,7 @@ static void render(App* app) {
                  gui_browser_pages(&app->browser), app->games.count);
         text(app, 1, app->rows - 5, page, muted);
         text(app, 1, app->rows - 4, app->message, yellow);
-    } else if (!app->menu.running) {
+    } else if (!app->menu.running && !app->finished) {
         text(app, 1, 1, "Arrows: move (Up/Down/Left/Right). Space/Enter: select.", normal);
         text(app, 1, 2,
              app->menu.view == GUI_LOAD_DROP ? "Drop a file now. Ctrl+V: paste a path. ESC: back."
@@ -119,12 +120,16 @@ static void render(App* app) {
                      app->menu.load_selected == GUI_LOAD_DIRECTORY ? yellow : normal);
             }
         }
-        text(app, 1, app->log_top - 4, app->message, yellow);
+        text(app, 1, app->log_top - 4, app->message, app->abnormal_exit ? red : yellow);
         if (app->has_output) text(app, 1, app->log_top - 2, "Last output (no scrollback):", muted);
     } else {
-        text(app, 1, 1, items[app->menu.selected], yellow);
+        text(app, 1, 1, app->finished ? app->message : items[app->menu.selected], app->abnormal_exit ? red : yellow);
         text(app, 1, 2, app->file ? app->file : "", normal);
-        text(app, 1, 3, "Driver output (stdout + stderr). Close window to stop the process tree.", muted);
+        if (app->finished)
+            text(app, 1, 3, "Press [ESC] to return to menu", red);
+        else
+            text(app, 1, 3, app->aborting ? "Aborting process tree..." : "Press [ESC] to abort and return to menu",
+                 red);
     }
     if (app->has_output && app->menu.view != GUI_LOAD_GAMES) {
         SDL_SetTextureColorMod(app->font, normal.r, normal.g, normal.b);
@@ -158,9 +163,18 @@ static void pump(App* app) {
         int status;
         if (gui_process_finished(app->process, &status)) {
             app->menu.running = false;
+            /* Normal exits wait for acknowledgement. ESC already acknowledged
+               an abort, so return straight to the menu after nonblocking reaping. */
+            app->finished = !app->aborting;
+            app->abnormal_exit = app->aborting || status != 0;
             app->menu.view = GUI_LOAD_NONE;
-            snprintf(app->message, sizeof(app->message), "Driver exited with status %d. Select a file to run again.",
-                     status);
+            if (app->aborting)
+                snprintf(app->message, sizeof(app->message), "Program ended abnormally (force-terminated by ESC).");
+            else if (app->abnormal_exit)
+                snprintf(app->message, sizeof(app->message), "Program ended abnormally (status %d).", status);
+            else
+                snprintf(app->message, sizeof(app->message), "Driver exited with status %d.", status);
+            app->aborting = false;
             layout(app);
         }
     }
@@ -212,13 +226,15 @@ static void launch(App* app, char* absolute, bool prepared) {
     app->file = absolute;
     app->menu.view = GUI_LOAD_NONE;
     app->menu.running = true;
+    app->finished = false;
+    app->abnormal_exit = false;
     app->message[0] = 0;
     gui_console_init(&app->console, app->cols - 2, app->rows - 8);
     app->has_output = true;
     layout(app);
 }
 static void drop(App* app, const char* value, bool text_drop) {
-    if (app->menu.view != GUI_LOAD_DROP || app->menu.running) return;
+    if (app->menu.view != GUI_LOAD_DROP || app->menu.running || app->finished) return;
     char* path = gui_drop_path(value, text_drop);
     if (!path) {
         snprintf(app->message, sizeof(app->message), "Drop one local file path, not a list or remote URL.");
@@ -229,6 +245,15 @@ static void drop(App* app, const char* value, bool text_drop) {
     launch(app, absolute, false);
 }
 static void menu_key(App* app, GuiKey key) {
+    if (app->finished) {
+        if (key == GUI_CANCEL) {
+            app->finished = false;
+            app->menu.view = GUI_LOAD_NONE;
+            app->message[0] = 0;
+            layout(app);
+        }
+        return;
+    }
     if (app->menu.view == GUI_LOAD_GAMES) {
         /* Resizes and key events can arrive in the same SDL poll batch. */
         layout(app);
@@ -264,7 +289,16 @@ static void event(App* app, const SDL_Event* e) {
         drop(app, e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
         return; /* SDL3 owns the event's data, unlike SDL2. */
     }
-    if (e->type != SDL_EVENT_KEY_DOWN || app->menu.running) return;
+    if (e->type != SDL_EVENT_KEY_DOWN) return;
+    if (app->menu.running) {
+        if (e->key.key == SDLK_ESCAPE && !app->aborting) {
+            /* Do not ask a hung program to shut down or wait on it in the event
+               handler. Kill its tree now and let pump reap it without blocking. */
+            gui_process_terminate(app->process);
+            app->aborting = true;
+        }
+        return;
+    }
     if (e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) && app->menu.view == GUI_LOAD_DROP && !e->key.repeat) {
         char* clipboard = SDL_GetClipboardText();
         drop(app, clipboard, true);

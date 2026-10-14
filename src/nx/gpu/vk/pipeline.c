@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Shaders and pipelines. A guest shader is translated to GLSL (shader.c), patched for what Vulkan does differently
-   (vk_glsl_post: the alpha test and the depth range, with push constants), compiled to SPIR-V through the on-disk
-   cache and kept as a module. Every stage has a descriptor set of the same bindings, one set per stage
+/* Shaders and pipelines. A guest shader is translated directly to SPIR-V and kept as a module.
+   Every stage has a descriptor set of the same bindings, one set per stage
    (shader_vk_set). Pipelines are made per PipeKey: the shaders, vertex layout, attachment formats and blend state;
    everything else is dynamic state. */
 #include <stdio.h>
@@ -14,14 +13,13 @@
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
 #include "gpu/vk/vk.h"
-#include "gpu/vk/spirv.h"
+#include "gpu/vk/internal_spv.h"
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
 
 /* The caches live in shader_cache/ next to the games, shared by all of them, wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
-char g_vk_spirv_dir[1100];
 static int g_pcache_dirty; /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
 
 VkPipelineLayout g_vk_playout;
@@ -49,34 +47,49 @@ static int sh_cb_read(u32 idx, u32 off, u32* out) {
     if (idx >= 18) return 0;
     u64 a = g_vk_cb[g_sh_bind][idx];
     u32 sz = g_vk_cbsize[g_sh_bind][idx];
-    if (!a || off + 4 > (sz ? sz : 65536)) return 0;
+    u32 limit = sz ? sz : 65536;
+    if (!a || limit < 4 || off > limit - 4) return 0;
     gmem_read(a + off, out, 4);
     return 1;
 }
-
-/* translation records what it reads through rec_read */
 static VkCbReader g_rec_read;
 static VkCbReads* g_rec;
+static int g_rec_failed;
 static int rec_read(u32 idx, u32 off, u32* out) {
     int ok = g_rec_read(idx, off, out);
-    VkCbReads* r = g_rec;
-    if (r->n % 16 == 0) {
-        VkCbRead* g = realloc(r->r, sizeof *g * (r->n + 16));
-        if (!g) return ok;
-        r->r = g;
+    VkCbReads* reads = g_rec;
+    if (reads->n % 16 == 0) {
+        VkCbRead* grown = realloc(reads->r, sizeof *grown * (reads->n + 16));
+        if (!grown) {
+            g_rec_failed = 1;
+            return ok;
+        }
+        reads->r = grown;
     }
-    r->r[r->n++] = (VkCbRead){idx, off, (u32)ok, ok ? *out : 0};
+    reads->r[reads->n++] = (VkCbRead){idx, off, (u32)ok, ok ? *out : 0};
     return ok;
 }
-char* vk_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, VkCbReader read, VkCbReads* reads) {
+u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
+                        VkCbReads* reads) {
     int (*old)(u32, u32, u32*) = g_shader_cb_read;
     g_rec_read = read;
     g_rec = reads;
+    g_rec_failed = 0;
     g_shader_cb_read = rec_read;
-    char* src = shader_to_glsl(code, max_bytes, stage, si);
+    VkShaderStageFlagBits shader_stage = stage == ST_FS   ? VK_SHADER_STAGE_FRAGMENT_BIT
+                                         : stage == ST_CS ? VK_SHADER_STAGE_COMPUTE_BIT
+                                                          : VK_SHADER_STAGE_VERTEX_BIT;
+    u32* result = shader_to_spirv(code, max_bytes, stage, si, words, g_vk_flush_denorm, g_vk_preserve_infnan,
+                                  (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
-    return src;
+    g_rec = NULL;
+    if (g_rec_failed) {
+        free(result);
+        return NULL;
+    }
+    return result;
 }
+
 /* shader_hash with the jump tables of BRX read through read, as the translation reads them: without a reader the
    length stops at the first EXIT and leaves out code only a jump table reaches */
 u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read) {
@@ -124,13 +137,24 @@ void vk_pipeline_init(void) {
             VK_SHADER_STAGE_GEOMETRY_BIT};
     for (int s = 0; s < 3; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_SMAP + 1];
-        for (u32 i = 0; i <= SNX_VKB_SMAP; i++)
-            b[i] = (VkDescriptorSetLayoutBinding){
-                .binding = i, .descriptorType = binding_type(i), .descriptorCount = 1, .stageFlags = vis[s]};
-        VkDescriptorSetLayoutCreateInfo dl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                              .bindingCount = SNX_VKB_SMAP + 1,
-                                              .pBindings = b};
-        VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[s]));
+        u32 count = 0;
+        u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
+        if (image_slots > SNX_VKB_RS - SNX_VKB_IMG) image_slots = SNX_VKB_RS - SNX_VKB_IMG;
+        if (image_slots > g_vk.props.limits.maxDescriptorSetStorageImages)
+            image_slots = g_vk.props.limits.maxDescriptorSetStorageImages;
+        for (u32 i = 0; i <= SNX_VKB_SMAP; i++) {
+            int image = i >= SNX_VKB_IMG && i < SNX_VKB_RS;
+            if (image && (s == 2 || i - SNX_VKB_IMG >= image_slots)) continue;
+            b[count++] = (VkDescriptorSetLayoutBinding){
+                .binding = i,
+                .descriptorType = binding_type(i),
+                .descriptorCount = 1,
+                .stageFlags = image ? (s == 0 ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_FRAGMENT_BIT) : vis[s]};
+        }
+        VkDescriptorSetLayoutCreateInfo dl = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = count, .pBindings = b};
+        if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[s])))
+            fatal("vulkan: cannot create shader descriptor layout");
     }
     {
         VkDescriptorPoolSize n[4];
@@ -157,11 +181,10 @@ void vk_pipeline_init(void) {
                                      .pSetLayouts = sets,
                                      .pushConstantRangeCount = 1,
                                      .pPushConstantRanges = &pc};
-    VK_OK(vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &g_vk_playout));
+    if (!VK_OK(vkCreatePipelineLayout(g_vk.dev, &pl, NULL, &g_vk_playout)))
+        fatal("vulkan: cannot create shader pipeline layout");
     snprintf(g_cache_dir, sizeof g_cache_dir, "%sshader_cache", g_exedir);
     plat_mkdir(g_cache_dir);
-    snprintf(g_vk_spirv_dir, sizeof g_vk_spirv_dir, "%s/spirv", g_cache_dir);
-    plat_mkdir(g_vk_spirv_dir);
     snprintf(g_pcache_path, sizeof g_pcache_path, "%s/vk_pipelines.bin", g_cache_dir);
     /* the temporary name is the process's own: two games running at once would otherwise write the same file */
 #if defined(_WIN32)
@@ -299,21 +322,34 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
             if (corpus == (const char*)-1) corpus = getenv("SNX_SHADER_CORPUS");
             if (corpus) shader_corpus_save(corpus, code, mlen, 0x10000, stage, &s->si, h ^ mix);
         }
-        char* src = vk_translate(code, 0x10000, stage, &s->si, sh_cb_read, &s->cbr);
-        src = vk_glsl_post(src, stage, shader_flushes_denorms(&s->si));
-        if (s->si.unsupported)
-            WARN("shader %016llx: %d untranslated instructions (first: %s)\n", (unsigned long long)h, s->si.unsupported,
-                 s->si.first_unsupported);
         size_t nw = 0;
-        char err[2048] = "";
-        u32* spv = src ? vk_spirv_cached(src, stage, g_vk_spirv_dir, &nw, err, sizeof err) : NULL;
-        if (src && getenv("SNX_DUMP_SHADERS")) {
-            char pth[1200];
-            snprintf(pth, sizeof pth, "%s/vkshader_%016llx_%d.glsl", g_cache_dir, (unsigned long long)h, stage);
-            FILE* f = fopen(pth, "w");
-            if (f) {
-                fputs(src, f);
-                fclose(f);
+        u32* spv = vk_translate_spirv(code, 0x10000, stage, &s->si, &nw, sh_cb_read, &s->cbr);
+        if (spv && !g_vk.feat.shaderFloat64) {
+            for (size_t at = 5; at < nw;) {
+                u32 width = spv[at] >> 16;
+                if (!width || at + width > nw || (spv[at] & 0xffffu) != 17) break;
+                if (width == 2 && spv[at + 1] == 10) {
+                    free(spv);
+                    spv = NULL;
+                    snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported,
+                             "shaderFloat64 is unavailable");
+                    break;
+                }
+                at += width;
+            }
+        }
+        if (spv && s->si.nimg) {
+            u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
+            if (image_slots > g_vk.props.limits.maxDescriptorSetStorageImages)
+                image_slots = g_vk.props.limits.maxDescriptorSetStorageImages;
+            int needs_unformatted = 0;
+            for (int i = 0; i < s->si.nimg; i++) needs_unformatted |= s->si.img[i].kind == 0;
+            if (stage != ST_FS || s->si.nimg > (int)image_slots ||
+                (needs_unformatted && !g_vk.feat.shaderStorageImageWriteWithoutFormat)) {
+                free(spv);
+                spv = NULL;
+                snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported,
+                         "fragment storage image feature or descriptor limit");
             }
         }
         if (spv) {
@@ -323,9 +359,9 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
             free(spv);
         } else {
             s->failed = 1;
-            WARN("vulkan: shader %016llx (stage %d) didn't compile: %s\n", (unsigned long long)h, stage, err);
+            WARN("vulkan: shader %016llx (stage %d) not translated: %s\n", (unsigned long long)h, stage,
+                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
         }
-        free(src);
         s->next = g_shh[h & 1023];
         g_shh[h & 1023] = s;
     }
@@ -341,25 +377,35 @@ VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, 
     return s;
 }
 
-VkShaderModule vk_module(const char* glsl, int stage) {
-    size_t nw = 0;
-    char err[1024] = "";
-    u32* spv = vk_spirv_cached(glsl, stage, g_vk_spirv_dir, &nw, err, sizeof err);
-    if (!spv) {
-        WARN("vulkan: an internal shader didn't compile: %s\n", err);
-        return VK_NULL_HANDLE;
-    }
+VkShaderModule vk_module_spv(const u32* spv, size_t nw) {
     VkShaderModuleCreateInfo mi = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = spv};
     VkShaderModule m = VK_NULL_HANDLE;
     VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m));
-    free(spv);
     return m;
+}
+VkShaderModule vk_module_spv_location(const u32* source, size_t nw, u32 location) {
+    u32* spv = malloc(nw * sizeof *spv);
+    if (!spv) return VK_NULL_HANDLE;
+    memcpy(spv, source, nw * sizeof *spv);
+    int found = 0;
+    for (size_t i = 5; i < nw;) {
+        u32 count = spv[i] >> 16, op = spv[i] & 0xffffu;
+        if (!count || i + count > nw) break;
+        if (op == 71 && count == 4 && spv[i + 2] == 30) {
+            spv[i + 3] = location;
+            found++;
+        }
+        i += count;
+    }
+    VkShaderModule result = found == 1 ? vk_module_spv(spv, nw) : VK_NULL_HANDLE;
+    free(spv);
+    return result;
 }
 /* an empty fragment shader for depth-only passes */
 static VkShaderModule null_fs(void) {
     static VkShaderModule m;
-    if (!m) m = vk_module("#version 450\nvoid main(){}\n", ST_FS);
+    if (!m) m = vk_module_spv(snx_null_fs_spv, sizeof snx_null_fs_spv / sizeof *snx_null_fs_spv);
     return m;
 }
 

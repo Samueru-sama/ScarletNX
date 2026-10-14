@@ -12,10 +12,12 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
 - **Windows:** Win10/11 x64 + Git. Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
-  NASM and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries: without an LLVM for MinGW
-  (`-DSNX_LLVM_CONFIG=`), `scarletnx -r` stages data but builds no game module.
-- **Display:** a Vulkan 1.3 driver. Headless builds omit SDL3 and use Vulkan offscreen.
-- **FFmpeg:** avoid spaces in checkout/cache paths.
+  NASM and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries. Install LLVM development files
+  compatible with MinGW and set `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without them.
+- **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
+  SDL3 remains a required build dependency.
+- **FFmpeg:** required by every NX runtime build. CMake builds the pinned source release.
+  Avoid spaces in checkout/cache paths.
 
 ## Linux / FreeBSD
 
@@ -105,22 +107,25 @@ cmake --preset default -B build && cmake --build build
 
 ### SDL3 troubleshooting
 
-On Linux and FreeBSD, CMake first looks for `SDL3Config.cmake`. If it is missing, CMake downloads and
-builds the same SHA-256-pinned SDL3 used on Windows. The fallback is static, so no separate SDL3 runtime
+On all platforms, CPM first looks for a compatible SDL3 development package (3.4.18 or newer) through
+`SDL3Config.cmake`. If none is found, CPM downloads and builds the SHA-256-pinned SDL3. The fallback is static, so no separate SDL3 runtime
 installation is needed. It still needs your platform's window-system development libraries.
 
 - An old checkout showing `Could not find a package configuration file provided by SDL3` needs either
   the SDL3 **development** package or this updated fallback. Pull the latest checkout and configure again.
 - For SDL3 installed in a custom prefix, pass `-DCMAKE_PREFIX_PATH=/path/to/prefix`, or
   `-DSDL3_DIR=/path/to/prefix/lib/cmake/SDL3` (the directory containing `SDL3Config.cmake`).
-- To force the source build, pass `-DSNX_BUNDLED_SDL3=ON`.
+- To force the source build, pass `-DCPM_DOWNLOAD_SDL3=ON`. This is CPM 0.43.2's per-package override.
+  That version does not support `CPM_FORCE_BUNDLED_SDL3`. No bundled override is forced by ScarletNX.
+  The source build is recommended on Windows to match the MinGW toolchain and keep SDL3 statically linked.
 - If SDL3's configure reports missing X11/Wayland development libraries, install the packages above.
   Do not work around that by disabling both display backends for a windowed build.
 - No sound, and the log says `audio: SDL could not start its audio: No available audio device`: the
   SDL3 fallback was configured without audio development libraries (its configure warns `Unable to find
   the alsa development library`). Install the audio packages above and configure again.
-- A no-window Vulkan build needs no SDL3. Use `-DSNX_BACKEND=headless` as shown below.
-  The runtime flag `-H` alone does not remove the SDL3 build dependency from a window-capable binary.
+- SDL3 is mandatory for the NX runtime, including headless runs. Use `-H` at runtime to skip
+  SDL video initialization and run without a display server. The separate headless backend was removed.
+  For an old build directory, remove the cached backend selection with `-USNX_BACKEND`.
 
 After installing dependencies, rerun:
 
@@ -170,10 +175,13 @@ Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `gam
 matching `Game_code.so/.dll`; no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](DEVELOPMENT.md).
 
 CPM: [SHA-256-pinned sources](../cmake/dependencies.cmake), shared `.cache/cpm` cache, offline configure when populated.
-Override via CMake/env `CPM_SOURCE_CACHE`. SDL3: prefer the system development package on Unix,
-otherwise build the pinned static version. Windows always uses the pinned static build.
+Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
+source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
 ## Build variants
+
+SDL3, Vulkan and FFmpeg are mandatory for the NX runtime, including when running with `-H`.
+There are no renderer or media-decoding disable options. Tools-only, hactool-only and GNUABI-only builds do not need them.
 
 Persistent per-build-dir options (POSIX examples):
 
@@ -182,29 +190,29 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 ```
 
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
-- `-DSNX_H264=OFF`: disable FFmpeg, including NVDEC video and hwopus Opus decoding.
-- `-DSNX_BUNDLED_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
+- `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
 - `-DSNX_GAMES_DIR=/path`: override deployment dir (default: `games/`).
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
 
 ```sh
-# Vulkan without SDL3, a display server, a surface or a swapchain:
-cmake --preset default -B build/headless-vk -DSNX_BACKEND=headless -DSNX_DEPLOY=OFF &&
+# Build without the GUI launcher; SDL3 remains required by the runtime:
+cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF &&
 cmake --build build/headless-vk
-# -> build/headless-vk/scarletnx, Vulkan renderer, always headless
+# Run Vulkan without a display server, a surface or a swapchain:
+./build/headless-vk/scarletnx "Game.xci" -H
 
 cmake --preset windows-cross && cmake --build --preset windows-cross
 # -> build/windows-cross/scarletnx.exe; requires llvm-mingw on PATH
 ```
 
-The normal SDL3 build also supports `-H` at runtime. Omit the flag for windowed startup.
-The no-SDL3 builds cannot switch to a window. [Software Vulkan / lavapipe setup](USAGE.md#headless-vulkan--lavapipe).
+All NX builds use SDL3 and support `-H` at runtime. Omit the flag for windowed startup.
+[Software Vulkan / lavapipe setup](USAGE.md#headless-vulkan--lavapipe).
 
 Offscreen integration test, with an installed Vulkan 1.3 ICD (lavapipe works):
 
 ```sh
-cmake --preset default -B build/headless-vk -DSNX_BACKEND=headless \
+cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF \
   -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON && cmake --build build/headless-vk
 # Set VK_DRIVER_FILES to your lavapipe manifest to force CPU rendering.
 SNX_VK_VALIDATION=1 ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure
@@ -214,7 +222,10 @@ The test uses synthetic pixels, not a game. It checks offscreen submissions, fra
 readback hashes and PPM contents without WSI. Validation requires the Khronos validation layer to be installed.
 `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
-Cross-builds omit host hactool and the recompiler's code generator. Use a native driver for `-x` and `-r`.
+Cross-builds omit host hactool. Use a native driver for `-x`. The recompiler still requires LLVM development
+files for the target. `SNX_LLVM_CONFIG` must run on the build machine and describe that target installation,
+not the build machine's LLVM libraries. Running the `snx-rtlib-gen` build helper also requires a suitable
+`CMAKE_CROSSCOMPILING_EMULATOR`.
 
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
@@ -226,8 +237,8 @@ ctest --test-dir build/tools --output-on-failure
 
 The recompiler generates game code with LLVM (`--backend=llvm`, the default and the recommended backend). LLVM's
 development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one), and
-the configure stops without them (a cross build such as `windows-cross` skips them, and a native Windows build without
-an LLVM for MinGW warns instead: their recompiler can't build modules). Modules are built for the machine that builds them, with its instruction set
+the configure stops without them on every platform, including Windows and cross-builds. There is no recompiler
+build without LLVM. Modules are built for the machine that builds them, with its instruction set
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
 instructions (`--chunk`), with a progress line per compiled unit.
 `--backend=gcc` (libgccjit) is optional, built when libgccjit is found (`libgccjit` on Arch, `libgccjit-14-dev` on

@@ -21,7 +21,7 @@ static PMutex g_gpulock; /* everything below runs on the GPU thread, which takes
 int gmem_read(u64 gva, void* dst, u64 size) {
     u8* d = dst;
     if (g_cs_any) g_renderer->cs_mem_need(gva, size);
-    if (g_gfx_any) g_renderer->gfx_mem_need(gva, size);
+    if (g_gfx_any || g_gfx_img_any) g_renderer->gfx_mem_need(gva, size);
     while (size) {
         u64 cpu = gmmu_translate(gva);
         u64 n = 0x1000 - (gva & 0xFFF);
@@ -95,7 +95,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 u8* gmem_ptr(u64 gva, u64 size) {
     /* host pointer, only if the whole range is contiguous */
     if (g_cs_any) g_renderer->cs_mem_need(gva, size);
-    if (g_gfx_any) g_renderer->gfx_mem_need(gva, size);
+    if (g_gfx_any || g_gfx_img_any) g_renderer->gfx_mem_need(gva, size);
     return gmem_ptr_untracked(gva, size);
 }
 u8* gmem_ptr_untracked(u64 gva, u64 size) {

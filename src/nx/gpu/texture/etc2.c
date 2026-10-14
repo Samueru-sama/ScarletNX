@@ -6,7 +6,7 @@
 #include <string.h>
 
 /* the ETC1 intensity modifiers, per table codeword, for pixel indices 0 to 3 */
-static const int etc1_mod[8][4] = {{2, 8, -2, -8},     {5, 17, -5, -17},   {9, 29, -9, -29},   {13, 42, -13, -42},
+static const int etc1_mod[8][4] = {{2, 8, -2, -8},     {5, 17, -5, -17},   {9, 29, -9, -29},     {13, 42, -13, -42},
                                    {18, 60, -18, -60}, {24, 80, -24, -80}, {33, 106, -33, -106}, {47, 183, -47, -183}};
 /* the T and H modes' distances */
 static const int etc2_dist[8] = {3, 6, 11, 16, 23, 32, 41, 64};
@@ -81,7 +81,8 @@ static void etc2_rgb_block(u64 b, int punch, u8 out[16][4]) {
             u32 b1 = bits(b, 51, 51) << 3 | bits(b, 49, 47);
             u32 r2 = bits(b, 46, 43), g2 = bits(b, 42, 39), b2 = bits(b, 38, 35);
             /* the distance index's low bit is which base color is the larger */
-            u32 da = bits(b, 34, 34) << 2 | bits(b, 32, 32) << 1 | ((r1 << 8 | g1 << 4 | b1) >= (r2 << 8 | g2 << 4 | b2));
+            u32 da =
+                bits(b, 34, 34) << 2 | bits(b, 32, 32) << 1 | ((r1 << 8 | g1 << 4 | b1) >= (r2 << 8 | g2 << 4 | b2));
             int d = etc2_dist[da];
             int c[2][3] = {{ext4(r1), ext4(g1), ext4(b1)}, {ext4(r2), ext4(g2), ext4(b2)}};
             for (int i = 0; i < 16; i++) {

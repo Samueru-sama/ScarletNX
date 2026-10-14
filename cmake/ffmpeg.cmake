@@ -14,15 +14,14 @@ set(snx_ffmpeg_prefix "${CMAKE_BINARY_DIR}/ffmpeg")
 # FFmpeg's configure stops on a source path with a space in it, which would only show at build time
 if(snx_ffmpeg_src MATCHES "[ \t]")
     message(FATAL_ERROR "FFmpeg can't be built from a path with spaces in it (${snx_ffmpeg_src}). Move the checkout "
-                        "to a path without spaces, set CPM_SOURCE_CACHE to one, or configure with -DSNX_H264=OFF.")
+                        "to a path without spaces or set CPM_SOURCE_CACHE to one. FFmpeg is required by the NX runtime.")
 endif()
 # sh before bash: on Windows a bash.exe in System32 is WSL's launcher, and w64devkit's sh is the one to use
 find_program(SNX_FFMPEG_SH NAMES sh bash)
 find_program(SNX_FFMPEG_MAKE NAMES gmake make)
 if(NOT SNX_FFMPEG_SH OR NOT SNX_FFMPEG_MAKE)
     message(FATAL_ERROR "Building FFmpeg needs a POSIX shell (sh) and GNU make (gmake on the BSDs) on the PATH. On "
-                        "Windows, scripts\\bootstrap.ps1 installs them with w64devkit. Or configure with "
-                        "-DSNX_H264=OFF, and the game's videos stay black.")
+                        "Windows, scripts\\bootstrap.ps1 installs them with w64devkit. FFmpeg is required by the NX runtime.")
 endif()
 
 set(snx_ffmpeg_args
@@ -70,8 +69,8 @@ if(CMAKE_CROSSCOMPILING)
     # configure builds a few helper programs for the machine doing the build, which needs its own C compiler
     find_program(SNX_HOST_CC NAMES clang cc)
     if(NOT SNX_HOST_CC)
-        message(FATAL_ERROR "Cross-building FFmpeg needs a C compiler for this machine too (clang or cc). Install one, "
-                            "or configure with -DSNX_H264=OFF.")
+        message(FATAL_ERROR "Cross-building FFmpeg needs a C compiler for this machine too (clang or cc). Install one "
+                            "or set SNX_HOST_CC to its path.")
     endif()
     list(APPEND snx_ffmpeg_args --enable-cross-compile --host-cc=${SNX_HOST_CC})
 endif()

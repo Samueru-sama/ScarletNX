@@ -18,7 +18,7 @@ romfs/
 /keys/
 /dumps/
 
-# Made from the game's files: shader corpora (SNX_SHADER_CORPUS), SPIR-V and GLSL dumps, screenshots
+# Made from the game's files: shader corpora (SNX_SHADER_CORPUS), SPIR-V dumps, screenshots
 *.snxs
 *.spv
 *.ppm

@@ -11,6 +11,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <signal.h>
 #include <unistd.h>
 #endif
 static double now(void) {
@@ -84,12 +85,18 @@ int main(int argc, char** argv) {
         free(memory);
         return 0;
     }
-    if (argc > 1 && !strcmp(argv[1], "--linger")) {
+    if (argc > 1 && (!strcmp(argv[1], "--linger") || !strcmp(argv[1], "--orphan"))) {
+#ifndef _WIN32
+        signal(SIGTERM, SIG_IGN);
+#endif
         grandchild(argv[0], "--sleeper", argv[2]);
-        delay(10000);
-        return 0;
+        if (!strcmp(argv[1], "--orphan")) return 0;
+        for (;;) delay(1000);
     }
     if (argc > 1 && !strcmp(argv[1], "--sleeper")) {
+#ifndef _WIN32
+        signal(SIGTERM, SIG_IGN);
+#endif
         puts("ready");
         delay(1000);
         assert(!snx_write_file(argv[2], "escaped", 7));
@@ -134,25 +141,43 @@ int main(int argc, char** argv) {
     assert(status == 7 && found == 15 && bytes > 409600 && saw_cpu && saw_memory);
     char* temporary = snx_temp_dir(NULL);
     char* marker = snx_path_join(temporary, "must not exist");
-    const char* linger[] = {self, "--linger", marker, NULL};
-    assert(gui_process_start(process, linger, error, sizeof(error)));
-    end = now() + 5;
-    bool ready = false;
-    while (now() < end) {
-        int n = gui_process_read(process, buffer, sizeof(buffer) - 1);
-        if (n > 0) {
-            buffer[n] = 0;
-            if (strstr(buffer, "ready")) {
-                ready = true;
-                break;
+    /* Force termination covers a hung parent, an exited parent with surviving
+       descendants, and the existing close-window cleanup path. Reuse must work. */
+    for (int pass = 0; pass < 3; ++pass) {
+        const char* linger[] = {self, pass == 1 ? "--orphan" : "--linger", marker, NULL};
+        assert(gui_process_start(process, linger, error, sizeof(error)));
+        end = now() + 5;
+        bool ready = false;
+        while (now() < end) {
+            int n = gui_process_read(process, buffer, sizeof(buffer) - 1);
+            if (n > 0) {
+                buffer[n] = 0;
+                if (strstr(buffer, "ready")) {
+                    ready = true;
+                    break;
+                }
             }
+            delay(10);
         }
-        delay(10);
+        assert(ready && !gui_process_finished(process, &status));
+        if (pass == 2) {
+            gui_process_destroy(process);
+        } else {
+            double started = now();
+            gui_process_terminate(process);
+            assert(now() - started < 1);
+            gui_process_terminate(process); /* Idempotent while awaiting exit. */
+            bool finished = false;
+            while (now() - started < 2) {
+                gui_process_read(process, buffer, sizeof(buffer));
+                if ((finished = gui_process_finished(process, &status))) break;
+                delay(5);
+            }
+            assert(finished);
+        }
+        delay(1200);
+        assert(!snx_is_file(marker));
     }
-    assert(ready);
-    gui_process_destroy(process);
-    delay(1200);
-    assert(!snx_is_file(marker));
     snx_remove_tree(temporary);
     free(marker);
     free(temporary);

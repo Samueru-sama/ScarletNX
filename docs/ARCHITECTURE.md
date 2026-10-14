@@ -42,7 +42,7 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
   table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000.
-- `toolchain.c`: the runtime build for deployment, shader prebuild.
+- `toolchain.c`: the runtime build for deployment.
 - Code generators (`--backend`, `src/common/cpu/recompiler/backend.h`): `llvm` (the default and the recommended
   one; `src/common/cpu/recompiler/llvm/`, LLVM a required dependency) builds LLVM IR with the LLVM-C API: `ir_a64.c`, `ir_simd.c` and `ir_fp.c` emit each
   `a64_templates.inc` case as the IR of the C it holds, `ir_codegen.c` the functions of `codegen.c`, and
@@ -125,7 +125,7 @@ SVC -> `hle/svc/svc.c`; `svcSendSyncRequest` -> `hle/kernel/ipc.c` -> session's 
 2. Copy entries to GPU queue; `nv.submit_lk` orders fence promises and cross-channel submits.
    Promised GPU-channel fences wait on the GPU thread; host1x/CPU/unpromised fences wait on the submitter.
 3. GPU-thread dispatch: 3D, MME, compute, 2D, DMA, inline-to-memory. Draws -> `g_renderer` (`gpu/renderer.h`).
-   Shaders: Maxwell SASS -> GLSL -> SPIR-V (`gpu/shader/`, glslang).
+   Shaders: Maxwell SASS -> SPIR-V (`gpu/shader/`).
 4. Vk `stream_incr` lands compute writes in guest memory before incrementing the syncpoint.
 5. vi waits on unpromised fences, then queues present after preceding submits. GPU thread checks remaining fences;
    `present_buffer` uses matching RT + vi crop, or converts guest memory.

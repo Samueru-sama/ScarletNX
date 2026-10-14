@@ -49,11 +49,10 @@ python3 tools/disasm.py work/Game cf34240 cf343c0
 ```sh
 SNX_SHADER_CORPUS=corpus games/Game
 build/snx-shaderc corpus --validate --out translated
-build/snx-shaderc --nvn DIR --cache games/shader_cache/spirv --verbose
 ```
 
-`--validate`: needs `spirv-val`; `--out`: GLSL/SPIR-V for build comparisons.
-`--nvn`: prebuild shipped shaders (automatic in `-r`). PowerShell: `$env:SNX_SHADER_CORPUS='corpus'`.
+`--validate` needs `spirv-val`. `--out` writes SPIR-V modules for build comparisons.
+PowerShell: `$env:SNX_SHADER_CORPUS='corpus'`.
 
 ## Upstream / provenance
 
