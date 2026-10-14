@@ -242,6 +242,10 @@ int main(void) {
     CHECK(agb_read32(&board, 0x06010000) == 0x55667788); /* the last VRAM 32 KiB mirrors the one above */
     agb_write8(&board, 0x05000003, 0x7E);                /* palette byte writes land in both halves */
     CHECK(agb_read16(&board, 0x05000002) == 0x7E7E);
+    agb_write8(&board, 0x07000003, 0x7E); /* OAM is halfword wide: byte writes are dropped */
+    CHECK(agb_read16(&board, 0x07000002) == 0);
+    agb_write8(&board, 0x06018000, 0xAA); /* so are byte writes to the OBJ half of VRAM */
+    CHECK(agb_read32(&board, 0x06010000) == 0x55667788);
     agb_write16(&board, 0x0E000000, 0x1234); /* the save memory only keeps the low byte */
     CHECK(agb_read16(&board, 0x0E000000) == 0x3434);
 

@@ -25,13 +25,24 @@ The board is under construction, piece by piece:
 | Cartridge and ROM header | done: header parsing and validation |
 | Memory map | done: every region and mirror, the I/O window as plain storage |
 | HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
-| PPU and display | not yet |
+| PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending, drawn a
+| scanline at a time |
 | APU (audio) | not yet |
 | Keypad (HID) | not yet |
 | CPU, DMA, timers, interrupts | not yet |
 
 This build recognizes a ROM, reports its header and runs the BIOS as HLE. No
 code runs on the board yet.
+
+## The display device
+
+`ppu/ppu.c` owns the LCD controller's registers at 0x04000000 and its timing,
+308 dots of four cycles a scanline and 228 scanlines a frame, with the blanking
+flags in DISPSTAT and the vblank, hblank and vcount interrupts. Each visible
+line is drawn into the 240 by 160 RGBA frame the host presents: the text,
+affine and bitmap background layers, the sprites with their affine forms, the
+windows, and the colour special effects (alpha blending and brightness). Mosaic
+is the one display feature still missing.
 
 ## The memory map
 

@@ -6,7 +6,7 @@
 #   scarletnx-agb-runtime   the board: cartridge, memory map, devices
 #   scarletnx-agb-run       the system type's executable, named scarletnx-agb
 
-add_library(scarletnx-agb STATIC board/board.c board/memory.c cartridge/cartridge.c bios/bios.c)
+add_library(scarletnx-agb STATIC board/board.c board/memory.c cartridge/cartridge.c bios/bios.c ppu/ppu.c)
 set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_include_directories(scarletnx-agb PUBLIC "${PROJECT_SOURCE_DIR}/src/agb" "${PROJECT_SOURCE_DIR}/src/common")
 target_link_libraries(scarletnx-agb PUBLIC scarletnx-common)
@@ -28,6 +28,11 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-agb-bios PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-agb-bios PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_bios COMMAND snx-test-agb-bios)
+    add_executable(snx-test-agb-ppu "${PROJECT_SOURCE_DIR}/tests/agb_ppu.c")
+    target_link_libraries(snx-test-agb-ppu PRIVATE scarletnx-agb)
+    target_compile_options(snx-test-agb-ppu PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(snx-test-agb-ppu PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    add_test(NAME agb_ppu COMMAND snx-test-agb-ppu)
 endif()
 
 include(GNUInstallDirs)

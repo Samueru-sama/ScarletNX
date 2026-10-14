@@ -19,17 +19,19 @@ static void store32(uint8_t* p, uint32_t value) {
     p[3] = (uint8_t)(value >> 24);
 }
 
+static uint32_t vram_offset(uint32_t address) {
+    uint32_t offset = address & 0x1FFFF; /* the console wraps VRAM in 128 KiB windows */
+    /* the window's last 32 KiB mirror the 32 KiB above the bitmap region */
+    if (offset >= AGB_VRAM_SIZE) offset -= 0x8000;
+    return offset;
+}
+
 static uint8_t* region8(AgbBoard* board, uint32_t address) {
     switch (address >> 24) {
         case 0x02: return board->memory.ewram + (address & (AGB_EWRAM_SIZE - 1));
         case 0x03: return board->memory.iwram + (address & (AGB_IWRAM_SIZE - 1));
         case 0x05: return board->memory.palette + (address & (AGB_PALETTE_SIZE - 1));
-        case 0x06: {
-            uint32_t offset = address & 0x1FFFF; /* the console wraps VRAM in 128 KiB windows */
-            /* the window's last 32 KiB mirror the 32 KiB above the bitmap region */
-            if (offset >= AGB_VRAM_SIZE) offset -= 0x8000;
-            return board->memory.vram + offset;
-        }
+        case 0x06: return board->memory.vram + vram_offset(address);
         case 0x07: return board->memory.oam + (address & (AGB_OAM_SIZE - 1));
         case 0x0E:
         case 0x0F: return board->memory.sram + (address & (AGB_SRAM_SIZE - 1));
@@ -102,8 +104,14 @@ void agb_write8(AgbBoard* board, uint32_t address, uint8_t value) {
     switch (address >> 24) {
         /* byte writes reach these halfword wide buses as the byte duplicated in both halves */
         case 0x05:
-        case 0x06:
-        case 0x07: store16(p - (address & 1), (uint16_t)(value * 0x0101u)); break;
+        case 0x06: {
+            /* the OBJ half of VRAM has no byte writes at all, and OAM is halfword wide only */
+            uint32_t object_base = (board->ppu.dispcnt & 7) >= 3 ? 0x14000 : 0x10000;
+            if (address >> 24 == 0x06 && vram_offset(address) >= object_base) return;
+            store16(p - (address & 1), (uint16_t)(value * 0x0101u));
+            break;
+        }
+        case 0x07: return;
         default: *p = value; break;
     }
 }
