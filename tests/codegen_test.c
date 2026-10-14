@@ -181,7 +181,15 @@ static void emit_semantic_fixture(FILE* out) {
         0x1E23C020UL, /* FCVT H0,S1: FZ flushes a denormal operand before rounding, and sets IDC. */
         0x1F420C20UL, /* FMADD D0,D1,D2,D3: inf*0 gives the default NaN. */
         0x1F620C20UL, /* FNMADD D0,D1,D2,D3: of two quiet NaNs, the first (negated). */
-        0x4E62CC20UL  /* FMLA V0.2D,V1.2D,V2.2D: the same, per lane. */
+        0x4E62CC20UL, /* FMLA V0.2D,V1.2D,V2.2D: the same, per lane. */
+        0x7EE1D820UL, /* FRSQRTE D0,D1: FZ flushes a denormal operand, so +inf and IDC. */
+        0x4EA1D820UL, /* FRECPE V0.4S,V1.4S: the same per lane, with the sign. */
+        0x4EA1D820UL, /* FRECPE V0.4S,V1.4S without FZ: denormals get an estimate. */
+        0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under FZ: from 2^126 up the estimate is a zero, UFC. */
+        0x4EA1D820UL, /* FRECPE V0.4S,V1.4S under RP: a tiny operand overflows to +inf or -max, OFC and IXC. */
+        0x4EE1D820UL, /* FRECPE V0.2D,V1.2D under RZ: to the largest finite. */
+        0x5EE1D820UL, /* FRECPE D0,D1 under FZ: from 2^1022 up, a zero. */
+        0x4EA1D820UL  /* FRECPE V0.4S,V1.4S under RM: -inf or +max. */
     };
     size_t i;
     char function[32];
@@ -237,6 +245,18 @@ static void emit_semantic_fixture(FILE* out) {
           out);
     fputs(" case 34:c.v[0].d[0]=c.v[0].d[1]=0x3FF0000000000000ULL;c.v[1].d[0]=0x7FF0000000000000ULL;\n", out);
     fputs(" c.v[1].d[1]=0x7FF8000000000001ULL;c.v[2].d[1]=0xFFF8000000000002ULL;break;\n", out);
+    /* FRECPE and FRSQRTE: FZ and the FPCR mode */
+    fputs(" case 35:c.fpcr=0x1000000;c.v[1].d[0]=1;break;\n", out);
+    fputs(" case 36:case 37:c.fpcr=i==36?0x1000000:0;c.v[1].s[0]=0x00400000u;c.v[1].s[1]=0x80400000u;\n", out);
+    fputs(" c.v[1].s[2]=0x007FFFFFu;c.v[1].s[3]=0x3F800000u;break;\n", out);
+    fputs(" case 38:c.fpcr=0x1000000;c.v[1].s[0]=0x7E800000u;c.v[1].s[1]=0xFF000000u;c.v[1].s[2]=0x7E7FFFFFu;\n", out);
+    fputs(" c.v[1].s[3]=0x3F800000u;break;case 39:c.fpcr=0x400000;c.v[1].s[0]=1;c.v[1].s[1]=0x80000001u;\n", out);
+    fputs(" c.v[1].s[2]=0x001FFFFFu;c.v[1].s[3]=0x00200000u;break;case 40:c.fpcr=0xC00000;c.v[1].d[0]=1;\n", out);
+    fputs(
+        " c.v[1].d[1]=0x7FD0000000000000ULL;break;case 41:c.fpcr=0x1000000;c.v[1].d[0]=0xFFD0000000000000ULL;break;\n",
+        out);
+    fputs(" case 42:c.fpcr=0x800000;c.v[1].s[0]=1;c.v[1].s[1]=0x80000001u;c.v[1].s[2]=0x7E800000u;\n", out);
+    fputs(" c.v[1].s[3]=0x3F800000u;break;\n", out);
     fputs(" default:break;}\n", out);
     fputs(" pc=mode?snx_step(&c,words[i],0x1000):steps[i](&c);ok=pc==(i==16?0xFFC:i==17?0x1000:0x1004);\n switch(i){\n",
           out);
@@ -277,6 +297,19 @@ static void emit_semantic_fixture(FILE* out) {
     fputs(" case 32:ok&=c.v[0].d[0]==0x7FF8000000000000ULL&&!c.v[0].d[1];break;\n", out);
     fputs(" case 33:ok&=c.v[0].d[0]==0xFFF8000000000000ULL&&!c.v[0].d[1];break;\n", out);
     fputs(" case 34:ok&=c.v[0].d[0]==0x7FF8000000000000ULL&&c.v[0].d[1]==0x7FF8000000000001ULL;break;\n", out);
+    fputs(" case 35:ok&=c.v[0].d[0]==0x7FF0000000000000ULL&&!c.v[0].d[1]&&(c.fpsr&0x80);break;\n", out);
+    fputs(" case 36:ok&=c.v[0].d[0]==0xFF8000007F800000ULL&&c.v[0].d[1]==0x3F7F80007F800000ULL&&(c.fpsr&0x80);break;\n",
+          out);
+    fputs(" case 37:ok&=c.v[0].d[0]==0xFEFF80007EFF8000ULL&&c.v[0].d[1]==0x3F7F80007E800000ULL&&!c.fpsr;break;\n", out);
+    fputs(" case 38:ok&=c.v[0].d[0]==0x8000000000000000ULL&&c.v[0].d[1]==0x3F7F800000800000ULL&&c.fpsr==8;break;\n",
+          out);
+    fputs(" case 39:ok&=c.v[0].d[0]==0xFF7FFFFF7F800000ULL&&c.v[0].d[1]==0x7F7F80007F800000ULL&&c.fpsr==0x14;break;\n",
+          out);
+    fputs(" case 40:ok&=c.v[0].d[0]==0x7FEFFFFFFFFFFFFFULL&&c.v[0].d[1]==0x000FF80000000000ULL&&c.fpsr==0x14;break;\n",
+          out);
+    fputs(" case 41:ok&=c.v[0].d[0]==0x8000000000000000ULL&&!c.v[0].d[1]&&c.fpsr==8;break;\n", out);
+    fputs(" case 42:ok&=c.v[0].d[0]==0xFF8000007F7FFFFFULL&&c.v[0].d[1]==0x3F7F8000007FC000ULL&&c.fpsr==0x14;break;\n",
+          out);
     fputs(" default:break;}\n", out);
     fputs(" if(!ok||(i!=17&&traps)){fprintf(stderr,\"semantic case %u mode %u failed\\n\",i,mode);return 1;}}\n", out);
     fputs(" puts(\"Static/interpreted scalar, FP, SIMD, memory and trap semantics passed\");return 0;}\n", out);
