@@ -709,12 +709,17 @@ static int replay_query_scope_draw(const NvnDrawCommand* draw, const ReplayState
     return 1;
 }
 
+static int replay_dispatch_scope_inputs_known(const ReplayState* state) {
+    const NvnProgramSnapshot* program = &state->program[5].snapshot;
+    return (state->program_bound & (1u << 5)) && program->generation && program->refs_known &&
+           program->shader_count == 1 && !state->image_bound[5] &&
+           state->storage_bound[5] == state->storage_known[5];
+}
+
 static int replay_query_scope_dispatch(const ReplayState* state, ReplayQueue* queue) {
     const NvnProgramSnapshot* program = &state->program[5].snapshot;
     u16 writes = 0;
-    if (!(state->program_bound & (1u << 5)) || !program->generation || !program->refs_known ||
-        program->shader_count != 1 || state->image_bound[5] ||
-        state->storage_bound[5] != state->storage_known[5] ||
+    if (!replay_dispatch_scope_inputs_known(state) ||
         !nvn_program_compute_write_slots(program->refs[0].code_candidate,
                                          program->refs[0].control_candidate, &writes) ||
         (writes & ~state->storage_known[5])) return 0;
@@ -1873,6 +1878,7 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
                                            .program = state->program[5],
                                            .uniform_bound = state->uniform_bound[5],
                                            .storage_bound = state->storage_known[5]};
+            dispatch.scope_inputs_known = replay_dispatch_scope_inputs_known(state);
             if (query_dispatch_scoped) {
                 dispatch.write_slots_known = nvn_program_compute_write_slots(
                     dispatch.program.snapshot.refs[0].code_candidate,

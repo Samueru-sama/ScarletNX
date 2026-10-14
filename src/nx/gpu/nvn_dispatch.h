@@ -32,7 +32,7 @@ typedef struct {
     NvnSamplerDescriptorSnapshot texture0_sampler;
     u8 texture0_descriptor_valid, texture0_sampler_valid;
     /* Certified compute storage outputs, also used to scope pre-submit color probes. */
-    u8 control_known, write_slots_known;
+    u8 control_known, write_slots_known, scope_inputs_known;
     u16 write_slots;
 } NvnDispatchCommand;
 

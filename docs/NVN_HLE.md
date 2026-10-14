@@ -1575,10 +1575,17 @@ draws now invalidate only an exact attachment face and mip; aliases and
 uncertain views still lose whole-image coverage. The attachment-view cache also
 holds the 24 views needed by a six-face, four-mip cube. In TotK this carries the
 64×64 → 32×32 → 16×16 → 8×8 cube chain through all six faces of each level.
-A later unknown write marker blocks reuse of that completed cube in another
-batch; this remains a resource-provenance task rather than a missing cubemap
-view. The face probe synchronously reads back each candidate and is diagnostic
-until its cost and pixel parity are measured.
+A later compute dispatch initially blocked reuse of that completed cube. Its
+write-set analysis had omitted the shared-memory size in the validated NVN
+control record, causing translation to reject a shader that writes only one
+known storage slot. The analyzer now supplies the recorded workgroup and shared
+memory sizes. Skipped dispatches with certified write slots retire only those
+physical ranges, and GPU-thread replay can complete an analysis still queued at
+record time. The cubemap pending trace no longer recurs at that submission in
+the sampled TotK run. A later five-mip cube still loses coverage before a
+subsequent sample; that invalidation and cubemap pixel parity remain open. The
+face probe synchronously reads back each candidate and remains diagnostic
+until its cost is measured.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

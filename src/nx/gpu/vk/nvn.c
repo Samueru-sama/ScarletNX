@@ -2276,6 +2276,36 @@ int vk_nvn_dispatch(const NvnDispatchCommand* command) {
     if (retired)
         LOG_LIMIT(12, "nvn-shadow-dispatch-retire: code=%llx buffers=%u\n",
                   (unsigned long long)command->program.snapshot.refs[0].code_candidate, retired);
+    u16 write_slots = command->write_slots;
+    int write_slots_known = command->write_slots_known;
+    if (!write_slots_known && command->scope_inputs_known)
+        write_slots_known = nvn_program_compute_write_slots_now(
+            command->program.snapshot.refs[0].code_candidate,
+            command->program.snapshot.refs[0].control_candidate, &write_slots);
+    if (write_slots_known && !(write_slots & ~command->storage_bound)) {
+        /* Translation proved the complete compute write set. A failed direct dispatch need only
+           retire those physical ranges; read-only inputs and unrelated shadow images survive. */
+        for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+            if (!(write_slots & (1u << slot))) continue;
+            const NvnBufferRange* range = &command->storage[slot];
+            if (!range->address || !range->size || range->size > (16u << 20) ||
+                range->address > UINT64_MAX - range->size ||
+                !gmem_ptr_untracked(range->address, range->size)) return 0;
+        }
+        for (u32 slot = 0; slot < NVN_DRAW_STORAGE_SLOTS; slot++) {
+            if (!(write_slots & (1u << slot))) continue;
+            const NvnBufferRange* range = &command->storage[slot];
+            NvnMemoryWriteCommand write = {.sequence = command->sequence,
+                                           .prior_unmodeled_write = command->prior_unmodeled_write,
+                                           .address = range->address, .size = range->size};
+            if (!vk_nvn_memory_write(&write)) return 0;
+        }
+        if (!write_slots)
+            mark_modeled_unknown(command->sequence, command->prior_unmodeled_write);
+        LOG_LIMIT(12, "nvn-shadow-dispatch-scoped: seq=%llu slots=%x\n",
+                  (unsigned long long)command->sequence, write_slots);
+        return 2;
+    }
     return 0;
 }
 
@@ -2960,7 +2990,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         /* A first draw may replace the complete face even when its guest backing is unknown.
            If it leaves any RGB component untouched, this face stays untrusted. */
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color_attachments[0].clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
+        color_attachments[0].clearValue.color = (VkClearColorValue){{0.5f, 0.5f, 0.5f, 1.0f}};
     }
     u32 depth_width = depth && depth_mip < 16 ? depth_target->width >> depth_mip : 0;
     u32 depth_height = depth && depth_mip < 16 ? depth_target->height >> depth_mip : 0;
@@ -3083,7 +3113,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             for (u64 i = 0; i < bytes; i += sizeof(u32)) {
                 u32 packed;
                 memcpy(&packed, pixels + i, sizeof packed);
-                u32 changed = packed ^ 0x780003c0u;
+                u32 changed = packed ^ 0x701c0380u;
                 if (!(changed & 0x7ffu) || !(changed & 0x3ff800u) || !(changed & 0xffc00000u)) {
                     cube_probe_full = 0;
                     break;

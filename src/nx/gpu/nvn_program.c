@@ -40,8 +40,9 @@ typedef struct {
     u64 address;
     u64 hash, code_hash;
     u32 size;
+    u32 local[3], shared_size;
     u8 cbuf1[256];
-    u8 has_cbuf1;
+    u8 has_cbuf1, has_control;
 } ComputeWritesJob;
 #define COMPUTE_WRITES_SLOTS 4096
 static ComputeWrites compute_writes[COMPUTE_WRITES_SLOTS];
@@ -105,6 +106,11 @@ static int compute_writes_inputs(u64 address, u64 control, ComputeWritesJob* job
             memcpy(&descriptor_size, descriptor + 0x20, 4);
             memcpy(&offset, descriptor + 0x700, 4);
         }
+        if (descriptor_magic == 0x98761234 && descriptor_size == 0x880) {
+            memcpy(job->local, descriptor + 0x748, sizeof job->local);
+            memcpy(&job->shared_size, descriptor + 0x754, sizeof job->shared_size);
+            job->has_control = 1;
+        }
         if (descriptor_magic == 0x98761234 && descriptor_size == 0x880 &&
             offset >= 0x100 && offset <= 0x10000 && address <= UINT64_MAX - offset - 256) {
             const u8* cbuf1 = gmem_ptr_untracked(address + offset, 256);
@@ -129,6 +135,7 @@ static void analyze_compute_writes(void* ptr) {
     u64 hash = 0, code_hash = 0;
     int certified = 0, repeatable = 0;
     int bounded = 0, mapped = 0, has_brx = 0, branch = -1, unsupported = -1, images = -1, buffers = -1;
+    char unsupported_reason[96] = {0};
     const char* branch_name = "";
     if (header[0] == 0x12345679 && size >= 0x80 && size <= NVN_SHADER_CODE_MAX &&
         address <= UINT64_MAX - 0x100 - size) {
@@ -163,10 +170,17 @@ static void analyze_compute_writes(void* ptr) {
             if (mapped && !bounded) repeatable = 1;
             if (bounded) {
                 ShaderInfo info = {.cs_local = {1, 1, 1}};
+                if (job->has_control && job->local[0] && job->local[1] && job->local[2] &&
+                    (u64)job->local[0] * job->local[1] * job->local[2] <= 1024 &&
+                    job->shared_size <= (64u << 10)) {
+                    for (u32 axis = 0; axis < 3; axis++) info.cs_local[axis] = job->local[axis];
+                    info.shared_size = job->shared_size;
+                }
                 size_t words = 0;
                 u32* spirv = shader_to_spirv(code, size + 80, ST_CS, &info, &words, 1, 1, 1);
                 if (spirv) repeatable = 1;
                 unsupported = info.unsupported;
+                memcpy(unsupported_reason, info.first_unsupported, sizeof info.first_unsupported);
                 images = info.nimg;
                 buffers = info.ngbuf;
                 if (spirv && !info.unsupported && !info.nimg && info.ngbuf <= 16) {
@@ -190,9 +204,10 @@ static void analyze_compute_writes(void* ptr) {
     }
     const char* trace = getenv("SNX_NVN_DISPATCH_TRACE");
     if (trace && !strcmp(trace, "1"))
-        LOG("nvn-compute-analysis: code=%llx magic=%08x size=%x length=%x mapped=%d bounded=%d branch=%d/%s unsupported=%d images=%d buffers=%d writes=%04x certified=%d\n",
-            (unsigned long long)address, header[0], size, length, mapped, bounded, branch, branch_name, unsupported, images, buffers,
-            writes, certified);
+        LOG("nvn-compute-analysis: code=%llx magic=%08x size=%x length=%x mapped=%d bounded=%d branch=%d/%s cbuf1=%d control=%d shared=%u brx=%d unsupported=%d/%s images=%d buffers=%d writes=%04x certified=%d\n",
+            (unsigned long long)address, header[0], size, length, mapped, bounded, branch, branch_name,
+            job->has_cbuf1, job->has_control, job->shared_size, has_brx,
+            unsupported, unsupported_reason, images, buffers, writes, certified);
     pm_lock(&compute_writes_lock);
     ComputeWrites* slot = compute_writes_slot(address, 0);
     if (slot && slot->state == 1) {
@@ -247,6 +262,41 @@ int nvn_program_compute_write_slots(u64 address, u64 control, u16* slots) {
             slot && slot->hash == (slot->cb_sensitive ? input.hash : input.code_hash), valid);
     pm_unlock(&compute_writes_lock);
     if (stale) queue_compute_writes(address, control);
+    return valid;
+}
+
+int nvn_program_compute_write_slots_now(u64 address, u64 control, u16* slots) {
+    if (!address || !slots) return 0;
+    ComputeWritesJob* job = malloc(sizeof *job);
+    if (!job) return 0;
+    if (!compute_writes_inputs(address, control, job)) {
+        free(job);
+        return 0;
+    }
+    pm_lock(&compute_writes_lock);
+    ComputeWrites* slot = compute_writes_slot(address, 1);
+    int valid = slot && slot->state == 2 && slot->size == job->size &&
+                slot->hash == (slot->cb_sensitive ? job->hash : job->code_hash);
+    int rejected = slot && slot->state == 3 && slot->size == job->size &&
+                   slot->hash == (slot->cb_sensitive ? job->hash : job->code_hash);
+    if (valid) *slots = slot->writes;
+    if (slot && !valid && !rejected) slot->state = 1;
+    pm_unlock(&compute_writes_lock);
+    if (valid || rejected || !slot) {
+        free(job);
+        return valid;
+    }
+    /* Analyze on the GPU thread before this batch continues. Any older queued job sees
+       the completed cache state and cannot replace this proof with stale code bytes. */
+    analyze_compute_writes(job);
+    ComputeWritesJob current;
+    if (!compute_writes_inputs(address, control, &current)) return 0;
+    pm_lock(&compute_writes_lock);
+    slot = compute_writes_slot(address, 0);
+    valid = slot && slot->state == 2 && slot->size == current.size &&
+            slot->hash == (slot->cb_sensitive ? current.hash : current.code_hash);
+    if (valid) *slots = slot->writes;
+    pm_unlock(&compute_writes_lock);
     return valid;
 }
 

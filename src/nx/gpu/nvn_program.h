@@ -31,5 +31,7 @@ int nvn_program_check(u64 program);
 int nvn_program_snapshot(u64 program, NvnProgramSnapshot* out);
 /* True only for a current compute blob with a fully bounded NVN storage write set. */
 int nvn_program_compute_write_slots(u64 code_address, u64 control_address, u16* slots);
+/* GPU-thread replay can finish a queued proof before retiring a skipped dispatch. */
+int nvn_program_compute_write_slots_now(u64 code_address, u64 control_address, u16* slots);
 void nvn_program_report(void);
 #endif
