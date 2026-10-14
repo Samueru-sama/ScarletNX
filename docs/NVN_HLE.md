@@ -1470,19 +1470,26 @@ multi-attachment pass feeding the 80×45 image cannot sample all of its sources;
 one chain reaches a 192×192 NVN `R16` attachment. Direct NVN rendering now maps
 format `0x06` to Vulkan `R16_UNORM` and accepts it as a color attachment. Its first
 headless readback issued a direct draw and matched the native 192×192 image at all
-36,864 pixels. That image is not certified as fully covered, and another TIC views
-the same backing as 256×256. The different view dimensions and earlier incomplete
-images remain prerequisites for this chain; the 80×45 pass is not yet certified.
+36,864 pixels. That image is not certified as fully covered; a later TIC in one
+boot used the same address with 256×256 dimensions. The different view
+dimensions and earlier incomplete images remain prerequisites for this chain;
+the 80×45 pass is not yet certified.
 
-The same-address R16 alias has distinct physical layouts: the observed 192×192
-NVN target reports a 384-byte row stride and 73,728-byte storage size, while
-the later 256×256 TIC is block-linear. The shadow image cache now includes the
-NVN stride and storage class in its identity, and an exact-shape TIC sample
-requires a matching pitch-linear or block-linear layout before it can reuse a
-shadow image. This prevents a false semantic match, but it does not yet merge
-the partial R16 target into the differently tiled TIC backing. That requires
-tracked per-byte ownership and a layout conversion, including unchanged bytes
-from the existing backing.
+The observed 192×192 `R16` NVN target reports a 384-byte row stride and
+73,728-byte storage size. A later 256×256 TIC at the same address in one boot
+described block-linear `RGBA16F` data; the address and format combination does
+not establish whether this is reinterpretation or pool reuse. The shadow image
+cache now includes NVN stride and storage class in its identity, and an
+exact-shape TIC sample requires a matching pitch-linear or block-linear layout
+before reusing a shadow image. The first 256×256 `RGBA16F` draw can be
+certified by the diagnostic sentinel readback: all 262,144 half-float
+components changed from an unusual negative clear value, and all 65,536
+pixels matched the emulated target. This extends the RGBA8 component proof to
+RGBA16F. The later TIC still cannot consume that image because a global
+unmodeled-write marker has advanced beyond its draw sequence. Logged writes
+around the marker include draws to other targets and updates to disjoint
+buffer addresses. Per-resource write ownership, with unknown operations
+remaining conservative, is the next prerequisite for this chain.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

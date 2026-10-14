@@ -2854,7 +2854,9 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             ? (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}}
             : color_target->format == 0x25
                 ? (VkClearColorValue){{0.2f, 0.4f, 0.6f, 0.8f}}
-                : (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
+                : color_target->format == 0x29
+                    ? (VkClearColorValue){{-0.333251953125f, -0.66650390625f, -0.77734375f, -0.22216796875f}}
+                    : (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
         if (depth) {
             depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
@@ -2978,30 +2980,36 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             vk_finish();
             vk_readback_ready();
             u64 changed = 0, changed_components = 0;
-            const u8 magenta_rgba16f[8] = {0, 0x3c, 0, 0, 0, 0x3c, 0, 0x3c};
+            const u8 rgba16f_sentinel[8] = {0x55, 0xb5, 0x55, 0xb9, 0x38, 0xba, 0x1c, 0xb3};
             const u32 magenta_packed = color_target->format == 0x3f ? 0x780003c0u : 0xffff00ffu;
             const u8 rgba8_sentinel[4] = {51, 102, 153, 204};
             const u64 zero = 0;
             const void* sentinel = zero_probe ? (const void*)&zero
                                    : color_target->format == 0x25 ? (const void*)rgba8_sentinel
-                                   : color_format.bpp == 8 ? (const void*)magenta_rgba16f : &magenta_packed;
+                                   : color_format.bpp == 8 ? (const void*)rgba16f_sentinel : &magenta_packed;
             for (u64 i = 0; i < bytes; i += color_format.bpp) {
                 changed += memcmp(pixels + i, sentinel, color_format.bpp) != 0;
-                if (!zero_probe && color_target->format == 0x25)
+                if (!zero_probe && color_target->format == 0x25) {
                     for (u32 component = 0; component < 4; component++)
                         changed_components += pixels[i + component] != rgba8_sentinel[component];
+                } else if (!zero_probe && color_target->format == 0x29) {
+                    for (u32 component = 0; component < 4; component++)
+                        changed_components += memcmp(pixels + i + component * 2,
+                                                     rgba16f_sentinel + component * 2, 2) != 0;
+                }
             }
-            /* A changed RGB pixel does not prove alpha was written. For unblended RGBA8,
-               require every component to differ from its initialized sentinel. */
-            capture_full = !zero_probe && color_target->format == 0x25 && !key->blend[0].en &&
+            /* A changed pixel does not prove that every color component was written. */
+            u64 component_count = bytes / (color_target->format == 0x29 ? 2 : 1);
+            capture_full = !zero_probe && (color_target->format == 0x25 || color_target->format == 0x29) &&
+                           !key->blend[0].en &&
                            key->blend[0].mask == 15 && (fragment->si.sph[18] & 15) == 15 &&
-                           changed_components == bytes;
+                           changed_components == component_count;
             u64 center = ((u64)(color_target->height / 2) * color_target->width + color_target->width / 2) *
                          color_format.bpp;
             LOG("nvn-shadow-readback: zero-probe=%d changed-pixels=%llu total=%llu components=%llu/%llu corners=%02x%02x%02x%02x/%02x%02x%02x%02x center=%02x%02x%02x%02x\n",
                 zero_probe,
                 (unsigned long long)changed, (unsigned long long)(bytes / color_format.bpp),
-                (unsigned long long)changed_components, (unsigned long long)bytes,
+                (unsigned long long)changed_components, (unsigned long long)component_count,
                 pixels[0], pixels[1], pixels[2],
                 pixels[3], pixels[bytes - 4], pixels[bytes - 3], pixels[bytes - 2], pixels[bytes - 1],
                 pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3]);
