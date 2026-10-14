@@ -220,7 +220,7 @@ static int trace_target(const Surf* s) {
             lo = strtoull(v, &end, 0);
             bytes = *end == ':' ? strtoull(end + 1, &size_end, 0) : 1;
             if (end == v || (*end && *end != ':') || (size_end && (*size_end || size_end == end + 1)) || !bytes) {
-                WARN("SNX_GPU_TRACE_TARGET=%s isn't address[:bytes] (0x for hex): no trace\n", v);
+                WARN("SNX_GPU_TRACE_TARGET=%s isn't address[:bytes] with a nonzero size (0x for hex): no trace\n", v);
                 bytes = 0;
             }
         }

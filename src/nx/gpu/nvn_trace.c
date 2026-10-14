@@ -124,6 +124,7 @@ static void getproc_trace(CPU* c, u64 entry) {
         pm_lock(&procs_lock);
         original = getproc_original;
         pm_unlock(&procs_lock);
+        if (!original) fatal("nvn: the nvnDeviceGetProcAddress wrapper runs before its original is known");
     }
     original(c, entry);
     if (!valid) return;
