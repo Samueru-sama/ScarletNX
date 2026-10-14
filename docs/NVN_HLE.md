@@ -1596,6 +1596,33 @@ changed its pool bytes, even when no new NVN attachment lookup occurred. The
 TotK cube chain remained sampleable without pending or guest-wait traces in a
 40-second headless run with this coherence check enabled.
 
+For later target comparisons, `SNX_NVN_SHADOW_COMPARE_COVERED=1` excludes
+images whose first layer has already lost shadow coverage. This avoids treating
+identical zero readbacks from an uncovered image as a pixel-parity result.
+`SNX_NVN_SHADOW_COMPARE_CUBE_FACE0=1` additionally permits the base face and
+mip of a cubemap to be compared with a same-address Maxwell render target when
+their dimensions and stored formats agree. It does not certify the other faces
+or mip levels. `SNX_NVN_SHADOW_COMPARE_LEVELS=N` selects a particular backing
+mip count when several cubemaps share a size and format.
+`SNX_NVN_SHADOW_COMPARE_DEPTH=1` permits a covered depth attachment to be
+selected by size and format without a fixed address, while retaining the
+matching Maxwell surface and stored-format checks. In this TotK boot the
+64×64 shadow depth image's address resolves to a 1280×720 or 1024×576 Maxwell
+surface by present time, so the depth comparison correctly declines it.
+Operation-aligned snapshots are needed to establish whether depth contributes
+to the cube-face mismatch.
+
+The first covered TotK `R11G11B10F` base-face comparison differs at 305 of
+4,096 pixels. Filtering the earlier four-mip source cube produces the same
+305-pixel difference and row pattern (rows 12–31), so the error is already in
+the source face's four-draw pass; the later five-mip pass carries it forward.
+All four draws issue in the shadow path. Diagnostic runs omitting each of the
+three later draws increased the difference to 2,048, 447, and 564 pixels,
+respectively, so each contributes useful output. The first draw samples the
+pixel-exact 256×256 `RGBA16F` shadow target; later draws also sample guest
+`BC4` textures. The center pixel matches, but cubemap pixel parity is not yet
+reached.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

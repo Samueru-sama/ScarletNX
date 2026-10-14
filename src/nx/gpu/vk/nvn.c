@@ -2956,11 +2956,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         if (capture_chain) captured_targets[captured_target_count++] = color_target->gpu_address;
         shadow_capture_target = color->address;
         memcpy(shadow_capture_scissor, sc_data, sizeof shadow_capture_scissor);
-        LOG("nvn-shadow-capture-draw: sequence=%llu zero=%u count=%u indexed=%d type=%u index=%llx primitive=%u vs=%llx fs=%llx attrs=%u viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
+        LOG("nvn-shadow-capture-draw: sequence=%llu zero=%u count=%u indexed=%d type=%u index=%llx primitive=%u vs=%llx fs=%llx attrs=%u tex=%d/%d gbuf=%d/%d viewport=%g,%g %gx%g scissor=%u,%u %ux%u target=%ux%u cull=%u depth=%x\n",
             (unsigned long long)command->sequence, command->color_initial_zero,
             command->count, command->indexed, command->index_type,
             (unsigned long long)command->index_address, command->primitive,
             (unsigned long long)vertex->hash, (unsigned long long)fragment->hash, key->nattr,
+            vertex->si.ntex, fragment->si.ntex, vertex->si.ngbuf, fragment->si.ngbuf,
             vp_data[0], vp_data[1], vp_data[2], vp_data[3],
             sc_data[0], sc_data[1], sc_data[2], sc_data[3], color_width, color_height,
             command->polygon_state & 3, command->depth_stencil_state[0]);
@@ -3417,8 +3418,16 @@ void vk_nvn_shadow_compare(void) {
     const char* size_filter = getenv("SNX_NVN_SHADOW_COMPARE_SIZE");
     const char* format_filter = getenv("SNX_NVN_SHADOW_COMPARE_FORMAT");
     const char* address_filter = getenv("SNX_NVN_SHADOW_COMPARE_ADDRESS");
+    const char* levels_filter = getenv("SNX_NVN_SHADOW_COMPARE_LEVELS");
+    const char* covered_opt = getenv("SNX_NVN_SHADOW_COMPARE_COVERED");
+    const char* cube_face0_opt = getenv("SNX_NVN_SHADOW_COMPARE_CUBE_FACE0");
+    const char* depth_opt = getenv("SNX_NVN_SHADOW_COMPARE_DEPTH");
+    int require_covered = covered_opt && !strcmp(covered_opt, "1");
+    int cube_face0 = cube_face0_opt && !strcmp(cube_face0_opt, "1");
+    int compare_depth = depth_opt && !strcmp(depth_opt, "1");
     unsigned filter_width = 0, filter_height = 0;
     unsigned long filter_format = format_filter ? strtoul(format_filter, NULL, 0) : 0;
+    unsigned long filter_levels = levels_filter ? strtoul(levels_filter, NULL, 0) : 0;
     unsigned long long filter_address = 0;
     if (address_filter) {
         char* end = NULL;
@@ -3428,22 +3437,30 @@ void vk_nvn_shadow_compare(void) {
     if (size_filter && (sscanf(size_filter, "%ux%u", &filter_width, &filter_height) != 2 ||
                         !filter_width || !filter_height))
         return;
+    if (levels_filter && (!filter_levels || filter_levels > 16)) return;
     NvnImage* shadow = NULL;
     /* An explicit address can inspect a modeled clear/copy before any direct draw touches it. Array images
        compare their first layer against Maxwell's render target for that address. */
     for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++)
         if ((images[i].shadow_draw_stamp ||
              (address_filter && ((images[i].color_layers[0] | images[i].depth_layers[0]) & 1) &&
+              images[i].subresource_sequence[0][0]) ||
+             (compare_depth && (images[i].depth_layers[0] & 1) &&
               images[i].subresource_sequence[0][0])) &&
             (!size_filter || (images[i].width == filter_width && images[i].height == filter_height)) &&
             (!format_filter || images[i].format == filter_format) &&
+            (!compare_depth || nvn_format(images[i].format).depth) &&
+            (!levels_filter || images[i].levels == filter_levels) &&
             (!address_filter || images[i].address == filter_address) &&
-            (!shadow || (address_filter
+            (!require_covered ||
+             ((images[i].color_layers[0] | images[i].depth_layers[0]) & 1)) &&
+            (!shadow || (address_filter || compare_depth
                             ? images[i].subresource_sequence[0][0] > shadow->subresource_sequence[0][0]
                             : images[i].shadow_draw_stamp > shadow->shadow_draw_stamp)))
             shadow = &images[i];
-    if (!shadow || !shadow->transfer_src || shadow->levels != 1 ||
-        (shadow->layers != 1 && !address_filter) ||
+    if (!shadow || !shadow->transfer_src ||
+        (shadow->levels != 1 && !(cube_face0 && shadow->target == 8)) ||
+        (shadow->layers != 1 && !address_filter && !(cube_face0 && shadow->target == 8)) ||
         !shadow->width || !shadow->height) {
         LOG_LIMIT(8, "nvn-shadow-compare-skip: shadow=%d transfer=%d levels=%u layers=%u size=%ux%u\n",
                   !!shadow, shadow ? shadow->transfer_src : 0, shadow ? shadow->levels : 0,
@@ -3451,7 +3468,8 @@ void vk_nvn_shadow_compare(void) {
         return;
     }
     VkFmt format = nvn_format(shadow->format);
-    if (!format.vk || !format.bpp || (format.depth && !address_filter) || format.bw > 1 || format.bh > 1 ||
+    if (!format.vk || !format.bpp || (format.depth && !address_filter && !compare_depth) ||
+        format.bw > 1 || format.bh > 1 ||
         (u64)shadow->width * shadow->height > (16ull << 20) / format.bpp) {
         LOG_LIMIT(8, "nvn-shadow-compare-skip: format=%x vk=%u bpp=%u block=%ux%u depth=%d\n",
                   shadow->format, format.vk, format.bpp, format.bw, format.bh, format.depth);
@@ -3514,6 +3532,9 @@ void vk_nvn_shadow_compare(void) {
     vk_finish();
     vk_readback_ready();
     u64 different = 0, different_bytes = 0, first_different = ~0ull;
+    const char* rows_opt = getenv("SNX_NVN_SHADOW_COMPARE_ROWS");
+    u32* differing_rows = rows_opt && !strcmp(rows_opt, "1") && shadow->height <= 4096
+                              ? calloc(shadow->height, sizeof *differing_rows) : NULL;
     u64 capture_inside_different = 0, capture_inside_pixels = 0;
     u64 nonblack_shadow = 0, nonblack_emulated = 0;
     const u8 black_rgba8[4] = {0, 0, 0, 255};
@@ -3532,6 +3553,7 @@ void vk_nvn_shadow_compare(void) {
             if (first_different == ~0ull) first_different = i;
             u64 pixel = i / format.bpp;
             u32 x = (u32)(pixel % shadow->width), y = (u32)(pixel / shadow->width);
+            if (differing_rows) differing_rows[y]++;
             if (x < min_x) min_x = x;
             if (y < min_y) min_y = y;
             if (x > max_x) max_x = x;
@@ -3564,6 +3586,12 @@ void vk_nvn_shadow_compare(void) {
         (unsigned long long)different_bytes, (unsigned long long)bytes, emulated->wgen,
         pixels[center], pixels[center + 1], pixels[center + 2], pixels[center + 3],
         pixels[bytes + center], pixels[bytes + center + 1], pixels[bytes + center + 2], pixels[bytes + center + 3]);
+    if (differing_rows) {
+        for (u32 y = 0; y < shadow->height; y++)
+            if (differing_rows[y])
+                LOG("nvn-shadow-compare-row: y=%u different=%u/%u\n", y, differing_rows[y], shadow->width);
+        free(differing_rows);
+    }
     if (shadow->address == shadow_capture_target)
         LOG("nvn-shadow-capture-region: different=%llu/%llu scissor=%u,%u %ux%u\n",
             (unsigned long long)capture_inside_different, (unsigned long long)capture_inside_pixels,
