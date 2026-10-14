@@ -116,7 +116,7 @@ int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, d
 
 /* write log for GPU-side writes (cb_data, I2M, DMA, 2D, reports and shader writeback) so we can tell a range changed
    without rehashing it. Back-to-back writes (cb_data goes word by word) get merged. */
-#define GW_N 1024
+#define GW_N 8192
 static u64 g_gw_gen;      /* published after each complete write-log update */
 static u64 g_gw_phys_gen; /* latest shader writeback to a guest CPU page */
 static PMutex g_gwlock = PMUTEX_INIT;

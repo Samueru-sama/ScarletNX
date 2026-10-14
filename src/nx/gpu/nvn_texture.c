@@ -407,6 +407,51 @@ NvnTargetResult nvn_texture_find_target(u64 gpu_address, u32 width, u32 height,
     return found && equivalent ? nvn_texture_resolve_target(texture, NULL, out) : NVN_TARGET_MISSING;
 }
 
+NvnTargetResult nvn_texture_find_layer_target(u64 gpu_address, u32 width, u32 height,
+                                               u32* matches, NvnTextureTarget* out) {
+    u32 exact_matches = 0;
+    NvnTargetResult exact = nvn_texture_find_target(gpu_address, width, height, &exact_matches, out);
+    if (matches) *matches = exact_matches;
+    if (exact == NVN_TARGET_RESOLVED || exact_matches) return exact;
+    if (!gpu_address || !width || !height || !out) return NVN_TARGET_MISSING;
+    u64 texture = 0;
+    u32 layer = 0, found = 0;
+    Texture first = {0};
+    int equivalent = 1;
+    pm_lock(&lock);
+    for (u32 i = 0; i < TEXTURE_SLOTS; i++) {
+        const Texture* t = &textures[i];
+        if (!t->key || !t->alive || !t->address_known || !t->size_known || !t->gpu_address ||
+            (t->target != 4 && t->target != 8) || t->depth < 2 || !t->storage_size ||
+            t->storage_size % t->depth || t->width != width || t->height != height ||
+            gpu_address < t->gpu_address) continue;
+        u64 layer_stride = t->storage_size / t->depth;
+        u64 delta = gpu_address - t->gpu_address;
+        if (!layer_stride || delta >= t->storage_size || delta % layer_stride) continue;
+        if (!found) {
+            texture = t->key;
+            layer = (u32)(delta / layer_stride);
+            first = *t;
+        } else if (t->pool != first.pool || t->offset != first.offset ||
+                   t->storage_size != first.storage_size || t->format != first.format ||
+                   t->target != first.target || t->depth != first.depth ||
+                   t->levels != first.levels || t->samples != first.samples ||
+                   t->storage_class != first.storage_class || t->stride != first.stride ||
+                   (u32)(delta / layer_stride) != layer) {
+            equivalent = 0;
+        }
+        found++;
+    }
+    pm_unlock(&lock);
+    if (matches) *matches = found;
+    if (!found || !equivalent || nvn_texture_resolve_target(texture, NULL, out) != NVN_TARGET_RESOLVED)
+        return NVN_TARGET_MISSING;
+    out->view.flags = 2;
+    out->view.first_layer = layer;
+    out->view.layer_count = 1;
+    return NVN_TARGET_RESOLVED;
+}
+
 NvnTargetResult nvn_texture_resolve_copied_target(u64 texture, const NvnTextureViewSelection* view,
                                                   NvnTextureTarget* out) {
     /* Older SDK clients can memcpy an initialized texture object before SetRenderTargets. Accept a copy only when

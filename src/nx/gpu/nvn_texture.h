@@ -62,6 +62,10 @@ NvnTargetResult nvn_texture_resolve_target(u64 texture, const NvnTextureViewSele
 /* Resolve a raw GPU attachment address only when live NVN textures at that extent agree on the backing and layout. */
 NvnTargetResult nvn_texture_find_target(u64 gpu_address, u32 width, u32 height,
                                          u32* matches, NvnTextureTarget* out);
+/* Match a raw attachment address to one layer of a live array/cube texture when its observed storage
+   footprint divides evenly into independently addressed layers. */
+NvnTargetResult nvn_texture_find_layer_target(u64 gpu_address, u32 width, u32 height,
+                                               u32* matches, NvnTextureTarget* out);
 /* Resolve an old-layout texture object copied after Initialize, only through an exact unique backing match. */
 NvnTargetResult nvn_texture_resolve_copied_target(u64 texture, const NvnTextureViewSelection* view,
                                                   NvnTextureTarget* out);

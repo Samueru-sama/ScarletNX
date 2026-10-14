@@ -31,6 +31,7 @@ int main(void) {
     assert(nvn_control_macro38_draw(packet, 12, &draw));
     assert(draw.index_address == 0x656bd6ce8ull);
     assert(draw.index_type == 2 && draw.primitive == 4 && draw.count == 0x5af3 && draw.instances == 1);
+    assert(draw.base_instance == 0 && draw.base_vertex == 0x13703);
     assert(draw.macro_args[4] == 0x13703);
     u32 malformed[12];
     for (u32 i = 0; i < 12; i++) malformed[i] = packet[i];

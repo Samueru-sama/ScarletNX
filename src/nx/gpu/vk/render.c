@@ -1014,6 +1014,13 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
                     u32 instances) {
     u32* r = ch->r3d;
     if (!count || !instances) return;
+    const char* trace_count = getenv("SNX_GPU_TRACE_DRAW_COUNT");
+    if (trace_count && strtoul(trace_count, NULL, 0) == count)
+        LOG_LIMIT(16, "gpu-draw-trace: count=%u indexed=%d topology=%u first=%u base-vertex=%u base-instance=%u instances=%u index-type=%x index-address=%llx depth=%x/%x/%x viewport=%08x/%08x/%08x/%08x\n",
+                  count, indexed, topology, first, base_vertex, base_instance, instances,
+                  r[0x5f6], (unsigned long long)(((u64)r[0x5f2] << 32) | r[0x5f3]),
+                  r[0x4b3], r[0x4ba], r[0x4c3],
+                  r[0x280], r[0x281], r[0x283], r[0x284]);
     u32 initial_first = first, initial_count = count;
     int retries = 0;
 retry:
@@ -1054,6 +1061,18 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
+    const char* trace_target = getenv("SNX_GPU_TRACE_RT_ADDRESS");
+    if (trace_target) {
+        u64 address = strtoull(trace_target, NULL, 0);
+        const char* trace_bytes = getenv("SNX_GPU_TRACE_RT_BYTES");
+        u64 bytes = trace_bytes ? strtoull(trace_bytes, NULL, 0) : 1;
+        for (u32 i = 0; i < n; i++)
+            if (rt[i] && rt[i]->gva >= address && rt[i]->gva - address < bytes)
+                LOG_LIMIT(16, "gpu-target-trace: target=%llx slot=%u count=%u indexed=%d topology=%u vs=%llx fs=%llx dimensions=%ux%u\n",
+                          (unsigned long long)rt[i]->gva, i, count, indexed, topology,
+                          (unsigned long long)(code + r[0x811]),
+                          (unsigned long long)(code + r[0x851]), rt[i]->w, rt[i]->h);
+    }
     /* a color target the fragment shader samples but doesn't write (no output for it, or a write mask of 0) is drawn
        without: Tears of the Kingdom's lighting passes keep the whole G-buffer bound while they read some of it, which
        Maxwell allows, and Vulkan can't sample an attachment of the pass */
@@ -1490,6 +1509,9 @@ retry:
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
     if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) zt->wgen++;
     g_vk_drawn++;
+    const char* control_compare = getenv("SNX_NVN_CONTROL_COMPARE_PROBE");
+    if (control_compare && !strcmp(control_compare, "1") && indexed && zt)
+        vk_nvn_control_compare_probe(zt, count, base_vertex);
 }
 
 /* DRAW_TEXTURE (3D 0x420-0x42B, drawn when 0x42B is written): a texture's rectangle blitted onto color target 0, as

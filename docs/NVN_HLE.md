@@ -1799,6 +1799,33 @@ checks mapped vertex streams and stages the captured index bytes. TotK reports
 successful pipelines and buffers for all 65 first-cubemap depth draws. These
 probes do not bind descriptors or issue a draw.
 
+The control-list probe now captures submit-time CBUF0 contents, index bytes,
+texture descriptors, semantic storage bindings, and the direct 3D registers
+needed by each indexed draw. In a TotK 64×64 cubemap batch, all 211 decoded
+draws have mapped vertex/index buffers and descriptor candidates, with no
+packet drops. The indexed-draw macro's base vertex comes from argument 10;
+the first 23,283-index draw uses base vertex 79,619. An opt-in Vulkan draw
+probe renders that draw into an isolated NVN-owned color/depth image. Its
+depth readback matches the corresponding Maxwell draw at all 4,096 pixels.
+The probe clears its attachments and executes a single draw, so this is a
+draw-state comparison rather than whole-list parity.
+
+TotK's cubemap color texture is a six-layer, four-mip, 147,456-byte live NVN
+object. Raw face addresses advance by 24,576 bytes. The layer resolver now
+maps a raw address to the matching face when a live array/cube object's
+observed footprint divides evenly into layers and its dimensions agree.
+All 211 color targets and pipelines in that batch now resolve, including the
+later 12- and 11-draw face batches. A 1,024-entry GPU write history wrapped
+between image checks, falsely invalidating a 1.25–5 MiB sampled image even
+when no overlapping write remained in the log. The bounded history now holds
+8,192 entries. With that correction, all 211 draws have ready descriptors,
+and the isolated first draw again matches Maxwell's depth image at all 4,096
+pixels without importing a Maxwell-owned sampled image. A separate opt-in
+diagnostic bridge remains available for sources that really do come from the
+Maxwell path. Ordered execution of the entire list and validation of all its
+sampled-image producers remain necessary before selecting direct NVN
+rendering for this scene.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

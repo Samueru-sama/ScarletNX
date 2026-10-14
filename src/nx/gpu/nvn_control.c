@@ -36,7 +36,8 @@ int nvn_control_macro38_draw(const u32* words, u32 count, NvnControlMacro38Draw*
     if (type > 2 || words[3] >= 256 || !words[7] || !words[8] || words[6] > 9) return 0;
     NvnControlMacro38Draw draw = {.index_address = ((u64)words[3] << 32) | words[4],
                                   .index_type = type, .primitive = words[6],
-                                  .count = words[7], .instances = words[8]};
+                                  .count = words[7], .instances = words[8],
+                                  .base_instance = words[9], .base_vertex = words[10]};
     memcpy(draw.macro_args, &words[6], sizeof draw.macro_args);
     *out = draw;
     return 1;

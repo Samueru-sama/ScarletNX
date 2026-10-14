@@ -3,7 +3,9 @@
 #ifndef SNX_NVN_CONTROL_H
 #define SNX_NVN_CONTROL_H
 #include "cpu/aarch64/cpu.h"
+#include "gpu/nvn_draw.h"
 #define NVN_CONTROL_SENTINEL 0xffffffffffffff01ull
+#define NVN_CONTROL_CBUF0_SNAPSHOT_BYTES 0x680u
 
 /* Find a submitted GPFIFO entry in a bounded NVN control-memory record.
    The record begins with the observed list sentinel; a second sentinel ends it.
@@ -15,6 +17,7 @@ int nvn_control_find_gpu_entry(const u64* control, u32 qwords, u64 gpu_va,
 typedef struct {
     u64 index_address;
     u32 index_type, primitive, count, instances;
+    u32 base_instance, base_vertex;
     u32 macro_args[6]; /* preserve SDK-specific arguments until their effects are proven */
 } NvnControlMacro38Draw;
 
@@ -48,6 +51,9 @@ typedef struct {
     u8 texture_registers_known;
     const struct NvnControlTextureDescriptor* texture_descriptors;
     u32 texture_descriptor_mask;
+    const u8* cbuf0_snapshot[2];
+    NvnStorageBinding semantic_storage[2][NVN_DRAW_STORAGE_SLOTS];
+    u16 semantic_storage_known[2];
 } NvnControlShaderProbe;
 typedef struct NvnControlTextureDescriptor {
     u32 handle, tic[8], tsc[8];

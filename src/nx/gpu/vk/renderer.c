@@ -106,10 +106,11 @@ static int vkr_nvn_control_depth_prepare(const NvnTextureTarget* target) {
     return result;
 }
 static int vkr_nvn_control_pipeline_probe(const NvnControlShaderProbe* probe,
+                                          const NvnTextureTarget* color_target,
                                           const NvnTextureTarget* depth_target,
                                           const u32* registers, u32 primitive) {
     vk_lock();
-    int result = vk_nvn_control_pipeline_probe(probe, depth_target, registers, primitive);
+    int result = vk_nvn_control_pipeline_probe(probe, color_target, depth_target, registers, primitive);
     vk_unlock();
     return result;
 }
@@ -117,6 +118,26 @@ static u32 vkr_nvn_control_buffer_probe(const NvnControlShaderProbe* probe, cons
                                         const u8* indices, u32 index_bytes, u32 index_count, u32 index_type) {
     vk_lock();
     u32 result = vk_nvn_control_buffer_probe(probe, registers, indices, index_bytes, index_count, index_type);
+    vk_unlock();
+    return result;
+}
+static int vkr_nvn_control_descriptor_probe(const NvnControlShaderProbe* probe,
+                                             const NvnTextureTarget* depth_target) {
+    vk_lock();
+    int result = vk_nvn_control_descriptor_probe(probe, depth_target);
+    vk_unlock();
+    return result;
+}
+static int vkr_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
+                                      const NvnTextureTarget* color_target,
+                                      const NvnTextureTarget* depth_target,
+                                      const u32* registers, const u8* indices,
+                                      u32 index_bytes, u32 index_count, u32 index_type,
+                                      u32 instances, u32 base_vertex, u32 base_instance) {
+    vk_lock();
+    int result = vk_nvn_control_draw_probe(probe, color_target, depth_target,
+                                            registers, indices, index_bytes, index_count,
+                                            index_type, instances, base_vertex, base_instance);
     vk_unlock();
     return result;
 }
@@ -515,6 +536,8 @@ const Renderer vk_renderer = {
     .nvn_control_depth_prepare = vkr_nvn_control_depth_prepare,
     .nvn_control_pipeline_probe = vkr_nvn_control_pipeline_probe,
     .nvn_control_buffer_probe = vkr_nvn_control_buffer_probe,
+    .nvn_control_descriptor_probe = vkr_nvn_control_descriptor_probe,
+    .nvn_control_draw_probe = vkr_nvn_control_draw_probe,
     .nvn_probe_initial_color = vkr_nvn_probe_initial_color,
     .nvn_clear = vkr_nvn_clear,
     .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,
