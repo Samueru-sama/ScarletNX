@@ -1541,6 +1541,12 @@ enabled, this production coverage path matches the emulated target byte for
 byte across all 65,536 pixels. Later pending sources and presented-frame parity
 remain open.
 
+The same certified zero-load path now covers a single-attachment `R16_UNORM`
+target. TotK's 192×192 producer becomes sampleable without diagnostic coverage;
+its 36,864 pixels and 73,728 bytes match Maxwell exactly in the readback. The
+next blocked texture in this run is a 64×64 depth image, followed by cubemap
+views whose layers or mip levels are not yet complete.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state

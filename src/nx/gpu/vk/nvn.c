@@ -2776,7 +2776,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                     color_written && !color->image_was_written && !prior_covered &&
                     !color_mip && !color_layer && command->color_target_mask == 1 &&
                     (color_target->format == 0x25 || color_target->format == 0x38 ||
-                     color_target->format == 0x29);
+                     color_target->format == 0x29 || color_target->format == 0x06);
     if (zero_seed) {
         zero_seed = 0;
         for (u32 i = 0; i < 64; i++) {
