@@ -31,7 +31,7 @@ static void usage(void) {
          "  --no-build             Stage data/INI only, generate no code");
     puts("  --interp-only          Generate fallback interpreter only\n"
          "  --runtime FILE         Deploy this runtime instead of building one\n"
-         "  --hook-direct-calls    Route direct guest calls through dispatch for runtime instrumentation\n"
+         "  --hook-direct-calls    Route calls and branches between functions through dispatch (SNX_NVN_TRACE)\n"
          "  --keep-ir              Save the generated code (LLVM IR, libgccjit dumps) in <outdir>/<NAME>_build\n"
          "  -q, --quiet            Suppress progress");
     puts("Hints: <outdir>/<NAME>.hints (hex PCs, one per line).");

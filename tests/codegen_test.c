@@ -308,6 +308,59 @@ done:
     free(output);
 }
 
+/* --hook-direct-calls: a BL to a recompiled function becomes a call through CPU.disp (CALLDYN), where runtime wrappers
+   can see it; without the option it stays a direct call of the function */
+static char* emit_text(SnxCodegen* codegen, const SnxFunction* function) {
+    FILE* file = tmpfile();
+    char* text = NULL;
+    long size;
+    if (!file) return NULL;
+    snx_codegen_emit(file, codegen, function);
+    size = ftell(file);
+    if (size >= 0 && !fseek(file, 0, SEEK_SET) && (text = calloc(1, (size_t)size + 1)) != NULL &&
+        fread(text, 1, (size_t)size, file) != (size_t)size) {
+        free(text);
+        text = NULL;
+    }
+    fclose(file);
+    return text;
+}
+static void hook_test(void) {
+    static const SnxU32 words[] = {0x94000002UL,  /* BL +8 */
+                                   0xD65F03C0UL,  /* RET */
+                                   0xD65F03C0UL}; /* RET: the called function */
+    unsigned char image[sizeof(words)];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxFde range;
+    const SnxFunction* function;
+    char *direct, *hooked;
+    size_t i;
+    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+    setup_program(&program, &module, image, sizeof(image));
+    range.start = 0;
+    range.size = 8;
+    module.fde = &range;
+    module.fde_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1), "analyze the hooked call");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    check(function && snx_codegen_function(&codegen, SNX_CODE_BASE + 8), "caller and callee are functions");
+    if (function) {
+        direct = emit_text(&codegen, function);
+        codegen.hook_direct_calls = 1;
+        hooked = emit_text(&codegen, function);
+        /* the call site; every function's dispatcher also ends in CALLDYN(c->pc) */
+        check(direct && strstr(direct, "F_8000008(c,") && !strstr(direct, "CALLDYN(134217736)"),
+              "a direct call stays direct");
+        check(hooked && strstr(hooked, "CALLDYN(134217736)") && !strstr(hooked, "F_8000008(c,"),
+              "a hooked call goes through CPU.disp");
+        free(direct);
+        free(hooked);
+    }
+    snx_codegen_free(&codegen);
+}
+
 /* A loop of generated code runs with CPU.poll set: its backward branch calls rt->poll, the runtime's chance to take
    the core from a thread that makes no SVC, and the loop still runs to its end. The same loop through the
    interpreter, as a loop the recompiler never found runs, polls on its taken branch. */
@@ -418,6 +471,7 @@ int main(int argc, char** argv) {
     if (!directory) return 1;
     decoder_test();
     analysis_test();
+    hook_test();
     large_range_test();
     semantics_test(argv[1], argv[2], directory);
     poll_test(argv[1], argv[2], directory);

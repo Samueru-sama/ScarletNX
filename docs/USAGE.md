@@ -102,6 +102,8 @@ Remaining examples: POSIX.
 - **Codegen:** `--no-build` stages data/INI only; `--interp-only` omits AOT functions.
   `--chunk N` sets instructions per code unit. Nothing is cached between runs.
   `--keep-ir` saves the generated code (LLVM IR, libgccjit dumps) in `<outdir>/<NAME>_build/`.
+  `--hook-direct-calls` sends calls between guest functions through the dispatch table too, so `SNX_NVN_TRACE`
+  counts every call to an NVN function. The game runs slower, so use it only for investigating.
 - **Data updates:** ExeFS refreshes; `Game_data/romfs` is reused.
   Replace cached RomFS after asset changes; preserve `Game_data/save/`.
 

@@ -69,7 +69,8 @@ static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
     return LLVMBuildCall2(B, ir->t_guest, function, args, 2, "");
 }
 
-/* call(): F_target(c,target) when the target is a recompiled function, CALLDYN(target) otherwise; tail: then return */
+/* call(): F_target(c,target) when the target is a recompiled function and direct calls aren't hooked
+   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return */
 static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) {
     LLVMValueRef args[2], site;
     args[0] = ir->c;

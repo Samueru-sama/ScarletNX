@@ -23,6 +23,8 @@ typedef struct {
     SnxFunction* functions;
     size_t function_count, function_capacity, instruction_count;
     SnxCodeImage* last_module;
+    /* an emit option (--hook-direct-calls): calls and branches between functions go through CPU.disp too, so wrappers
+       installed there (gpu/nvn_trace.c) see them. Set it after snx_codegen_analyze, which clears the struct */
     int hook_direct_calls;
 } SnxCodegen;
 
