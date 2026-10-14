@@ -222,15 +222,23 @@ typedef struct {
     u32 registers[6]; /* TIC hi/lo, TSC hi/lo, texture CBUF bank, sampler index mode */
     u8 known;
 } NvnRawTextureState;
+typedef struct {
+    u32 value[0x1000];
+    u64 known[0x1000 / 64];
+} NvnRawRegisterState;
 /* Submission order, rather than control-record order, defines execution. A record may be
    submitted repeatedly or after an earlier record in the same list. Keep a bounded copy of
    each control-owned entry while the guest backing is still valid. */
 typedef struct NvnControlPacket {
     struct NvnControlPacket* next;
-    u64 gpu_va, cpu_address, list, visit, ordinal;
+    u64 gpu_va, cpu_address, list, visit, ordinal, sequence;
     u32 channel, control_offset, record_value, word_count, macro12_count, macro38_count;
     u32 index_snapshot_size;
     u8 index_snapshot_valid;
+    u32 index_snapshot_reserved;
+    u32 texture_snapshot_mask;
+    u8 register_snapshot_valid;
+    u32 texture_snapshot_reserved;
     u32 depth_registers[8];
     u8 depth_known;
     u32 shader_code_base[2];
@@ -529,6 +537,7 @@ typedef struct {
     NvnRawVertexState vertex;
     NvnRawCbufState cbuf;
     NvnRawTextureState texture;
+    NvnRawRegisterState registers;
     u32 cbuf_setup[3];
     u8 cbuf_setup_known;
     u8 active, known;
@@ -571,6 +580,7 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
             stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
             stream->cbuf_setup_known = 0;
             stream->texture.known = 0;
+            memset(stream->registers.known, 0, sizeof stream->registers.known);
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
@@ -578,6 +588,10 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
         stream->classes[sub] = value & 0xffff;
     }
     if (sub == 0 && (stream->classes[sub] == 0xb197 || !stream->classes[sub])) {
+        if (method < 0x1000) {
+            stream->registers.value[method] = value;
+            stream->registers.known[method / 64] |= 1ull << (method % 64);
+        }
         if (method == 0x582 || method == 0x583) {
             u32 index = method - 0x582;
             stream->shader_code_base[index] = value;
@@ -691,6 +705,7 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
             stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
             stream->cbuf_setup_known = 0;
             stream->texture.known = 0;
+            memset(stream->registers.known, 0, sizeof stream->registers.known);
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
@@ -723,16 +738,45 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
     if (!enabled || strcmp(enabled, "1")) return;
     NvnControlMacro38Draw draw;
     u32 index_bytes = 0;
-    if (macro38_count == 1 && data && nvn_control_macro38_draw(data, words, &draw)) {
+    int decoded_draw = macro38_count == 1 && data && nvn_control_macro38_draw(data, words, &draw);
+    if (decoded_draw) {
         u32 element_size = draw.index_type == 0 ? 1 : draw.index_type == 1 ? 2 : 4;
         if (draw.count <= (512u << 10) / element_size &&
             draw.index_address <= UINT64_MAX - (u64)draw.count * element_size)
             index_bytes = draw.count * element_size;
     }
-    u64 size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32) + index_bytes;
+    u32 texture_bytes = 0;
+    if (index_bytes && (stream->texture.known & 0x3f) == 0x3f &&
+        !stream->texture.registers[5]) {
+        u32 bank = stream->texture.registers[4] & 31;
+        if (bank < 18 && (stream->cbuf.known[1] & (1u << bank)) &&
+            stream->cbuf.address[1][bank] && stream->cbuf.size[1][bank] >= 284)
+            texture_bytes = 32 * sizeof(NvnControlTextureDescriptor);
+    }
+    u32 register_bytes = decoded_draw ? sizeof(NvnRawRegisterState) : 0;
+    u64 size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32) +
+               index_bytes + texture_bytes + register_bytes;
+    if (size > (1u << 20)) {
+        size -= register_bytes;
+        register_bytes = 0;
+    }
+    if (size > (1u << 20)) {
+        size -= texture_bytes;
+        texture_bytes = 0;
+    }
     if (size > (1u << 20)) {
         index_bytes = 0;
         size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32);
+    }
+    if (register_bytes && (size > (8u << 20) - queue->control_packet_bytes ||
+                           size > (32u << 20) - control_packet_snapshot_bytes)) {
+        size -= register_bytes;
+        register_bytes = 0;
+    }
+    if (texture_bytes && (size > (8u << 20) - queue->control_packet_bytes ||
+                          size > (32u << 20) - control_packet_snapshot_bytes)) {
+        texture_bytes = 0;
+        size -= 32 * sizeof(NvnControlTextureDescriptor);
     }
     if (!data || !words || size > (1u << 20) ||
         size > (8u << 20) - queue->control_packet_bytes ||
@@ -748,10 +792,15 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
     *packet = (NvnControlPacket){.gpu_va = va, .cpu_address = cpu,
                                  .list = range ? range->list : 0,
                                  .visit = range ? range->visit : 0,
-                                 .ordinal = queue->gpu_entries, .channel = channel,
+                                 .ordinal = queue->gpu_entries,
+                                 .sequence = range ? range->after_sequence : 0,
+                                 .channel = channel,
                                  .control_offset = offset,
                                  .record_value = record_value, .word_count = words,
                                  .macro12_count = macro12_count, .macro38_count = macro38_count,
+                                 .index_snapshot_reserved = index_bytes,
+                                 .texture_snapshot_reserved = texture_bytes,
+                                 .register_snapshot_valid = !!register_bytes,
                                  .depth_known = stream->depth_known,
                                  .shader_code_base_known = stream->shader_code_base_known,
                                  .clip_enable = stream->clip_enable,
@@ -767,6 +816,31 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
             (u8*)packet->words + (u64)words * sizeof(u32), index_bytes);
         packet->index_snapshot_size = packet->index_snapshot_valid ? index_bytes : 0;
     }
+    if (texture_bytes) {
+        NvnControlTextureDescriptor* descriptors = (NvnControlTextureDescriptor*)((u8*)packet->words +
+            (u64)words * sizeof(u32) + index_bytes);
+        u32 bank = stream->texture.registers[4] & 31;
+        u64 handle_bank = stream->cbuf.address[1][bank];
+        u64 tic_base = ((u64)stream->texture.registers[0] << 32) | stream->texture.registers[1];
+        u64 tsc_base = ((u64)stream->texture.registers[2] << 32) | stream->texture.registers[3];
+        for (u32 slot = 0; slot < 32; slot++) {
+            NvnControlTextureDescriptor* descriptor = &descriptors[slot];
+            u64 handle_address = handle_bank + (8u + 2u * slot) * 4u;
+            if (handle_address < handle_bank ||
+                !copy_gpu_pages(handle_address, &descriptor->handle, sizeof descriptor->handle)) continue;
+            u32 handle = descriptor->handle;
+            u64 tic_offset = (u64)(handle & 0xfffff) * 32;
+            u64 tsc_offset = (u64)(handle >> 20) * 32;
+            if (tic_base > UINT64_MAX - tic_offset - 32 ||
+                tsc_base > UINT64_MAX - tsc_offset - 32 ||
+                !copy_gpu_pages(tic_base + tic_offset, descriptor->tic, sizeof descriptor->tic) ||
+                !copy_gpu_pages(tsc_base + tsc_offset, descriptor->tsc, sizeof descriptor->tsc)) continue;
+            packet->texture_snapshot_mask |= 1u << slot;
+        }
+    }
+    if (register_bytes)
+        memcpy((u8*)packet->words + (u64)words * sizeof(u32) + index_bytes + texture_bytes,
+               &stream->registers, sizeof stream->registers);
     if (queue->control_packets_tail) queue->control_packets_tail->next = packet;
     else queue->control_packets = packet;
     queue->control_packets_tail = packet;
@@ -850,6 +924,7 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
             stream->cbuf_setup_known = 0;
             stream->texture.known = 0;
+            memset(stream->registers.known, 0, sizeof stream->registers.known);
         }
         if (queue) {
             int matched_control = 0;
@@ -2414,7 +2489,8 @@ static void replay_list(u64 handle, ReplayState* state, ReplayQueue* queue, u32 
     }
     if (queue) {
         const char* hazards = getenv("SNX_NVN_CONTROL_HAZARDS");
-        if (hazards && !strcmp(hazards, "1")) {
+        const char* packets = getenv("SNX_NVN_CONTROL_PACKETS");
+        if ((hazards && !strcmp(hazards, "1")) || (packets && !strcmp(packets, "1"))) {
             u64 marker = 0;
             for (NvnControlRange* range = queue->control_ranges; range; range = range->next)
                 if (range->visit == visit) {
@@ -3353,6 +3429,11 @@ static void free_control_packets(NvnControlPacket* packet) {
         packet = next;
     }
 }
+static int raw_registers_have(const u64 known[0x1000 / 64], const u16* methods, u32 count) {
+    for (u32 i = 0; i < count; i++)
+        if (!(known[methods[i] / 64] & (1ull << (methods[i] % 64)))) return 0;
+    return 1;
+}
 typedef struct {
     u32 channel, vertex_offset, fragment_offset;
     u8 used, vertex_bound, fragment_bound;
@@ -3367,7 +3448,10 @@ static void execute_nvn_batch(void* arg) {
         u32 decoded_program_binds = 0, draws_with_program_pair = 0;
         u32 mapped_shader_pairs = 0;
         u32 valid_shader_pairs = 0;
+        u64 distinct_vertex_code[128] = {0}, distinct_fragment_code[128] = {0};
+        u32 distinct_shader_pairs = 0;
         u32 shader_probe_attempted = 0, shader_probe_ready = 0;
+        u32 shader_probe_all_ready = 0, shader_probe_all_resources = 0;
         NvnControlShaderProbeResult shader_probe_result = {0};
         u32 vertex_sph = 0, fragment_sph = 0;
         u64 first_vertex_code = 0, first_fragment_code = 0;
@@ -3375,6 +3459,13 @@ static void execute_nvn_batch(void* arg) {
         u32 vertex_cbuf0_seen = 0, fragment_cbuf0_seen = 0;
         u32 vertex_uniform_seen = 0, fragment_uniform_seen = 0;
         u32 index_snapshots = 0;
+        u32 texture_snapshots = 0, first_texture_snapshot_mask = 0;
+        u32 register_snapshots = 0;
+        u32 sequenced_draws = 0;
+        u64 first_raw_sequence = 0;
+        u32 viewport_registers = 0, scissor_registers = 0;
+        u32 raster_registers = 0, depth_pipeline_registers = 0;
+        u32 probe_texture_snapshot_ready = 0;
         u64 index_snapshot_bytes = 0;
         NvnProgramCursor cursors[16] = {0};
         u32 first_depth_writers = 0;
@@ -3434,6 +3525,28 @@ static void execute_nvn_batch(void* arg) {
                     index_snapshots++;
                     index_snapshot_bytes += packet->index_snapshot_size;
                 }
+                texture_snapshots += !!packet->texture_snapshot_mask;
+                register_snapshots += !!packet->register_snapshot_valid;
+                sequenced_draws += !!packet->sequence;
+                if (!first_raw_sequence) first_raw_sequence = packet->sequence;
+                if (packet->register_snapshot_valid) {
+                    const u8* raw = (const u8*)packet->words +
+                        (u64)packet->word_count * sizeof(u32) +
+                        packet->index_snapshot_reserved + packet->texture_snapshot_reserved;
+                    u64 known[0x1000 / 64];
+                    memcpy(known, raw + 0x1000 * sizeof(u32), sizeof known);
+                    static const u16 viewport[] = {0x280, 0x281, 0x282, 0x283, 0x284, 0x285,
+                                                   0x300, 0x301, 0x302, 0x303};
+                    static const u16 scissor[] = {0x380, 0x381, 0x382};
+                    static const u16 raster[] = {0x36b, 0x646, 0x647, 0x648};
+                    static const u16 depth[] = {0x4b3, 0x4ba, 0x4c3};
+                    viewport_registers += raw_registers_have(known, viewport, sizeof viewport / sizeof *viewport);
+                    scissor_registers += raw_registers_have(known, scissor, sizeof scissor / sizeof *scissor);
+                    raster_registers += raw_registers_have(known, raster, sizeof raster / sizeof *raster);
+                    depth_pipeline_registers += raw_registers_have(known, depth, sizeof depth / sizeof *depth);
+                }
+                if (!first_texture_snapshot_mask)
+                    first_texture_snapshot_mask = packet->texture_snapshot_mask;
                 draws_with_program_pair += cursor && cursor->vertex_bound && cursor->fragment_bound;
                 if (cursor && cursor->vertex_bound && cursor->fragment_bound &&
                     packet->shader_code_base_known == 3) {
@@ -3451,10 +3564,22 @@ static void execute_nvn_batch(void* arg) {
                             if ((vs_header & 31) == 1 && ((vs_header >> 10) & 15) <= 1 &&
                                 (fs_header & 31) == 2 && ((fs_header >> 10) & 15) == 5) {
                                 valid_shader_pairs++;
+                                u32 pair = 0;
+                                while (pair < distinct_shader_pairs &&
+                                       (distinct_vertex_code[pair] != vertex_code ||
+                                        distinct_fragment_code[pair] != fragment_code)) pair++;
+                                int new_pair = pair == distinct_shader_pairs && distinct_shader_pairs < 128;
+                                if (new_pair) {
+                                    distinct_vertex_code[pair] = vertex_code;
+                                    distinct_fragment_code[pair] = fragment_code;
+                                    distinct_shader_pairs++;
+                                }
                                 const char* probe_opt = getenv("SNX_NVN_CONTROL_SHADER_PROBE");
-                                if (!shader_probe_attempted && probe_opt && !strcmp(probe_opt, "1") &&
+                                if (new_pair && shader_probe_attempted < 8 &&
+                                    probe_opt && !strcmp(probe_opt, "1") &&
                                     g_renderer->nvn_control_shader_probe) {
                                     NvnControlShaderProbe probe = {.code = {vertex_code, fragment_code}};
+                                    NvnControlShaderProbeResult result = {0};
                                     memcpy(probe.cbuf_address, packet->cbuf.address, sizeof probe.cbuf_address);
                                     memcpy(probe.cbuf_size, packet->cbuf.size, sizeof probe.cbuf_size);
                                     memcpy(probe.cbuf_known, packet->cbuf.known, sizeof probe.cbuf_known);
@@ -3474,16 +3599,22 @@ static void execute_nvn_batch(void* arg) {
                                     probe.texture_cbuf_bank = packet->texture.registers[4];
                                     probe.sampler_index_mode = packet->texture.registers[5];
                                     probe.texture_registers_known = packet->texture.known;
-                                    g_renderer->nvn_control_shader_probe(&probe, &shader_probe_result);
-                                    shader_probe_ready = shader_probe_result.ready;
-                                    shader_probe_result.vertex_attrib_known =
-                                        packet->vertex.attrib_written & shader_probe_result.vertex_input_mask;
+                                    if (packet->texture_snapshot_mask) {
+                                        probe.texture_descriptors = (const NvnControlTextureDescriptor*)(
+                                            (const u8*)packet->words +
+                                            (u64)packet->word_count * sizeof(u32) +
+                                            packet->index_snapshot_reserved);
+                                        probe.texture_descriptor_mask = packet->texture_snapshot_mask;
+                                    }
+                                    g_renderer->nvn_control_shader_probe(&probe, &result);
+                                    result.vertex_attrib_known =
+                                        packet->vertex.attrib_written & result.vertex_input_mask;
                                     for (u32 attr = 0; attr < 32; attr++) {
-                                        if (!(shader_probe_result.vertex_attrib_known & (1u << attr))) continue;
+                                        if (!(result.vertex_attrib_known & (1u << attr))) continue;
                                         u32 raw = packet->vertex.attrib[attr];
                                         u32 stream_index = raw & 31;
                                         if ((raw >> 6) & 1) {
-                                            shader_probe_result.vertex_stream_ready |= 1u << attr;
+                                            result.vertex_stream_ready |= 1u << attr;
                                             continue;
                                         }
                                         u64 stream_bits = 7ull << (stream_index * 4);
@@ -3496,9 +3627,27 @@ static void execute_nvn_batch(void* arg) {
                                         u64 end = ((u64)packet->vertex.limit[stream_index][0] << 32) |
                                                   packet->vertex.limit[stream_index][1];
                                         if (start && end >= start)
-                                            shader_probe_result.vertex_stream_ready |= 1u << attr;
+                                            result.vertex_stream_ready |= 1u << attr;
                                     }
-                                    shader_probe_attempted = 1;
+                                    shader_probe_all_ready += result.ready == 3;
+                                    shader_probe_all_resources +=
+                                        result.ready == 3 &&
+                                        (result.cbuf_bound[0] & result.cbuf_mask[0]) == result.cbuf_mask[0] &&
+                                        (result.cbuf_bound[1] & result.cbuf_mask[1]) == result.cbuf_mask[1] &&
+                                        result.vertex_stream_ready == result.vertex_input_mask &&
+                                        result.texture_slots_known[1] &&
+                                        result.texture_count[1] <= 32 &&
+                                        result.texture_snapshots_available[1] ==
+                                            (result.texture_count[1] == 32 ? UINT32_MAX :
+                                             (1u << result.texture_count[1]) - 1);
+                                    if (!shader_probe_attempted) {
+                                        shader_probe_result = result;
+                                        shader_probe_ready = result.ready;
+                                        probe_texture_snapshot_ready = result.texture_slots_known[1] &&
+                                            (packet->texture_snapshot_mask & result.texture_slots[1]) ==
+                                                result.texture_slots[1];
+                                    }
+                                    shader_probe_attempted++;
                                 }
                                 if (!vertex_sph) {
                                     vertex_sph = vs_header;
@@ -3562,11 +3711,13 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u mapped-shaders=%u valid-shaders=%u shader-probe=%u/%x cbmask=%x/%x cbbound=%x/%x tex=%u/%u texslots=%x/%x known=%u/%u handles=%x/%x descriptors=%x/%x first-handle=%x img=%u/%u inputs=%x/%x/%x first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u sequenced=%u/%llu paired-program-draws=%u mapped-shaders=%u valid-shaders=%u unique-shaders=%u shader-probe=%u/%x all-ready=%u resource-ready=%u cbmask=%x/%x cbbound=%x/%x tex=%u/%u texslots=%x/%x known=%u/%u handles=%x/%x descriptors=%x/%x snapshot-available=%x/%x snapshot-live-match=%x/%x shapes=%x/%x first-handle=%x texture-snapshots=%u/%x/%u registers=%u pipeline-regs=%u/%u/%u/%u img=%u/%u inputs=%x/%x/%x first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
             batch->control_packet_count, ordered, macro12,
             (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
-            macro38, decoded_draws, draws_with_program_pair, mapped_shader_pairs,
-            valid_shader_pairs, shader_probe_attempted, shader_probe_ready,
+            macro38, decoded_draws, sequenced_draws, (unsigned long long)first_raw_sequence,
+            draws_with_program_pair, mapped_shader_pairs,
+            valid_shader_pairs, distinct_shader_pairs, shader_probe_attempted, shader_probe_ready,
+            shader_probe_all_ready, shader_probe_all_resources,
             shader_probe_result.cbuf_mask[0], shader_probe_result.cbuf_mask[1],
             shader_probe_result.cbuf_bound[0], shader_probe_result.cbuf_bound[1],
             shader_probe_result.texture_count[0], shader_probe_result.texture_count[1],
@@ -3574,7 +3725,13 @@ static void execute_nvn_batch(void* arg) {
             shader_probe_result.texture_slots_known[0], shader_probe_result.texture_slots_known[1],
             shader_probe_result.texture_handles_mapped[0], shader_probe_result.texture_handles_mapped[1],
             shader_probe_result.texture_descriptors_mapped[0], shader_probe_result.texture_descriptors_mapped[1],
+            shader_probe_result.texture_snapshots_available[0], shader_probe_result.texture_snapshots_available[1],
+            shader_probe_result.texture_snapshots_match[0], shader_probe_result.texture_snapshots_match[1],
+            shader_probe_result.texture_shapes_supported[0], shader_probe_result.texture_shapes_supported[1],
             shader_probe_result.first_texture_handle,
+            texture_snapshots, first_texture_snapshot_mask, probe_texture_snapshot_ready,
+            register_snapshots, viewport_registers, scissor_registers,
+            raster_registers, depth_pipeline_registers,
             shader_probe_result.image_count[0], shader_probe_result.image_count[1],
             shader_probe_result.vertex_input_mask, shader_probe_result.vertex_attrib_known,
             shader_probe_result.vertex_stream_ready,

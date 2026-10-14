@@ -1567,8 +1567,16 @@ void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
         memcpy(saved_size, g_vk_cbsize[row], sizeof saved_size);
         memset(g_vk_cb[row], 0, sizeof saved_cb);
         memset(g_vk_cbsize[row], 0, sizeof saved_size);
+        if (probe->code[stage] >= 0x30) {
+            u64 embedded = shader_embedded_bank1(probe->code[stage] - 0x30);
+            if (embedded) {
+                g_vk_cb[row][1] = embedded;
+                g_vk_cbsize[row][1] = 65536;
+                result->cbuf_bound[stage] |= 1u << 1;
+            }
+        }
         for (u32 bank = 0; bank < 18; bank++)
-            if (probe->cbuf_known[stage] & (1u << bank)) {
+            if (bank != 1 && (probe->cbuf_known[stage] & (1u << bank))) {
                 g_vk_cb[row][bank] = probe->cbuf_address[stage][bank];
                 g_vk_cbsize[row][bank] = probe->cbuf_size[stage][bank];
                 if (probe->cbuf_address[stage][bank] && probe->cbuf_size[stage][bank])
@@ -1592,17 +1600,36 @@ void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
                     result->texture_slots_known[stage] = 0;
                     break;
                 }
-                result->texture_slots[stage] |= 1u << ((word - 8) / 2);
-                u32 bank = texture->bindless ? texture->bl_cbuf : probe->texture_cbuf_bank & 31;
-                if (bank >= 18 || !(probe->cbuf_known[stage] & (1u << bank)) ||
-                    !probe->cbuf_address[stage][bank] || word > (UINT32_MAX / 4) ||
-                    (u64)word * 4 + 4 > probe->cbuf_size[stage][bank]) continue;
-                u64 handle_address = probe->cbuf_address[stage][bank] + (u64)word * 4;
-                if (handle_address < probe->cbuf_address[stage][bank] ||
-                    !gmmu_translate(handle_address) || !gmmu_translate(handle_address + 3)) continue;
+                u32 slot = (word - 8) / 2;
+                result->texture_slots[stage] |= 1u << slot;
+                u32 bank = probe->texture_cbuf_bank & 31;
                 u32 handle = 0;
-                gmem_read(handle_address, &handle, sizeof handle);
-                result->texture_handles_mapped[stage] |= 1u << i;
+                int live_handle = 0;
+                if (bank < 18 && (probe->cbuf_known[stage] & (1u << bank)) &&
+                    probe->cbuf_address[stage][bank] &&
+                    (u64)word * 4 + 4 <= probe->cbuf_size[stage][bank]) {
+                    u64 handle_address = probe->cbuf_address[stage][bank] + (u64)word * 4;
+                    if (handle_address >= probe->cbuf_address[stage][bank] &&
+                        gmmu_translate(handle_address) && gmmu_translate(handle_address + 3)) {
+                        gmem_read(handle_address, &handle, sizeof handle);
+                        live_handle = 1;
+                        result->texture_handles_mapped[stage] |= 1u << i;
+                    }
+                }
+                if (probe->texture_descriptors && (probe->texture_descriptor_mask & (1u << slot))) {
+                    result->texture_snapshots_available[stage] |= 1u << i;
+                    if (live_handle && probe->texture_descriptors[slot].handle == handle)
+                        result->texture_snapshots_match[stage] |= 1u << i;
+                    u64 image_address = 0;
+                    u32 width = 0, height = 0, layers = 0, levels = 0;
+                    VkImageViewType view_type = 0;
+                    VkFormat format = VK_FORMAT_UNDEFINED;
+                    if (vk_tex_tic_shadow(probe->texture_descriptors[slot].tic, &image_address,
+                                          &width, &height, &layers, &levels,
+                                          &view_type, &format))
+                        result->texture_shapes_supported[stage] |= 1u << i;
+                }
+                if (!live_handle) continue;
                 if (!result->first_texture_handle) result->first_texture_handle = handle;
                 if ((probe->texture_registers_known & 0x3f) != 0x3f || probe->sampler_index_mode ||
                     probe->tic_base > UINT64_MAX - (u64)(handle & 0xfffff) * 32 - 31 ||

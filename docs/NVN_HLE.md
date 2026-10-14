@@ -1774,6 +1774,21 @@ descriptor addresses resolve from the observed CBUF and texture-table
 registers. This establishes the resource inputs for that draw, but the
 descriptors, raster state, attachments, and ordered depth writes still need
 to reach the direct render pass.
+The packet capture now retains the 32 generated texture-handle slots and
+their TIC/TSC bytes for each decoded depth draw, as well as a bounded copy
+of its directly written 3D registers. All 65 first-cubemap draws retain
+indices, texture descriptors, and register snapshots. A GPU-side probe found
+that one live handle often differs from its submission snapshot by the time
+the batch callback runs. Future direct execution must use the snapshot for
+that draw. The six distinct shader pairs in this pass all translate; bank 1
+comes from the shader blob rather than a direct CBUF bind. The register copy
+does not yet include writes performed inside MME macros.
+With that embedded bank supplied, all six pairs also have the CBUF, vertex
+stream, and sampled-texture snapshots required by their translated shader
+metadata. The captured direct register state covers the viewport, scissor,
+raster, and depth-test inputs used by this pass. This is resource readiness;
+the raw draws still need ordered direct Vulkan execution and a depth-image
+comparison against Maxwell.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
