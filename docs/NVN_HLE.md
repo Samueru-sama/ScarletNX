@@ -1764,6 +1764,16 @@ Both stages have observed CBUF0 and uniform slot 0 bindings for all 65 draws.
 These register snapshots are candidates for direct shader translation. Macro
 effects beyond the confirmed program binds and CBUF contents still need to be
 represented before executing the draws independently.
+With `SNX_NVN_CONTROL_SHADER_PROBE=1`, the first raw draw in each batch is
+translated using only its captured code addresses and CBUF bindings. TotK's
+first cubemap pair produces valid vertex and fragment modules. The vertex
+shader reads attributes 0, 1, and 8, and all three have observed stream
+state. Its required CBUF banks and the fragment shader's required banks are
+bound. The fragment shader samples five textures; their handles and TIC/TSC
+descriptor addresses resolve from the observed CBUF and texture-table
+registers. This establishes the resource inputs for that draw, but the
+descriptors, raster state, attachments, and ordered depth writes still need
+to reach the direct render pass.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

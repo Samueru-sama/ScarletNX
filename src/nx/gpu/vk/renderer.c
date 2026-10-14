@@ -93,6 +93,12 @@ static void vkr_nvn_batch_begin(void) {
     vk_nvn_batch_begin();
     vk_unlock();
 }
+static void vkr_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
+                                         NvnControlShaderProbeResult* result) {
+    vk_lock();
+    vk_nvn_control_shader_probe(probe, result);
+    vk_unlock();
+}
 static void vkr_nvn_probe_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key,
                                         u64 prior_unmodeled_write, int prior_writes_scoped) {
     vk_lock();
@@ -484,6 +490,7 @@ const Renderer vk_renderer = {
     .async_submit = vkr_async_submit,
     .clear = vkr_clear,
     .nvn_batch_begin = vkr_nvn_batch_begin,
+    .nvn_control_shader_probe = vkr_nvn_control_shader_probe,
     .nvn_probe_initial_color = vkr_nvn_probe_initial_color,
     .nvn_clear = vkr_nvn_clear,
     .nvn_copy_buffer_texture = vkr_nvn_copy_buffer_texture,

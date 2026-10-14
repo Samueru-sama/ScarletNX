@@ -32,4 +32,27 @@ typedef struct {
    Returns zero for malformed packets or insufficient output capacity. */
 int nvn_control_program_binds(const u32* words, u32 count, NvnControlProgramBind* out,
                               u32 capacity, u32* bind_count);
+
+/* A raw draw's shader inputs, captured from submitted 3D register writes.
+   The probe translates these inputs but does not submit a draw. */
+typedef struct {
+    u64 code[2];
+    u64 cbuf_address[2][18];
+    u32 cbuf_size[2][18];
+    u32 cbuf_known[2];
+    u32 attr_int, attr_sint;
+    u32 clip_enable;
+    u64 tic_base, tsc_base;
+    u32 texture_cbuf_bank, sampler_index_mode;
+    u8 texture_registers_known;
+} NvnControlShaderProbe;
+typedef struct {
+    u32 ready;
+    u32 cbuf_mask[2], cbuf_bound[2], texture_count[2], texture_slots[2], image_count[2];
+    u8 texture_slots_known[2];
+    u32 texture_handles_mapped[2], texture_descriptors_mapped[2];
+    u32 first_texture_handle;
+    u32 vertex_input_mask;
+    u32 vertex_attrib_known, vertex_stream_ready;
+} NvnControlShaderProbeResult;
 #endif

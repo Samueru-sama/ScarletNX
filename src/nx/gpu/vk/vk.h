@@ -25,6 +25,7 @@
 #include "cpu/aarch64/cpu.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_clear.h"
+#include "gpu/nvn_control.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
 #include "gpu/nvn_dispatch.h"
@@ -39,6 +40,8 @@
 int vk_nvn_clear(const NvnClearCommand* command);
 int vk_nvn_copy_buffer_texture(const NvnCopyBufferTextureCommand* command);
 void vk_nvn_batch_begin(void);
+void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
+                                 NvnControlShaderProbeResult* result);
 void vk_nvn_seed_initial_color(u64 address, u32 size, u64 sequence, u64 queue_key);
 int vk_nvn_draw_prepare(const NvnDrawCommand* command);
 int vk_nvn_dispatch(const NvnDispatchCommand* command);

@@ -218,6 +218,10 @@ typedef struct {
     u32 size[2][18];
     u32 known[2];
 } NvnRawCbufState;
+typedef struct {
+    u32 registers[6]; /* TIC hi/lo, TSC hi/lo, texture CBUF bank, sampler index mode */
+    u8 known;
+} NvnRawTextureState;
 /* Submission order, rather than control-record order, defines execution. A record may be
    submitted repeatedly or after an earlier record in the same list. Keep a bounded copy of
    each control-owned entry while the guest backing is still valid. */
@@ -231,8 +235,10 @@ typedef struct NvnControlPacket {
     u8 depth_known;
     u32 shader_code_base[2];
     u8 shader_code_base_known;
+    u8 clip_enable, clip_known;
     NvnRawVertexState vertex;
     NvnRawCbufState cbuf;
+    NvnRawTextureState texture;
     u32 words[];
 } NvnControlPacket;
 typedef struct {
@@ -522,6 +528,7 @@ typedef struct {
     u8 shader_code_base_known;
     NvnRawVertexState vertex;
     NvnRawCbufState cbuf;
+    NvnRawTextureState texture;
     u32 cbuf_setup[3];
     u8 cbuf_setup_known;
     u8 active, known;
@@ -563,6 +570,7 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
             stream->shader_code_base_known = 0;
             stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
             stream->cbuf_setup_known = 0;
+            stream->texture.known = 0;
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
@@ -598,6 +606,13 @@ static void origin_method(NvnOriginStream* stream, u32 sub, u32 method, u32 valu
                 }
             }
         }
+        static const u16 texture_methods[6] = {0x55d, 0x55e, 0x557, 0x558, 0x982, 0x48d};
+        for (u32 i = 0; i < 6; i++)
+            if (method == texture_methods[i]) {
+                stream->texture.registers[i] = value;
+                stream->texture.known |= (u8)(1u << i);
+                break;
+            }
         static const u16 depth_methods[8] = {0x3f8, 0x3f9, 0x48a, 0x48b,
                                               0x3fa, 0x54e, 0x4b3, 0x4ba};
         for (u32 i = 0; i < 8; i++)
@@ -675,6 +690,7 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
             stream->shader_code_base_known = 0;
             stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
             stream->cbuf_setup_known = 0;
+            stream->texture.known = 0;
             stream->vertex.attrib_written = stream->vertex.limit_written = 0;
             stream->vertex.stream_written = 0;
             stream->vertex.instanced_written = 0;
@@ -737,11 +753,14 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
                                  .record_value = record_value, .word_count = words,
                                  .macro12_count = macro12_count, .macro38_count = macro38_count,
                                  .depth_known = stream->depth_known,
-                                 .shader_code_base_known = stream->shader_code_base_known};
+                                 .shader_code_base_known = stream->shader_code_base_known,
+                                 .clip_enable = stream->clip_enable,
+                                 .clip_known = stream->clip_known};
     memcpy(packet->depth_registers, stream->depth_registers, sizeof packet->depth_registers);
     memcpy(packet->shader_code_base, stream->shader_code_base, sizeof packet->shader_code_base);
     if (macro38_count) packet->vertex = stream->vertex;
     if (macro38_count) packet->cbuf = stream->cbuf;
+    if (macro38_count) packet->texture = stream->texture;
     memcpy(packet->words, data, (size_t)words * sizeof(u32));
     if (index_bytes) {
         packet->index_snapshot_valid = copy_gpu_pages(draw.index_address,
@@ -830,6 +849,7 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             stream->vertex.instanced_written = 0;
             stream->cbuf.known[0] = stream->cbuf.known[1] = 0;
             stream->cbuf_setup_known = 0;
+            stream->texture.known = 0;
         }
         if (queue) {
             int matched_control = 0;
@@ -3347,6 +3367,8 @@ static void execute_nvn_batch(void* arg) {
         u32 decoded_program_binds = 0, draws_with_program_pair = 0;
         u32 mapped_shader_pairs = 0;
         u32 valid_shader_pairs = 0;
+        u32 shader_probe_attempted = 0, shader_probe_ready = 0;
+        NvnControlShaderProbeResult shader_probe_result = {0};
         u32 vertex_sph = 0, fragment_sph = 0;
         u64 first_vertex_code = 0, first_fragment_code = 0;
         u32 vertex_attr0_seen = 0, vertex_stream0_seen = 0;
@@ -3429,6 +3451,55 @@ static void execute_nvn_batch(void* arg) {
                             if ((vs_header & 31) == 1 && ((vs_header >> 10) & 15) <= 1 &&
                                 (fs_header & 31) == 2 && ((fs_header >> 10) & 15) == 5) {
                                 valid_shader_pairs++;
+                                const char* probe_opt = getenv("SNX_NVN_CONTROL_SHADER_PROBE");
+                                if (!shader_probe_attempted && probe_opt && !strcmp(probe_opt, "1") &&
+                                    g_renderer->nvn_control_shader_probe) {
+                                    NvnControlShaderProbe probe = {.code = {vertex_code, fragment_code}};
+                                    memcpy(probe.cbuf_address, packet->cbuf.address, sizeof probe.cbuf_address);
+                                    memcpy(probe.cbuf_size, packet->cbuf.size, sizeof probe.cbuf_size);
+                                    memcpy(probe.cbuf_known, packet->cbuf.known, sizeof probe.cbuf_known);
+                                    for (u32 attr = 0; attr < 32; attr++) {
+                                        if (!(packet->vertex.attrib_written & (1u << attr))) continue;
+                                        u32 type = (packet->vertex.attrib[attr] >> 27) & 7;
+                                        if (type == 3 || type == 4) {
+                                            probe.attr_int |= 1u << attr;
+                                            if (type == 3) probe.attr_sint |= 1u << attr;
+                                        }
+                                    }
+                                    probe.clip_enable = packet->clip_known ? packet->clip_enable : 0;
+                                    probe.tic_base = ((u64)packet->texture.registers[0] << 32) |
+                                                     packet->texture.registers[1];
+                                    probe.tsc_base = ((u64)packet->texture.registers[2] << 32) |
+                                                     packet->texture.registers[3];
+                                    probe.texture_cbuf_bank = packet->texture.registers[4];
+                                    probe.sampler_index_mode = packet->texture.registers[5];
+                                    probe.texture_registers_known = packet->texture.known;
+                                    g_renderer->nvn_control_shader_probe(&probe, &shader_probe_result);
+                                    shader_probe_ready = shader_probe_result.ready;
+                                    shader_probe_result.vertex_attrib_known =
+                                        packet->vertex.attrib_written & shader_probe_result.vertex_input_mask;
+                                    for (u32 attr = 0; attr < 32; attr++) {
+                                        if (!(shader_probe_result.vertex_attrib_known & (1u << attr))) continue;
+                                        u32 raw = packet->vertex.attrib[attr];
+                                        u32 stream_index = raw & 31;
+                                        if ((raw >> 6) & 1) {
+                                            shader_probe_result.vertex_stream_ready |= 1u << attr;
+                                            continue;
+                                        }
+                                        u64 stream_bits = 7ull << (stream_index * 4);
+                                        u32 limit_bits = 3u << (stream_index * 2);
+                                        if ((packet->vertex.stream_written & stream_bits) != stream_bits ||
+                                            (packet->vertex.limit_written & limit_bits) != limit_bits ||
+                                            !(packet->vertex.stream[stream_index][0] & 0x1000)) continue;
+                                        u64 start = ((u64)packet->vertex.stream[stream_index][1] << 32) |
+                                                    packet->vertex.stream[stream_index][2];
+                                        u64 end = ((u64)packet->vertex.limit[stream_index][0] << 32) |
+                                                  packet->vertex.limit[stream_index][1];
+                                        if (start && end >= start)
+                                            shader_probe_result.vertex_stream_ready |= 1u << attr;
+                                    }
+                                    shader_probe_attempted = 1;
+                                }
                                 if (!vertex_sph) {
                                     vertex_sph = vs_header;
                                     fragment_sph = fs_header;
@@ -3491,11 +3562,23 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u mapped-shaders=%u valid-shaders=%u first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u mapped-shaders=%u valid-shaders=%u shader-probe=%u/%x cbmask=%x/%x cbbound=%x/%x tex=%u/%u texslots=%x/%x known=%u/%u handles=%x/%x descriptors=%x/%x first-handle=%x img=%u/%u inputs=%x/%x/%x first-sph=%08x/%08x first-code=%llx/%llx attr0=%u stream0=%u cbuf0=%u/%u uniform0=%u/%u index-snapshots=%u/%llu indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
             batch->control_packet_count, ordered, macro12,
             (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
             macro38, decoded_draws, draws_with_program_pair, mapped_shader_pairs,
-            valid_shader_pairs, vertex_sph, fragment_sph,
+            valid_shader_pairs, shader_probe_attempted, shader_probe_ready,
+            shader_probe_result.cbuf_mask[0], shader_probe_result.cbuf_mask[1],
+            shader_probe_result.cbuf_bound[0], shader_probe_result.cbuf_bound[1],
+            shader_probe_result.texture_count[0], shader_probe_result.texture_count[1],
+            shader_probe_result.texture_slots[0], shader_probe_result.texture_slots[1],
+            shader_probe_result.texture_slots_known[0], shader_probe_result.texture_slots_known[1],
+            shader_probe_result.texture_handles_mapped[0], shader_probe_result.texture_handles_mapped[1],
+            shader_probe_result.texture_descriptors_mapped[0], shader_probe_result.texture_descriptors_mapped[1],
+            shader_probe_result.first_texture_handle,
+            shader_probe_result.image_count[0], shader_probe_result.image_count[1],
+            shader_probe_result.vertex_input_mask, shader_probe_result.vertex_attrib_known,
+            shader_probe_result.vertex_stream_ready,
+            vertex_sph, fragment_sph,
             (unsigned long long)first_vertex_code, (unsigned long long)first_fragment_code,
             vertex_attr0_seen, vertex_stream0_seen,
             vertex_cbuf0_seen, fragment_cbuf0_seen, vertex_uniform_seen, fragment_uniform_seen,

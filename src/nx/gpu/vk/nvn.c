@@ -1554,6 +1554,72 @@ static int materialize_draw_shaders(const NvnDrawCommand* command, VkSh** vertex
     return 1;
 }
 
+void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
+                                 NvnControlShaderProbeResult* result) {
+    if (!result) return;
+    *result = (NvnControlShaderProbeResult){0};
+    if (!probe || !probe->code[0] || !probe->code[1]) return;
+    for (u32 stage = 0; stage < 2; stage++) {
+        u32 row = stage ? 4 : 0;
+        u64 saved_cb[18];
+        u32 saved_size[18];
+        memcpy(saved_cb, g_vk_cb[row], sizeof saved_cb);
+        memcpy(saved_size, g_vk_cbsize[row], sizeof saved_size);
+        memset(g_vk_cb[row], 0, sizeof saved_cb);
+        memset(g_vk_cbsize[row], 0, sizeof saved_size);
+        for (u32 bank = 0; bank < 18; bank++)
+            if (probe->cbuf_known[stage] & (1u << bank)) {
+                g_vk_cb[row][bank] = probe->cbuf_address[stage][bank];
+                g_vk_cbsize[row][bank] = probe->cbuf_size[stage][bank];
+                if (probe->cbuf_address[stage][bank] && probe->cbuf_size[stage][bank])
+                    result->cbuf_bound[stage] |= 1u << bank;
+            }
+        vk_shader_set_nvn_handle_bank(NULL, NULL, 0);
+        VkSh* shader = vk_shader_get(probe->code[stage], 0, stage ? ST_FS : ST_VS,
+                                     stage ? 0 : probe->attr_int, stage ? 0 : probe->attr_sint,
+                                     0, 0, stage ? 0 : probe->clip_enable, 0, 0);
+        if (shader && shader->mod && !shader->failed && !shader->si.unsupported) {
+            result->ready |= 1u << stage;
+            result->cbuf_mask[stage] = shader->si.cbuf_mask;
+            result->texture_count[stage] = shader->si.ntex;
+            result->image_count[stage] = shader->si.nimg;
+            result->texture_slots_known[stage] = 1;
+            for (int i = 0; i < shader->si.ntex; i++) {
+                const ShTex* texture = &shader->si.tex[i];
+                u32 word = texture->cbuf_off;
+                if (texture->bindless || texture->bl2 || word < 8 || ((word - 8) & 1) ||
+                    (word - 8) / 2 >= NVN_DRAW_TEXTURE_SLOTS) {
+                    result->texture_slots_known[stage] = 0;
+                    break;
+                }
+                result->texture_slots[stage] |= 1u << ((word - 8) / 2);
+                u32 bank = texture->bindless ? texture->bl_cbuf : probe->texture_cbuf_bank & 31;
+                if (bank >= 18 || !(probe->cbuf_known[stage] & (1u << bank)) ||
+                    !probe->cbuf_address[stage][bank] || word > (UINT32_MAX / 4) ||
+                    (u64)word * 4 + 4 > probe->cbuf_size[stage][bank]) continue;
+                u64 handle_address = probe->cbuf_address[stage][bank] + (u64)word * 4;
+                if (handle_address < probe->cbuf_address[stage][bank] ||
+                    !gmmu_translate(handle_address) || !gmmu_translate(handle_address + 3)) continue;
+                u32 handle = 0;
+                gmem_read(handle_address, &handle, sizeof handle);
+                result->texture_handles_mapped[stage] |= 1u << i;
+                if (!result->first_texture_handle) result->first_texture_handle = handle;
+                if ((probe->texture_registers_known & 0x3f) != 0x3f || probe->sampler_index_mode ||
+                    probe->tic_base > UINT64_MAX - (u64)(handle & 0xfffff) * 32 - 31 ||
+                    probe->tsc_base > UINT64_MAX - (u64)(handle >> 20) * 32 - 31) continue;
+                u64 tic = probe->tic_base + (u64)(handle & 0xfffff) * 32;
+                u64 tsc = probe->tsc_base + (u64)(handle >> 20) * 32;
+                if (gmmu_translate(tic) && gmmu_translate(tic + 31) &&
+                    gmmu_translate(tsc) && gmmu_translate(tsc + 31))
+                    result->texture_descriptors_mapped[stage] |= 1u << i;
+            }
+            if (!stage) result->vertex_input_mask = shader->si.in_mask;
+        }
+        memcpy(g_vk_cb[row], saved_cb, sizeof saved_cb);
+        memcpy(g_vk_cbsize[row], saved_size, sizeof saved_size);
+    }
+}
+
 static VkBlendFactor nvn_blend_factor(u32 factor) {
     switch (factor) {
         case 1: return VK_BLEND_FACTOR_ZERO;

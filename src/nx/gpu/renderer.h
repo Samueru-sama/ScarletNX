@@ -7,6 +7,7 @@
 #include "cpu/aarch64/cpu.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_clear.h"
+#include "gpu/nvn_control.h"
 #include "gpu/nvn_copy.h"
 #include "gpu/nvn_draw.h"
 #include "gpu/nvn_dispatch.h"
@@ -23,6 +24,8 @@ typedef struct Renderer {
     void (*clear)(GpuChannel* ch, u32 v);
     /* Opt-in semantic NVN probes. Guest GPFIFO rendering remains authoritative. */
     void (*nvn_batch_begin)(void);
+    void (*nvn_control_shader_probe)(const NvnControlShaderProbe* probe,
+                                     NvnControlShaderProbeResult* result);
     void (*nvn_probe_initial_color)(u64 address, u32 size, u64 sequence, u64 queue_key, u64 prior_unmodeled_write,
                                     int prior_writes_scoped);
     int (*nvn_clear)(const NvnClearCommand* command);
