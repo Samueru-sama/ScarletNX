@@ -210,7 +210,7 @@ typedef struct NvnControlRange {
 typedef struct NvnControlPacket {
     struct NvnControlPacket* next;
     u64 gpu_va, cpu_address, list, visit, ordinal;
-    u32 control_offset, record_value, word_count, macro38_count;
+    u32 channel, control_offset, record_value, word_count, macro12_count, macro38_count;
     u32 depth_registers[8];
     u8 depth_known;
     u32 words[];
@@ -222,6 +222,7 @@ typedef struct {
     u64 batch_start_sequence;
     u64 last_unmodeled_write;
     u64 gpu_entries, gpu_entries_in_draw_span;
+    u64 gpu_macro12_packets;
     u64 gpu_macro_packets_outside_draw_span, gpu_macro38_packets_outside_draw_span;
     u64 gpu_macro38_control_matched;
     u64 gpu_macro38_hazards_applied;
@@ -488,7 +489,7 @@ typedef struct {
     u32 mode, sub, method, count, index;
     u32 origin, origin_writes;
     u32 clip_writes;
-    u64 macro_packets, macro38_packets;
+    u64 macro_packets, macro12_packets, macro38_packets;
     u8 clip_enable, clip_known;
     u32 depth_registers[8]; /* address hi/lo, width, height, format, enabled, test, write */
     u8 depth_known;
@@ -571,6 +572,7 @@ static void origin_pushbuffer(NvnOriginStream* stream, const u32* words, u32 len
         u32 count = (header >> 16) & 0x1fff;
         if (!sub && method >= 0xe00 && (mode == 1 || mode == 3 || mode == 4 || mode == 5)) {
             stream->macro_packets++;
+            if (method == 0xe18) stream->macro12_packets++;
             if (method == 0xe4c) stream->macro38_packets++;
         }
         if (mode == 4)
@@ -595,13 +597,13 @@ static int origin_entry_matches_list(const NvnDrawCommand* draw, u64 cpu, u64 by
 }
 
 static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* range,
-                                   u64 va, u64 cpu, u32 offset, u32 record_value,
-                                   const u32* data, u32 words, u32 macro38_count,
+                                   u32 channel, u64 va, u64 cpu, u32 offset, u32 record_value,
+                                   const u32* data, u32 words, u32 macro12_count, u32 macro38_count,
                                    const NvnOriginStream* stream) {
     const char* enabled = getenv("SNX_NVN_CONTROL_PACKETS");
     if (!enabled || strcmp(enabled, "1")) return;
     u64 size = sizeof(NvnControlPacket) + (u64)words * sizeof(u32);
-    if (!data || !words || size > (64u << 10) ||
+    if (!data || !words || size > (1u << 20) ||
         size > (8u << 20) - queue->control_packet_bytes ||
         size > (32u << 20) - control_packet_snapshot_bytes) {
         queue->control_packets_dropped++;
@@ -613,10 +615,12 @@ static void capture_control_packet(ReplayQueue* queue, const NvnControlRange* ra
         return;
     }
     *packet = (NvnControlPacket){.gpu_va = va, .cpu_address = cpu,
-                                 .list = range->list, .visit = range->visit,
-                                 .ordinal = queue->gpu_entries, .control_offset = offset,
+                                 .list = range ? range->list : 0,
+                                 .visit = range ? range->visit : 0,
+                                 .ordinal = queue->gpu_entries, .channel = channel,
+                                 .control_offset = offset,
                                  .record_value = record_value, .word_count = words,
-                                 .macro38_count = macro38_count,
+                                 .macro12_count = macro12_count, .macro38_count = macro38_count,
                                  .depth_known = stream->depth_known};
     memcpy(packet->depth_registers, stream->depth_registers, sizeof packet->depth_registers);
     memcpy(packet->words, data, (size_t)words * sizeof(u32));
@@ -670,10 +674,11 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
         u32 writes_before = stream->origin_writes;
         u32 clip_writes_before = stream->clip_writes;
         u64 macros_before = stream->macro_packets;
+        u64 macro12_before = stream->macro12_packets;
         u64 macro38_before = stream->macro38_packets;
         const u32* data = (const u32*)gmem_ptr_untracked(va, bytes);
         u32* copied_data = NULL;
-        if (!data && words <= 16384) {
+        if (!data && words <= (1u << 18)) {
             /* Disjoint GPU pages still form one ordered entry. The fast path above
                only returns a pointer when every page has contiguous CPU backing. */
             copied_data = malloc((size_t)bytes);
@@ -697,7 +702,9 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
             stream->depth_known = 0;
         }
         if (queue) {
+            int matched_control = 0;
             queue->gpu_entries++;
+            queue->gpu_macro12_packets += stream->macro12_packets - macro12_before;
             queue->gpu_entries_in_draw_span += !!matched_visit && matched_visit != UINT64_MAX;
             if (!matched_visit || matched_visit == UINT64_MAX) {
                 queue->gpu_macro_packets_outside_draw_span += stream->macro_packets - macros_before;
@@ -707,6 +714,7 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
                         u32 offset = 0, record_value = 0;
                         if (!nvn_control_find_gpu_entry(range->words, range->qwords,
                                                         va, cpu, &offset, &record_value)) continue;
+                        matched_control = 1;
                         queue->gpu_macro38_control_matched += stream->macro38_packets - macro38_before;
                         if (range->seen_offset) {
                             queue->gpu_control_rewinds += offset < range->last_offset;
@@ -714,7 +722,8 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
                         }
                         range->last_offset = offset;
                         range->seen_offset = 1;
-                        capture_control_packet(queue, range, va, cpu, offset, record_value, data, words,
+                        capture_control_packet(queue, range, channel, va, cpu, offset, record_value, data, words,
+                                               (u32)(stream->macro12_packets - macro12_before),
                                                (u32)(stream->macro38_packets - macro38_before), stream);
                         const char* order_trace = getenv("SNX_NVN_CONTROL_ORDER");
                         if (order_trace && !strcmp(order_trace, "1") && queue->draws &&
@@ -744,6 +753,12 @@ void nvn_record_observe_gpu_submit(const u64* entries, u32 count, u32 channel) {
                         break;
                     }
             }
+            /* Program binds can be in a parent command-memory span rather than a
+               secondary control record. Keep them in the same ordinal stream. */
+            if (!matched_control && stream->macro12_packets != macro12_before)
+                capture_control_packet(queue, NULL, channel, va, cpu, 0, 0, data, words,
+                                       (u32)(stream->macro12_packets - macro12_before),
+                                       (u32)(stream->macro38_packets - macro38_before), stream);
         }
         if (queue && queue->draws && matched_visit)
             for (u32 i = 0; i < queue->draws->count; i++) {
@@ -3162,6 +3177,7 @@ typedef struct {
     NvnMemoryWriteBatch* memory_writes;
     NvnControlPacket* control_packets;
     u32 control_packet_count, control_packets_dropped;
+    u64 gpu_macro12_packets;
     NvnStorageSeed* storage_seeds;
     NvnUniformUpdate* uniform_updates;
 } NvnGpuBatch;
@@ -3187,26 +3203,73 @@ static void free_control_packets(NvnControlPacket* packet) {
         packet = next;
     }
 }
+typedef struct {
+    u32 channel, vertex_offset, fragment_offset;
+    u8 used, vertex_bound, fragment_bound;
+} NvnProgramCursor;
 
 static void execute_nvn_batch(void* arg) {
     NvnGpuBatch* batch = arg;
     if (g_renderer->nvn_batch_begin) g_renderer->nvn_batch_begin();
     if (batch->control_packet_count || batch->control_packets_dropped) {
         u64 previous = 0;
-        u32 ordered = 0, macro38 = 0, decoded_draws = 0, depth_state_known = 0, depth_writers = 0;
+        u32 ordered = 0, macro12 = 0, macro38 = 0, decoded_draws = 0, depth_state_known = 0, depth_writers = 0;
+        u32 decoded_program_binds = 0, draws_with_program_pair = 0;
+        NvnProgramCursor cursors[16] = {0};
         u32 first_depth_writers = 0;
         u64 decoded_indices = 0;
         u64 first_depth_address = 0;
         u32 first_depth_width = 0, first_depth_height = 0;
         const char* dump = getenv("SNX_NVN_CONTROL_PACKET_DUMP");
         for (const NvnControlPacket* packet = batch->control_packets; packet; packet = packet->next) {
+            NvnProgramCursor* cursor = NULL;
+            for (u32 i = 0; i < 16; i++)
+                if (cursors[i].used && cursors[i].channel == packet->channel) {
+                    cursor = &cursors[i];
+                    break;
+                }
+            if (!cursor)
+                for (u32 i = 0; i < 16; i++)
+                    if (!cursors[i].used) {
+                        cursor = &cursors[i];
+                        *cursor = (NvnProgramCursor){.used = 1, .channel = packet->channel};
+                        break;
+                    }
             ordered += packet->ordinal > previous && packet->word_count > 0;
+            macro12 += packet->macro12_count;
             macro38 += packet->macro38_count;
+            if (packet->macro12_count) {
+                NvnControlProgramBind binds[512];
+                u32 bind_count = 0;
+                int parsed = nvn_control_program_binds(packet->words, packet->word_count,
+                                                       binds, 512, &bind_count);
+                if (parsed) {
+                    decoded_program_binds += bind_count;
+                    for (u32 i = 0; i < bind_count; i++) {
+                        if (cursor && binds[i].selector == 1) {
+                            cursor->vertex_offset = binds[i].code_offset;
+                            cursor->vertex_bound = 1;
+                        } else if (cursor && binds[i].selector == 5) {
+                            cursor->fragment_offset = binds[i].code_offset;
+                            cursor->fragment_bound = 1;
+                        }
+                    }
+                }
+                if (!parsed || bind_count != packet->macro12_count) {
+                    if (cursor) cursor->vertex_bound = cursor->fragment_bound = 0;
+                    if (dump && !strcmp(dump, "1") && packet->word_count >= 4)
+                        LOG_LIMIT(8, "nvn-control-macro12-unresolved: ordinal=%llu words=%u calls=%u parsed=%u head=%08x,%08x,%08x,%08x\n",
+                            (unsigned long long)packet->ordinal, packet->word_count,
+                            packet->macro12_count, bind_count,
+                            packet->words[0], packet->words[1], packet->words[2], packet->words[3]);
+                }
+            }
             NvnControlMacro38Draw decoded;
             if (packet->macro38_count == 1 &&
                 nvn_control_macro38_draw(packet->words, packet->word_count, &decoded)) {
                 decoded_draws++;
                 decoded_indices += decoded.count;
+                draws_with_program_pair += cursor && cursor->vertex_bound && cursor->fragment_bound;
                 if (packet->depth_known == 0xff) {
                     depth_state_known++;
                     if (packet->depth_registers[5] && packet->depth_registers[7]) {
@@ -3232,10 +3295,18 @@ static void execute_nvn_batch(void* arg) {
                     packet->words[0], packet->words[1], packet->words[2], packet->words[3],
                     packet->words[4], packet->words[5], packet->words[6], packet->words[7],
                     packet->words[8], packet->words[9], packet->words[10], packet->words[11]);
+            if (dump && !strcmp(dump, "1") && packet->macro12_count && packet->word_count >= 8)
+                LOG_LIMIT(8, "nvn-control-macro12-packet: ordinal=%llu list=%llx offset=%u words=%u data=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+                    (unsigned long long)packet->ordinal, (unsigned long long)packet->list,
+                    packet->control_offset, packet->word_count,
+                    packet->words[0], packet->words[1], packet->words[2], packet->words[3],
+                    packet->words[4], packet->words[5], packet->words[6], packet->words[7]);
             previous = packet->ordinal;
         }
-        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro38=%u decoded-draws=%u indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
-            batch->control_packet_count, ordered, macro38, decoded_draws,
+        LOG("nvn-control-packet-stream: captured=%u ordered=%u macro12=%u/%llu decoded-programs=%u macro38=%u decoded-draws=%u paired-program-draws=%u indices=%llu depth-state=%u depth-writers=%u first-depth=%llx/%ux%u writers-to-first=%u dropped=%u\n",
+            batch->control_packet_count, ordered, macro12,
+            (unsigned long long)batch->gpu_macro12_packets, decoded_program_binds,
+            macro38, decoded_draws, draws_with_program_pair,
             (unsigned long long)decoded_indices, depth_state_known, depth_writers,
             (unsigned long long)first_depth_address, first_depth_width, first_depth_height,
             first_depth_writers,
@@ -3360,6 +3431,7 @@ static void flush_replay_queue(u64 command_buffer) {
     NvnMemoryWriteBatch* memory_write_batch = NULL;
     NvnControlPacket* control_packets = NULL;
     u32 control_packet_count = 0, control_packets_dropped = 0;
+    u64 gpu_macro12_packets = 0;
     NvnStorageSeed* storage_seeds = NULL;
     NvnUniformUpdate* uniform_updates = NULL;
     pm_lock(&lock);
@@ -3394,9 +3466,11 @@ static void flush_replay_queue(u64 command_buffer) {
         control_packets = queue->control_packets;
         control_packet_count = queue->control_packet_count;
         control_packets_dropped = queue->control_packets_dropped;
+        gpu_macro12_packets = queue->gpu_macro12_packets;
         control_packet_snapshot_bytes -= queue->control_packet_bytes;
         queue->control_packets = queue->control_packets_tail = NULL;
         queue->control_packet_count = queue->control_packet_bytes = queue->control_packets_dropped = 0;
+        queue->gpu_macro12_packets = 0;
         if (queue->pending_roots) {
             preflight_batches++;
             if (!queue->pending_clears)
@@ -3478,6 +3552,7 @@ static void flush_replay_queue(u64 command_buffer) {
             owned->control_packets = control_packets;
             owned->control_packet_count = control_packet_count;
             owned->control_packets_dropped = control_packets_dropped;
+            owned->gpu_macro12_packets = gpu_macro12_packets;
             owned->storage_seeds = storage_seeds;
             owned->uniform_updates = uniform_updates;
             gpu_call(execute_nvn_batch, owned);

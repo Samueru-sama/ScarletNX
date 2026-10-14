@@ -41,3 +41,39 @@ int nvn_control_macro38_draw(const u32* words, u32 count, NvnControlMacro38Draw*
     *out = draw;
     return 1;
 }
+
+int nvn_control_program_binds(const u32* words, u32 count, NvnControlProgramBind* out,
+                              u32 capacity, u32* bind_count) {
+    if (!words || !bind_count || !count || count > (1u << 18) || (capacity && !out)) return 0;
+    u32 found = 0;
+    for (u32 i = 0; i < count;) {
+        u32 header = words[i], mode = header >> 29, sub = (header >> 13) & 7;
+        u32 method = header & 0xfff, n = (header >> 16) & 0x1fff;
+        if (mode != 1 && mode != 3 && mode != 5) {
+            i++;
+            continue;
+        }
+        if (n >= count - i && n) return 0;
+        if (!sub && method == 0xe18 && n == 5) found++;
+        i += n + 1;
+    }
+    if (found > capacity) return 0;
+    u32 used = 0;
+    for (u32 i = 0; i < count;) {
+        u32 header = words[i], mode = header >> 29;
+        if (mode != 1 && mode != 3 && mode != 5) {
+            i++;
+            continue;
+        }
+        u32 n = (header >> 16) & 0x1fff;
+        if (!((header >> 13) & 7) && (header & 0xfff) == 0xe18 && n == 5) {
+            NvnControlProgramBind* bind = &out[used++];
+            bind->selector = words[i + 1];
+            bind->code_offset = words[i + 3];
+            memcpy(bind->macro_args, words + i + 1, sizeof bind->macro_args);
+        }
+        i += n + 1;
+    }
+    *bind_count = used;
+    return 1;
+}

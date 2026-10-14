@@ -21,4 +21,15 @@ typedef struct {
 /* Decode the observed 12-word secondary-list indexed draw. This extracts draw
    arguments but does not establish the surrounding render state or execute it. */
 int nvn_control_macro38_draw(const u32* words, u32 count, NvnControlMacro38Draw* out);
+
+typedef struct {
+    u32 selector, code_offset;
+    u32 macro_args[5];
+} NvnControlProgramBind;
+
+/* Extract complete MME macro-12 program binds from a validated GPFIFO entry.
+   The observed selector 1 writes VertexB's code offset and 5 writes fragment's.
+   Returns zero for malformed packets or insufficient output capacity. */
+int nvn_control_program_binds(const u32* words, u32 count, NvnControlProgramBind* out,
+                              u32 capacity, u32* bind_count);
 #endif

@@ -1734,6 +1734,16 @@ target at `0x52cc10000`, matching the operation-aligned Maxwell readback.
 This is an ordered input for a future direct renderer, not executable NVN
 draw state yet. Shader registers cannot be inferred from direct pushbuffer
 writes alone: the preceding MME calls can change registers before a draw.
+The executed TotK MME trace identifies macro 12's selector `1` and `5` as
+VertexB and fragment shader-offset writes; its third argument is the new
+offset. The packet decoder now extracts those binds in GPFIFO order, including
+binds in parent command memory outside a control record. Increasing the
+per-entry copy limit to 1 MiB recovered a large initial packet. In the first
+64×64 cubemap batch, all 302 submitted macro 12 calls and all 65 control-owned
+depth draws are present and decoded, with zero dropped packets. Every one of
+those 65 draws has preceding program binds in this captured batch. Program
+binding, vertex input, uniforms, and MME state still need to become executable
+direct draw commands before this can replace the Maxwell path.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
