@@ -13,7 +13,8 @@ permissions:
   contents: read
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
-# recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
+# recompiler's code generator (required, cmake/llvm.cmake). The AppImages for aarch64, loongarch64, ppc64le and riscv64 are cross-built the same way,
+# on x86_64 against a system root of each architecture (see the jobs below). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
 # and LLVM's development libraries come from one compatible toolchain. FFmpeg, Vulkan and SDL3 are built from the
 # pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg. Downloads are cached in
 # .cache/cpm, one cache per job since each job fetches a different set. The artifacts are what `cmake --install` puts
@@ -116,6 +117,181 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: AppImage-x86_64
+          path: |
+            dist/*.AppImage*
+            dist/appinfo
+
+  appimage-cross:
+    name: Linux AppImage (${{ matrix.arch }})
+    runs-on: ubuntu-26.04
+    # The sysroot, the cross build and the packaging run natively and finish in about the time the x86_64 jobs do
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            platform: arm64
+            triple: aarch64-linux-gnu
+          - arch: loongarch64
+            platform: loong64
+            triple: loongarch64-linux-gnu
+          - arch: ppc64le
+            platform: ppc64le
+            triple: powerpc64le-linux-gnu
+          - arch: riscv64
+            platform: riscv64
+            triple: riscv64-linux-gnu
+    steps:
+      # On the host, which has git: without git, actions/checkout downloads the files without the history, and the
+      # AppImage's version (git describe) is unknown
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/cache@v5
+        with:
+          path: .cache/cpm
+          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      # Everything runs natively on x86_64 and cross-compiles: clang with a target triple builds the runtime against
+      # a system root of that architecture, and pkgforge's packaging tools run natively too. Only the loader behind
+      # `ldd` in quick-sharun and the finished AppImage in the smoke test run as target programs, through qemu-user.
+      # The sysroot is pkgforge's Arch container of that architecture, unpacked with the host's Docker (its file tree
+      # only: the container itself never runs). The later steps enter the build container with docker exec because a
+      # job container cannot reach the host's Docker daemon, and the workspace is mounted at /src, so everything the
+      # build writes lands where the upload step below looks for it
+      - name: Start the build container
+        run: |
+          docker run --detach --name build \
+            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+      - name: Unpack the ${{ matrix.arch }} system root
+        run: |
+          set -euo pipefail
+          image=ghcr.io/pkgforge-dev/archlinux:latest
+          docker pull --platform linux/${{ matrix.platform }} "$image"
+          docker exec build mkdir -p /src/sysroot
+          docker export "$(docker create --platform linux/${{ matrix.platform }} "$image")" | docker exec -i build tar -x -C /src/sysroot
+      # pkgforge's setup action cannot run here: GitHub runs composite actions on the host, where there is no pacman.
+      # The job runs its pinned setup script inside the container instead (the action pins that script only: the tools
+      # the script downloads are pinned here to a commit of Anylinux-AppImages, and checked against their SHA-256
+      # below)
+      - name: Install the packaging tools
+        env:
+          ANYLINUX_SETUP: https://raw.githubusercontent.com/pkgforge-dev/anylinux-setup-action/b2d1ce4216f71162e00ae58fa11ee9aeb723d0d5/setup.sh
+          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/quick-sharun.sh
+          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/get-debloated-pkgs.sh
+          MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/d4262a9978e7b5d88e3799b389b138eb244e3936/useful-tools/make-aur-package.sh
+        run: |
+          docker exec -i -e ANYLINUX_SETUP -e QUICK_SHARUN -e DEBLOATED_PACKAGES -e MAKE_AUR_PACKAGE build sh -s <<'EOF'
+          set -eu
+          wget -O /tmp/anylinux-setup.sh "$ANYLINUX_SETUP"
+          sha256sum -c <<'SUMS'
+          4e97072095e80a46203a1cd711eface00de1b028be3e66ef30cc9ccd728501e5  /tmp/anylinux-setup.sh
+          SUMS
+          sh /tmp/anylinux-setup.sh
+          # quick-sharun packs with the appimagetool of its pinned release, of the build that runs on this machine:
+          # it embeds the riscv64 runtime all the same, that is what APPIMAGE_ARCH names (quick-sharun skips its own
+          # download when appimagetool is already in place, and the job checks it below)
+          wget -O /usr/local/bin/appimagetool \
+            https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.3/appimagetool-full-x86_64-linux
+          chmod +x /usr/local/bin/appimagetool
+          EOF
+      - name: Check the packaging tools
+        run: |
+          docker exec -i build sh -s <<'EOF'
+          set -eu
+          sha256sum -c <<'SUMS'
+          b38ac233f0b56a03bb10565f6b074a43ce016939faee44ae8bb23d6e66c2d553  /usr/local/bin/quick-sharun
+          217ff68aafe085d2d4ab34a50e267805af43736ad8ef880c01ef88e52db8589f  /usr/local/bin/get-debloated-pkgs
+          86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
+          9a6fd46ee6bc5910e7acfa68f9d8090f3751e956840b90304ef57d64321a530d  /usr/local/bin/appimagetool
+          SUMS
+          EOF
+      # cmake ninja and clang build and cross-compile; llvm's llvm-config and llvm-ar describe and archive the LLVM the
+      # recompiler links, whose files are the sysroot's (the sysroot's own llvm-config is riscv64 and cannot run here);
+      # dwarfs provides appimagetool the mkdwarfs that compresses the AppImage; qemu-user-static runs the target's
+      # loader and the finished AppImage. The target's own libraries go into the sysroot, with its package database
+      # and licenses. NASM is left out: only FFmpeg's x86-64 assembly asks for it
+      - name: Install the build tools and the target's libraries
+        run: |
+          docker exec -i build sh -s <<'EOF'
+          set -eu
+          pacman -Syu --noconfirm --needed cmake ninja make patch clang llvm dwarfs qemu-user-static patchelf
+          # The sysroot is a system root of its own: its keyring signs its packages, its mirror list finds them
+          pacman-key --init --gpgdir /src/sysroot/etc/pacman.d/gnupg
+          pacman-key --populate archlinux --gpgdir /src/sysroot/etc/pacman.d/gnupg
+          cat >/src/sysroot-pacman.conf <<'CONF'
+          [options]
+          Architecture = ${{ matrix.arch }}
+          SigLevel = Required DatabaseOptional
+          GPGDir = /etc/pacman.d/gnupg
+
+          [core]
+          Include = /src/sysroot/etc/pacman.d/mirrorlist
+          [extra]
+          Include = /src/sysroot/etc/pacman.d/mirrorlist
+          CONF
+          # --nohooks --noscriptlets leave the packages as their files and their database: the hooks and scripts run
+          # the package's riscv64 programs, and nothing here needs them (sharun resolves the bundled libraries
+          # itself, without ld.so.cache)
+          pacman --root /src/sysroot --config /src/sysroot-pacman.conf --nohooks --noscriptlets \
+            -Syu --noconfirm --needed llvm llvm-libs sdl3 libx11 mesa vulkan-icd-loader
+          # The debloated Mesa from pkgforge, like the x86_64 job. get-debloated-pkgs installs with pacman, so a shim
+          # points it at the sysroot
+          mkdir -p /opt/shims
+          printf '#!/bin/sh\nexec /usr/bin/pacman --root /src/sysroot --config /src/sysroot-pacman.conf --nohooks --noscriptlets "$@"\n' \
+            >/opt/shims/pacman
+          chmod +x /opt/shims/pacman
+          PATH=/opt/shims:$PATH ARCH=${{ matrix.arch }} get-debloated-pkgs --add-common --prefer-nano
+          EOF
+      - name: Cross-build and install into the sysroot
+        run: |
+          docker exec -i build sh -s <<'EOF'
+          set -e
+          git config --global --add safe.directory '*'
+          mkdir -p /opt/toolchain/bin
+          # A clang that targets riscv64 and searches the sysroot. FFmpeg's configure is handed the compiler as it is
+          # (cmake/ffmpeg.cmake), so the target belongs in the wrapper, not only in CMake's variables
+          for cc in clang clang++; do
+              printf '#!/bin/sh\nexec %s --target=${{ matrix.triple }} --sysroot=/src/sysroot "$@"\n' "$cc" \
+                  >/opt/toolchain/bin/${{ matrix.triple }}-$cc
+              chmod +x /opt/toolchain/bin/${{ matrix.triple }}-$cc
+          done
+          ln -sf "$(command -v llvm-ar)" /opt/toolchain/bin/${{ matrix.triple }}-ar
+          ln -sf "$(command -v llvm-ranlib)" /opt/toolchain/bin/${{ matrix.triple }}-ranlib
+          ln -sf "$(command -v llvm-nm)" /opt/toolchain/bin/${{ matrix.triple }}-nm
+          # cmake/llvm.cmake asks SNX_LLVM_CONFIG for the LLVM the recompiler links: the sysroot's own llvm-config,
+          # asked through qemu since it is a target program, with the directories it names moved into the sysroot
+          cat >/opt/toolchain/bin/llvm-config-${{ matrix.arch }} <<'WRAP'
+          #!/bin/sh
+          qemu-${{ matrix.arch }}-static -L /src/sysroot /src/sysroot/usr/bin/llvm-config "$@" |
+              sed -e 's|/usr/include|/src/sysroot/usr/include|g' -e 's|/usr/lib|/src/sysroot/usr/lib|g'
+          WRAP
+          chmod +x /opt/toolchain/bin/llvm-config-${{ matrix.arch }}
+          cmake --preset default -B build/${{ matrix.arch }} \
+            -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.arch }} \
+            -DCMAKE_C_COMPILER=/opt/toolchain/bin/${{ matrix.triple }}-clang \
+            -DCMAKE_CXX_COMPILER=/opt/toolchain/bin/${{ matrix.triple }}-clang++ \
+            -DCMAKE_AR=/opt/toolchain/bin/${{ matrix.triple }}-ar \
+            -DCMAKE_RANLIB=/opt/toolchain/bin/${{ matrix.triple }}-ranlib \
+            -DCMAKE_NM=/opt/toolchain/bin/${{ matrix.triple }}-nm \
+            -DCMAKE_SYSROOT=/src/sysroot -DCMAKE_INSTALL_PREFIX=/src/sysroot/usr \
+            -DSNX_LLVM_CONFIG=/opt/toolchain/bin/llvm-config-${{ matrix.arch }} \
+            -DSNX_DEPLOY=OFF
+          cmake --build build/${{ matrix.arch }}
+          cmake --install build/${{ matrix.arch }}
+          EOF
+      # The script names the AppImage after `git describe` and `uname -m`; ARCH names the target instead, and the
+      # shims inside the script keep quick-sharun on the target too
+      - name: Make the AppImage
+        run: |
+          docker exec -i -e GITHUB_REPOSITORY build sh -s <<'EOF'
+          set -e
+          SYSROOT=/src/sysroot ARCH=${{ matrix.arch }} APPIMAGETOOL=/usr/local/bin/appimagetool scripts/make-appimage.sh
+          EOF
+      # Only what the script made: dist/ also holds the tracked desktop entry and icon
+      - uses: actions/upload-artifact@v7
+        with:
+          name: AppImage-${{ matrix.arch }}
           path: |
             dist/*.AppImage*
             dist/appinfo
@@ -239,6 +415,41 @@ jobs:
           chmod +x dist/*.AppImage
           scripts/check-package.sh dist/*.AppImage
 
+  appimage-cross-check:
+    name: Linux AppImage (${{ matrix.arch }}), as installed
+    needs: appimage-cross
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            platform: arm64
+          - arch: loongarch64
+            platform: loong64
+          - arch: ppc64le
+            platform: ppc64le
+          - arch: riscv64
+            platform: riscv64
+    steps:
+      # The package is for another architecture and the runner is x86_64: qemu's binfmt handlers run it, and
+      # everything it starts, the way a machine of that architecture would run them natively
+      - name: Set up qemu emulation for ${{ matrix.arch }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: ${{ matrix.platform }}
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: AppImage-${{ matrix.arch }}
+          path: dist
+      # Artifacts drop the executable bit
+      - name: Run the AppImage as a user would
+        run: |
+          chmod +x dist/*.AppImage
+          scripts/check-package.sh dist/*.AppImage
+
   windows-check:
     name: Windows zip, as installed
     needs: windows
@@ -259,12 +470,13 @@ jobs:
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
 
-  # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with Linux and Windows builds.
-  # A newer push cancels a release still running, so an older commit never publishes last
+  # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with the AppImages of every
+  # architecture and the Windows build. A newer push cancels a release still running, so an older commit never
+  # publishes last
   release:
     name: Nightly release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [linux, appimage, windows, appimage-check, windows-check]
+    needs: [linux, appimage, appimage-cross, windows, appimage-check, appimage-cross-check, windows-check]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     concurrency:
@@ -276,7 +488,17 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: AppImage-x86_64
-      - name: Release the AppImage
+      # Into a folder of their own: every artifact carries an appinfo sidecar naming its own architecture, and the
+      # release action reads ./appinfo, so only the x86_64 one is left at the root (the name and version it reads
+      # are the same on every architecture)
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: AppImage-*
+          merge-multiple: true
+          path: appimages
+      - name: Add the other architectures' AppImages
+        run: cp appimages/*.AppImage* .
+      - name: Release the AppImages
         uses: pkgforge-dev/make-nightly-appimage-release@17cbe90fc0796286e424619a54a82a3a880efe4c # v1.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -300,6 +522,6 @@ jobs:
         run: |
           gh release edit nightly --repo "$GITHUB_REPOSITORY" --notes "Built from commit $GITHUB_SHA, whose source is at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$GITHUB_SHA.
 
-          The third-party libraries built into the runtime are fetched from the release archives that cmake/dependencies.cmake lists at that commit, each checked against the SHA-256 written next to it. The AppImage also bundles libraries from Arch Linux packages. Its licenses are in share/licenses, with the package list in share/licenses/bundled-packages.txt.
+          The third-party libraries built into the runtime are fetched from the release archives that cmake/dependencies.cmake lists at that commit, each checked against the SHA-256 written next to it. The AppImages also bundle libraries from Arch Linux packages. Their licenses are in share/licenses, with the package list in share/licenses/bundled-packages.txt. The AppImages differ only in architecture: ScarletNX-x86_64.AppImage for x86-64 machines and ScarletNX-aarch64.AppImage, ScarletNX-loongarch64.AppImage, ScarletNX-ppc64le.AppImage, ScarletNX-riscv64.AppImage for AArch64, LoongArch64, PowerPC64 little-endian and RISC-V machines.
 
           ScarletNX-windows-x86_64.zip contains the Windows build, its required runtime DLLs and licenses under share/licenses. The MSYS2 build environment's package versions are recorded in share/licenses/msys2/build-packages.txt."
