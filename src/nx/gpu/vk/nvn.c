@@ -18,6 +18,7 @@
 #define NVN_IMAGE_SLOTS  128
 #define NVN_IMAGE_BUDGET (256ull << 20)
 #define NVN_SAMPLE_VIEW_SLOTS 8
+#define NVN_ATTACHMENT_VIEW_SLOTS 32
 #define NVN_SHADOW_STORAGE_SLOTS 128
 #define NVN_SHADOW_STORAGE_BUDGET (64ull << 20)
 typedef struct {
@@ -51,7 +52,7 @@ typedef struct {
     VkFormat alt_format;
     NvnSampleView sample_views[NVN_SAMPLE_VIEW_SLOTS];
     u8 next_sample_view;
-    NvnAttachmentView attachments[16];
+    NvnAttachmentView attachments[NVN_ATTACHMENT_VIEW_SLOTS];
     NvnAttachmentView storage_views[16];
     VmaAllocation allocation;
     VkImageLayout layout;
@@ -176,7 +177,7 @@ static NvnImage* evict_old_image(void) {
         if (!oldest || image->last_batch < oldest->last_batch) oldest = image;
     }
     if (!oldest) return NULL;
-    for (u32 i = 0; i < 16; i++)
+    for (u32 i = 0; i < NVN_ATTACHMENT_VIEW_SLOTS; i++)
         if (oldest->attachments[i].view)
             vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, oldest->attachments[i].view, VK_NULL_HANDLE);
     for (u32 i = 0; i < 16; i++)
@@ -448,13 +449,13 @@ static int prepare_attachment(const NvnTextureTarget* target, int depth) {
                   target->format, target->storage_format, full, !!image, image && !!image->attachment);
         return 0;
     }
-    for (u32 i = 0; i < 16; i++)
+    for (u32 i = 0; i < NVN_ATTACHMENT_VIEW_SLOTS; i++)
         if (image->attachments[i].view && image->attachments[i].format == format.vk &&
             image->attachments[i].mip == mip && image->attachments[i].layer == layer) {
             image->last_batch = batch_serial;
             return 1;
         }
-    for (u32 i = 0; i < 16; i++) {
+    for (u32 i = 0; i < NVN_ATTACHMENT_VIEW_SLOTS; i++) {
         NvnAttachmentView* slot = &image->attachments[i];
         if (slot->view) continue;
         VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -579,7 +580,7 @@ int vk_nvn_clear(const NvnClearCommand* command) {
     VkCommandBuffer cb = vk_cmd();
     if (partial) {
         VkImageView view = VK_NULL_HANDLE;
-        for (u32 i = 0; i < 16; i++)
+        for (u32 i = 0; i < NVN_ATTACHMENT_VIEW_SLOTS; i++)
             if (image->attachments[i].view && image->attachments[i].format == format.vk &&
                 image->attachments[i].mip == mip && image->attachments[i].layer == layer) {
                 view = image->attachments[i].view;
@@ -671,6 +672,48 @@ static void shadow_invalidate_backing(const NvnTextureTarget* target) {
         memset(image->color_layers, 0, sizeof image->color_layers);
         memset(image->depth_layers, 0, sizeof image->depth_layers);
         memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
+        image->image_was_written = 1;
+        image->guest_host = NULL;
+    }
+}
+
+/* A scoped fallback draw writes only its selected attachment view. Keep other faces and mips
+   when the cached image is the exact storage object; any alias or uncertain view loses all
+   coverage because its subresource mapping is not proven. */
+static void shadow_invalidate_attachment(const NvnTextureTarget* target) {
+    u64 end = target->gpu_address + target->storage_size;
+    for (u32 i = 0; i < NVN_IMAGE_SLOTS; i++) {
+        NvnImage* image = &images[i];
+        if (!image->image) continue;
+        if (image->storage_size && image->address <= UINT64_MAX - image->storage_size &&
+            (image->address >= end || target->gpu_address >= image->address + image->storage_size))
+            continue;
+        u32 mip = target->view.base_level, layer = target->view.first_layer;
+        int exact_view = target->pool == image->pool &&
+                         target->pool_generation == image->pool_generation &&
+                         target->gpu_address == image->address &&
+                         target->storage_size == image->storage_size &&
+                         target->width == image->width && target->height == image->height &&
+                         target->depth == image->layers && target->levels == image->levels &&
+                         target->storage_target == image->target &&
+                         target->target == target->storage_target &&
+                         target->storage_format == image->format &&
+                         target->stride_known == image->stride_known &&
+                         (!target->stride_known || target->stride == image->stride) &&
+                         target->storage_class_known == image->storage_class_known &&
+                         (!target->storage_class_known || target->storage_class == image->storage_class) &&
+                         target->view.level_count <= 1 && target->view.layer_count <= 1 &&
+                         !(target->view.flags & (4 | 8 | 16 | 32)) &&
+                         mip < image->levels && layer < image->layers && layer < 64;
+        if (exact_view) {
+            image->color_layers[mip] &= ~(1ull << layer);
+            image->depth_layers[mip] &= ~(1ull << layer);
+            image->guest_seed_layers[mip] &= ~(1ull << layer);
+        } else {
+            memset(image->color_layers, 0, sizeof image->color_layers);
+            memset(image->depth_layers, 0, sizeof image->depth_layers);
+            memset(image->guest_seed_layers, 0, sizeof image->guest_seed_layers);
+        }
         image->image_was_written = 1;
         image->guest_host = NULL;
     }
@@ -1021,7 +1064,18 @@ static VkImageView image_view_from_semantic(const NvnDescriptorSnapshot* descrip
                 if (!(written & (1ull << layer)) || image->subresource_sequence[level][layer] <= last_unmodeled_write)
                     complete = 0;
             }
-        if (!complete) continue;
+        if (!complete) {
+            const char* cube_coverage = getenv("SNX_NVN_SHADOW_CUBE_COVERAGE");
+            if (cube_coverage && !strcmp(cube_coverage, "1") && view_type == VK_IMAGE_VIEW_TYPE_CUBE)
+                LOG_LIMIT(24, "nvn-shadow-cube-pending: seq=%llu addr=%llx size=%ux%u levels=%u coverage=%llx,%llx,%llx unknown=%llu\n",
+                          (unsigned long long)sequence, (unsigned long long)address,
+                          width, height, levels,
+                          (unsigned long long)image->color_layers[0],
+                          (unsigned long long)image->color_layers[1],
+                          (unsigned long long)image->color_layers[2],
+                          (unsigned long long)last_unmodeled_write);
+            continue;
+        }
         VkImageView sampled_view = image_sample_view(image, format, view_type, levels, descriptor->tic, &source);
         if (!sampled_view) continue;
         VkCommandBuffer cb = vk_cmd();
@@ -1671,7 +1725,7 @@ static VkPipeline prepare_draw_pipeline(const NvnDrawCommand* command, const VkS
 }
 
 static VkImageView shadow_attachment_view(const NvnImage* image, VkFormat format, u32 mip, u32 layer) {
-    for (u32 i = 0; i < 16; i++)
+    for (u32 i = 0; i < NVN_ATTACHMENT_VIEW_SLOTS; i++)
         if (image->attachments[i].view && image->attachments[i].format == format &&
             image->attachments[i].mip == mip && image->attachments[i].layer == layer)
             return image->attachments[i].view;
@@ -2824,6 +2878,14 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                    color_target->format == 0x29 || color_target->format == 0x3f);
     int zero_probe = capture && zero_seed && command->color_initial_zero &&
                      (color_target->format == 0x25 || color_target->format == 0x38);
+    const char* cube_coverage = getenv("SNX_NVN_SHADOW_CUBE_COVERAGE");
+    int cube_probe = cube_coverage && !strcmp(cube_coverage, "1") && !capture && !zero_seed &&
+                     color->target == 8 && color_target->format == 0x3f &&
+                     color->transfer_src && color_width <= 64 && color_height <= 64 &&
+                     !prior_covered && command->color_target_mask == 1 && !depth &&
+                     !fragment->si.nimg && !vertex->si.gbuf_wmask && !fragment->si.gbuf_wmask &&
+                     !key->blend[0].en && key->blend[0].mask == 15 &&
+                     (fragment->si.sph[18] & 15) == 15;
     if (zero_seed) {
         color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color_attachments[0].clearValue.color = (VkClearColorValue){{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -2893,6 +2955,12 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
             depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             depth_attachment.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
         }
+    }
+    if (cube_probe) {
+        /* A first draw may replace the complete face even when its guest backing is unknown.
+           If it leaves any RGB component untouched, this face stays untrusted. */
+        color_attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachments[0].clearValue.color = (VkClearColorValue){{1.0f, 0.0f, 1.0f, 1.0f}};
     }
     u32 depth_width = depth && depth_mip < 16 ? depth_target->width >> depth_mip : 0;
     u32 depth_height = depth && depth_mip < 16 ? depth_target->height >> depth_mip : 0;
@@ -2993,6 +3061,39 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
                                   (used_writable[i] ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT : 0);
     }
     vkCmdEndRendering(cb);
+    int cube_probe_full = 0;
+    if (cube_probe) {
+        u64 bytes = (u64)color_width * color_height * sizeof(u32);
+        VkBuffer readback;
+        u8* pixels = vk_readback_buffer(bytes, &readback);
+        if (pixels) {
+            vk_barrier(cb, color->image, VK_IMAGE_ASPECT_COLOR_BIT,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            color->layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            color->stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            color->access = VK_ACCESS_2_TRANSFER_READ_BIT;
+            VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, color_mip, color_layer, 1},
+                                      .imageExtent = {color_width, color_height, 1}};
+            vkCmdCopyImageToBuffer(cb, color->image, color->layout, readback, 1, &copy);
+            vk_finish();
+            vk_readback_ready();
+            cube_probe_full = 1;
+            for (u64 i = 0; i < bytes; i += sizeof(u32)) {
+                u32 packed;
+                memcpy(&packed, pixels + i, sizeof packed);
+                u32 changed = packed ^ 0x780003c0u;
+                if (!(changed & 0x7ffu) || !(changed & 0x3ff800u) || !(changed & 0xffc00000u)) {
+                    cube_probe_full = 0;
+                    break;
+                }
+            }
+            LOG_LIMIT(24, "nvn-shadow-cube-coverage: seq=%llu mip=%u face=%u complete=%d size=%ux%u\n",
+                      (unsigned long long)command->sequence, color_mip, color_layer,
+                      cube_probe_full, color_width, color_height);
+        }
+    }
     if (capture) {
         u64 bytes = (u64)color_target->width * color_target->height * color_format.bpp;
         VkBuffer readback;
@@ -3086,7 +3187,7 @@ static int shadow_draw_simple(const NvnDrawCommand* command, const VkSh* vertex,
         attachment->guest_seed_layers[mip] &= ~(1ull << layer);
         int covered = (attachment->color_layers[mip] & (1ull << layer)) &&
                       attachment->subresource_sequence[mip][layer] > effective_unknown;
-        if (i == 0) covered = zero_seed || (capture ? capture_full : prior_covered);
+        if (i == 0) covered = zero_seed || cube_probe_full || (capture ? capture_full : prior_covered);
         if (covered) {
             attachment->color_layers[mip] |= 1ull << layer;
             attachment->subresource_sequence[mip][layer] = command->sequence;
@@ -3258,12 +3359,12 @@ static void scope_unmodeled_draw(const NvnDrawCommand* command, const VkSh* vert
     int storage_writes = !!(vertex->si.gbuf_wmask || fragment->si.gbuf_wmask);
     if (storage_writes && !scope_storage_writes(command, vertex, fragment)) return;
     for (u32 i = 0; i < 8; i++)
-        if (command->color_target_mask & (1u << i)) shadow_invalidate_backing(&command->color_target[i]);
+        if (command->color_target_mask & (1u << i)) shadow_invalidate_attachment(&command->color_target[i]);
     /* A bound depth attachment is read-only when both write enables are off. Keep a prior full clear
        available to later texture reads; any overlapping color or storage write still invalidates it. */
     if (command->depth_target_bound &&
         (!command->depth_stencil_state_known || (command->depth_stencil_state[0] & (2 | 4))))
-        shadow_invalidate_backing(&command->depth_target);
+        shadow_invalidate_attachment(&command->depth_target);
     mark_modeled_unknown(command->sequence + 1, command->last_unmodeled_write);
     static u64 scoped_draws, scoped_storage_draws;
     scoped_draws++;

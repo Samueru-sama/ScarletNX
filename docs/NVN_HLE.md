@@ -1567,6 +1567,19 @@ proof, so the next mip pass remains pending. These cubemap draws have not yet
 been established pixel exact against Maxwell, and presented-frame parity is
 still open.
 
+An opt-in `SNX_NVN_SHADOW_CUBE_COVERAGE=1` path now tests a first draw into an
+untrusted `R11G11B10F` cube face against a known RGB sentinel. It certifies the
+face only when every packed color component changes at every pixel, with
+blending, depth, writable shader storage, and feedback excluded. Scoped fallback
+draws now invalidate only an exact attachment face and mip; aliases and
+uncertain views still lose whole-image coverage. The attachment-view cache also
+holds the 24 views needed by a six-face, four-mip cube. In TotK this carries the
+64×64 → 32×32 → 16×16 → 8×8 cube chain through all six faces of each level.
+A later unknown write marker blocks reuse of that completed cube in another
+batch; this remains a resource-provenance task rather than a missing cubemap
+view. The face probe synchronously reads back each candidate and is diagnostic
+until its cost and pixel parity are measured.
+
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command
    list at a time. Mixing HLE recording with guest NVN pushbuffers for one list could duplicate draws or omit state
