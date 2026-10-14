@@ -1917,11 +1917,28 @@ all six 8×8 mip-1 faces because each render-target alias exposes a padded
 shape and copies the logical 8×8 extent. A consumer-time probe then measures
 0 different pixels across all twelve sampled face/mip subresources. This
 fixes the emulated GPU's sampled texture assembly; it does not by itself
-establish control-draw parity. A queue finish before a cube-consuming HLE
-draw removes the first two later-pass color mismatches in the observed run,
-whereas an additional graphics memory or image barrier and a submit without
-waiting do not. The required completion dependency remains under
-investigation; a queue-wide wait is too costly to use as the rendering fix.
+establish control-draw parity. The direct control draw still differs by
+hundreds of color pixels on some later faces while depth matches. A queue
+finish during descriptor binding appeared to improve that result, but the
+raw draw's frame guard rejects draws after a finish advances the frame;
+the apparent improvement came from skipped draws and is not a valid
+synchronization result. Same-frame substitutions of the cube, 256×256
+RGBA16F input, and two-layer D16 input leave the late color mismatch.
+Substituting Maxwell's 96×96 R16 source changes those late faces, so the
+remaining comparison follows that producer chain.
+
+In a TotK depth-producer trace, the first 192×192 R16 pass matches Maxwell,
+but a later pass differs at 7,565/36,864 texels (`ffff` versus `e05f` at the
+first mismatch). Its sampled 192×192 D16 image differs from Maxwell at the
+same 7,565 texels. The downstream 96×96 R16 pass differs at 2,035/9,216
+texels. The HLE D16 source has a full-depth clear immediately before the
+R16 consumer; the corresponding Maxwell render target still contains depth
+from control-list draws. A diagnostic depth-only replay of 44 control draws
+changes only 26 D16 texels with the old vertex binding, or 1,480 after
+matching Maxwell's cross-stride attribute padding. That replay remains a
+probe: the depth image still fails parity, and its packet ordering relative
+to the NVN clear has not been reconciled. The vertex binding correction is
+independent of the unresolved depth ordering.
 
 1. Keep GPFIFO execution as a supported, user-selectable mode after direct NVN reaches whole-list parity. The two
    modes should share shader translation and the Vulkan renderer, but only one should execute a game's NVN command

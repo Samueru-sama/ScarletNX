@@ -1698,6 +1698,23 @@ void vk_nvn_control_shader_probe(const NvnControlShaderProbe* probe,
     raw_shader_probe(probe, result, NULL);
 }
 
+/* Maxwell permits an attribute read to cross its stream stride. Match the vertex
+   binding's byte range so the last vertex remains readable on the host. */
+static u32 raw_vertex_attribute_bytes(u32 attribute) {
+    switch ((attribute >> 21) & 0x3f) {
+        case 0x01: return 16;
+        case 0x02: return 12;
+        case 0x03:
+        case 0x04: return 8;
+        case 0x05: return 6;
+        case 0x13: return 3;
+        case 0x18:
+        case 0x1b: return 2;
+        case 0x1d: return 1;
+        default: return 4;
+    }
+}
+
 static VkPipeline raw_depth_pipeline(const NvnControlShaderProbe* probe,
                                      const NvnTextureTarget* color_target,
                                      const NvnTextureTarget* depth_target,
@@ -1759,7 +1776,9 @@ static VkPipeline raw_depth_pipeline(const NvnControlShaderProbe* probe,
             u32 offset = (raw >> 7) & 0x3fff;
             u32 stride = registers[0x700 + stream * 4] & 0xfff;
             if (stride > limits->maxVertexInputBindingStride) return 0;
-            u32 base = offset > limits->maxVertexInputAttributeOffset ? offset : 0;
+            u32 bytes = raw_vertex_attribute_bytes(raw);
+            u32 base = offset > limits->maxVertexInputAttributeOffset ||
+                       (stride && offset + bytes > stride) ? offset : 0;
             key.attr[key.nattr].format = vk_render_vertex_format(raw);
             key.attr[key.nattr].offset = offset - base;
             u32 divisor = registers[0x620 + stream] ?
@@ -2194,17 +2213,21 @@ int vk_nvn_control_draw_probe(const NvnControlShaderProbe* probe,
         u32 raw = registers[0x458 + location], stream = raw & 31;
         if (binding >= key.nbind || stream >= 16 || (raw & 0x40)) CONTROL_DRAW_REJECT("attribute");
         u32 offset = (raw >> 7) & 0x3fff;
-        u32 base = offset > g_vk.props.limits.maxVertexInputAttributeOffset ? offset : 0;
+        u32 stride = registers[0x700 + stream * 4] & 0xfff;
+        u32 bytes = raw_vertex_attribute_bytes(raw);
+        u32 base = offset > g_vk.props.limits.maxVertexInputAttributeOffset ||
+                   (stride && offset + bytes > stride) ? offset : 0;
+        u32 pad = stride && base + bytes > stride ? base + bytes - stride : 0;
         u64 start = ((u64)registers[0x700 + stream * 4 + 1] << 32) |
                     registers[0x700 + stream * 4 + 2];
         u64 end = ((u64)registers[0x7c0 + stream * 2] << 32) |
                   registers[0x7c0 + stream * 2 + 1];
         if (!start || end < start || end - start >= (4u << 20) ||
             base > end - start ||
-            !vk_buf_get_strict(start, end - start + 1, &vertex_buffers[binding],
+            !vk_buf_get_strict(start, end - start + 1 + pad, &vertex_buffers[binding],
                                &vertex_offsets[binding])) CONTROL_DRAW_REJECT("vertex-buffer");
         vertex_offsets[binding] += base;
-        vertex_strides[binding] = registers[0x700 + stream * 4] & 0xfff;
+        vertex_strides[binding] = stride;
     }
     VkBuffer index_buffer;
     u64 index_offset;
