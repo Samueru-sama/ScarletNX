@@ -577,8 +577,11 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     }
     need += sizeof(i32) * 320 + vk_stage_align(); /* optional format data */
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
-       pending results overlap land those first, before anything is put in the arena */
+       pending compute results overlap land those first, before anything is put in the arena */
     int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, storage_images = 0, retries = 0;
+    /* so does one whose storage buffers a draw's pending result covers: on the graphics queue, after that draw, it
+       reads the result on the GPU instead of the compute queue waiting for it to land (TotK: three a frame) */
+    for (i = 0; i < ng && !gfx; i++) gfx = sa[i] && vk_buf_pending(sa[i], ss[i]);
     for (i = 0; i < p->si.nimg; i++) storage_images |= p->si.img[i].type != 1;
     /* A graphics-queue dispatch without storage images binds like a draw: staged inputs, results pending in staging
        (buffer.c's GfxOut), landed when the guest needs them or once their submit is done. Landing each one at once
