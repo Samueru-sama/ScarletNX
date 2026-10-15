@@ -84,15 +84,17 @@ u8* vk_stage_back(u64 size, VkBuffer* buf, u64* off, VmaAllocation* mem);
    The frame goes on: its staging, pools and deferred resources live until vk_frame_next and its slot's next use.
    Either semaphore may be VK_NULL_HANDLE */
 void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal);
-void vk_finish(void);      /* submits and waits until the GPU has done everything, and lands every result */
-void vk_frame_next(void);  /* ends the frame (a present): the next records in the other slot */
-void vk_frame_check(void); /* at the start of a draw or dispatch: ends a frame that has grown too big */
+void vk_finish(void); /* submits and waits until the GPU has done everything, and lands every result */
+extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
+void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
+void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */
 /* a buffer for GPU -> host copies: record the copy into it, vk_finish(), vk_readback_ready(), then read */
 u8* vk_readback_buffer(u64 size, VkBuffer* buf);
 void vk_readback_ready(void);
 /* destroyed once the frame being recorded now is done (the GPU may still use them until then) */
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2);
 void vk_defer_buffer(VkBuffer b, VmaAllocation a);
+void vk_defer_buffer_view(VkBufferView v);
 /* the submission being recorded (a number that grows at every submit: what a submit may have changed, results landed,
    is checked against it), and the frame (grows at vk_frame_next: frame f's work is done once f + VK_FRAMES started) */
 u64 vk_submit_number(void);

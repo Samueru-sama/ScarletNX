@@ -8,6 +8,7 @@
    submit would reset them mid-draw, and wait for the GPU at every submit. */
 #include <stdlib.h>
 #include "runtime/platform/log.h"
+#include "runtime/platform/plat.h"
 #include "gpu/vk/vk.h"
 
 typedef struct {
@@ -15,6 +16,7 @@ typedef struct {
     VmaAllocation mem;
     VkImageView v1, v2;
     VkBuffer buf;
+    VkBufferView view;
 } Dead;
 
 /* A per-frame ring of one mapped buffer, reused once the frame's previous work is done. */
@@ -108,6 +110,7 @@ static void dead_free(Frame* f) {
         Dead* d = &f->dead[i];
         if (d->v1) vkDestroyImageView(g_vk.dev, d->v1, NULL);
         if (d->v2) vkDestroyImageView(g_vk.dev, d->v2, NULL);
+        if (d->view) vkDestroyBufferView(g_vk.dev, d->view, NULL);
         if (d->img) vmaDestroyImage(g_vk.vma, d->img, d->mem);
         if (d->buf) vmaDestroyBuffer(g_vk.vma, d->buf, d->mem);
     }
@@ -234,7 +237,8 @@ u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, VmaAllocation*
     return ring_alloc(&g_fr[g_cur], &g_fr[g_cur].stage, size, align,
                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                          VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
                       VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, VMA_MEMORY_USAGE_AUTO, buf, off, mem);
 }
 u8* vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) { return vk_stage_output(size, align, buf, off, NULL); }
@@ -299,10 +303,14 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
     if (VK_OK(vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, &done))) land_through(done < g_gval ? done : g_gval);
 }
 
+u64 g_vk_finishes, g_vk_finish_ns;
 void vk_finish(void) {
+    u64 t0 = plat_ns();
     vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
     timeline_wait(g_gval);
     land_through(g_gval);
+    g_vk_finishes++;
+    g_vk_finish_ns += plat_ns() - t0;
 }
 
 /* A present ends the frame: the next one records in the other slot, once that slot's previous use is done */
@@ -375,6 +383,10 @@ void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2
 void vk_defer_buffer(VkBuffer b, VmaAllocation a) {
     vk_cmd();
     dead_push(&g_fr[g_cur], (Dead){.buf = b, .mem = a});
+}
+void vk_defer_buffer_view(VkBufferView v) {
+    vk_cmd();
+    dead_push(&g_fr[g_cur], (Dead){.view = v});
 }
 
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,

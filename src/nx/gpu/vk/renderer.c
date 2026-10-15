@@ -305,10 +305,12 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     vk_tex_frame();
     vk_buf_frame();
     if (g_vk_present % 600 == 0) {
-        LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped\n",
+        LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped; %llu "
+            "finishes (%llu ms)\n",
             (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_dispatches,
             (unsigned long long)g_vk_cs_batches, (unsigned long long)(g_vk_cs_wait_ns / 1000000),
-            (unsigned long long)g_vk_cs_skipped);
+            (unsigned long long)g_vk_cs_skipped, (unsigned long long)g_vk_finishes,
+            (unsigned long long)(g_vk_finish_ns / 1000000));
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);

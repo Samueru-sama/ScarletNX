@@ -223,6 +223,7 @@ static void cs_land(void) {
 
 /* A descriptor can fail after its inputs were copied into the arena. No command references those inputs yet. */
 static void cs_abandon_binding(u8* originals[8]) {
+    vk_buf_writable_abort(); /* a deferred dispatch's outputs, not recorded */
     for (int i = 0; i < 8; i++) free(originals[i]);
     if (g_recording || g_inflight) return;
     g_ar_used = 0;
@@ -577,7 +578,12 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     need += sizeof(i32) * 320 + vk_stage_align(); /* optional format data */
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
        pending results overlap land those first, before anything is put in the arena */
-    int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0;
+    int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, storage_images = 0, retries = 0;
+    for (i = 0; i < p->si.nimg; i++) storage_images |= p->si.img[i].type != 1;
+    /* A graphics-queue dispatch without storage images binds like a draw: staged inputs, results pending in staging
+       (buffer.c's GfxOut), landed when the guest needs them or once their submit is done. Landing each one at once
+       took a vk_finish per dispatch, about 9 a frame in TotK. Storage images still land at once (vk_surf_flush) */
+    int deferred = gfx && !storage_images;
     /* a read-only input inside a pending result of this batch is read from the arena on the GPU, after a barrier
        (multi-pass skinning reads what the pass before wrote); any other overlap lands the results first */
     i64 chain[16];
@@ -592,22 +598,38 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
                 overlap = 1;
         }
     }
-    if (g_recording && g_ar_used + need > g_ar_cap && g_ar_want < (64ull << 20))
-        g_ar_want *= 2; /* fewer, bigger batches */
-    if (gfx || overlap || g_inflight || g_nout + ng > 256 || g_ar_used + need > g_ar_cap) {
-        cs_land();
-        for (int i = 0; i < ng; i++) chain[i] = -1; /* the results are in memory now */
+    if (deferred)
+        for (int i = 0; i < ng; i++) chain[i] = -1; /* inputs come through vk_buf_get, which finds pending results */
+    else {
+        if (g_recording && g_ar_used + need > g_ar_cap && g_ar_want < (64ull << 20))
+            g_ar_want *= 2; /* fewer, bigger batches */
+        if (gfx || overlap || g_inflight || g_nout + ng > 256 || g_ar_used + need > g_ar_cap) {
+            cs_land();
+            for (int i = 0; i < ng; i++) chain[i] = -1; /* the results are in memory now */
+        }
+        if (!g_recording && !arena_fit(need)) return;
     }
-    if (!g_recording && !arena_fit(need)) return;
 
     VkDescriptorSet set;
-    VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                       .descriptorPool = g_dpool,
-                                       .descriptorSetCount = 1,
-                                       .pSetLayouts = &g_vk_dslayout[shader_vk_set(ST_CS)]};
-    if (vkAllocateDescriptorSets(g_vk.dev, &dai, &set) != VK_SUCCESS) {
-        cs_land();
-        if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) return;
+    u64 setup_sub;
+rebind:
+    setup_sub = vk_submit_number();
+    if (deferred) {
+        vk_buf_writable_abort();
+        set = vk_desc_alloc(g_vk_dslayout[shader_vk_set(ST_CS)]);
+        if (!set) {
+            g_vk_cs_skipped++;
+            return;
+        }
+    } else {
+        VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                           .descriptorPool = g_dpool,
+                                           .descriptorSetCount = 1,
+                                           .pSetLayouts = &g_vk_dslayout[shader_vk_set(ST_CS)]};
+        if (vkAllocateDescriptorSets(g_vk.dev, &dai, &set) != VK_SUCCESS) {
+            cs_land();
+            if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) return;
+        }
     }
     VkWriteDescriptorSet w[80];
     VkDescriptorBufferInfo bi[80];
@@ -615,6 +637,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     Surf* images[8] = {0};
     u8* originals[8] = {0};
     VkBufferView bufimg_view[8] = {0};
+    VkBuffer bufimg_buf[8] = {0};
     u64 bufimg_off[8] = {0};
     u32 nw = 0;
     for (int i = 0; i < 8; i++)
@@ -626,11 +649,23 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             range = (range + 15) & ~15u;
             if (!range) range = 16;
             if (range > g_vk.props.limits.maxUniformBufferRange) range = g_vk.props.limits.maxUniformBufferRange;
-            u64 o = arena_alloc(range);
             u32 n = g_cbn[i] < range ? g_cbn[i] : range;
-            memcpy(g_ar_ptr + o, g_cb[i], n);
-            memset(g_ar_ptr + o + n, 0, range - n);
-            bi[nw] = (VkDescriptorBufferInfo){g_ar, o, range};
+            VkBuffer cbuf = g_ar;
+            u64 o;
+            u8* dst;
+            if (deferred) {
+                dst = vk_stage(range, vk_stage_align(), &cbuf, &o);
+                if (!dst) {
+                    g_vk_cs_skipped++;
+                    return;
+                }
+            } else {
+                o = arena_alloc(range);
+                dst = g_ar_ptr + o;
+            }
+            memcpy(dst, g_cb[i], n);
+            memset(dst + n, 0, range - n);
+            bi[nw] = (VkDescriptorBufferInfo){cbuf, o, range};
             w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstSet = set,
                                            .dstBinding = SNX_VKB_CB + i,
@@ -642,15 +677,31 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     u64 so[16];
     int chained = 0;
     for (int i = 0; i < ng; i++) {
-        if (chain[i] >= 0) chained = 1;
-        u64 o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
-        if (chain[i] >= 0)
-            ; /* written by an earlier dispatch of the batch, read in place */
-        else if (sa[i])
-            gmem_read(sa[i], g_ar_ptr + o, ss[i]);
-        else
-            memset(g_ar_ptr + o, 0, ss[i]);
-        bi[nw] = (VkDescriptorBufferInfo){g_ar, o, ss[i]};
+        VkBuffer sbuf = g_ar;
+        u64 o;
+        if (deferred) {
+            /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
+               which may be an earlier draw's or dispatch's result on the GPU */
+            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o)
+                     : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
+                                                 : vk_buf_copy(0, ss[i], &sbuf, &o);
+            if (!ok) {
+                vk_buf_writable_abort();
+                g_vk_cs_skipped++;
+                return;
+            }
+            so[i] = o;
+        } else {
+            if (chain[i] >= 0) chained = 1;
+            o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
+            if (chain[i] >= 0)
+                ; /* written by an earlier dispatch of the batch, read in place */
+            else if (sa[i])
+                gmem_read(sa[i], g_ar_ptr + o, ss[i]);
+            else
+                memset(g_ar_ptr + o, 0, ss[i]);
+        }
+        bi[nw] = (VkDescriptorBufferInfo){sbuf, o, ss[i]};
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
@@ -789,20 +840,30 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
                 if (bufimg_view[k] && bimg[k].gva == bimg[i].gva) alias = k;
             if (alias >= 0) {
                 bufimg_off[i] = bufimg_off[alias];
+                bufimg_buf[i] = bufimg_buf[alias];
                 if (bimg[i].bytes > bimg[alias].bytes) bimg[i].bytes = bimg[alias].bytes;
+            } else if (deferred) { /* a pending result, like a written storage buffer */
+                if (!vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i])) {
+                    for (k = 0; k < i; k++)
+                        if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
+                    g_vk_cs_skipped++;
+                    cs_abandon_binding(originals);
+                    return;
+                }
             } else {
                 bufimg_off[i] = arena_alloc(bimg[i].bytes);
+                bufimg_buf[i] = g_ar;
                 gmem_read(bimg[i].gva, g_ar_ptr + bufimg_off[i], bimg[i].bytes);
             }
             memset(&vci, 0, sizeof vci);
             vci.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
-            vci.buffer = g_ar;
+            vci.buffer = bufimg_buf[i];
             vci.format = bimg[i].fmt;
             vci.offset = bufimg_off[i];
             vci.range = bimg[i].bytes;
             if (!VK_OK(vkCreateBufferView(g_vk.dev, &vci, NULL, &bufimg_view[i]))) {
                 for (k = 0; k < i; k++)
-                    if (bufimg_view[k]) vkDestroyBufferView(g_vk.dev, bufimg_view[k], NULL);
+                    if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]); /* a draw may still use the set */
                 g_vk_cs_skipped++;
                 cs_abandon_binding(originals);
                 return;
@@ -817,9 +878,24 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             nw++;
         }
         if (fmt_used) {
-            u64 o = arena_alloc(sizeof fmt);
-            memcpy(g_ar_ptr + o, fmt, sizeof fmt);
-            bi[nw] = (VkDescriptorBufferInfo){g_ar, o, sizeof fmt};
+            VkBuffer fbuf = g_ar;
+            u64 o;
+            u8* dst;
+            if (deferred) {
+                dst = vk_stage(sizeof fmt, vk_stage_align(), &fbuf, &o);
+                if (!dst) {
+                    for (i = 0; i < p->si.nimg && i < 8; i++)
+                        if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
+                    g_vk_cs_skipped++;
+                    cs_abandon_binding(originals);
+                    return;
+                }
+            } else {
+                o = arena_alloc(sizeof fmt);
+                dst = g_ar_ptr + o;
+            }
+            memcpy(dst, fmt, sizeof fmt);
+            bi[nw] = (VkDescriptorBufferInfo){fbuf, o, sizeof fmt};
             w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstSet = set,
                                            .dstBinding = SNX_VKB_FMT,
@@ -829,8 +905,20 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             nw++;
         }
     }
+    /* reading an input landed results and submitted: what was read before may be stale, as in a draw's setup */
+    if (deferred && setup_sub != vk_submit_number()) {
+        for (i = 0; i < p->si.nimg && i < 8; i++)
+            if (bufimg_view[i]) {
+                vk_defer_buffer_view(bufimg_view[i]);
+                bufimg_view[i] = VK_NULL_HANDLE;
+            }
+        vk_buf_writable_abort();
+        if (++retries < 4) goto rebind;
+        g_vk_cs_skipped++;
+        return;
+    }
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
-    for (int i = 0; i < ng; i++)
+    for (int i = 0; i < ng && !deferred; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
             memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
             g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
@@ -838,7 +926,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             if (sa[i] + ss[i] > g_out_hi) g_out_hi = sa[i] + ss[i];
         }
     /* buffer images land like storage buffers: only the bytes the dispatch changed are written back */
-    for (i = 0; i < p->si.nimg && i < 8; i++) {
+    for (i = 0; i < p->si.nimg && i < 8 && !deferred; i++) {
         int alias = 0;
         int k;
         for (k = 0; k < i; k++) alias |= bufimg_view[k] && bufimg_off[k] == bufimg_off[i];
@@ -878,6 +966,14 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk_playout, 0, 1, &set, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
+    if (deferred) {
+        /* pending from here: the submit copies them where the host reads them (vk_buf_host_barrier) */
+        vk_buf_writable_commit();
+        for (i = 0; i < p->si.nimg && i < 8; i++)
+            if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
+        g_vk_dispatches++;
+        return;
+    }
     /* results visible to the host */
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

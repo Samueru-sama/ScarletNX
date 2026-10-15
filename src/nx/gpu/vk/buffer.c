@@ -139,8 +139,9 @@ void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame) {
     while (first && first->frame != frame) first = first->next;
     if (!first) return;
     VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                          .srcStageMask =
-                              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                          .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                           .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                           .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                           .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
@@ -256,20 +257,23 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     u8* host = gva >= o->addr && len <= o->size - delta ? gmem_ptr_untracked(gva, len) : NULL;
     if (o->frame == vk_submit_number() && host && !memcmp(host, o->org + delta, len) &&
         !((o->off + delta) & (vk_stage_align() - 1))) {
-        static u64 barrier_frame = ~0ull, barrier_draw = ~0ull;
-        if (barrier_frame != vk_submit_number() || barrier_draw != g_vk_drawn) {
+        /* one barrier per draw or dispatch that reads an earlier one's result: either may have written it, and
+           either may read it next (a dispatch on the graphics queue binds like a draw) */
+        static u64 barrier_frame = ~0ull, barrier_work = ~0ull;
+        if (barrier_frame != vk_submit_number() || barrier_work != g_vk_drawn + g_vk_dispatches) {
             vk_render_end();
-            VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                                  .srcStageMask =
-                                      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                  .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                                  .dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-                                  .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+            VkMemoryBarrier2 b = {
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
             VkDependencyInfo d = {
                 .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
             vkCmdPipelineBarrier2(vk_cmd(), &d);
             barrier_frame = vk_submit_number();
-            barrier_draw = g_vk_drawn;
+            barrier_work = g_vk_drawn + g_vk_dispatches;
         }
         *buf = o->buf;
         *off = o->off + delta;
@@ -668,7 +672,9 @@ static int make_own(Vb* e, const u8* src) {
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                               .size = e->len,
                               .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
+                                       VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo aci = {.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                                             VMA_ALLOCATION_CREATE_MAPPED_BIT,
