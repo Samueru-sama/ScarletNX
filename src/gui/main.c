@@ -50,7 +50,7 @@ typedef struct {
     bool has_output, finished, aborting, abnormal_exit;
     int native;
 } App;
-static const char* const items[] = {"Load Switch NSP/XCI/NRO", "Load Linux ARM ELF", "Setup device keys",
+static const char* const items[] = {"Load Switch NSP/XCI/NRO", "Load Linux ARM ELF", "Load 3DS CIA", "Setup device keys",
                                    "Fullscreen", "Enable libgccjit", "Enable gdbstub", "Theme", "Exit"};
 static SDL_Color rgb(GuiRgb c) {
     SDL_Color out;
@@ -696,8 +696,17 @@ static void pump(App* app) {
     }
     if (app->leaving_ms && now_ms(app) - app->leaving_ms >= app->theme.fade_out_ms) leave_run(app);
 }
+static const char* driver_name(const App* app) {
+    switch (app->menu.selected) {
+        case GUI_SWITCH: return "scarletnx-mariko";
+        case GUI_LINUX: return "scarletnx-gnuabi";
+        case GUI_3DS: return "scarletnx-3ds";
+        default: return NULL;
+    }
+}
 static char* find_driver(App* app) {
-    const char* name = app->menu.selected == GUI_SWITCH ? "scarletnx-mariko" : "scarletnx-gnuabi";
+    const char* name = driver_name(app);
+    if (!name) return NULL;
 #ifdef _WIN32
     char* filename = snx_format("%s.exe", name);
 #else
@@ -715,11 +724,13 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(absolute);
         return;
     }
+    /* The 3DS browser lists CIA inputs, not prepared host executables. */
+    if (app->menu.selected == GUI_3DS) prepared = false;
     bool native = prepared && app->menu.selected == GUI_SWITCH;
     char* driver = native ? NULL : find_driver(app);
     if (!native && !driver) {
         snprintf(app->message, sizeof(app->message), "Cannot find %s beside the GUI or on PATH.",
-                 app->menu.selected == GUI_SWITCH ? "scarletnx-mariko" : "scarletnx-gnuabi");
+                 driver_name(app) ? driver_name(app) : "the selected driver");
         free(absolute);
         return;
     }
@@ -744,9 +755,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     free(app->file);
     app->file = absolute;
-    if (app->recent_file && !gui_recent_add(&app->recent, absolute, app->menu.selected == GUI_SWITCH ? GUI_SWITCH
-                                                                                                      : GUI_LINUX,
-                                            prepared))
+    if (app->recent_file && !gui_recent_add(&app->recent, absolute, app->menu.selected, prepared))
         recent_changed(app);
     app->recent_named = 0;
     app->menu.view = GUI_LOAD_NONE;
@@ -879,7 +888,10 @@ static void menu_key(App* app, GuiKey key) {
     }
     if (key == GUI_CANCEL || (key == GUI_SELECT && app->menu.view == GUI_LOAD_KEYS)) app->message[0] = 0;
     if (app->menu.view == GUI_LOAD_GAMES) {
-        gui_games_scan(&app->games, app->games_dir, app->message, sizeof(app->message));
+        if (app->menu.active == GUI_3DS)
+            gui_cias_scan(&app->games, app->games_dir, app->message, sizeof(app->message));
+        else
+            gui_games_scan(&app->games, app->games_dir, app->message, sizeof(app->message));
         app->browser = (GuiBrowser){.count = app->games.count};
         layout(app);
     }

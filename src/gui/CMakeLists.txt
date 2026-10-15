@@ -56,6 +56,9 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-model "${PROJECT_SOURCE_DIR}/tests/gui_model.c")
     target_link_libraries(snx-test-gui-model PRIVATE snx_gui_support)
     add_test(NAME gui_model COMMAND snx-test-gui-model)
+    add_executable(snx-test-gui-cia-browser "${PROJECT_SOURCE_DIR}/tests/gui_cia_browser.c")
+    target_link_libraries(snx-test-gui-cia-browser PRIVATE snx_gui_support scarletnx-common)
+    add_test(NAME gui_cia_browser COMMAND snx-test-gui-cia-browser)
     add_executable(snx-test-gui-recent "${PROJECT_SOURCE_DIR}/tests/gui_recent.c")
     target_link_libraries(snx-test-gui-recent PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_recent COMMAND snx-test-gui-recent)
@@ -73,7 +76,7 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-sdl "${PROJECT_SOURCE_DIR}/tests/gui_sdl.c")
     target_link_libraries(snx-test-gui-sdl PRIVATE snx_gui_support scarletnx-common SDL3::SDL3 snx_window_icon
                           snx_build_info)
-    foreach(test snx-test-gui-model snx-test-gui-recent snx-test-gui-steps snx-test-gui-theme snx-test-gui-process
+    foreach(test snx-test-gui-model snx-test-gui-cia-browser snx-test-gui-recent snx-test-gui-steps snx-test-gui-theme snx-test-gui-process
                  snx-test-gui-sdl)
         target_compile_options(${test} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     endforeach()

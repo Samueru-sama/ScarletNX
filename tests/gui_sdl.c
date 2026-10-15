@@ -127,6 +127,11 @@ int main(int argc, char** argv) {
         fputs("prepared game stderr\n", stderr);
         return 0;
     }
+    if (argc > 1 && strstr(argv[0], "scarletnx-3ds")) {
+        assert(argc == 2 && snx_is_file(argv[1]) && strstr(argv[1], "3ds input.CIA"));
+        fputs("CIA execution is not implemented (stage 2)\n", stderr);
+        return 3;
+    }
     if (argc > 1 && strstr(argv[1], "option flags")) {
         int i = 2;
         assert(argc == 5 + SNX_GUI_HAS_GCCJIT && !strcmp(argv[i++], "-f"));
@@ -167,8 +172,8 @@ int main(int argc, char** argv) {
     char* self = snx_executable(argv[0]);
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
-    const char* names[] = {"scarletnx-mariko", "scarletnx-gnuabi"};
-    for (int i = 0; i < 2; ++i) {
+    const char* names[] = {"scarletnx-mariko", "scarletnx-gnuabi", "scarletnx-3ds"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
 #else
@@ -186,6 +191,10 @@ int main(int argc, char** argv) {
     colored_text(&app, menu_row(&app, GUI_SWITCH), "- Load Switch NSP/XCI/NRO", yellow);
     assert(!app.menu.activated);
     key(&app, SDLK_DOWN);
+    key(&app, SDLK_RIGHT);
+    assert(app.menu.selected == GUI_3DS);
+    render(&app);
+    colored_text(&app, menu_row(&app, GUI_3DS), "- Load 3DS CIA", yellow);
     key(&app, SDLK_RIGHT);
     assert(app.menu.selected == GUI_KEYS);
     /* Never touch the real user's keys: exercise installation in a private home. */
@@ -311,6 +320,7 @@ int main(int argc, char** argv) {
     mouse(&app, 2, menu_row(&app, GUI_FULLSCREEN), true);
     assert(app.menu.fullscreen);
     key(&app, SDLK_UP);
+    key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     key(&app, SDLK_RETURN);
@@ -473,6 +483,53 @@ int main(int argc, char** argv) {
         app.menu.gccjit = app.menu.gdbstub = false;
         app.menu.selected = GUI_LINUX;
         free(again);
+        free(recent_file);
+    }
+
+    /* 3DS: its own driver for drops, CIA browser and recents, with no Switch
+       flags or direct execution, even when another item is hovered. */
+    {
+        char* original_games = app.games_dir;
+        char* recent_file = snx_path_join(temporary, "prefs/3ds-recent.txt");
+        app.games_dir = snx_path_join(temporary, "cia-games");
+        char* cia = snx_path_join(app.games_dir, "3ds input.CIA");
+        assert(!snx_mkdirs(app.games_dir) && !snx_write_file(cia, "fixture", 7));
+        recent_open(&app, snx_strdup(recent_file));
+        app.menu.gccjit = !!SNX_GUI_HAS_GCCJIT;
+        app.menu.gdbstub = true;
+        mouse(&app, 2, menu_row(&app, GUI_3DS), true);
+        key(&app, SDLK_RETURN);
+        assert(app.menu.view == GUI_LOAD_DROP && app.menu.active == GUI_3DS);
+        mouse(&app, 2, menu_row(&app, GUI_LINUX), false);
+        e.type = SDL_EVENT_DROP_FILE;
+        e.drop.data = cia;
+        event(&app, &e);
+        assert(app.menu.running && app.menu.selected == GUI_3DS && !app.native);
+        finish(&app, 3);
+        assert(app.recent.count == 1 && app.recent.game[0].driver == GUI_3DS && !app.recent.game[0].prepared);
+        GuiRecent kept;
+        gui_recent_load(&kept, recent_file);
+        assert(kept.count == 1 && kept.game[0].driver == GUI_3DS && !kept.game[0].prepared);
+        open_recent(&app, 0);
+        finish(&app, 3);
+        app.menu.recent_focus = 0;
+        mouse(&app, 2, menu_row(&app, GUI_3DS), true);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_RETURN);
+        assert(app.menu.view == GUI_LOAD_GAMES && app.games.count == 1);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_RETURN);
+        assert(app.menu.running && !app.native);
+        finish(&app, 3);
+        app.recent = (GuiRecent){0};
+        app.menu.recent = app.menu.recent_focus = 0;
+        free(app.recent_file);
+        app.recent_file = NULL;
+        app.menu.gccjit = app.menu.gdbstub = false;
+        app.menu.selected = GUI_LINUX;
+        free(app.games_dir);
+        app.games_dir = original_games;
+        free(cia);
         free(recent_file);
     }
 

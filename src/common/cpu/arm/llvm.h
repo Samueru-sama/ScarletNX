@@ -3,6 +3,7 @@
 #ifndef SNX_ARM_LLVM_H
 #define SNX_ARM_LLVM_H
 #include "arm.h"
+#include "checked.h"
 #include <llvm-c/Core.h>
 
 /* Emit void name(SnxArmCPU*) into a host-target module. No interpreter or runtime
@@ -20,4 +21,24 @@ LLVMValueRef snx_arm_llvm_block(LLVMModuleRef module, const char* name, const ui
    instruction; interworking branches set/clear CPSR.T before returning. */
 LLVMValueRef snx_thumb_llvm_block(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
                                   uint32_t pc, size_t* consumed);
+
+/* Versioned opt-in code generation. NULL means the original A57/flat ABI.
+   Checked memory currently supports integer transfers only; exclusives and
+   vectors stop with BACKEND_UNSUPPORTED, never access the flat pointer.
+   Every instruction is fetched through the bus before executing, including
+   condition-failed instructions. Permission faults report PREFETCH_ABORT;
+   changed bytes report CODE_CHANGED without executing the stale instruction.
+   The runtime must return to its dispatcher on either exit, never re-enter
+   stale code or silently compile at runtime. ARM11 VFPv2 emission is pending. */
+typedef enum { SNX_ARM_MEMORY_FLAT, SNX_ARM_MEMORY_CHECKED } SnxArmMemoryMode;
+#define SNX_ARM_CODEGEN_OPTIONS_ABI 1u
+typedef struct {
+    uint32_t abi;
+    SnxArmProfile profile;
+    SnxArmMemoryMode memory;
+} SnxArmCodegenOptions;
+LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
+                                  uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
+LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
+                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
 #endif

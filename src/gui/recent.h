@@ -9,7 +9,7 @@
 typedef struct {
     char path[1024]; /* absolute */
     char name[128];  /* what the run called it, else the file's own name */
-    int driver;      /* GUI_SWITCH or GUI_LINUX: the item that loaded it */
+    int driver;      /* GUI_SWITCH, GUI_LINUX or GUI_3DS: the item that loaded it */
     int prepared;    /* a program from games/, run as it is */
 } GuiRecentGame;
 typedef struct {
@@ -23,7 +23,7 @@ int gui_recent_add(GuiRecent* recent, const char* path, int driver, int prepared
 void gui_recent_remove(GuiRecent* recent, int index);
 /* The name the run gave the game at path; 1 when it changed */
 int gui_recent_rename(GuiRecent* recent, const char* path, const char* name);
-/* The file: a line per game, "<switch|linux> <file|games> <path> <name>" separated by tabs. Loading keeps the games
+/* The file: a line per game, "<switch|linux|3ds> <file|games> <path> <name>" separated by tabs. Loading keeps the games
    whose file is still there and skips a line it cannot read; a missing list is an empty one */
 void gui_recent_load(GuiRecent* recent, const char* file);
 int gui_recent_save(const GuiRecent* recent, const char* file);

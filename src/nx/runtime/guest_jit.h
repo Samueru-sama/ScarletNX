@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* What runs a pc the game module has no function for (RtAPI.miss, rtapi.c): with cpu_fallback=jit, code the runtime
    JIT compiles in the background (recompiler/llvm/jit_service.c), and the module's interpreter until it has */
-#ifndef SNX_RUNTIME_JIT_H
-#define SNX_RUNTIME_JIT_H
+#ifndef SNX_RUNTIME_GUEST_JIT_H
+#define SNX_RUNTIME_GUEST_JIT_H
 #include "cpu/aarch64/cpu.h"
 
 /* once the game's executables are loaded, the dispatch table built and the hints loaded, before any guest thread

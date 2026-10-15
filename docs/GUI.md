@@ -23,13 +23,18 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
 - Moving outside a submenu (including over another main item) leaves it open
   and anchored to its activated parent. ESC goes back; explicitly activating a
   different main item replaces/closes the submenu.
-- Selecting **Load Switch NSP/XCI/NRO** or **Load Linux ARM ELF** keeps that item
+- Selecting **Load Switch NSP/XCI/NRO**, **Load Linux ARM ELF** or **Load 3DS CIA** keeps that item
   visible and opens two selectable options underneath it: **Select via drag and drop**
   and **Select file from games/ instead**.
 - Activate **Select via drag and drop** to wait for a file. SDL file drops and text drops
   are supported. Ctrl+V also accepts a clipboard path while waiting. ESC returns to
   the two options, and another ESC returns to the main menu.
-- **Setup device keys**, immediately after the two load entries, prompts you to
+- **Load 3DS CIA** uses `scarletnx-3ds`. Its `games/` browser lists CIA inputs,
+  not host executables. The driver extracts supported decrypted application CIAs,
+  then returns an explicit error because ARM11 AOT/execution is still pending.
+  Existing extraction directories are refused rather than treated as cache hits.
+  See [3DS port](3DS.md) for limits and extract-only usage.
+- **Setup device keys**, immediately after the three load entries, prompts you to
   drag and drop `prod.keys` (or paste its path with Ctrl+V); a blinking
   **[ Drop prod.keys here ]** waits in the middle of the screen (the theme's
   `[prompt]`). It installs the file to `~/.switch/prod.keys`, or
@@ -48,7 +53,7 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   The runtime currently supports the stub on UNIX only.
 - Selecting or hovering these settings shows a short description immediately
   above the CPU/RAM footer. The CPU-only Linux driver does not support these
-  Switch options; they are never forwarded as Linux guest arguments.
+  Switch options; they are never forwarded as Linux guest arguments or to the 3DS driver.
 - **Theme** switches to the next theme: the built-in Default and YoRHa, then each
   folder of `themes/` (see [Themes](#themes)). It lasts for the session.
 - **Exit** closes the launcher. Closing its window during a run terminates the
@@ -61,11 +66,11 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   list instead. The list is kept in `recent.txt` in the user's data folder
   (`$XDG_DATA_HOME/scarletnx/gui/`, by default `~/.local/share/scarletnx/gui/`, or
   `%APPDATA%\scarletnx\gui\` on Windows), a line per
-  game: `switch` or `linux`, `file` or `games` (a program from games/, run as it is),
+  game: `switch`, `linux` or `3ds`, `file` or `games` (a program from games/, run as it is),
   the path and the name, separated by tabs.
 
 The launcher looks beside its executable, then on PATH, for `scarletnx-mariko`
-(the existing Switch driver alias) or `scarletnx-gnuabi`. Files are passed directly
+(the existing Switch driver alias), `scarletnx-gnuabi` or `scarletnx-3ds`. Files are passed directly
 as argv entries, never through a shell. Spaces, Unicode paths and shell punctuation
 are not evaluated. Local `file://` text drops are decoded, but lists and remote URI
 authorities are rejected. The working directory is not changed and is shown at the
@@ -78,6 +83,8 @@ list. It reads `games/` relative to the working directory shown in the footer,
 not relative to the GUI executable. Each entry is displayed by basename, sorted
 alphabetically. Only immediate executable files are listed (execute permission
 on UNIX, `.exe` on Windows). Hidden files, shared libraries and directories are
+excluded. For **Load 3DS CIA**, only immediate non-hidden `.cia` files are listed
+(case-insensitive); they do not need execute permission, and directories are
 excluded. The list is refreshed each time it is opened.
 
 - **Back [ESC]** is the first selectable item on every page. Enter/Space on it, or
@@ -92,7 +99,8 @@ For the Switch selection these are already-prepared native game launchers, so
 selecting one runs it directly with the fullscreen/debugger settings rather than trying to
 extract it as a dump. For the Linux selection, the selected file is passed to
 `scarletnx-gnuabi` as an ARM64 ELF. Output capture, resource accounting and the
-return to the main menu work the same way for both input methods.
+return to the main menu work the same way for both input methods. For the 3DS
+selection, the browser passes a CIA input to `scarletnx-3ds`; it never executes it directly.
 
 ## Output and resource use
 

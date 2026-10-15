@@ -29,7 +29,80 @@ On return:
 
 Use bounded blocks for scheduling and polling. The caller owns instruction fetching, executable-page validation, block lookup, object loading, code-cache invalidation, syscall dispatch, and clearing monitors on context switches. For example, the existing `SnxIr` module/object utilities can host these functions, but its A64 function dispatcher cannot call them.
 
-## Implemented instructions
+## Opt-in ARM11 profile and checked memory
+
+The existing APIs still select **A57 + flat memory**; `SnxArmCPU`, `SNX_ARM_ABI=2`
+and its field offsets have not changed. No board-specific compile definition
+changes shared code generation. Other boards opt in through the `_ex` APIs:
+
+```c
+SnxArmCodegenOptions options = {
+    SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11, SNX_ARM_MEMORY_CHECKED
+};
+snx_arm_llvm_block_ex(module, name, words, count, pc, &consumed, &options);
+```
+
+ISA and memory mode are independent. NULL options preserve the original API.
+Invalid option versions/enums are refused without modifying the LLVM module.
+`snx_a32_decode_profile` / `snx_thumb_decode_profile` are LLVM-independent.
+
+The ARM11 profile implements a **conservative ARMv6K integer subset**, rejecting
+MOVW/MOVT, MLS, divide, RBIT, bitfields, ARMv7 barrier encodings, acquire/release,
+NEON, VFPv3/v4 and D16..D31. It recognizes the ARM11 CP15 barrier forms. VFPv2
+recognition currently exits with `BACKEND_UNSUPPORTED`: VFPv2 short vectors are
+not implemented by the A57 FP helpers. This is not a complete ARM11 ISA model.
+
+ARM11 ALU writes to PC remain in ARM state. Its Thumb BL prefix and BL/BLX suffix
+are **separately executable 16-bit instructions**, with the original signed
+high offset and observable intermediate LR; they are not decoded as Thumb-2
+S/J1/J2 branches. Thumb-2-looking bytes can be valid legacy instructions and
+are interpreted accordingly, never with Thumb-2 semantics. ARM11 Thumb PC
+register reads use PC+4; literal/ADR bases alone are word-aligned. Profile-only
+support also covers Thumb REV, literal LDR, BKPT, high-register ADD-to-PC and
+LDM base-in-list behavior. ARM11 paired transfers require eight-byte alignment.
+Ordinary unaligned scalar RAM transfers model alignment checking disabled and
+ARMv6 unaligned support enabled; CP15 alignment/legacy rotated-load modes are
+not emulated. None of these changes affect A57's original flat-memory path.
+
+Checked blocks require `&SnxArmCheckedCPU.cpu` (see `checked.h`), not a standalone
+`SnxArmCPU`. This **separate ABI** supplies a context and one callback; no flat
+pointer is read. Each instruction fetch checks execute permission and compares
+its bytes with the static compilation input, even when its condition fails.
+A fault reports `PREFETCH_ABORT`; a mismatch reports `CODE_CHANGED` before the
+stale instruction executes. These exits must return to the dispatcher. There
+is no automatic recompilation, block discovery or executable-module loader.
+
+Integer transfers use bounded little-endian transaction buffers. Reads complete
+before register updates; stores commit before base/SP writeback. Paired and
+multiword accesses are whole-range RAM transactions and carry `ACCESS_MULTI`,
+which callbacks must reject on MMIO. This intentionally preflights all bytes,
+not hardware partial-transfer behavior on abort. Ordinary aligned single MMIO
+accesses remain one callback, not byte-split accesses. Callers serialize CPU,
+permissions, mappings, callbacks and device/memory writes; concurrent code
+mutation and multicore reservation semantics are not supported. Exclusives,
+acquire/release, vectors and Thumb table branches explicitly stop as unsupported
+on checked memory rather than touching a flat pointer.
+
+Asset-free native tests (LLVM SDK required; no NX/SDL dependencies):
+
+```sh
+cmake -S . -B build/arm11 -DSNX_BUILD_NX=OFF -DSNX_BUILD_GNUABI=OFF \
+  -DSNX_BUILD_GUI=OFF -DSNX_TEST_ARM_AOT=ON
+cmake --build build/arm11
+ctest --test-dir build/arm11 --output-on-failure
+```
+
+The build-time generator emits verified native `.o` files at O0/O2; the witness
+executables link only the CTR CPU/memory adapters, **not LLVM or MCJIT**. The bus
+matrix compares checked and flat AOT across 1,059 integer encodings and 13 states
+for both profiles at both optimization levels (55,068 comparisons). With
+`SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the isolated build also runs
+independent ARM11 MPCore integer comparisons and the existing A57 integer,
+VFP/NEON and Thumb regression suites. ARM11 Thumb BL halves have C golden tests,
+not a claimed independent differential oracle. Production dispatch, process
+setup, cache identity and full CIA-to-native integration remain separate work.
+
+## Implemented instructions (default A57/flat configuration)
 
 - Word/byte LDR and STR, immediate and shifted-register offsets, positive/negative offsets, pre/post indexing, writeback and unprivileged aliases.
 - LDRH, STRH, LDRSB, LDRSH, LDRD, STRD, including literal loads and applicable unprivileged aliases.

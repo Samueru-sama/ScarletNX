@@ -28,6 +28,8 @@ char* snx_executable(const char* argv0);
 int snx_is_file(const char* path);
 int snx_is_dir(const char* path);
 int snx_is_link(const char* path);
+/* Any existing directory entry, including dangling symlinks and special files. */
+int snx_path_exists(const char* path);
 int snx_mkdirs(const char* path);
 int snx_remove_tree(const char* path);
 int snx_copy_file(const char* src, const char* dst);

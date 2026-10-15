@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   The shared library's exports: snx_recompiler.h's interface, nothing of the backends behind it */
+{
+  global:
+    snx_recompiler_*;
+    snx_recompile;
+    snx_recompile_ranges;
+    snx_recompile32;
+    snx_recompile32_ranges;
+    snx_recompiled_*;
+    snx_recompiled32_*;
+    snx_runtime_defaults;
+  local:
+    *;
+};

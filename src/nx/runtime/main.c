@@ -10,7 +10,7 @@
 #include "runtime/loader.h"
 #include "runtime/options.h"
 #include "runtime/gdbstub.h"
-#include "runtime/jit.h"
+#include "runtime/guest_jit.h"
 #include "runtime/rtapi.h"
 #include "gpu/gpu.h"
 #include "gpu/nvn_trace.h"

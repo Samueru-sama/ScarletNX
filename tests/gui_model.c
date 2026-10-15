@@ -32,6 +32,14 @@ int main(void) {
     assert(menu.view == GUI_LOAD_NONE);
     gui_menu_key(&menu, GUI_DOWN);
     gui_menu_key(&menu, GUI_RIGHT);
+    assert(menu.selected == GUI_3DS);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.active == GUI_3DS && menu.view == GUI_LOAD_OPTIONS);
+    gui_menu_key(&menu, GUI_SELECT);
+    assert(menu.view == GUI_LOAD_DROP && menu.active == GUI_3DS);
+    gui_menu_key(&menu, GUI_CANCEL);
+    gui_menu_key(&menu, GUI_CANCEL);
+    gui_menu_key(&menu, GUI_RIGHT);
     assert(menu.selected == GUI_KEYS);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.view == GUI_LOAD_KEYS && !menu.running);
@@ -76,7 +84,9 @@ int main(void) {
     menu.selected = GUI_LINUX; /* Mouse focus outside the open submenu. */
     menu.focus_load = false;
     gui_menu_key(&menu, GUI_DOWN);
-    assert(menu.selected == GUI_KEYS && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_OPTIONS);
+    assert(menu.selected == GUI_3DS && menu.active == GUI_SWITCH && menu.view == GUI_LOAD_OPTIONS);
+    gui_menu_key(&menu, GUI_DOWN);
+    assert(menu.selected == GUI_KEYS && menu.active == GUI_SWITCH);
     gui_menu_key(&menu, GUI_SELECT);
     assert(menu.active == GUI_KEYS && menu.view == GUI_LOAD_KEYS);
 
@@ -98,6 +108,9 @@ int main(void) {
         menu.selected = GUI_LINUX;
         const char* args[4];
         assert(gui_launch_options(&menu, false, args) == 0);
+        menu.selected = GUI_3DS;
+        assert(gui_launch_options(&menu, false, args) == 0);
+        assert(gui_launch_options(&menu, true, args) == 0);
     }
 
     GuiBrowser browser = {.count = 23};

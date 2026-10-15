@@ -51,6 +51,16 @@ int main(void) {
         assert(!strcmp(again.game[i].path, r.game[i].path) && !strcmp(again.game[i].name, r.game[i].name) &&
                again.game[i].driver == r.game[i].driver && again.game[i].prepared == r.game[i].prepared);
 
+    /* 3DS records keep their own driver across restart; CIA inputs are never prepared executables. */
+    GuiRecent before_ctr = r;
+    assert(!gui_recent_add(&r, games[6], GUI_3DS, 1));
+    assert(!r.game[0].prepared && r.game[0].driver == GUI_3DS);
+    assert(!gui_recent_save(&r, file));
+    gui_recent_load(&again, file);
+    assert(again.count == r.count && again.game[0].driver == GUI_3DS && !again.game[0].prepared);
+    assert(gui_recent_add(&r, games[6], GUI_KEYS, 0));
+    r = before_ctr;
+
     /* a file that is gone, a line it cannot read, a second copy: left out; CRLF read too */
     assert(!remove(games[1]));
     text = snx_format("switch\tfile\t%s\tTwo\r\nnonsense\nlinux\tgames\t%s\t\nswitch\tfile\t%s\tcopy\n"

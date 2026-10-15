@@ -43,21 +43,54 @@ static void block(uint32_t h[8], const unsigned char* p) {
     h[6] += g;
     h[7] += v;
 }
-void snx_sha256(const void* data, size_t size, unsigned char digest[32]) {
-    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+void snx_sha256_init(SnxSha256* context) {
+    static const uint32_t initial[8] = {
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    memcpy(context->h, initial, sizeof initial);
+    context->bytes = 0;
+    context->used = 0;
+}
+void snx_sha256_update(SnxSha256* context, const void* data, size_t size) {
     const unsigned char* p = data;
-    uint64_t bits = (uint64_t)size * 8;
-    unsigned char tail[128] = {0};
+    context->bytes += size;
+    if (!size) return;
+    if (context->used) {
+        size_t n = 64 - context->used;
+        if (n > size) n = size;
+        memcpy(context->pending + context->used, p, n);
+        context->used += n;
+        p += n;
+        size -= n;
+        if (context->used == 64) {
+            block(context->h, context->pending);
+            context->used = 0;
+        }
+    }
     while (size >= 64) {
-        block(h, p);
+        block(context->h, p);
         p += 64;
         size -= 64;
     }
-    if (size) memcpy(tail, p, size);
+    if (size) {
+        memcpy(context->pending, p, size);
+        context->used = size;
+    }
+}
+void snx_sha256_final(SnxSha256* context, unsigned char digest[32]) {
+    unsigned char tail[128] = {0};
+    uint64_t bits = context->bytes * 8;
+    size_t size = context->used, end = size < 56 ? 64 : 128;
+    if (size) memcpy(tail, context->pending, size);
     tail[size] = 0x80;
-    size_t end = size < 56 ? 64 : 128;
     for (unsigned i = 0; i < 8; i++) tail[end - 1 - i] = (unsigned char)(bits >> (8 * i));
-    block(h, tail);
-    if (end == 128) block(h, tail + 64);
-    for (unsigned i = 0; i < 32; i++) digest[i] = (unsigned char)(h[i / 4] >> (24 - 8 * (i % 4)));
+    block(context->h, tail);
+    if (end == 128) block(context->h, tail + 64);
+    for (unsigned i = 0; i < 32; i++) digest[i] = (unsigned char)(context->h[i / 4] >> (24 - 8 * (i % 4)));
+    memset(context, 0, sizeof *context);
+}
+void snx_sha256(const void* data, size_t size, unsigned char digest[32]) {
+    SnxSha256 context;
+    snx_sha256_init(&context);
+    snx_sha256_update(&context, data, size);
+    snx_sha256_final(&context, digest);
 }

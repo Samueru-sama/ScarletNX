@@ -18,7 +18,7 @@ void ini_poll(void);
 extern int g_opt_docked, g_opt_lang, g_opt_fps;
 extern int g_opt_diag, g_opt_shadows, g_opt_prof;
 extern int g_opt_network; /* network: 1 = the game is online through the host (hle/services/network) */
-/* cpu_fallback: what runs guest code the game module has no function for (RtAPI.miss, runtime/jit.c). Startup only */
+/* cpu_fallback: what runs guest code the game module has no function for (RtAPI.miss, runtime/guest_jit.c). Startup only */
 enum { CPU_FALLBACK_INTERP, CPU_FALLBACK_JIT };
 extern int g_opt_cpu_fallback;
 extern int g_opt_jit_threads; /* jit_threads: compile threads for cpu_fallback=jit, 0 by the CPUs. Startup only */

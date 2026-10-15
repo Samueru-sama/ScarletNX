@@ -147,7 +147,7 @@ static void ini_apply(const char* k, const char* v) {
         g_opt_prof = atoi(v);
     else if (!strcmp(k, "network"))
         g_opt_network = atoi(v);
-    else if (!strcmp(k, "cpu_fallback")) /* the miss path is chosen before any guest thread runs (runtime/jit.c) */
+    else if (!strcmp(k, "cpu_fallback")) /* the miss path is chosen before any guest thread runs (runtime/guest_jit.c) */
         g_opt_cpu_fallback = !strcmp(v, "jit") ? CPU_FALLBACK_JIT : CPU_FALLBACK_INTERP;
     else if (!strcmp(k, "jit_threads")) /* the compile threads start with the JIT */
         g_opt_jit_threads = atoi(v) > 0 ? atoi(v) : 0;

@@ -44,6 +44,8 @@ if(SNX_GCCJIT_FOUND)
 else()
     target_sources(snx_driver PRIVATE ../../loader/module_gccjit.c) # the stub: built without libgccjit
 endif()
+# the recompiler as a library (snx_recompiler.h), over the backends configured above
+add_subdirectory("${CMAKE_SOURCE_DIR}/src/common/cpu/recompiler" recompiler-library)
 if(SNX_TOOLS_ONLY)
     add_executable(scarletnx main.c)
     set_target_properties(scarletnx PROPERTIES C_STANDARD 90 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF

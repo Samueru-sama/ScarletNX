@@ -5,7 +5,7 @@
 /* what the game module calls through RtAPI: undefined instructions, BRK, hints, ticks, FPCR */
 #include "runtime/rtapi.h"
 #include "runtime/clock.h"
-#include "runtime/jit.h"
+#include "runtime/guest_jit.h"
 #include "runtime/loader.h"
 #include "runtime/main.h"
 #include "hle/kernel/kernel.h"

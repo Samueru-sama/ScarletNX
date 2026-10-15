@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Cortex-A57, ARMv8-A AArch32 user mode, little-endian guest memory.
+/* Default: Cortex-A57, ARMv8-A AArch32 user mode, little-endian guest memory.
    Separate from the A64 module ABI: never cast CPU* to SnxArmCPU*. */
 #define SNX_ARM_ABI 2 /* shared S/D/Q register bank and FPSCR */
 #define SNX_ARM_T   (1u << 5)
@@ -23,7 +23,9 @@ typedef enum {
     SNX_ARM_ALIGNMENT,
     SNX_ARM_BAD_ENTRY,
     SNX_ARM_ENDIAN_UNSUPPORTED,
-    SNX_ARM_BACKEND_UNSUPPORTED
+    SNX_ARM_BACKEND_UNSUPPORTED,
+    SNX_ARM_PREFETCH_ABORT,
+    SNX_ARM_CODE_CHANGED
 } SnxArmExit;
 
 typedef struct {
@@ -77,6 +79,11 @@ typedef enum {
    Decode is independent of LLVM and does not execute an instruction. */
 SnxA32Kind snx_a32_decode(uint32_t word);
 
+/* Opt-in ISA profiles. Existing decode/emission APIs remain Cortex-A57.
+   ARM11 is an integer ARMv6K user-mode subset, not a full ARM11 implementation. */
+typedef enum { SNX_ARM_PROFILE_A57, SNX_ARM_PROFILE_ARM11 } SnxArmProfile;
+SnxA32Kind snx_a32_decode_profile(SnxArmProfile profile, uint32_t word);
+
 /* ---- Thumb16/Thumb32 ----
    Decoded to an explicit operand model (unlike A32, whose emitter re-decodes
    its word): Thumb16 uses 3-bit register fields and Thumb32 spreads operands
@@ -101,7 +108,9 @@ typedef enum {
     TH_WDATA,     /* wide data-processing (shifted register) */
     TH_TABLE,     /* TBB/TBH */
     TH_IT,        /* If-Then */
-    TH_HINT       /* NOP/YIELD/WFE/WFI/SEV */
+    TH_HINT,      /* NOP/YIELD/WFE/WFI/SEV */
+    TH_LEGACY_BL, /* ARM11 only: separate Thumb BL prefix / BL or BLX suffix */
+    TH_REV        /* ARM11 Thumb REV/REV16/REVSH */
 } SnxThumbShape;
 
 /* ALU sub-operations for TH_ALU / TH_WDATA / TH_ADDSUB. */
@@ -128,7 +137,7 @@ enum {
     ALU_ORN
 };
 /* Branch sub-operations. */
-enum { BR_B, BR_BCOND, BR_BL, BR_BLX_IMM, BR_BX, BR_BLX_REG, BR_CBZ, BR_CBNZ, BR_BW, BR_SVC };
+enum { BR_B, BR_BCOND, BR_BL, BR_BLX_IMM, BR_BX, BR_BLX_REG, BR_CBZ, BR_CBNZ, BR_BW, BR_SVC, BR_BKPT };
 /* TH_IMM8 sub-operations. */
 enum { I8_MOV, I8_CMP, I8_ADD, I8_SUB };
 
@@ -161,6 +170,7 @@ typedef struct {
    halfword (ignored for 16-bit forms). Returns the length in halfwords
    (1 or 2), or 0 for a reserved/unpredictable encoding. */
 unsigned snx_thumb_decode(uint16_t hw1, uint16_t hw2, SnxThumb* out);
+unsigned snx_thumb_decode_profile(SnxArmProfile profile, uint16_t hw1, uint16_t hw2, SnxThumb* out);
 /* Explicitly unsupported backend, never falls back to the A64 decoder. */
 SnxArmExit snx_arm_gccjit_stub(void);
 

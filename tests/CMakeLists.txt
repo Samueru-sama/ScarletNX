@@ -2,6 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 option(SNX_TEST_SANITIZERS "Run native regression tests with ASan and UBSan" OFF)
 option(SNX_TEST_VULKAN "Run offscreen Vulkan integration tests (requires a Vulkan 1.3 ICD, e.g. lavapipe)" OFF)
+option(SNX_TEST_ARM_AOT "Build asset-free static ARM11/checked-memory witnesses (requires native LLVM SDK)" OFF)
 if(SNX_TEST_SANITIZERS AND TARGET snx_driver)
     target_compile_options(snx_driver PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(snx_driver INTERFACE -fsanitize=address,undefined)
@@ -30,6 +31,64 @@ function(snx_test_target target standard)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
     endif()
 endfunction()
+
+if(TARGET snx_ctr_board)
+    if(SNX_TEST_SANITIZERS)
+        foreach(target snx_ctr_board snx_ctr_memory snx_ctr_loader snx_ctr_cpu)
+            target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+            target_link_options(${target} INTERFACE -fsanitize=address,undefined)
+        endforeach()
+        target_compile_options(scarletnx-3ds PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    endif()
+    add_executable(snx-test-3ds-board 3ds_board.c)
+    snx_test_target(snx-test-3ds-board 11)
+    target_compile_options(snx-test-3ds-board PRIVATE -UNDEBUG)
+    target_link_libraries(snx-test-3ds-board PRIVATE snx_ctr_board)
+    add_test(NAME 3ds_board COMMAND snx-test-3ds-board)
+    add_executable(snx-test-3ds-memory 3ds_memory.c)
+    snx_test_target(snx-test-3ds-memory 11)
+    target_link_libraries(snx-test-3ds-memory PRIVATE snx_ctr_memory)
+    add_test(NAME 3ds_memory COMMAND snx-test-3ds-memory)
+    add_executable(snx-test-3ds-blz 3ds_blz.c)
+    snx_test_target(snx-test-3ds-blz 11)
+    target_link_libraries(snx-test-3ds-blz PRIVATE snx_ctr_loader)
+    add_test(NAME 3ds_blz COMMAND snx-test-3ds-blz)
+    add_executable(snx-test-sha256-stream sha256_stream.c "${PROJECT_SOURCE_DIR}/src/common/utilities/sha256.c")
+    snx_test_target(snx-test-sha256-stream 11)
+    add_test(NAME sha256_stream COMMAND snx-test-sha256-stream)
+    foreach(target snx-test-3ds-memory snx-test-3ds-blz snx-test-sha256-stream)
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endforeach()
+
+    if (NOT WIN32)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_test(NAME 3ds_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_driver.py"
+                $<TARGET_FILE:scarletnx-3ds>)
+            add_test(NAME 3ds_extract COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_extract.py"
+                $<TARGET_FILE:scarletnx-3ds>)
+            set_tests_properties(3ds_extract PROPERTIES TIMEOUT 120)
+        endif()
+    endif()
+endif()
+
+add_executable(snx-test-arm-profile arm_profile.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/a32.c"
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/thumb_decode.c"
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/vector_decode.c"
+    "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/profile.c")
+snx_test_target(snx-test-arm-profile 11)
+target_compile_options(snx-test-arm-profile PRIVATE -UNDEBUG)
+add_test(NAME arm_isa_profiles COMMAND snx-test-arm-profile)
+if(SNX_TEST_ARM_AOT)
+    include(arm_checked.cmake)
+endif()
+
+# Board/GUI-only builds do not configure either AOT runtime or LLVM. Do not
+# create CPU execution tests that link the absent backend targets in that case.
+if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
+    include(architecture.cmake)
+    return()
+endif()
 
 # Validate the direct writer against SPIRV-Tools when the system tools are installed.
 if(SNX_BUILD_NX)
@@ -376,6 +435,11 @@ if(TARGET snx_jit)
 endif()
 add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}"
     "${CMAKE_C_COMPILER}" ${snx_extra_backends})
+# the recompiler as a library (snx_recompiler.h): A64 on every backend built, A32, from code in memory
+add_executable(snx-test-recompiler-library recompiler_library.c)
+snx_test_target(snx-test-recompiler-library 11)
+target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
+add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
 
 add_executable(snx_codegen_test codegen_test.c)
 snx_test_target(snx_codegen_test 90)

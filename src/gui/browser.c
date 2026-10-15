@@ -22,7 +22,7 @@ void gui_games_free(GuiGames* games) {
     games->names = NULL;
     games->count = 0;
 }
-bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size) {
+static bool scan(GuiGames* games, const char* directory, char* error, size_t size, bool cia) {
     gui_games_free(games);
     if (size) error[0] = 0;
     char** names = NULL;
@@ -42,6 +42,17 @@ bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t 
     for (size_t i = 0; i < count; ++i) {
         const char* name = names[i];
         if (name[0] == '.') continue;
+        if (cia) {
+            if (!suffix(name, ".cia")) continue;
+            char* path = snx_path_join(directory, name);
+            bool regular = path && snx_is_file(path);
+            free(path);
+            if (regular) {
+                games->names[games->count++] = names[i];
+                names[i] = NULL;
+            }
+            continue;
+        }
 #ifdef _WIN32
         if (!suffix(name, ".exe")) continue;
 #else
@@ -63,4 +74,10 @@ bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t 
     }
     snx_free_strings(names, count);
     return true;
+}
+bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size) {
+    return scan(games, directory, error, size, false);
+}
+bool gui_cias_scan(GuiGames* games, const char* directory, char* error, size_t size) {
+    return scan(games, directory, error, size, true);
 }

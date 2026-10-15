@@ -24,6 +24,11 @@ See [Linux ABI execution and QEMU validation](docs/GNUABI.md) for supported sysc
 virtual filesystems, static ELF execution, and current limits. The NX executable also
 has `scarletnx-erista`, `scarletnx-mariko`, and `scarletnx-aula` aliases.
 
+The recompiler is also a library on its own, `libscarletnx-recompiler`: a program hands
+it ARM64 or AArch32 code in memory and runs the result in its own process with its own
+SVC handler, with no Switch runtime behind it. See
+[The recompiler as a library](docs/LIBRARY.md).
+
 Install the build tools first. On Debian/Ubuntu:
 ```bash
 sudo apt update
@@ -63,6 +68,14 @@ Enter or hover and click, then choose drag-and-drop or the paginated `games/` br
 The GUI shows live driver/game
 output and combined CPU/RAM usage. See [GUI launcher](docs/GUI.md).
 
+The experimental `scarletnx-3ds` driver and **Load 3DS CIA** menu entry support
+decrypted application CIA extraction (`scarletnx-3ds -x game.cia`) and an independent
+page-based memory controller. An opt-in ARM11 integer profile and checked-memory
+adapter now have static AOT witnesses, without changing shared A57 defaults.
+**CIA-to-native execution, HLE and devices remain incomplete**; a normal CIA launch
+extracts, then stops explicitly before execution.
+See the [staged 3DS port](docs/3DS.md) for limits, build instructions and remaining work.
+
 For more detailed information please see: [Build + run](./docs/BUILD.md).
 
 # Special thanks
@@ -72,5 +85,6 @@ For more detailed information please see: [Build + run](./docs/BUILD.md).
 - LibHac.
 - [Nexium](https://nexium-emu.org/) for research and development.
 - [Switchbrew](https://switchbrew.org) for research.
+- [Azahar](https://github.com/azahar-emu/azahar) and Citra, for all of the 3DS emulation.
 
 Wimsy, the mascot and the runtime's icon (`dist/wimsy.svg`) was drawn by Liz.

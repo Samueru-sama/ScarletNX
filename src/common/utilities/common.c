@@ -312,6 +312,14 @@ int snx_is_link(const char* path) {
     return !lstat(path, &st) && S_ISLNK(st.st_mode);
 #endif
 }
+int snx_path_exists(const char* path) {
+#ifdef _WIN32
+    return attributes(path) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat st;
+    return !lstat(path, &st);
+#endif
+}
 static int mkdir_one(const char* path) {
 #ifdef _WIN32
     wchar_t* p = wide(path);

@@ -10,5 +10,7 @@ typedef struct {
 } GuiGames;
 /* Immediate executable files only. Never recurse into data/save directories. */
 bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t size);
+/* Immediate CIA files only, case-insensitive extension; no execute bit needed. */
+bool gui_cias_scan(GuiGames* games, const char* directory, char* error, size_t size);
 void gui_games_free(GuiGames* games);
 #endif
