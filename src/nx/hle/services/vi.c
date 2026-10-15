@@ -27,7 +27,7 @@ typedef struct {
     u8 raw[0x16C];
     u32 rawsize;
     int queued;    /* held: dequeued by the game, or queued and not shown yet */
-    u32 gen;       /* counts dequeues, so a late present doesn't free the slot again after a forced release */
+    u32 gen;       /* counts dequeues, so a present from an earlier dequeue doesn't free the slot */
     i32 crop[4];   /* the part of the buffer shown (left, top, right, bottom); all 0 for the whole buffer */
     u32 transform; /* the queued frame's Android buffer transform, retained with its crop */
 } Slot;
@@ -216,8 +216,7 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
         }
         case 3: { /* DEQUEUE_BUFFER */
             /* a slot is held from DEQUEUE until its frame is shown or cancelled. With every buffer held this waits
-               for one; when the wait times out the holds are dropped, which hands out a buffer the game may still draw
-               into or the GPU thread may still show. The log says when that happens, with the slots held */
+               for one, as the console's blocking queue does, however long the GPU thread takes */
             pm_lock(&vi.lock);
             int k = -1, nused = 0;
             for (int i = 0; i < 64; i++) nused += vi.slots[i].used;
@@ -236,17 +235,16 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                         break;
                     }
                 if (k >= 0) break;
-                /* a slot comes free when the GPU thread shows its frame. If none does for a second, the GPU thread
-                   is far behind (long waits in a stream, pipeline compiles) or stuck: free them all rather than hang
-                   the game. Its late presents don't free the slots again (gen) */
+                /* a slot comes free when the GPU thread shows its frame. This used to hand out a held slot after a
+                   timeout (1 s, before that 16 ms): a buffer the GPU thread was still to show, which the game would
+                   draw into. The console's queue never does. A wait this long only says the GPU thread is far behind
+                   (a RenderDoc capture, long pipeline compiles) or stuck */
                 if (pc_wait(&vi.free_cv, &vi.lock, 1000000000)) {
                     u64 held = 0;
                     for (int i = 0; i < 64; i++)
                         if (vi.slots[i].used && vi.slots[i].queued) held |= 1ull << i;
-                    WARN_LIMIT(
-                        8, "binder: DEQUEUE_BUFFER found all %d buffers held (slots %llx) for 1 s: releasing them\n",
-                        nused, (unsigned long long)held);
-                    for (int i = 0; i < 64; i++) vi.slots[i].queued = 0;
+                    WARN_LIMIT(8, "binder: DEQUEUE_BUFFER has waited 1 s with all %d buffers held (slots %llx)\n",
+                               nused, (unsigned long long)held);
                 }
             }
             vi.slots[k].queued = 1;
