@@ -666,10 +666,18 @@ static u32 draw_page_index(const DrawPage* p, size_t n, u64 key) {
 }
 static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, VmaAllocation mem) {
     GfxOut* o;
+    const u8* page;
     if (p->key & (1ull << 63)) return 1;
     o = gfx_out_new(1, 4096);
     if (!o) return 0;
-    memcpy(o->org, ptr, 4096);
+    /* the original bytes from guest memory, which the atlas page was filled from: staging can be device-local
+       memory behind the BAR, where a CPU read crosses PCIe uncached (this copy was most of the GPU thread's memcpy
+       time in TotK) */
+    page = gmem_ptr_untracked(p->gva, 4096);
+    if (page)
+        memcpy(o->org, page, 4096);
+    else
+        memset(o->org, 0, 4096);
     o->pages[0] = p->key;
     o->addr = p->gva;
     o->size = 4096;
