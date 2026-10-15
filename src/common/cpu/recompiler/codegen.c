@@ -436,37 +436,51 @@ int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t
     return 0;
 }
 
-int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, SnxU64 pc,
-                         SnxCodegenKnown known, void* user, size_t budget) {
+int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* roots,
+                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget) {
     Addresses work, found;
-    AddressSet local, seen_seed, none;
+    AddressSet local, seen_seed, entries, inside, none;
     Known stop;
-    size_t next, total;
+    size_t next, total, i, searched;
     SnxU64 a;
     memset(codegen, 0, sizeof(*codegen));
     codegen->modules = (SnxCodeImage*)snx_alloc((module_count ? module_count : 1) * sizeof(*modules));
     memcpy(codegen->modules, modules, module_count * sizeof(*modules));
     codegen->module_count = module_count;
-    if ((pc & 3) || !snx_codegen_module(codegen, pc)) return -1;
     memset(&work, 0, sizeof(work));
     memset(&local, 0, sizeof(local));
     memset(&seen_seed, 0, sizeof(seen_seed));
+    memset(&entries, 0, sizeof(entries));
+    memset(&inside, 0, sizeof(inside));
     memset(&none, 0, sizeof(none));
     stop.set = &local;
     stop.callback = known;
     stop.user = user;
-    /* pc first, then the functions it calls in the order they turn up, nearest first: a call left out once the budget
-       is spent goes through CPU.disp and misses on its own */
-    push(&work, pc);
+    /* The roots first, by address, then the functions they call in the order they turn up, nearest first: a call left
+       out once the budget is spent goes through CPU.disp and misses on its own. A root inside a function found before
+       it (a pc in the middle of a function that missed on its own, where a thread came back from other code) is a
+       leader of that function, not a function of its own, so the function stays whole */
+    for (i = 0; i < root_count; ++i)
+        if (!(roots[i] & 3) && snx_codegen_module(codegen, roots[i])) {
+            push(&work, roots[i]);
+            set_add(&entries, roots[i]);
+        }
+    searched = work.count; /* the roots in work: searched whatever the budget and whatever known says */
+    if (searched) qsort(work.values, searched, sizeof(*work.values), compare_address);
     total = 0;
-    for (next = 0; next < work.count && total < budget; ++next) {
+    for (next = 0; next < work.count; ++next) {
         a = work.values[next];
         if ((a & 3) || !set_add(&seen_seed, a)) continue;
-        if (a != pc && is_known(&stop, a)) continue;
-        if (!snx_codegen_module(codegen, a)) continue;
+        if (next < searched) {
+            if (set_has(&inside, a)) continue;
+        } else {
+            if (total >= budget) break;
+            if (is_known(&stop, a) || !snx_codegen_module(codegen, a)) continue;
+        }
         found = explore(codegen, a, &stop, &work);
         if (found.count) {
             total += found.count;
+            for (i = 0; i < found.count; ++i) set_add(&inside, found.values[i]);
             add_function(codegen, a, 0, &found);
             set_add(&local, a);
         }
@@ -474,11 +488,25 @@ int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_
     }
     if (codegen->function_count)
         qsort(codegen->functions, codegen->function_count, sizeof(*codegen->functions), compare_function);
-    leaders(codegen, &none, &none);
+    leaders(codegen, &entries, &none);
     free(work.values);
     set_free(&local);
     set_free(&seen_seed);
-    return snx_codegen_function(codegen, pc) ? 0 : -1;
+    set_free(&entries);
+    set_free(&inside);
+    for (i = 0; i < root_count; ++i)
+        if (snx_codegen_entry(codegen, roots[i])) return 0;
+    return -1;
+}
+
+const SnxFunction* snx_codegen_entry(const SnxCodegen* codegen, SnxU64 address) {
+    const SnxFunction* f = snx_codegen_function(codegen, address);
+    size_t i, index;
+    for (i = 0; !f && i < codegen->function_count; ++i) {
+        index = function_index(&codegen->functions[i], address);
+        if (index < codegen->functions[i].count && codegen->functions[i].leaders[index]) f = &codegen->functions[i];
+    }
+    return f;
 }
 
 void snx_codegen_free(SnxCodegen* codegen) {

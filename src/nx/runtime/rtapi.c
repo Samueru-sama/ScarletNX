@@ -78,6 +78,15 @@ void save_hints(void) {
     }
     pm_unlock(&g_hint_lock);
 }
+/* the JIT's warm start (jit.c) */
+u64* hints_copy(size_t* count) {
+    pm_lock(&g_hint_lock);
+    u64* copy = g_nhints ? malloc(8 * (size_t)g_nhints) : NULL;
+    *count = copy ? (size_t)g_nhints : 0;
+    if (copy) memcpy(copy, g_hints, 8 * (size_t)g_nhints);
+    pm_unlock(&g_hint_lock);
+    return copy;
+}
 void load_hints(void) {
     FILE* f = fopen(g_hints_path, "r");
     if (!f) return;
@@ -122,7 +131,7 @@ static void rt_poll(CPU* c) { core_poll((KThread*)c->thread); }
 /* snx_lookup found no function for pc. The JIT's code is noted as a hint as the interpreter notes its entries, so the
    next recompile has the function in the module */
 static void rt_miss(CPU* c, u64 pc) {
-    GuestFn f = jit_resolve(c, pc);
+    GuestFn f = jit_resolve(pc);
     if (f)
         hint_add(pc);
     else if (!(f = g_mod->interp))

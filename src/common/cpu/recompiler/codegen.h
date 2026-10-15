@@ -31,19 +31,25 @@ typedef struct {
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
                         size_t hint_count, int quiet);
-/* The runtime JIT's discovery: the function at pc and those it calls, found as snx_codegen_analyze finds functions,
-   until they hold budget instructions. known(user, address) says code exists already at an address (the AOT module,
-   an earlier compile): a function stops there and isn't searched from there. 0, or -1 when pc is unaligned or outside
-   the modules. The codegen is snx_codegen_free'd either way */
+/* The runtime JIT's discovery: the functions at roots[0..root_count), a batch of them, and those they call, found as
+   snx_codegen_analyze finds functions. Every root is searched, and its callees until the functions hold budget
+   instructions. known(user, address) says code exists already at an address, or will without this batch (the AOT
+   module, an earlier compile, a pc another batch compiles): a function stops there and isn't searched from there,
+   unless it is a root. A root inside another root's function is a leader of it. 0 when at least one root has code
+   (snx_codegen_entry), -1 when none has (unaligned, outside the modules). The codegen is snx_codegen_free'd either
+   way */
 typedef int (*SnxCodegenKnown)(void* user, SnxU64 address);
-int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, SnxU64 pc,
-                         SnxCodegenKnown known, void* user, size_t budget);
+int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* roots,
+                         size_t root_count, SnxCodegenKnown known, void* user, size_t budget);
 void snx_codegen_free(SnxCodegen* codegen);
 SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address);
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);
 SnxU64 snx_function_address(const SnxFunction* function, size_t index);
 int snx_function_contains(const SnxFunction* function, SnxU64 address);
 const SnxFunction* snx_codegen_function(const SnxCodegen* codegen, SnxU64 address);
+/* the function that starts at address, or else one that has a leader there: what GuestFn(c, address) enters. NULL when
+   none has */
+const SnxFunction* snx_codegen_entry(const SnxCodegen* codegen, SnxU64 address);
 void snx_codegen_emit(FILE* out, SnxCodegen* codegen, const SnxFunction* function);
 
 #endif

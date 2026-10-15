@@ -84,10 +84,13 @@ Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lo
 through `CPU.disp` (relaxed loads: slots go from NULL to a function while threads run), and a pc without a function
 goes to `RtAPI.miss`. `CPU.rt` supplies `RtAPI` callbacks: SVC, UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE, poll,
 miss; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the module's interpreter, or with
-`cpu_fallback=jit` the runtime JIT's code (`src/nx/runtime/jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`):
-the function at pc and its callees found by `snx_codegen_discover`, emitted by the LLVM backend, loaded into a code
-arena with a copy of `rtlib.c` (`code_loader.c`) and published into `CPU.disp`. The pc is recorded as a hint either
-way, so the next recompile has it.
+`cpu_fallback=jit` the runtime JIT's code (`src/nx/runtime/jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`)
+once it has some. A miss never waits for a compile: the pc is queued and the interpreter runs it meanwhile. Compile
+threads (host threads, not guest threads) take the queued pcs in batches: the functions at them and their callees
+found by `snx_codegen_discover`, emitted by the LLVM backend into one module, loaded into a code arena with a copy of
+`rtlib.c` (`code_loader.c`, packed into shared memory mapped once executable and once writable) and published into
+`CPU.disp`. At start the hints of earlier runs are queued behind every miss. The pc is recorded as a hint either way,
+so the next recompile has it.
 `cpu_helpers.c` + `helpers/`: SIMD, crypto, FP.
 
 GNU supplies an optional fetch callback that checks execute permissions and

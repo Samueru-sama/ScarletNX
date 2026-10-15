@@ -21,6 +21,7 @@ extern int g_opt_network; /* network: 1 = the game is online through the host (h
 /* cpu_fallback: what runs guest code the game module has no function for (RtAPI.miss, runtime/jit.c). Startup only */
 enum { CPU_FALLBACK_INTERP, CPU_FALLBACK_JIT };
 extern int g_opt_cpu_fallback;
+extern int g_opt_jit_threads; /* jit_threads: compile threads for cpu_fallback=jit, 0 by the CPUs. Startup only */
 extern float g_opt_resf;
 
 #endif

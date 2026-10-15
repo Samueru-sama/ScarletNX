@@ -2,6 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* The runtime JIT (jit_service.h). C90 in style; the target's C11 is for the LLVM-C headers and cpu.h's inline
    functions */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
+#endif
 #include "jit_service.h"
 #include "code_loader.h"
 #include "ir.h"
@@ -14,15 +17,22 @@
 #include <windows.h>
 typedef SRWLOCK JitLock;
 typedef CONDITION_VARIABLE JitCond;
+typedef HANDLE JitThread;
 #else
 #include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 typedef pthread_mutex_t JitLock;
 typedef pthread_cond_t JitCond;
+typedef pthread_t JitThread;
 #endif
 
-/* what the service knows of a pc. IN_FLIGHT: a thread compiles from it, the others wait. FAILED: the caller's
-   fallback runs it, every time, without another try */
-enum { IN_FLIGHT = 1, DONE, FAILED };
+/* What the service knows of a pc. QUEUED_WARM: in the warm queue only. QUEUED: in the misses' queue. IN_FLIGHT: a
+   batch compiles from it. FAILED: the caller's interpreter runs it, every time, without another try */
+enum { QUEUED_WARM = 1, QUEUED, IN_FLIGHT, DONE, FAILED };
+enum { LIVE, WARM, QUEUES }; /* the queues, by priority */
 
 typedef struct {
     SnxU64 key; /* pc | 1 (a pc is 4-aligned), 0 for a free slot */
@@ -30,19 +40,36 @@ typedef struct {
     int state;
 } Entry;
 
+/* pcs to compile, first in first out: a ring that grows on its own */
+typedef struct {
+    SnxU64* pcs;
+    size_t head, count, capacity; /* capacity: 0 or a power of two */
+} Queue;
+
 struct SnxJitService {
     SnxJitConfig config;
     SnxCodeLoader* loader;
-    /* the pcs: the misses compiling or failed, and every leader of every compiled function, for a pc outside the
-       dispatch table or one whose slot holds something else (a wrapper). An open-addressing table, at most half full,
-       under lock */
+    GuestFn interpreter;
+    /* One bit per instruction of the dispatch table, set (under lock, never cleared) once the pc is in the misses'
+       queue, compiling or failed. A guest thread that misses a pc with its bit set and its slot empty gets NULL without
+       the lock: every miss after the first, until the code is published, costs two loads. It also tells discovery,
+       without the lock, which pcs other batches have or will have, so a batch doesn't compile them too */
+    unsigned char* pending;
+    /* the pcs: the misses and warm pcs queued, compiling or failed, and every leader of every compiled function, for
+       a pc outside the dispatch table or one whose slot holds something else (a wrapper). An open-addressing table,
+       at most half full, under lock */
     Entry* entries;
     size_t entry_count, entry_capacity; /* capacity: a power of two */
+    Queue queues[QUEUES];               /* under lock */
+    unsigned busy;                      /* batches compiling, under lock */
+    int stop;                           /* under lock: the compile threads end */
     SnxJitStats stats;                  /* under lock */
-    JitLock lock;                       /* entries and stats */
-    JitCond done;                       /* broadcast when a compile ends */
+    JitLock lock;                       /* everything above marked so */
+    JitCond work;                       /* signalled when a pc is queued, broadcast at stop */
+    JitCond idle;                       /* broadcast when nothing is queued or compiling */
     JitLock load_lock;                  /* the loader, one load at a time (code_loader.h), and units */
     unsigned long units;                /* loads: the number in each unit's table name */
+    JitThread threads[SNX_JIT_THREADS];
 };
 
 static void lock_init(JitLock* l) {
@@ -94,6 +121,13 @@ static void cond_wait(JitCond* c, JitLock* l) {
     pthread_cond_wait(c, l);
 #endif
 }
+static void cond_signal(JitCond* c) {
+#ifdef _WIN32
+    WakeConditionVariable(c);
+#else
+    pthread_cond_signal(c);
+#endif
+}
 static void cond_broadcast(JitCond* c) {
 #ifdef _WIN32
     WakeAllConditionVariable(c);
@@ -102,7 +136,7 @@ static void cond_broadcast(JitCond* c) {
 #endif
 }
 
-/* ---- the pcs, under lock ---- */
+/* ---- the pcs and the queues, under lock ---- */
 
 static size_t entry_hash(SnxU64 key, size_t capacity) {
     return (size_t)(((key >> 2) * (SnxU64)0x9E3779B97F4A7C15ULL) >> 32) & (capacity - 1);
@@ -148,7 +182,34 @@ static Entry* add(SnxJitService* s, SnxU64 pc, int state) {
     return e;
 }
 
-/* ---- the compile ---- */
+/* 0, or -1 when memory runs out */
+static int push(Queue* q, SnxU64 pc) {
+    SnxU64* grown;
+    size_t capacity, i;
+    if (q->count == q->capacity) {
+        capacity = q->capacity ? q->capacity * 2 : 256;
+        if (capacity > ((size_t)-1) / sizeof(*grown)) return -1;
+        grown = (SnxU64*)malloc(capacity * sizeof(*grown));
+        if (!grown) return -1;
+        for (i = 0; i < q->count; ++i) grown[i] = q->pcs[(q->head + i) & (q->capacity - 1)];
+        free(q->pcs);
+        q->pcs = grown;
+        q->head = 0;
+        q->capacity = capacity;
+    }
+    q->pcs[(q->head + q->count) & (q->capacity - 1)] = pc;
+    ++q->count;
+    return 0;
+}
+
+static SnxU64 pop(Queue* q) {
+    SnxU64 pc = q->pcs[q->head];
+    q->head = (q->head + 1) & (q->capacity - 1);
+    --q->count;
+    return pc;
+}
+
+/* ---- what the threads read without the lock ---- */
 
 static int in_table(const SnxJitService* s, SnxU64 pc) {
     return !(pc & 3) && pc - s->config.code_lo < s->config.code_hi - s->config.code_lo;
@@ -156,15 +217,55 @@ static int in_table(const SnxJitService* s, SnxU64 pc) {
 
 static GuestFn* slot(const SnxJitService* s, SnxU64 pc) { return &s->config.dispatch[(pc - s->config.code_lo) >> 2]; }
 
-/* snx_codegen_discover's question: code exists at address already, an AOT entry or an earlier compile's leader */
+static int is_pending(const SnxJitService* s, SnxU64 pc) {
+    size_t i = (size_t)((pc - s->config.code_lo) >> 2);
+    return __atomic_load_n(&s->pending[i >> 3], __ATOMIC_RELAXED) >> (i & 7) & 1;
+}
+
+/* under lock, with the entry that says so in place: a thread that reads the bit without the lock gets NULL, which is
+   right whatever the entry says by then (the code, once published, is in the slot) */
+static void set_pending(SnxJitService* s, SnxU64 pc) {
+    size_t i;
+    if (!in_table(s, pc)) return;
+    i = (size_t)((pc - s->config.code_lo) >> 2);
+    __atomic_fetch_or(&s->pending[i >> 3], (unsigned char)(1u << (i & 7)), __ATOMIC_RELAXED);
+}
+
+/* ---- the compile ---- */
+
+/* a batch's pcs by address, for discovery's question */
+typedef struct {
+    SnxJitService* service;
+    const SnxU64* pcs;
+    size_t count;
+} Batch;
+
+static int in_batch(const Batch* b, SnxU64 pc) {
+    size_t lo = 0, hi = b->count, middle;
+    while (lo < hi) {
+        middle = lo + (hi - lo) / 2;
+        if (b->pcs[middle] < pc)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    return lo < b->count && b->pcs[lo] == pc;
+}
+
+/* snx_codegen_discover's question: code exists at address already (an AOT entry, an earlier batch's leader) or will
+   without this batch (a pc queued, compiling in another batch, or failed) */
 static int known(void* user, SnxU64 address) {
-    SnxJitService* s = (SnxJitService*)user;
+    const Batch* b = (const Batch*)user;
+    SnxJitService* s = b->service;
     Entry* e;
     int result;
-    if (in_table(s, address)) return __atomic_load_n(slot(s, address), __ATOMIC_RELAXED) != NULL;
+    if (in_table(s, address)) {
+        if (__atomic_load_n(slot(s, address), __ATOMIC_RELAXED)) return 1;
+        return is_pending(s, address) && !in_batch(b, address);
+    }
     lock(&s->lock);
     e = find(s, address);
-    result = e && e->state == DONE;
+    result = e && e->state != QUEUED_WARM && !(e->state == IN_FLIGHT && in_batch(b, address));
     unlock(&s->lock);
     return result;
 }
@@ -221,26 +322,42 @@ static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_na
     return rc;
 }
 
-/* Compiles from pc, whose entry is IN_FLIGHT, publishes the code and ends the entry: the function at pc, or NULL */
-static GuestFn compile(SnxJitService* s, SnxU64 pc) {
+/* function i's code in a loaded unit's table */
+static GuestFn unit_function(SnxU64 table, size_t i) {
+    GuestFn code;
+    memcpy(&code, (const unsigned char*)(size_t)table + i * sizeof(code), sizeof(code));
+    return code;
+}
+
+/* Compiles the batch of pcs (count of them by address, each IN_FLIGHT), publishes the code and ends their entries:
+   DONE with the code that enters at each, or FAILED. A batch of several that fails to emit or load is split, so one pc
+   LLVM or the loader refuses fails alone */
+static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
     SnxCodegen codegen;
     SnxJitReport report;
     SnxLinkInput input;
     unsigned char* object = NULL;
-    size_t size = 0, i, j, used;
+    size_t size = 0, i, j, used, failed = 0;
     char error[512], name[48];
     const char* names[1];
     SnxU64 table = 0, address;
-    GuestFn result = NULL, code, expected;
+    GuestFn code, expected;
     const SnxFunction* f;
     Entry* e;
-    int rc;
+    Batch batch;
+    int rc, discovered;
     memset(&report, 0, sizeof(report));
-    report.pc = pc;
+    report.pc = pcs[0];
+    report.pcs = count;
     report.seconds = snx_seconds();
     error[0] = 0;
-    rc = snx_codegen_discover(&codegen, s->config.images, s->config.image_count, pc, known, s, s->config.budget);
-    if (rc) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pc);
+    batch.service = s;
+    batch.pcs = pcs;
+    batch.count = count;
+    rc = snx_codegen_discover(&codegen, s->config.images, s->config.image_count, pcs, count, known, &batch,
+                              s->config.budget);
+    discovered = !rc;
+    if (rc) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
     for (i = 0; !rc && i < codegen.function_count; ++i) report.instructions += codegen.functions[i].count;
     report.functions = codegen.function_count;
     if (!rc) {
@@ -254,7 +371,8 @@ static GuestFn compile(SnxJitService* s, SnxU64 pc) {
         input.size = size;
         input.name = name;
         names[0] = name;
-        /* the code is executable and its addresses final when this returns: from here they may go to any thread */
+        /* the code is complete and visible to instruction fetch when this returns: its addresses may go to any
+           thread from here (code_loader.h) */
         lock(&s->load_lock);
         used = snx_code_used(s->loader);
         rc = snx_code_load(s->loader, &input, 1, names, 1, &table, error, sizeof(error));
@@ -262,13 +380,17 @@ static GuestFn compile(SnxJitService* s, SnxU64 pc) {
         unlock(&s->load_lock);
     }
     free(object);
+    if (rc && discovered && count > 1) {
+        snx_codegen_free(&codegen);
+        for (i = 0; i < count; ++i) compile(s, &pcs[i], 1);
+        return;
+    }
     /* publish: every leader's slot that is still empty, with release ordering, so a thread that loads the address
-       (relaxed, cpu.h) reaches the code and data written before it. A slot something else filled meanwhile (another
-       compile, a wrapper) keeps what it holds */
+       (relaxed, cpu.h: x86-64 keeps loads in order) reaches the code and data written before it. A slot something
+       else filled meanwhile (another batch, a wrapper) keeps what it holds */
     for (i = 0; !rc && i < codegen.function_count; ++i) {
         f = &codegen.functions[i];
-        memcpy(&code, (const unsigned char*)(size_t)table + i * sizeof(code), sizeof(code));
-        if (f->start == pc) result = code;
+        code = unit_function(table, i);
         for (j = 0; j < f->count; ++j) {
             if (!f->leaders[j]) continue;
             address = snx_function_address(f, j);
@@ -280,86 +402,218 @@ static GuestFn compile(SnxJitService* s, SnxU64 pc) {
     lock(&s->lock);
     for (i = 0; !rc && i < codegen.function_count; ++i) {
         f = &codegen.functions[i];
-        memcpy(&code, (const unsigned char*)(size_t)table + i * sizeof(code), sizeof(code));
+        code = unit_function(table, i);
         for (j = 0; j < f->count; ++j) {
             if (!f->leaders[j]) continue;
-            /* an entry another miss holds (IN_FLIGHT, FAILED) is that miss's to end, and an earlier compile's keeps
-               its code */
+            /* a queued pc this batch compiled is done (its queue skips it); one another batch compiles is that
+               batch's to end, as this batch's own pcs are below, and an earlier batch's keeps its code */
             e = add(s, snx_function_address(f, j), DONE);
-            if (e && e->state == DONE && !e->code) e->code = code;
+            if (!e || e->state == IN_FLIGHT || e->state == FAILED || (e->state == DONE && e->code)) continue;
+            e->state = DONE;
+            e->code = code;
         }
     }
-    e = find(s, pc);
-    if (e) {
-        e->state = result ? DONE : FAILED;
-        e->code = result;
+    for (i = 0; i < count; ++i) {
+        e = find(s, pcs[i]);
+        f = rc ? NULL : snx_codegen_entry(&codegen, pcs[i]);
+        code = f ? unit_function(table, (size_t)(f - codegen.functions)) : NULL;
+        if (e) {
+            e->state = code ? DONE : FAILED;
+            e->code = code;
+        }
+        if (code)
+            ++s->stats.compiled;
+        else
+            ++failed;
     }
     report.seconds = snx_seconds() - report.seconds;
-    if (result) {
-        ++s->stats.compiles;
+    ++s->stats.batches;
+    s->stats.failures += (unsigned long)failed;
+    if (!rc) {
         s->stats.functions += (unsigned long)report.functions;
         s->stats.instructions += (unsigned long)report.instructions;
         s->stats.bytes += report.bytes;
-    } else
-        ++s->stats.failures;
+    }
     s->stats.seconds += report.seconds;
-    cond_broadcast(&s->done);
     unlock(&s->lock);
-    if (!result && !error[0])
-        snprintf(error, sizeof(error), "the code at %llx is not where it was compiled", (unsigned long long)pc);
-    report.error = result ? NULL : error;
+    if (failed && !error[0])
+        snprintf(error, sizeof(error), "%lu of the batch's pcs are not where their code was found",
+                 (unsigned long)failed);
+    report.error = failed ? error : NULL;
     if (s->config.report) s->config.report(&report);
     snx_codegen_free(&codegen);
-    return result;
 }
 
-GuestFn snx_jit_resolve(SnxJitService* s, CPU* c, SnxU64 pc) {
-    const SnxCodeImage* m;
-    GuestFn code = NULL;
+/* Under lock: up to max pcs of the first queue that has any into pcs, made IN_FLIGHT; 0 when both are empty. Skips
+   the pcs a batch compiled while they waited */
+static size_t take(SnxJitService* s, SnxU64* pcs) {
+    size_t n = 0, max;
+    int q, state;
+    SnxU64 pc;
     Entry* e;
-    size_t i;
-    int inside = 0, left = 0, mine = 0;
-    /* step 3 of the JIT: NRO text the game loads joins the images here, published through the entries only */
-    for (i = 0; !(pc & 3) && !inside && i < s->config.image_count; ++i) {
-        m = &s->config.images[i];
-        inside = pc >= m->base + m->text_off && pc - (m->base + m->text_off) < m->text_size;
+    for (q = LIVE; q < QUEUES && !n; ++q) {
+        max = q == LIVE ? s->config.batch : (s->config.batch + 7) / 8;
+        while (n < max && s->queues[q].count) {
+            pc = pop(&s->queues[q]);
+            e = find(s, pc);
+            state = q == LIVE ? QUEUED : QUEUED_WARM;
+            /* compiled since as another batch's leader (whatever its slot holds: a wrapper isn't code for it), or moved
+               to the misses' queue */
+            if (!e || e->state != state) continue;
+            e->state = IN_FLIGHT;
+            set_pending(s, pc);
+            pcs[n++] = pc;
+        }
     }
-    if (!inside) return NULL;
+    s->stats.queued = (unsigned long)(s->queues[LIVE].count + s->queues[WARM].count);
+    return n;
+}
+
+static int compare_pc(const void* a, const void* b) {
+    SnxU64 x = *(const SnxU64*)a, y = *(const SnxU64*)b;
+    return x < y ? -1 : x > y;
+}
+
+/* A compile thread: batch after batch until the service stops. A batch that leaves pcs queued wakes another thread
+   for them */
+static void worker(SnxJitService* s) {
+    SnxU64* pcs = (SnxU64*)malloc(s->config.batch * sizeof(*pcs));
+    size_t n;
+#if defined(__linux__)
+    /* below the guest threads: when the host has no idle CPU, a compile waits, not the game */
+    setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
+#endif
     lock(&s->lock);
-    for (;;) {
-        e = find(s, pc);
-        if (!e) {
-            mine = add(s, pc, IN_FLIGHT) != NULL;
-            break;
-        }
-        if (e->state != IN_FLIGHT) {
-            code = e->state == DONE ? e->code : NULL;
-            break;
-        }
-        if (!left && s->config.leave) { /* not under lock: giving the core up takes the kernel's */
-            unlock(&s->lock);
-            s->config.leave(c);
-            left = 1;
-            lock(&s->lock);
+    while (pcs && !s->stop) {
+        n = take(s, pcs);
+        if (!n) {
+            if (!s->busy) cond_broadcast(&s->idle);
+            cond_wait(&s->work, &s->lock);
             continue;
         }
-        cond_wait(&s->done, &s->lock);
+        ++s->busy;
+        if (s->queues[LIVE].count || s->queues[WARM].count) cond_signal(&s->work);
+        unlock(&s->lock);
+        qsort(pcs, n, sizeof(*pcs), compare_pc);
+        compile(s, pcs, n);
+        lock(&s->lock);
+        --s->busy;
     }
+    if (!s->busy) cond_broadcast(&s->idle);
     unlock(&s->lock);
-    if (mine) {
-        if (!left && s->config.leave) s->config.leave(c);
-        left = 1;
-        code = compile(s, pc);
+    free(pcs);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI worker_main(LPVOID s) {
+    worker((SnxJitService*)s);
+    return 0;
+}
+static int thread_start(JitThread* t, SnxJitService* s) {
+    *t = CreateThread(NULL, 0, worker_main, s, 0, NULL);
+    return *t ? 0 : -1;
+}
+static void thread_join(JitThread t) {
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+}
+#else
+static void* worker_main(void* s) {
+    worker((SnxJitService*)s);
+    return NULL;
+}
+static int thread_start(JitThread* t, SnxJitService* s) { return pthread_create(t, NULL, worker_main, s) ? -1 : 0; }
+static void thread_join(JitThread t) { pthread_join(t, NULL); }
+#endif
+
+/* ---- the interface ---- */
+
+static int in_text(const SnxJitService* s, SnxU64 pc) {
+    const SnxCodeImage* m;
+    size_t i;
+    for (i = 0; !(pc & 3) && i < s->config.image_count; ++i) {
+        m = &s->config.images[i];
+        if (pc >= m->base + m->text_off && pc - (m->base + m->text_off) < m->text_size) return 1;
     }
-    /* taking the core back may wait for it, so never under lock: its holder may be missing too */
-    if (left && s->config.enter) s->config.enter(c);
+    return 0;
+}
+
+GuestFn snx_jit_resolve(SnxJitService* s, SnxU64 pc) {
+    GuestFn code = NULL;
+    Entry* e;
+    /* step 3 of the JIT: NRO text the game loads joins the images here, published through the entries only */
+    if (!in_text(s, pc)) return NULL;
+    if (in_table(s, pc) && is_pending(s, pc) && !__atomic_load_n(slot(s, pc), __ATOMIC_ACQUIRE)) return NULL;
+    lock(&s->lock);
+    e = find(s, pc);
+    if (!e || e->state == QUEUED_WARM) {
+        if (!e) e = add(s, pc, QUEUED);
+        if (e && !push(&s->queues[LIVE], pc)) {
+            e->state = QUEUED;
+            set_pending(s, pc);
+            s->stats.queued = (unsigned long)(s->queues[LIVE].count + s->queues[WARM].count);
+            cond_signal(&s->work);
+        } else if (e && e->state == QUEUED)
+            e->state = FAILED; /* in no queue: memory ran out */
+    } else if (e->state == DONE)
+        code = e->code;
+    unlock(&s->lock);
     return code;
+}
+
+size_t snx_jit_warm(SnxJitService* s, const SnxU64* pcs, size_t count) {
+    size_t i, queued = 0;
+    Entry* e;
+    lock(&s->lock);
+    for (i = 0; i < count; ++i) {
+        if (!in_text(s, pcs[i]) || find(s, pcs[i])) continue;
+        if (in_table(s, pcs[i]) && __atomic_load_n(slot(s, pcs[i]), __ATOMIC_RELAXED)) continue;
+        e = add(s, pcs[i], QUEUED_WARM);
+        if (!e) break;
+        if (push(&s->queues[WARM], pcs[i])) {
+            e->state = FAILED;
+            break;
+        }
+        ++queued;
+    }
+    s->stats.queued = (unsigned long)(s->queues[LIVE].count + s->queues[WARM].count);
+    cond_signal(&s->work);
+    unlock(&s->lock);
+    return queued;
+}
+
+void snx_jit_drain(SnxJitService* s) {
+    lock(&s->lock);
+    while (s->queues[LIVE].count || s->queues[WARM].count || s->busy) cond_wait(&s->idle, &s->lock);
+    unlock(&s->lock);
+}
+
+GuestFn snx_jit_interpreter(SnxJitService* s) { return s->interpreter; }
+
+/* the CPUs the process may run on: its affinity mask where the host has one (a game started under taskset gets the
+   CPUs taskset gave it), else every online CPU */
+static unsigned usable_cpus(void) {
+#ifdef __linux__
+    cpu_set_t set;
+    if (!sched_getaffinity(0, sizeof(set), &set) && CPU_COUNT(&set) > 0) return (unsigned)CPU_COUNT(&set);
+#endif
+    return snx_cpu_count();
+}
+/* the compile threads when the config leaves it open: every CPU the process may use but two, from one up to
+   SNX_JIT_THREADS. They run below the game's threads (compile_thread lowers their priority), so a compile only gets a
+   CPU the guest threads, the GPU thread and audio leave idle. Keeping six CPUs for the game left one compile thread on
+   hosts with up to 7 CPUs and two on 8, which fell minutes behind Ender Magnolia's misses */
+static unsigned default_threads(void) {
+    unsigned cpus = usable_cpus();
+    return cpus >= SNX_JIT_THREADS + 2 ? SNX_JIT_THREADS : cpus > 3 ? cpus - 2 : 1;
 }
 
 SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size_t error_size) {
     SnxJitService* s;
     SnxLinkInput input;
-    size_t i;
+    SnxU64 interpreter = 0;
+    const char* interp_name = "snx_interp";
+    size_t i, bits;
     for (i = 1; i < config->aot_count; ++i)
         if (config->aot_addresses[i - 1] >= config->aot_addresses[i]) {
             snprintf(error, error_size, "the AOT entries are not in ascending order");
@@ -373,32 +627,60 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
     }
     s->config = *config;
     if (!s->config.budget) s->config.budget = SNX_JIT_BUDGET;
+    if (!s->config.batch) s->config.batch = SNX_JIT_BATCH;
     if (!s->config.opt) s->config.opt = '2';
-    s->loader = snx_code_loader_new(0, error, error_size);
+    if (!s->config.threads) s->config.threads = default_threads();
+    if (s->config.threads > SNX_JIT_THREADS) s->config.threads = SNX_JIT_THREADS;
+    bits = s->config.code_hi > s->config.code_lo ? (size_t)((s->config.code_hi - s->config.code_lo) >> 2) : 0;
+    s->pending = (unsigned char*)calloc(bits / 8 + 1, 1);
+    s->loader = s->pending ? snx_code_loader_new(0, error, error_size) : NULL;
     if (!s->loader) {
+        if (!s->pending) snprintf(error, error_size, "out of memory");
+        free(s->pending);
         free(s);
         return NULL;
     }
     input.data = snx_rtlib_object;
     input.size = snx_rtlib_object_size;
     input.name = "rtlib";
-    if (snx_code_load(s->loader, &input, 1, NULL, 0, NULL, error, error_size)) {
+    if (snx_code_load(s->loader, &input, 1, &interp_name, 1, &interpreter, error, error_size)) {
         snx_code_loader_free(s->loader);
+        free(s->pending);
         free(s);
         return NULL;
     }
+    s->interpreter = (GuestFn)(size_t)interpreter;
     s->stats.bytes = snx_code_used(s->loader);
     lock_init(&s->lock);
     lock_init(&s->load_lock);
-    cond_init(&s->done);
+    cond_init(&s->work);
+    cond_init(&s->idle);
+    for (i = 0; i < s->config.threads; ++i)
+        if (thread_start(&s->threads[i], s)) break;
+    s->stats.threads = (unsigned)i;
+    if (!i) {
+        snprintf(error, error_size, "cannot start a compile thread");
+        snx_jit_service_free(s);
+        return NULL;
+    }
     return s;
 }
 
 void snx_jit_service_free(SnxJitService* s) {
+    unsigned i;
+    int q;
     if (!s) return;
+    lock(&s->lock);
+    s->stop = 1;
+    cond_broadcast(&s->work);
+    unlock(&s->lock);
+    for (i = 0; i < s->stats.threads; ++i) thread_join(s->threads[i]);
     snx_code_loader_free(s->loader);
     free(s->entries);
-    cond_free(&s->done);
+    for (q = 0; q < QUEUES; ++q) free(s->queues[q].pcs);
+    free(s->pending);
+    cond_free(&s->work);
+    cond_free(&s->idle);
     lock_free(&s->lock);
     lock_free(&s->load_lock);
     free(s);

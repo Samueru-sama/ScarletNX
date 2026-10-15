@@ -45,6 +45,8 @@ static void emit_validity(FILE* out, unsigned validation) {
 
 static unsigned char buckets[2048][sizeof(patterns) / sizeof(patterns[0])];
 static unsigned char bucket_sizes[2048];
+/* 0 until a thread builds the buckets, 1 while it does, 2 once they are built; through __atomic_*. The runtime JIT's
+   compile threads decode at once (jit_service.c): two of them filling bucket_sizes together counted patterns twice */
 static int buckets_ready;
 static const SnxA64Case undefined_case = {SNX_FLOW_UNDEF, "", "", ""};
 
@@ -52,7 +54,13 @@ static void prepare_buckets(void) {
     unsigned top;
     size_t i;
     SnxU32 mask, value;
-    if (buckets_ready) return;
+    int unbuilt = 0;
+    if (__atomic_load_n(&buckets_ready, __ATOMIC_ACQUIRE) == 2) return;
+    if (!__atomic_compare_exchange_n(&buckets_ready, &unbuilt, 1, 0, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
+        /* another thread builds them, which takes about a millisecond, once per process */
+        while (__atomic_load_n(&buckets_ready, __ATOMIC_ACQUIRE) != 2) continue;
+        return;
+    }
     for (top = 0; top < 2048; ++top) {
         value = (SnxU32)top << 21;
         for (i = 0; i < sizeof(patterns) / sizeof(patterns[0]); ++i) {
@@ -60,7 +68,7 @@ static void prepare_buckets(void) {
             if ((value & mask) == (patterns[i].value & mask)) buckets[top][bucket_sizes[top]++] = (unsigned char)i;
         }
     }
-    buckets_ready = 1;
+    __atomic_store_n(&buckets_ready, 2, __ATOMIC_RELEASE);
 }
 
 const SnxA64Pattern* snx_a64_patterns(size_t* count) {

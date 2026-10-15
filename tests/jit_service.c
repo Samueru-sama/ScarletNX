@@ -1,21 +1,28 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (recompiler/llvm/jit_service.c) driven as the runtime drives it: a few A64 functions in a guest
-   memory buffer, a dispatch table with one "AOT" function (a host function standing in for the module's), and an
-   RtAPI whose miss asks the service for code, as rtapi.c's does. Checks that a miss compiles the function and what it
-   calls, publishes their leaders, calls the AOT function directly and other JIT code through the table, compiles a pc
-   once when threads miss it together, serves a pc whose slot holds a wrapper from its own table, and refuses a pc
-   outside the code */
+/* The runtime JIT (recompiler/llvm/jit_service.c) driven as the runtime drives it: A64 functions in a guest memory
+   buffer, a dispatch table with one "AOT" function (a host function standing in for the module's), and an RtAPI whose
+   miss asks the service for code and runs the interpreter (the service's copy of rtlib.c's) when it has none yet, as
+   rtapi.c's does. Checks that a miss never waits: it runs in the interpreter while a compile thread compiles the pc
+   with what it calls, and later calls run the published code. That the compiled code calls the AOT function directly
+   and other JIT code through the table, that threads missing one pc together queue it once, that a pc whose slot holds
+   a wrapper is served from the service's table, that pcs outside the code are refused. Then a bank of functions missed
+   from several threads at once: they compile in batches, packed into the arena with no page writable and executable,
+   measured against one pc per compile. Then the warm start: queued pcs compile before any miss, and a miss goes ahead
+   of them */
 #include "jit_service.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define MEMORY  0x10000
-#define CODE_LO 0x1000
-#define CODE_HI 0x4000
-#define THREADS 8
+#define MEMORY     0x40000
+#define CODE_LO    0x1000
+#define CODE_HI    0x30000
+#define THREADS    8
+#define BANK       0x20000 /* BANK_COUNT functions of 8 instructions, every 0x40 bytes */
+#define BANK_COUNT 512
+#define RETURN     0xFFF0 /* where the outermost RET goes */
 
 static int failures;
 #define CHECK(x)                                                                                                       \
@@ -30,10 +37,13 @@ static unsigned char* memory;
 static GuestFn dispatch[(CODE_HI - CODE_LO) / 4];
 static SnxJitService* service;
 static RtAPI rt;
-static unsigned misses, leaves, enters, wrapped, unresolved;
+static unsigned misses, interpreted, wrapped;
+/* the batches the report saw, and the first after which 0x3800 had code */
+static unsigned batch_count, live_batch;
 
 static void put(u64 address, const u32* words, size_t count) { memcpy(memory + address, words, count * 4); }
 static GuestFn* slot(u64 address) { return &dispatch[(address - CODE_LO) / 4]; }
+static GuestFn get(u64 address) { return __atomic_load_n(slot(address), __ATOMIC_RELAXED); }
 
 /* the module's function at 0x2000: x0 += 100, then return */
 static void aot_add100(CPU* c, u64 e) {
@@ -48,15 +58,14 @@ static void aot_poisoned(CPU* c, u64 e) {
     c->pc = c->x[30];
 }
 
-/* rtapi.c's rt_miss, without the interpreter */
+/* rtapi.c's rt_miss */
 static void miss(CPU* c, u64 pc) {
     GuestFn f;
     __atomic_fetch_add(&misses, 1, __ATOMIC_RELAXED);
-    f = snx_jit_resolve(service, c, pc);
+    f = snx_jit_resolve(service, pc);
     if (!f) {
-        __atomic_fetch_add(&unresolved, 1, __ATOMIC_RELAXED);
-        c->pc = 0;
-        return;
+        __atomic_fetch_add(&interpreted, 1, __ATOMIC_RELAXED);
+        f = snx_jit_interpreter(service);
     }
     f(c, pc);
 }
@@ -64,20 +73,21 @@ static void poll(CPU* c) { __atomic_store_n(&c->poll, 0, __ATOMIC_RELAXED); }
 static void undef(CPU* c, u64 pc, u32 w) {
     (void)c;
     fprintf(stderr, "undefined instruction %08x at %llx\n", w, (unsigned long long)pc);
-    ++failures;
+    __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
 }
-static void leave(CPU* c) {
-    (void)c;
-    __atomic_fetch_add(&leaves, 1, __ATOMIC_RELAXED);
-}
-static void enter(CPU* c) {
-    (void)c;
-    __atomic_fetch_add(&enters, 1, __ATOMIC_RELAXED);
+/* on a compile thread */
+static void report(const SnxJitReport* r) {
+    unsigned i = __atomic_fetch_add(&batch_count, 1, __ATOMIC_RELAXED), unset = ~0u;
+    if (get(0x3800)) __atomic_compare_exchange_n(&live_batch, &unset, i, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    if (r->error) {
+        fprintf(stderr, "jit: %llx: %s\n", (unsigned long long)r->pc, r->error);
+        __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    }
 }
 
 /* the function at 0x3400 behind a wrapper, as gpu/nvn_trace.c puts one into an empty slot: its original is the miss */
 static void wrapper(CPU* c, u64 e) {
-    ++wrapped;
+    __atomic_fetch_add(&wrapped, 1, __ATOMIC_RELAXED);
     rt.miss(c, e);
 }
 
@@ -89,73 +99,22 @@ static void cpu_init(CPU* c, u64 stack) {
     c->code_hi = CODE_HI;
     c->rt = &rt;
     c->x[31] = stack;
-    c->x[30] = 0xFFF0; /* where the outermost RET goes */
+    c->x[30] = RETURN;
 }
 
 /* CALLDYN(pc), from the host: what a thread's loop does (kernel/thread.c) */
 static void run(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
 
-typedef struct {
-    pthread_barrier_t* barrier;
-    CPU cpu;
-    u64 pc;
-} Racer;
-static void* race(void* p) {
-    Racer* r = (Racer*)p;
-    pthread_barrier_wait(r->barrier);
-    run(&r->cpu, r->pc);
-    return NULL;
-}
-/* THREADS threads run racers[i].pc at once */
-static void race_all(Racer* racers) {
-    pthread_barrier_t barrier;
-    pthread_t threads[THREADS];
-    int i;
-    pthread_barrier_init(&barrier, NULL, THREADS);
-    for (i = 0; i < THREADS; ++i) {
-        racers[i].barrier = &barrier;
-        CHECK(!pthread_create(&threads[i], NULL, race, &racers[i]));
-    }
-    for (i = 0; i < THREADS; ++i) pthread_join(threads[i], NULL);
-    pthread_barrier_destroy(&barrier);
-}
-
-int main(void) {
-    /* 0x1000: x0 = x0 * 3 + 1, then the AOT function at 0x2000, then 0x3000, which the same compile finds */
-    static const u32 f1[] = {0xD2800061, 0x9B017C00, 0x91000400, 0xA9BF7BFD,
-                             0x940003FC, 0x940007FB, 0xA8C17BFD, 0xD65F03C0};
-    static const u32 f3[] = {0x91001400, 0xD65F03C0}; /* 0x3000: x0 += 5 */
-    /* 0x3800: x0 = 2 * f1(x0), calling 0x1000 through a register: CALLDYN to code of another unit */
-    static const u32 f4[] = {0xA9BF7BFD, 0xD2820002, 0xD63F0040, 0x8B000000, 0xA8C17BFD, 0xD65F03C0};
-    /* 0x2800: x0 += 100 in a loop, with a backward branch */
-    static const u32 f5[] = {0xD2800C83, 0x91000400, 0xD1000463, 0xB5FFFFC3, 0xD65F03C0};
-    static const u32 f6[] = {0x91002400, 0xD65F03C0}; /* 0x3400: x0 += 9 */
-    /* 0x3C00 calls 0x3E00 (x0 += 3): threads miss both at once, so two compiles may each hold 0x3E00 */
-    static const u32 f7[] = {0xA9BF7BFD, 0x9400007F, 0xA8C17BFD, 0xD65F03C0};
-    static const u32 f8[] = {0x91000C00, 0xD65F03C0};
+/* a fresh table, with only the module's function, and a service over it */
+static SnxJitService* start(size_t batch, unsigned threads) {
+    SnxJitConfig config;
+    static SnxCodeImage image;
     static const u64 aot_addresses[] = {0x2000};
     static const GuestFn aot_functions[] = {aot_add100};
-    SnxCodeImage image;
-    SnxJitConfig config;
-    SnxJitStats stats;
-    Racer racers[THREADS];
-    unsigned long before;
-    CPU c;
     char error[512];
-    int i;
-    memory = (unsigned char*)calloc(1, MEMORY);
-    if (!memory) return 1;
-    put(0x1000, f1, 8);
-    put(0x3000, f3, 2);
-    put(0x3800, f4, 6);
-    put(0x2800, f5, 5);
-    put(0x3400, f6, 2);
-    put(0x3C00, f7, 4);
-    put(0x3E00, f8, 2);
+    SnxJitService* s;
+    memset(dispatch, 0, sizeof(dispatch));
     *slot(0x2000) = aot_add100; /* as main.c's build_dispatch fills the module's entries */
-    rt.miss = miss;
-    rt.poll = poll;
-    rt.undef = undef;
     memset(&image, 0, sizeof(image));
     image.image = memory;
     image.image_size = MEMORY;
@@ -171,86 +130,287 @@ int main(void) {
     config.aot_addresses = aot_addresses;
     config.aot_functions = aot_functions;
     config.aot_count = 1;
-    config.leave = leave;
-    config.enter = enter;
-    service = snx_jit_service_new(&config, error, sizeof(error));
-    if (!service) {
-        fprintf(stderr, "jit: %s\n", error);
-        return 1;
-    }
+    config.batch = batch;
+    config.threads = threads;
+    config.report = report;
+    __atomic_store_n(&batch_count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&live_batch, ~0u, __ATOMIC_RELAXED);
+    s = snx_jit_service_new(&config, error, sizeof(error));
+    if (!s) fprintf(stderr, "jit: %s\n", error);
+    return s;
+}
 
-    /* a miss at 0x1000 compiles it with 0x3000, and publishes both */
+typedef struct {
+    pthread_barrier_t* barrier;
+    CPU cpu;
+    u64 pc;
+    int bank; /* run the bank's functions index, index + THREADS... instead of pc */
+    int index;
+} Racer;
+static void* race(void* p) {
+    Racer* r = (Racer*)p;
+    int i;
+    pthread_barrier_wait(r->barrier);
+    if (!r->bank) {
+        run(&r->cpu, r->pc);
+        return NULL;
+    }
+    for (i = r->index; i < BANK_COUNT; i += THREADS) {
+        r->cpu.x[0] = 0;
+        r->cpu.x[1] = 0x30000;
+        r->cpu.x[30] = RETURN;
+        run(&r->cpu, BANK + 0x40 * (u64)i);
+        if (r->cpu.x[0] != (u64)i || r->cpu.pc != RETURN) __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+/* THREADS threads run racers[i] at once */
+static void race_all(Racer* racers) {
+    pthread_barrier_t barrier;
+    pthread_t threads[THREADS];
+    int i;
+    pthread_barrier_init(&barrier, NULL, THREADS);
+    for (i = 0; i < THREADS; ++i) {
+        racers[i].barrier = &barrier;
+        CHECK(!pthread_create(&threads[i], NULL, race, &racers[i]));
+    }
+    for (i = 0; i < THREADS; ++i) pthread_join(threads[i], NULL);
+    pthread_barrier_destroy(&barrier);
+}
+
+/* every thread misses the bank's functions: the time until all are compiled, and what it took */
+static void run_bank(const char* label, SnxJitStats* out) {
+    Racer racers[THREADS];
+    SnxJitStats before, after;
+    double t;
+    int i;
+    snx_jit_stats(service, &before);
+    t = snx_seconds();
+    for (i = 0; i < THREADS; ++i) {
+        cpu_init(&racers[i].cpu, 0x8800 + 0x800 * (u64)i);
+        racers[i].bank = 1;
+        racers[i].index = i;
+    }
+    race_all(racers);
+    snx_jit_drain(service);
+    t = snx_seconds() - t;
+    snx_jit_stats(service, &after);
+    for (i = 0; i < BANK_COUNT; ++i) CHECK(get(BANK + 0x40 * (u64)i) != NULL);
+    out->batches = after.batches - before.batches;
+    out->compiled = after.compiled - before.compiled;
+    out->functions = after.functions - before.functions;
+    out->bytes = after.bytes - before.bytes;
+    out->seconds = after.seconds - before.seconds;
+    printf("%s: %lu pcs in %lu batches (%.1f per batch) on %u threads, %.2f ms per batch, %.3f ms per function, "
+           "%lu bytes per function, all compiled %.0f ms after the first miss\n",
+           label, out->compiled, out->batches, (double)out->compiled / (double)(out->batches ? out->batches : 1),
+           after.threads, out->seconds * 1000.0 / (double)(out->batches ? out->batches : 1),
+           out->seconds * 1000.0 / (double)(out->functions ? out->functions : 1),
+           (unsigned long)(out->bytes / (out->functions ? out->functions : 1)), t * 1000.0);
+}
+
+/* no mapping of the process both writable and executable */
+static int wx_mappings(void) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    char line[512], perms[8];
+    int count = 0;
+    if (!f) return 0;
+    while (fgets(line, sizeof(line), f))
+        if (sscanf(line, "%*s %7s", perms) == 1 && strchr(perms, 'w') && strchr(perms, 'x')) {
+            fprintf(stderr, "writable and executable: %s", line);
+            ++count;
+        }
+    fclose(f);
+    return count;
+}
+
+int main(void) {
+    /* 0x1000: x0 = x0 * 3 + 1, then the AOT function at 0x2000, then 0x3000, which the same batch may find */
+    static const u32 f1[] = {0xD2800061, 0x9B017C00, 0x91000400, 0xA9BF7BFD,
+                             0x940003FC, 0x940007FB, 0xA8C17BFD, 0xD65F03C0};
+    static const u32 f3[] = {0x91001400, 0xD65F03C0}; /* 0x3000: x0 += 5 */
+    /* 0x3800: x0 = 2 * f1(x0), calling 0x1000 through a register: CALLDYN to code of another unit */
+    static const u32 f4[] = {0xA9BF7BFD, 0xD2820002, 0xD63F0040, 0x8B000000, 0xA8C17BFD, 0xD65F03C0};
+    /* 0x2800: x0 += 100 in a loop, with a backward branch */
+    static const u32 f5[] = {0xD2800C83, 0x91000400, 0xD1000463, 0xB5FFFFC3, 0xD65F03C0};
+    static const u32 f6[] = {0x91002400, 0xD65F03C0}; /* 0x3400: x0 += 9 */
+    /* 0x3C00 calls 0x3E00 (x0 += 3): threads miss both at once, so two batches may each hold 0x3E00 */
+    static const u32 f7[] = {0xA9BF7BFD, 0x9400007F, 0xA8C17BFD, 0xD65F03C0};
+    static const u32 f8[] = {0x91000C00, 0xD65F03C0};
+    /* the bank's function i: x2 = i plus eight words at x1, then x0 += x2 */
+    u32 bank[8] = {0xD2800002, 0xD2800103, 0xF8408424, 0x8B040042, 0xD1000463, 0xB5FFFFA3, 0x8B020000, 0xD65F03C0};
+    static const SnxU64 warm[] = {0x1000, 0x2800, 0x3C00, 0x2000, 0x1002, CODE_HI};
+    SnxJitStats stats, batched, single;
+    Racer racers[THREADS];
+    unsigned long before;
+    unsigned before_misses, before_interpreted, i;
+    static SnxU64 bank_pcs[BANK_COUNT];
+    SnxU64 lowest = ~(SnxU64)0, highest = 0, address;
+    CPU c;
+    memory = (unsigned char*)calloc(1, MEMORY);
+    if (!memory) return 1;
+    put(0x1000, f1, 8);
+    put(0x3000, f3, 2);
+    put(0x3800, f4, 6);
+    put(0x2800, f5, 5);
+    put(0x3400, f6, 2);
+    put(0x3C00, f7, 4);
+    put(0x3E00, f8, 2);
+    for (i = 0; i < BANK_COUNT; ++i) {
+        bank[0] = 0xD2800002 | (u32)i << 5;
+        put(BANK + 0x40 * (u64)i, bank, 8);
+    }
+    rt.miss = miss;
+    rt.poll = poll;
+    rt.undef = undef;
+    service = start(0, 0);
+    if (!service) return 1;
+
+    /* a miss at 0x1000 runs in the interpreter at once, and its call to 0x3000 too unless the batch beat it there.
+       Once the compile thread is done, 0x1000 and 0x3000 are published, with 0x1000's leaders */
     cpu_init(&c, 0xF000);
     c.x[0] = 7;
     run(&c, 0x1000);
-    CHECK(c.x[0] == 7 * 3 + 1 + 100 + 5 && c.pc == 0xFFF0 && c.x[31] == 0xF000);
-    CHECK(misses == 1 && *slot(0x1000) && *slot(0x1014) && *slot(0x1018) && *slot(0x3000));
+    CHECK(c.x[0] == 7 * 3 + 1 + 100 + 5 && c.pc == RETURN && c.x[31] == 0xF000);
+    CHECK(misses >= 1 && misses <= 2 && interpreted == misses);
+    snx_jit_drain(service);
+    CHECK(get(0x1000) && get(0x1014) && get(0x1018) && get(0x3000));
     snx_jit_stats(service, &stats);
-    CHECK(stats.compiles == 1 && stats.functions == 2 && stats.instructions == 10 && !stats.failures);
-    CHECK(leaves == 1 && enters == 1);
+    CHECK(stats.compiled >= 1 && stats.compiled <= 2 && stats.functions >= 2 && !stats.failures && !stats.queued);
+    /* now without a miss, in the compiled code */
+    before_misses = misses;
+    cpu_init(&c, 0xF000);
+    c.x[0] = 7;
+    run(&c, 0x1000);
+    CHECK(c.x[0] == 7 * 3 + 1 + 100 + 5 && c.pc == RETURN && misses == before_misses);
     /* the JIT's call to 0x2000 is direct: what its slot holds now doesn't matter */
-    *slot(0x2000) = aot_poisoned;
+    __atomic_store_n(slot(0x2000), aot_poisoned, __ATOMIC_RELAXED);
     cpu_init(&c, 0xF000);
     c.x[0] = 1;
     run(&c, 0x1000);
-    CHECK(c.x[0] == 1 * 3 + 1 + 100 + 5 && misses == 1);
+    CHECK(c.x[0] == 1 * 3 + 1 + 100 + 5 && misses == before_misses);
 
-    /* 0x3800 calls 0x1000 through the table */
-    cpu_init(&c, 0xF000);
-    c.x[0] = 1;
-    run(&c, 0x3800);
-    CHECK(c.x[0] == 2 * (1 * 3 + 1 + 100 + 5) && c.pc == 0xFFF0 && misses == 2);
+    /* 0x3800 calls 0x1000 through the table: interpreted first, then compiled, the same either way */
+    for (i = 0; i < 2; ++i) {
+        cpu_init(&c, 0xF000);
+        c.x[0] = 1;
+        run(&c, 0x3800);
+        CHECK(c.x[0] == 2 * (1 * 3 + 1 + 100 + 5) && c.pc == RETURN);
+        snx_jit_drain(service);
+    }
+    CHECK(misses == before_misses + 1 && get(0x3800));
+
+    /* threads missing 0x2800 together: each runs it in the interpreter, and it is queued and compiled once */
     snx_jit_stats(service, &stats);
-    CHECK(stats.compiles == 2 && stats.functions == 3);
-
-    /* threads missing 0x2800 together: one compile, every thread runs the code */
-    misses = 0;
+    before = stats.compiled;
+    before_misses = misses;
     for (i = 0; i < THREADS; ++i) {
         cpu_init(&racers[i].cpu, 0x8800 + 0x800 * (u64)i);
         racers[i].cpu.x[0] = (u64)i;
         racers[i].pc = 0x2800;
+        racers[i].bank = 0;
     }
     race_all(racers);
-    for (i = 0; i < THREADS; ++i) CHECK(racers[i].cpu.x[0] == (u64)i + 100 && racers[i].cpu.pc == 0xFFF0);
+    for (i = 0; i < THREADS; ++i) CHECK(racers[i].cpu.x[0] == (u64)i + 100 && racers[i].cpu.pc == RETURN);
+    snx_jit_drain(service);
     snx_jit_stats(service, &stats);
-    CHECK(stats.compiles == 3 && misses >= 1 && misses <= THREADS);
-    CHECK(leaves == enters);
+    CHECK(stats.compiled == before + 1 && misses - before_misses >= 1 && misses - before_misses <= THREADS);
+    CHECK(get(0x2800) != NULL);
 
-    /* half the threads miss a caller, half its callee: whichever publishes 0x3E00 first, every thread gets x0 + 3 */
-    before = stats.compiles;
+    /* half the threads miss a caller, half its callee: whichever compiles 0x3E00, every thread gets x0 + 3 */
+    before = stats.compiled;
     for (i = 0; i < THREADS; ++i) {
         cpu_init(&racers[i].cpu, 0x8800 + 0x800 * (u64)i);
         racers[i].cpu.x[0] = (u64)i;
         racers[i].pc = i & 1 ? 0x3E00 : 0x3C00;
     }
     race_all(racers);
-    for (i = 0; i < THREADS; ++i) CHECK(racers[i].cpu.x[0] == (u64)i + 3 && racers[i].cpu.pc == 0xFFF0);
+    for (i = 0; i < THREADS; ++i) CHECK(racers[i].cpu.x[0] == (u64)i + 3 && racers[i].cpu.pc == RETURN);
+    snx_jit_drain(service);
     snx_jit_stats(service, &stats);
-    CHECK(stats.compiles - before >= 1 && stats.compiles - before <= 2 && *slot(0x3C00) && *slot(0x3E00));
-    before = stats.compiles;
+    CHECK(stats.compiled - before >= 1 && stats.compiled - before <= 2 && get(0x3C00) && get(0x3E00));
+    before = stats.compiled;
 
-    /* a wrapper in an empty slot: the miss compiles 0x3400 once, and the second call finds it in the service's table */
-    *slot(0x3400) = wrapper;
-    misses = 0;
+    /* a wrapper in an empty slot: the first miss queues 0x3400 and interprets it, the second finds the code in the
+       service's table */
+    __atomic_store_n(slot(0x3400), wrapper, __ATOMIC_RELAXED);
+    before_misses = misses;
+    before_interpreted = interpreted;
     for (i = 0; i < 2; ++i) {
         cpu_init(&c, 0xF000);
         c.x[0] = 1;
         run(&c, 0x3400);
-        CHECK(c.x[0] == 10 && c.pc == 0xFFF0);
+        CHECK(c.x[0] == 10 && c.pc == RETURN);
+        snx_jit_drain(service);
     }
     snx_jit_stats(service, &stats);
-    CHECK(wrapped == 2 && misses == 2 && stats.compiles == before + 1 && *slot(0x3400) == wrapper);
+    CHECK(wrapped == 2 && misses == before_misses + 2 && interpreted == before_interpreted + 1);
+    CHECK(stats.compiled == before + 1 && get(0x3400) == wrapper);
 
     /* refused: unaligned, outside the text */
-    cpu_init(&c, 0xF000);
-    CHECK(!snx_jit_resolve(service, &c, 0x1002) && !snx_jit_resolve(service, &c, 0x8000));
-    CHECK(!unresolved);
+    CHECK(!snx_jit_resolve(service, 0x1002) && !snx_jit_resolve(service, CODE_HI));
+    snx_jit_drain(service);
     snx_jit_stats(service, &stats);
-    CHECK(stats.compiles == before + 1 && !stats.failures && stats.bytes > 0);
-
+    CHECK(stats.compiled == before + 1 && !stats.failures && stats.bytes > 0);
     snx_jit_service_free(service);
+
+    /* the bank, missed by THREADS threads at once: batched on every compile thread there can be, then one pc per compile
+       on one thread, as the JIT compiled before (but packed and in the background) */
+    service = start(0, SNX_JIT_THREADS);
+    if (!service) return 1;
+    run_bank("batched", &batched);
+    CHECK(batched.compiled == BANK_COUNT && batched.batches < BANK_COUNT / 4);
+    CHECK(!wx_mappings());
+    snx_jit_service_free(service);
+    service = start(1, 1);
+    if (!service) return 1;
+    run_bank("one pc per compile", &single);
+    CHECK(single.compiled == BANK_COUNT && single.batches == BANK_COUNT);
+    /* packed: a load per function, and their code within a few hundred bytes of each other, not a page apart */
+    for (i = 0; i < BANK_COUNT; ++i) {
+        address = (SnxU64)(size_t)get(BANK + 0x40 * (u64)i);
+        if (address < lowest) lowest = address;
+        if (address > highest) highest = address;
+    }
+    printf("packing: %d loads of one function each span %lu KiB of code, %lu bytes per load\n", BANK_COUNT,
+           (unsigned long)((highest - lowest) >> 10), (unsigned long)((highest - lowest) / (BANK_COUNT - 1)));
+    CHECK(highest - lowest < (SnxU64)BANK_COUNT * 1024);
+    CHECK(!wx_mappings());
+    snx_jit_service_free(service);
+
+    /* warm start: queued pcs compile with no miss (the AOT entry and the refused ones aren't queued) */
+    service = start(0, 1);
+    if (!service) return 1;
+    CHECK(snx_jit_warm(service, warm, sizeof(warm) / sizeof(warm[0])) == 3);
+    snx_jit_drain(service);
+    CHECK(get(0x1000) && get(0x2800) && get(0x3C00) && get(0x3E00) && get(0x3000));
+    before_misses = misses;
+    cpu_init(&c, 0xF000);
+    c.x[0] = 1;
+    run(&c, 0x1000);
+    CHECK(c.x[0] == 1 * 3 + 1 + 100 + 5 && misses == before_misses);
+    snx_jit_service_free(service);
+    /* a miss goes ahead of the warm queue: the bank queued warm, then a miss at 0x3800 (with 0x1000 and 0x3000, which
+       its interpreter calls), compiled by one of the first batches on the one compile thread while the bank takes
+       many more */
+    service = start(0, 1);
+    if (!service) return 1;
+    for (i = 0; i < BANK_COUNT; ++i) bank_pcs[i] = BANK + 0x40 * (SnxU64)i;
+    CHECK(snx_jit_warm(service, bank_pcs, BANK_COUNT) == BANK_COUNT);
+    cpu_init(&c, 0xF000);
+    c.x[0] = 1;
+    run(&c, 0x3800);
+    CHECK(c.x[0] == 2 * (1 * 3 + 1 + 100 + 5));
+    snx_jit_drain(service);
+    printf("warm start: %d pcs and 3 misses in %u batches, the miss at 0x3800 compiled by batch %u\n", BANK_COUNT,
+           batch_count, live_batch);
+    CHECK(live_batch <= 2 && batch_count > 8);
+    snx_jit_stats(service, &stats);
+    CHECK(stats.compiled + stats.failures >= BANK_COUNT + 1 && !stats.failures);
+    snx_jit_service_free(service);
+
     free(memory);
     if (failures) return 1;
-    printf("jit service: %lu compiles, %lu KiB of code\n", stats.compiles, (unsigned long)(stats.bytes >> 10));
+    printf("jit service: passed\n");
     return 0;
 }
