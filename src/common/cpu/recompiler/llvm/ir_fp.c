@@ -242,7 +242,7 @@ static V binary(SnxIr* ir, V a, V b, unsigned width, unsigned op) {
     x[0] = a, x[1] = b, x[2] = i32c(ir, width), x[3] = i32c(ir, op);
     return fp_call(ir, "snx_fp_binary", ir->t_i64, 2, x, 4);
 }
-static V minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
+V ir_fp_minmax(SnxIr* ir, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
     V x[5];
     x[0] = a, x[1] = b, x[2] = i32c(ir, width), x[3] = i32c(ir, minimum), x[4] = i32c(ir, numeric);
     return fp_call(ir, "snx_fp_minmax", ir->t_i64, 2, x, 5);
@@ -337,16 +337,18 @@ static int fp2(SnxIr* ir, SnxU32 w, size_t index) {
         ir_fp_join(ir, join);
         return 1;
     }
-    if (op < 4)
-        r = binary(ir, a, b, width, binary_ops[op]);
-    else if (op < 8)
-        r = minmax(ir, a, b, width, op & 1, (op >> 1) & 1);
-    else if (op == 8) /* FNMUL */
-        r = sign(ir, ir_cast(ir, binary(ir, a, b, width, 2), width == 64 ? ir->t_i64 : ir->t_i32, 0), width);
-    else
-        return 0;
-    set_bits(ir, rd, width, r);
-    return 1;
+    if (op < 8) { /* FMAX, FMIN, FMAXNM, FMINNM: inline without a NaN (or a denormal under FZ) */
+        LLVMBasicBlockRef slow, join;
+        SnxFpFast f;
+        ir_fp_minmax_fast(ir, width, 1, a, b, op & 1, &f);
+        join = ir_fp_branch(ir, f.ok, &slow);
+        set_bits(ir, rd, width, f.value);
+        ir_fp_else(ir, join, slow, f.inexact);
+        set_bits(ir, rd, width, ir_fp_minmax(ir, a, b, width, op & 1, (op >> 1) & 1));
+        ir_fp_join(ir, join);
+        return 1;
+    }
+    return 0;
 }
 
 static int fp1(SnxIr* ir, SnxU32 w, size_t index) {
@@ -433,24 +435,71 @@ static V lane_denormal(SnxIr* ir, const Shape* s, V bits) {
                         LLVMBuildNot(B, lane_zero(ir, s, bits), ""), "");
 }
 
+/* neither operand a NaN in any lane, and FZ clear or no operand a denormal in any lane: fp_input then changes
+   nothing and sets no IDC, and only a NaN can raise IOC */
+static V no_nan_no_flush(SnxIr* ir, const Shape* s, V a, V b, V fa, V fb) {
+    V fz =
+        LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, ir_cpu_load(ir, ir->t_i32, ir_off_fpcr()), i32c(ir, 1u << 24), ""),
+                      i32c(ir, 0), "");
+    V flush = LLVMBuildAnd(B, fz, any(ir, s, lane_or(ir, lane_denormal(ir, s, a), lane_denormal(ir, s, b))), "");
+    return LLVMBuildNot(B, LLVMBuildOr(B, any(ir, s, LLVMBuildFCmp(B, LLVMRealUNO, fa, fb, "")), flush, ""), "");
+}
+
+void ir_fp_minmax_fast(SnxIr* ir, unsigned width, unsigned lanes, V a, V b, unsigned minimum, SnxFpFast* out) {
+    Shape s;
+    V fa, fb, gt, lt, tie;
+    shape(ir, width, lanes, &s);
+    fa = LLVMBuildBitCast(B, a, s.ft, "");
+    fb = LLVMBuildBitCast(B, b, s.ft, "");
+    gt = LLVMBuildFCmp(B, LLVMRealOGT, fa, fb, "");
+    lt = LLVMBuildFCmp(B, LLVMRealOLT, fa, fb, "");
+    /* neither larger: equal, so the same bits unless they are zeros of different signs */
+    tie = minimum ? LLVMBuildOr(B, a, b, "") : LLVMBuildAnd(B, a, b, "");
+    out->value = minimum ? LLVMBuildSelect(B, lt, a, LLVMBuildSelect(B, gt, b, tie, ""), "")
+                         : LLVMBuildSelect(B, gt, a, LLVMBuildSelect(B, lt, b, tie, ""), "");
+    out->ok = no_nan_no_flush(ir, &s, a, b, fa, fb);
+    out->inexact = LLVMConstInt(ir->t_i1, 0, 0);
+}
+
+void ir_fp_compare_fast(SnxIr* ir, unsigned cmp, unsigned width, unsigned lanes, V a, V b, SnxFpFast* out) {
+    static const LLVMRealPredicate predicates[5] = {LLVMRealOEQ, LLVMRealOGE, LLVMRealOGT, LLVMRealOLE, LLVMRealOLT};
+    Shape s;
+    V fa, fb;
+    shape(ir, width, lanes, &s);
+    fa = LLVMBuildBitCast(B, a, s.ft, "");
+    fb = LLVMBuildBitCast(B, b, s.ft, "");
+    out->value = LLVMBuildSExt(B, LLVMBuildFCmp(B, predicates[cmp], fa, fb, ""), s.it, "");
+    out->ok = no_nan_no_flush(ir, &s, a, b, fa, fb);
+    out->inexact = LLVMConstInt(ir->t_i1, 0, 0);
+}
+
+/* fcmpmask: snx_fp_compare's NZCV (8 less, 6 equal, 2 greater, 3 unordered) tested for the predicate */
+V ir_fp_compare_mask(SnxIr* ir, unsigned cmp, V a, V b, unsigned width) {
+    V flags = compare(ir, a, b, width, i32c(ir, cmp != SNX_IR_CMP_EQ)), hit;
+    V less = LLVMBuildICmp(B, LLVMIntEQ, flags, i32c(ir, 8), "");
+    V equal = LLVMBuildICmp(B, LLVMIntEQ, flags, i32c(ir, 6), "");
+    V greater = LLVMBuildICmp(B, LLVMIntEQ, flags, i32c(ir, 2), "");
+    switch (cmp) {
+        case SNX_IR_CMP_EQ: hit = equal; break;
+        case SNX_IR_CMP_GE: hit = LLVMBuildOr(B, equal, greater, ""); break;
+        case SNX_IR_CMP_GT: hit = greater; break;
+        case SNX_IR_CMP_LE: hit = LLVMBuildOr(B, less, equal, ""); break;
+        default: hit = less; break;
+    }
+    return LLVMBuildSExt(B, hit, width == 64 ? ir->t_i64 : ir->t_i32, "");
+}
+
 /* FCMP without a NaN, and without a denormal when FZ is set (flushing it sets IDC): the host comparison gives the
    flags, and no FPSR bit changes. Zeros compare as IEEE says, equal whatever their signs, with FZ or without */
 static V compare_fast(SnxIr* ir, V a, V b, unsigned width, V* ok) {
     Shape s;
-    V fa, fb, nan_a, nan_b, flush, nzcv;
+    V fa, fb, nzcv;
     shape(ir, width, 1, &s);
     a = ir_cast(ir, a, s.it, 0);
     b = ir_cast(ir, b, s.it, 0);
     fa = LLVMBuildBitCast(B, a, s.ft, "");
     fb = LLVMBuildBitCast(B, b, s.ft, "");
-    nan_a = LLVMBuildFCmp(B, LLVMRealUNO, fa, fa, "");
-    nan_b = LLVMBuildFCmp(B, LLVMRealUNO, fb, fb, "");
-    flush = LLVMBuildAnd(
-        B,
-        LLVMBuildICmp(B, LLVMIntNE, LLVMBuildAnd(B, ir_cpu_load(ir, ir->t_i32, ir_off_fpcr()), i32c(ir, 1u << 24), ""),
-                      i32c(ir, 0), ""),
-        LLVMBuildOr(B, lane_denormal(ir, &s, a), lane_denormal(ir, &s, b), ""), "");
-    *ok = LLVMBuildNot(B, LLVMBuildOr(B, LLVMBuildOr(B, nan_a, nan_b, ""), flush, ""), "");
+    *ok = no_nan_no_flush(ir, &s, a, b, fa, fb);
     nzcv = LLVMBuildSelect(B, LLVMBuildFCmp(B, LLVMRealOLT, fa, fb, ""), i32c(ir, 8), i32c(ir, 2), "");
     return LLVMBuildSelect(B, LLVMBuildFCmp(B, LLVMRealOEQ, fa, fb, ""), i32c(ir, 6), nzcv, "");
 }

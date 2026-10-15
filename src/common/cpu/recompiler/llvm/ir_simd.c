@@ -944,11 +944,116 @@ static int fp_sign_misc(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
+enum { FP_LANES_ADD, FP_LANES_MINMAX, FP_LANES_COMPARE };
+/* x op y in each of n lanes of 1<<s bytes, into Vd: every lane at once on the host's vector unit when the fast
+   path's guard holds for all of them (ir_fp_fast, ir_fp_minmax_fast, ir_fp_compare_fast), otherwise the helper a
+   lane at a time, as simd_3same's and simd_2misc's loops call it. arg is the minimum flag or the comparison */
+static void fp_lanes(SnxIr* ir, unsigned kind, unsigned arg, unsigned numeric, unsigned s, unsigned n, V x, V y,
+                     unsigned rd, unsigned q) {
+    unsigned width = 8u << s, i;
+    LLVMBasicBlockRef slow, join;
+    SnxFpFast f;
+    V r;
+    if (kind == FP_LANES_ADD)
+        ir_fp_fast(ir, SNX_IR_FP_ADD, width, n, x, y, NULL, &f);
+    else if (kind == FP_LANES_MINMAX)
+        ir_fp_minmax_fast(ir, width, n, x, y, arg, &f);
+    else
+        ir_fp_compare_fast(ir, arg, width, n, x, y, &f);
+    join = ir_fp_branch(ir, f.ok, &slow);
+    write_lanes(ir, rd, f.value, q);
+    ir_fp_else(ir, join, slow, f.inexact);
+    r = LLVMGetUndef(LLVMTypeOf(x));
+    for (i = 0; i < n; ++i) {
+        V a = LLVMBuildExtractElement(B, x, ir_i32(ir, i), ""), b = LLVMBuildExtractElement(B, y, ir_i32(ir, i), ""), v;
+        if (kind == FP_LANES_ADD)
+            v = fp_binary(ir, a, b, width, 0); /* SNX_FP_ADD */
+        else if (kind == FP_LANES_MINMAX)
+            v = ir_fp_minmax(ir, a, b, width, arg, numeric);
+        else
+            v = ir_fp_compare_mask(ir, arg, a, b, width);
+        r = LLVMBuildInsertElement(B, r, ir_cast(ir, v, lane_type(ir, s), 0), ir_i32(ir, i), "");
+    }
+    write_lanes(ir, rd, r, q);
+    ir_fp_join(ir, join);
+}
+
+/* FP three-same (vector) beyond fast_simd's arithmetic: simd_3same's FADDP, FMAX/FMIN/FMAXNM/FMINNM and their
+   pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT */
+static int fp_three_same(SnxIr* ir, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1, rm = (w >> 16) & 31,
+             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), i;
+    unsigned kind, arg = hi, pair = 0, absolute = 0;
+    V x, y;
+    if (sz && !q) return 0;
+    switch (op) {
+        case 0x18: /* FMAXNM, FMINNM */
+        case 0x1E: /* FMAX, FMIN; with U, the pairwise FMAXNMP, FMINNMP, FMAXP, FMINP */
+            kind = FP_LANES_MINMAX;
+            pair = u;
+            break;
+        case 0x1A: /* FADDP (FADD is fast_simd's, FABD stays in snx_simd) */
+            if (!u || hi) return 0;
+            kind = FP_LANES_ADD;
+            pair = 1;
+            break;
+        case 0x1C:
+            if (!u && hi) return 0;
+            kind = FP_LANES_COMPARE;
+            arg = !u ? SNX_IR_CMP_EQ : hi ? SNX_IR_CMP_GT : SNX_IR_CMP_GE;
+            break;
+        case 0x1D: /* FACGE, FACGT: the comparison of the magnitudes */
+            if (!u) return 0;
+            kind = FP_LANES_COMPARE;
+            arg = hi ? SNX_IR_CMP_GT : SNX_IR_CMP_GE;
+            absolute = 1;
+            break;
+        default: return 0;
+    }
+    x = get_lanes(ir, vreg(ir, rn), s, n);
+    y = get_lanes(ir, vreg(ir, rm), s, n);
+    if (pair) { /* lanes 0..n/2-1 from pairs of Vn, the rest from pairs of Vm: in Vn:Vm, elements 2i and 2i+1 */
+        unsigned even[4], odd[4];
+        V a = x;
+        for (i = 0; i < n; ++i) {
+            even[i] = 2 * i;
+            odd[i] = 2 * i + 1;
+        }
+        x = shuffle(ir, a, y, even, n);
+        y = shuffle(ir, a, y, odd, n);
+    }
+    if (absolute) {
+        V magnitude = broadcast(ir, LLVMConstInt(lane_type(ir, s), sz ? ~((SnxU64)1 << 63) : 0x7FFFFFFFUL, 0), n);
+        x = LLVMBuildAnd(B, x, magnitude, "");
+        y = LLVMBuildAnd(B, y, magnitude, "");
+    }
+    fp_lanes(ir, kind, arg, op == 0x18, s, n, x, y, rd, q);
+    return 1;
+}
+
+/* FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector): simd_2misc's fcmpmask against +0 */
+static int fp_compare_zero(SnxIr* ir, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31,
+             rd = w & 31, sz = size & 1, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), cmp;
+    if (op < 0x0C || op > 0x0E || !(size >> 1) || (sz && !q)) return 0;
+    if (op == 0x0C)
+        cmp = u ? SNX_IR_CMP_GE : SNX_IR_CMP_GT;
+    else if (op == 0x0D)
+        cmp = u ? SNX_IR_CMP_LE : SNX_IR_CMP_EQ;
+    else if (!u)
+        cmp = SNX_IR_CMP_LT;
+    else
+        return 0;
+    fp_lanes(ir, FP_LANES_COMPARE, cmp, 0, s, n, get_lanes(ir, vreg(ir, rn), s, n), LLVMConstNull(lanes_type(ir, s, n)),
+             rd, q);
+    return 1;
+}
+
 int snx_ir_more_simd(SnxIr* ir, SnxU32 w) {
     if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL) return ld1_multiple(ir, w);
     if ((w & 0xBF000000UL) == 0x0D000000UL) return ld1_single(ir, w);
-    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(ir, w);
-    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(ir, w) || fp_sign_misc(ir, w);
+    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(ir, w) || fp_three_same(ir, w);
+    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(ir, w) || fp_sign_misc(ir, w) || fp_compare_zero(ir, w);
     if ((w & 0xBFE0FC00UL) == 0x0EE0E000UL) return pmull_1q(ir, w);
     if ((w & 0x9FF80400UL) == 0x0F000400UL) return modified_immediate(ir, w);
     if ((w & 0x9F800400UL) == 0x0F000400UL) return shift_immediate(ir, w);

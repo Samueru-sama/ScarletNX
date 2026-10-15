@@ -83,6 +83,19 @@ void jit_fp_join(SnxJit* jit, gcc_jit_block* join);
 /* snx_fp_binary/snx_fp_fma(c, ...) */
 gcc_jit_rvalue* jit_fp_binary(SnxJit* jit, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width, unsigned op);
 gcc_jit_rvalue* jit_fp_fma(SnxJit* jit, gcc_jit_rvalue* add, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width);
+/* ir_fp_minmax_fast's FMAX/FMIN without a NaN (or a denormal under FZ), a lane at a time; inexact is NULL */
+void jit_fp_minmax_fast(SnxJit* jit, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a, gcc_jit_rvalue* const* b,
+                        unsigned minimum, SnxJitFpFast* out);
+/* snx_fp_minmax(c, a, b, width, minimum, numeric) */
+gcc_jit_rvalue* jit_fp_minmax(SnxJit* jit, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width, unsigned minimum,
+                              unsigned numeric);
+/* the AdvSIMD compares' lane masks (simd.c's fcmpmask): a == b, a >= b, a > b, a <= b, a < b */
+enum { SNX_JIT_CMP_EQ, SNX_JIT_CMP_GE, SNX_JIT_CMP_GT, SNX_JIT_CMP_LE, SNX_JIT_CMP_LT };
+/* ir_fp_compare_fast's masks under the same guard; inexact is NULL */
+void jit_fp_compare_fast(SnxJit* jit, unsigned cmp, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a,
+                         gcc_jit_rvalue* const* b, SnxJitFpFast* out);
+/* one lane through snx_fp_compare, signalling for all but EQ: all ones (uN) or zero */
+gcc_jit_rvalue* jit_fp_compare_mask(SnxJit* jit, unsigned cmp, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width);
 
 /* ---- building blocks (jit.c) ----
    Values follow the C's evaluation order: anything that reads memory or calls is assigned to a fresh local where it

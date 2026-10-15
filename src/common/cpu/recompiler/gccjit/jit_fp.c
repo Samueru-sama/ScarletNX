@@ -218,7 +218,7 @@ V jit_fp_fma(SnxJit* j, V add, V a, V b, unsigned width) {
     x[0] = add, x[1] = a, x[2] = b, x[3] = jit_int(j, (int)width);
     return fp_call(j, "snx_fp_fma", j->t_u64, 3, x, 4);
 }
-static V minmax(SnxJit* j, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
+V jit_fp_minmax(SnxJit* j, V a, V b, unsigned width, unsigned minimum, unsigned numeric) {
     V x[5];
     x[0] = a, x[1] = b, x[2] = jit_int(j, (int)width), x[3] = jit_int(j, (int)minimum), x[4] = jit_int(j, (int)numeric);
     return fp_call(j, "snx_fp_minmax", j->t_u64, 2, x, 5);
@@ -324,9 +324,18 @@ static int fp2(SnxJit* j, SnxU32 w, size_t index) {
         jit_fp_join(j, join);
         return 1;
     }
-    if (op >= 8) return 0;
-    set_bits(j, rd, width, minmax(j, a, b, width, op & 1, (op >> 1) & 1));
-    return 1;
+    if (op < 8) { /* FMAX, FMIN, FMAXNM, FMINNM: inline without a NaN (or a denormal under FZ) */
+        gcc_jit_block *slow, *join;
+        SnxJitFpFast f;
+        jit_fp_minmax_fast(j, width, 1, &a, &b, op & 1, &f);
+        join = jit_fp_branch(j, f.ok, &slow);
+        set_bits(j, rd, width, f.value[0]);
+        jit_fp_else(j, join, slow, f.inexact);
+        set_bits(j, rd, width, jit_fp_minmax(j, a, b, width, op & 1, (op >> 1) & 1));
+        jit_fp_join(j, join);
+        return 1;
+    }
+    return 0;
 }
 
 static int fp1(SnxJit* j, SnxU32 w, size_t index) {
@@ -407,17 +416,85 @@ static int fp1(SnxJit* j, SnxU32 w, size_t index) {
 static V denormal(SnxJit* j, const Shape* s, V bits) {
     return jit_land(j, jit_lnot(j, exponent_in(j, s, bits, 1, s->emax)), jit_lnot(j, is_zero(j, s, bits)));
 }
+/* in every lane neither operand a NaN, and FZ clear or no operand a denormal: fp_input then changes nothing and sets
+   no IDC, and only a NaN can raise IOC (ir_fp.c's no_nan_no_flush) */
+static V no_nan_no_flush(SnxJit* j, const Shape* s, unsigned lanes, V const* a, V const* b, V const* fa, V const* fb) {
+    V nan = jit_false(j), denormals = jit_false(j);
+    unsigned i;
+    for (i = 0; i < lanes; ++i) {
+        nan = jit_lor(j, nan, jit_lor(j, NE(fa[i], fa[i]), NE(fb[i], fb[i])));
+        denormals = jit_lor(j, denormals, jit_lor(j, denormal(j, s, a[i]), denormal(j, s, b[i])));
+    }
+    return jit_val(j, jit_lnot(j, jit_lor(j, nan, jit_land(j, flush_to_zero(j), denormals))));
+}
 static V compare_fast(SnxJit* j, V a, V b, unsigned width, V* ok) {
     Shape s;
-    V fa, fb, nan, flush, nzcv;
+    V fa, fb, nzcv;
     shape(j, width, &s);
     fa = jit_val(j, to_float(j, &s, a));
     fb = jit_val(j, to_float(j, &s, b));
-    nan = jit_lor(j, NE(fa, fa), NE(fb, fb));
-    flush = jit_land(j, flush_to_zero(j), jit_lor(j, denormal(j, &s, a), denormal(j, &s, b)));
-    *ok = jit_val(j, jit_lnot(j, jit_lor(j, nan, flush)));
+    *ok = no_nan_no_flush(j, &s, 1, &a, &b, &fa, &fb);
     nzcv = jit_sel(j, LT(fa, fb), K32(8), K32(2));
     return jit_sel(j, EQ(fa, fb), K32(6), nzcv);
+}
+
+void jit_fp_minmax_fast(SnxJit* j, unsigned width, unsigned lanes, V const* a, V const* b, unsigned minimum,
+                        SnxJitFpFast* out) {
+    Shape s;
+    V fa[4], fb[4];
+    unsigned i;
+    shape(j, width, &s);
+    for (i = 0; i < lanes; ++i) {
+        V x = jit_cast(j, a[i], s.it), y = jit_cast(j, b[i], s.it), gt, lt, tie;
+        fa[i] = jit_val(j, to_float(j, &s, x));
+        fb[i] = jit_val(j, to_float(j, &s, y));
+        gt = LT(fb[i], fa[i]);
+        lt = LT(fa[i], fb[i]);
+        /* neither larger: equal, so the same bits unless they are zeros of different signs */
+        tie = minimum ? OR(x, y) : AND(x, y);
+        out->value[i] =
+            jit_val(j, minimum ? jit_sel(j, lt, x, jit_sel(j, gt, y, tie)) : jit_sel(j, gt, x, jit_sel(j, lt, y, tie)));
+    }
+    out->ok = no_nan_no_flush(j, &s, lanes, a, b, fa, fb);
+    out->inexact = NULL;
+}
+
+void jit_fp_compare_fast(SnxJit* j, unsigned cmp, unsigned width, unsigned lanes, V const* a, V const* b,
+                         SnxJitFpFast* out) {
+    Shape s;
+    V fa[4], fb[4];
+    unsigned i;
+    shape(j, width, &s);
+    for (i = 0; i < lanes; ++i) {
+        V holds;
+        fa[i] = jit_val(j, to_float(j, &s, a[i]));
+        fb[i] = jit_val(j, to_float(j, &s, b[i]));
+        switch (cmp) {
+            case SNX_JIT_CMP_EQ: holds = EQ(fa[i], fb[i]); break;
+            case SNX_JIT_CMP_GE: holds = GE(fa[i], fb[i]); break;
+            case SNX_JIT_CMP_GT: holds = LT(fb[i], fa[i]); break;
+            case SNX_JIT_CMP_LE: holds = LE(fa[i], fb[i]); break;
+            default: holds = LT(fa[i], fb[i]); break;
+        }
+        out->value[i] = jit_val(j, jit_sel(j, holds, kint(j, &s, ~(SnxU64)0), kint(j, &s, 0)));
+    }
+    out->ok = no_nan_no_flush(j, &s, lanes, a, b, fa, fb);
+    out->inexact = NULL;
+}
+
+/* fcmpmask: snx_fp_compare's NZCV (8 less, 6 equal, 2 greater, 3 unordered) tested for the predicate */
+V jit_fp_compare_mask(SnxJit* j, unsigned cmp, V a, V b, unsigned width) {
+    Shape s;
+    V flags = compare(j, a, b, width, jit_int(j, cmp != SNX_JIT_CMP_EQ)), holds;
+    shape(j, width, &s);
+    switch (cmp) {
+        case SNX_JIT_CMP_EQ: holds = EQ(flags, K32(6)); break;
+        case SNX_JIT_CMP_GE: holds = jit_lor(j, EQ(flags, K32(6)), EQ(flags, K32(2))); break;
+        case SNX_JIT_CMP_GT: holds = EQ(flags, K32(2)); break;
+        case SNX_JIT_CMP_LE: holds = jit_lor(j, EQ(flags, K32(8)), EQ(flags, K32(6))); break;
+        default: holds = EQ(flags, K32(8)); break;
+    }
+    return jit_val(j, jit_sel(j, holds, kint(j, &s, ~(SnxU64)0), kint(j, &s, 0)));
 }
 
 static void fcmp_flags(SnxJit* j, V a, V b, unsigned width, V signal) {

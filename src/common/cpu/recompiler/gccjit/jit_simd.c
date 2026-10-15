@@ -730,11 +730,115 @@ static int fp_sign_misc(SnxJit* j, SnxU32 w) {
     return 1;
 }
 
+enum { FP_LANES_ADD, FP_LANES_MINMAX, FP_LANES_COMPARE };
+/* x op y in each of n lanes of 1<<s bytes, into Vd: inline when the fast path's guard holds for every lane
+   (jit_fp_fast, jit_fp_minmax_fast, jit_fp_compare_fast), otherwise the helper a lane at a time, as simd_3same's and
+   simd_2misc's loops call it. arg is the minimum flag or the comparison (ir_simd.c's fp_lanes) */
+static void fp_lanes(SnxJit* j, unsigned kind, unsigned arg, unsigned numeric, unsigned s, unsigned n, V const* x,
+                     V const* y, unsigned rd, unsigned q) {
+    unsigned width = 8u << s, i;
+    gcc_jit_block *slow, *join;
+    SnxJitFpFast f;
+    V r[4];
+    if (kind == FP_LANES_ADD)
+        jit_fp_fast(j, SNX_JIT_FP_ADD, width, n, x, y, NULL, &f);
+    else if (kind == FP_LANES_MINMAX)
+        jit_fp_minmax_fast(j, width, n, x, y, arg, &f);
+    else
+        jit_fp_compare_fast(j, arg, width, n, x, y, &f);
+    join = jit_fp_branch(j, f.ok, &slow);
+    write_q(j, rd, s, n, f.value, q);
+    jit_fp_else(j, join, slow, f.inexact);
+    for (i = 0; i < n; ++i) {
+        if (kind == FP_LANES_ADD)
+            r[i] = jit_fp_binary(j, x[i], y[i], width, 0); /* SNX_FP_ADD */
+        else if (kind == FP_LANES_MINMAX)
+            r[i] = jit_fp_minmax(j, x[i], y[i], width, arg, numeric);
+        else
+            r[i] = jit_fp_compare_mask(j, arg, x[i], y[i], width);
+    }
+    write_q(j, rd, s, n, r, q);
+    jit_fp_join(j, join);
+}
+
+/* FP three-same (vector) beyond fast_simd's arithmetic: simd_3same's FADDP, FMAX/FMIN/FMAXNM/FMINNM and their
+   pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT */
+static int fp_three_same(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1, rm = (w >> 16) & 31,
+             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), i;
+    unsigned kind, arg = hi, pair = 0, absolute = 0;
+    V a[4], b[4], x[4], y[4];
+    if (sz && !q) return 0;
+    switch (op) {
+        case 0x18: /* FMAXNM, FMINNM */
+        case 0x1E: /* FMAX, FMIN; with U, the pairwise FMAXNMP, FMINNMP, FMAXP, FMINP */
+            kind = FP_LANES_MINMAX;
+            pair = u;
+            break;
+        case 0x1A: /* FADDP (FADD is fast_simd's, FABD stays in snx_simd) */
+            if (!u || hi) return 0;
+            kind = FP_LANES_ADD;
+            pair = 1;
+            break;
+        case 0x1C:
+            if (!u && hi) return 0;
+            kind = FP_LANES_COMPARE;
+            arg = !u ? SNX_JIT_CMP_EQ : hi ? SNX_JIT_CMP_GT : SNX_JIT_CMP_GE;
+            break;
+        case 0x1D: /* FACGE, FACGT: the comparison of the magnitudes */
+            if (!u) return 0;
+            kind = FP_LANES_COMPARE;
+            arg = hi ? SNX_JIT_CMP_GT : SNX_JIT_CMP_GE;
+            absolute = 1;
+            break;
+        default: return 0;
+    }
+    read_lanes(j, rn, s, n, a);
+    read_lanes(j, rm, s, n, b);
+    for (i = 0; i < n; ++i) {
+        if (pair) { /* lanes 0..n/2-1 from pairs of Vn, the rest from pairs of Vm */
+            const V* from = i < n / 2 ? a : b;
+            unsigned k = i < n / 2 ? 2 * i : 2 * (i - n / 2);
+            x[i] = from[k];
+            y[i] = from[k + 1];
+        } else {
+            x[i] = a[i];
+            y[i] = b[i];
+        }
+        if (absolute) {
+            x[i] = jit_val(j, AND(x[i], klane(j, s, sz ? ~((SnxU64)1 << 63) : 0x7FFFFFFFUL)));
+            y[i] = jit_val(j, AND(y[i], klane(j, s, sz ? ~((SnxU64)1 << 63) : 0x7FFFFFFFUL)));
+        }
+    }
+    fp_lanes(j, kind, arg, op == 0x18, s, n, x, y, rd, q);
+    return 1;
+}
+
+/* FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector): simd_2misc's fcmpmask against +0 */
+static int fp_compare_zero(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31,
+             rd = w & 31, sz = size & 1, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), cmp, i;
+    V a[4], zero[4];
+    if (op < 0x0C || op > 0x0E || !(size >> 1) || (sz && !q)) return 0;
+    if (op == 0x0C)
+        cmp = u ? SNX_JIT_CMP_GE : SNX_JIT_CMP_GT;
+    else if (op == 0x0D)
+        cmp = u ? SNX_JIT_CMP_LE : SNX_JIT_CMP_EQ;
+    else if (!u)
+        cmp = SNX_JIT_CMP_LT;
+    else
+        return 0;
+    read_lanes(j, rn, s, n, a);
+    for (i = 0; i < n; ++i) zero[i] = klane(j, s, 0);
+    fp_lanes(j, FP_LANES_COMPARE, cmp, 0, s, n, a, zero, rd, q);
+    return 1;
+}
+
 int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
     if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL) return ld1_multiple(j, w);
     if ((w & 0xBF000000UL) == 0x0D000000UL) return ld1_single(j, w);
-    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(j, w);
-    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(j, w) || fp_sign_misc(j, w);
+    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(j, w) || fp_three_same(j, w);
+    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(j, w) || fp_sign_misc(j, w) || fp_compare_zero(j, w);
     if ((w & 0x9FF80400UL) == 0x0F000400UL) return modified_immediate(j, w);
     if ((w & 0x9F800400UL) == 0x0F000400UL) return shift_immediate(j, w);
     if ((w & 0xBF208C00UL) == 0x0E000800UL) return permute(j, w);

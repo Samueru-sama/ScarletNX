@@ -32,6 +32,7 @@ typedef StepFn* (*TableFn)(void);
 
 #define MEMORY_SIZE 0x220000u
 #define PC_BASE     0x100000u
+#define DIRECTED    22u /* words directed() makes per round */
 
 static u64 seed = 0x9E3779B97F4A7C15ull;
 static u64 next_random(void) {
@@ -155,7 +156,7 @@ static void random_state(CPU* c, unsigned char* memory, const Word* w) {
     {
         /* the instruction's own FP operands (Rn, Rm, Ra) now and then: Rm or Ra a copy of Rn or its negation lane
            by lane, for sums that cancel exactly; a register of zeros of random signs, so every lane's product has a
-           zero operand; and a vector whose lanes need different checks: 1*1 is exact, and 0x3F800001 * 0x01800001
+           zero operand, or two, for FMAX/FMIN's +0/-0 ties; and a vector whose lanes need different checks: 1*1 is exact, and 0x3F800001 * 0x01800001
            is inexact with an FMA residual that underflows to zero */
         static const u64 negations[] = {0, 0x8000000080000000ull, 0x8000000000000000ull};
         unsigned rn = (w->word >> 5) & 31, rm = (w->word >> 16) & 31, ra = (w->word >> 10) & 31;
@@ -172,6 +173,11 @@ static void random_state(CPU* c, unsigned char* memory, const Word* w) {
             V128* zero = &c->v[(r >> 32) % 2 ? rm : rn];
             zero->d[0] = next_random() & 0x8000000080000000ull;
             zero->d[1] = next_random() & 0x8000000080000000ull;
+            if ((r >> 34) % 2) {
+                zero = &c->v[(r >> 32) % 2 ? rn : rm];
+                zero->d[0] = next_random() & 0x8000000080000000ull;
+                zero->d[1] = next_random() & 0x8000000080000000ull;
+            }
         }
         if ((r >> 40) % 24 == 0) {
             c->v[rn].d[0] = c->v[rn].d[1] = 0x3F8000013F800000ull;
@@ -293,20 +299,21 @@ static size_t generate(const SnxA64Pattern* p, size_t index, size_t want, Word* 
 /* snx_a64_fast_simd's encodings, which random fields rarely produce: 3-same logical/FP/ADD, FP by element, DUP/INS/
    UMOV, MOVI #0 and MOV (ORR Vd,Vn,Vn), with random operands */
 static size_t directed(const char* match, size_t want, Word* out) {
-    static const SnxU32 same_ops[] = {3, 0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1F}, element_ops[] = {1, 5, 9},
-                        copy_ops[] = {0, 1, 3, 7};
+    static const SnxU32 same_ops[] = {3, 0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F},
+                        element_ops[] = {1, 5, 9}, copy_ops[] = {0, 1, 3, 7}, fp_ops[] = {0x18, 0x1A, 0x1C, 0x1D, 0x1E};
+    const size_t nsame = sizeof(same_ops) / sizeof(same_ops[0]);
     size_t got = 0, i;
     if (match && strncmp("SIMD", match, strlen(match) < 4 ? strlen(match) : 4)) return 0;
     for (i = 0; i < want; ++i) {
-        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[20];
+        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[DIRECTED];
         unsigned k;
         words[0] = 0x2F00E400UL | (r & 31) | ((r >> 9) & 1) << 30;
         words[1] = 0x0EA01C00UL | ((r >> 10) & 1) << 30 | n << 16 | n << 5 | (r & 31);
-        words[2] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % 7] << 11;
+        words[2] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % nsame] << 11;
         words[3] = ((r & ~0x9F00F400UL) | (next_random() % 2 ? 0x5F000000UL : 0x0F000000UL) | 0x00800000UL) |
                    element_ops[next_random() % 3] << 12;
         words[4] = ((r & ~0x9FE0FC00UL) | 0x0E000400UL) | copy_ops[next_random() % 4] << 11;
-        words[5] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % 7] << 11 | 0x40000000UL;
+        words[5] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % nsame] << 11 | 0x40000000UL;
         /* snx_ir_more_simd: LD1/ST1 (1-4 registers), LD1R and lanes, CNT/NOT/RBIT, PMULL 1Q, MOVI family, UZP/TRN/ZIP,
            EXT, AES */
         words[6] = (r & 0x40C0001FUL) | 0x0C000000UL | (SnxU32)(next_random() % 2) << 23 |
@@ -329,7 +336,11 @@ static size_t directed(const char* match, size_t want, Word* out) {
             (r & 0x40DF07FFUL) | 0x0E200400UL | (SnxU32)(next_random() % 6) << 11 | (SnxU32)(next_random() % 2) << 29;
         words[18] = (r & 0x40DF03FFUL) | 0x2E201C00UL | (1u + (SnxU32)(next_random() % 3)) << 22;
         words[19] = (r & 0x40DF03FFUL) | 0x2E605800UL; /* RBIT */
-        for (k = 0; k < 20; ++k) {
+        /* FP three-same beyond fast_simd (FADDP, FMAX/FMIN and NM, pairwise, FCMEQ/GE/GT, FACGE/GT) and the FP
+           compares against #0.0 (2-reg misc 0x0C-0x0E), with random Q, U and sz */
+        words[20] = (r & 0x60DF03FFUL) | 0x0E200400UL | fp_ops[next_random() % 5] << 11;
+        words[21] = (r & 0x604003FFUL) | 0x0EA00800UL | (0x0Cu + (SnxU32)(next_random() % 3)) << 12;
+        for (k = 0; k < DIRECTED; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
             if (c->kind != SNX_FLOW_PLAIN) continue;
             out[got].word = words[k];
@@ -447,7 +458,7 @@ int main(int argc, char** argv) {
             count += generate(p, k, want, words + count);
         }
     }
-    words = (Word*)snx_realloc(words, (count + 20 * per_simd) * sizeof(*words));
+    words = (Word*)snx_realloc(words, (count + DIRECTED * per_simd) * sizeof(*words));
     count += directed(match, per_simd, words + count);
     if (!count) return snx_error("no words to test");
     dir = snx_temp_dir(NULL);

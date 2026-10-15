@@ -148,6 +148,23 @@ void ir_fp_fast(SnxIr* ir, unsigned op, unsigned width, unsigned lanes, LLVMValu
 LLVMBasicBlockRef ir_fp_branch(SnxIr* ir, LLVMValueRef ok, LLVMBasicBlockRef* slow);
 void ir_fp_else(SnxIr* ir, LLVMBasicBlockRef join, LLVMBasicBlockRef slow, LLVMValueRef inexact);
 void ir_fp_join(SnxIr* ir, LLVMBasicBlockRef join);
+/* FMAX/FMIN (and the NM forms, which differ only for NaNs) with no NaN operand in any lane, and no denormal one
+   when FPCR.FZ is set (flushing it sets IDC): FPMax/FPMin then return the larger or smaller operand unchanged, and
+   for equal operands their bitwise AND (max: +0 beats -0) or OR (min: -0 beats +0), raising nothing. inexact is
+   false */
+void ir_fp_minmax_fast(SnxIr* ir, unsigned width, unsigned lanes, LLVMValueRef a, LLVMValueRef b, unsigned minimum,
+                       SnxFpFast* out);
+/* snx_fp_minmax(c, a, b, width, minimum, numeric) */
+LLVMValueRef ir_fp_minmax(SnxIr* ir, LLVMValueRef a, LLVMValueRef b, unsigned width, unsigned minimum,
+                          unsigned numeric);
+/* the AdvSIMD compares' lane masks (simd.c's fcmpmask): a == b, a >= b, a > b, a <= b, a < b */
+enum { SNX_IR_CMP_EQ, SNX_IR_CMP_GE, SNX_IR_CMP_GT, SNX_IR_CMP_LE, SNX_IR_CMP_LT };
+/* all ones where the comparison holds, under the minmax guard: without a NaN no FPSR bit changes (only NaNs raise
+   IOC, quiet ones for every predicate but EQ), and the host's ordered comparison is FPCompare's */
+void ir_fp_compare_fast(SnxIr* ir, unsigned cmp, unsigned width, unsigned lanes, LLVMValueRef a, LLVMValueRef b,
+                        SnxFpFast* out);
+/* one lane through snx_fp_compare, signalling for all but EQ: all ones (iN) or zero */
+LLVMValueRef ir_fp_compare_mask(SnxIr* ir, unsigned cmp, LLVMValueRef a, LLVMValueRef b, unsigned width);
 
 /* ---- building blocks (ir.c) ---- */
 LLVMValueRef ir_i8(SnxIr* ir, unsigned v);
