@@ -22,7 +22,7 @@ float g_opt_resf = 1.0f;
 int g_opt_shadows = 1;
 int g_opt_prof = 0;
 int g_opt_network = 0;
-int g_opt_cpu_fallback = CPU_FALLBACK_INTERP;
+int g_opt_cpu_fallback = CPU_FALLBACK_JIT;
 int g_opt_jit_threads;
 /* legacy (spanish) key names -> current ones */
 static const char* const INI_ALIAS[][2] = {{"modo_tv", "docked"},  {"idioma", "language"}, {"resolucion", "resolution"},
@@ -147,8 +147,9 @@ static void ini_apply(const char* k, const char* v) {
         g_opt_prof = atoi(v);
     else if (!strcmp(k, "network"))
         g_opt_network = atoi(v);
-    else if (!strcmp(k, "cpu_fallback")) /* the miss path is chosen before any guest thread runs (runtime/guest_jit.c) */
-        g_opt_cpu_fallback = !strcmp(v, "jit") ? CPU_FALLBACK_JIT : CPU_FALLBACK_INTERP;
+    /* the miss path is chosen before any guest thread runs (runtime/guest_jit.c) */
+    else if (!strcmp(k, "cpu_fallback"))
+        g_opt_cpu_fallback = !strcmp(v, "interp") ? CPU_FALLBACK_INTERP : CPU_FALLBACK_JIT;
     else if (!strcmp(k, "jit_threads")) /* the compile threads start with the JIT */
         g_opt_jit_threads = atoi(v) > 0 ? atoi(v) : 0;
     else if (!strcmp(k, "memory_gb")) {
@@ -184,8 +185,8 @@ static const IniOpt INI_PERF[] = {
      "1 = 60 FPS (the speed of a Switch), 0 = unlimited (the game runs faster). Values under 60 are treated as 60: the game advances one step per image, so 30 meant half speed. F4 changes it in game"},
     {"memory_gb", "0",
      "Memory the game sees: 0 or 4 = 3.2 GB like the console, 6 or 8 = more (like yuzu's extended memory layout).\n;   Games that run out of memory on 3.2 GB, like Tears of the Kingdom, need 6"},
-    {"cpu_fallback", "interp",
-     "Game code the recompiler missed: interp = the interpreter, jit = compiled when it first runs (experimental).\n;   Applies when the game starts"},
+    {"cpu_fallback", "jit",
+     "Game code the recompiler missed: jit = compiled in the background, the interpreter running it until then,\n;   interp = the interpreter only. Where the JIT can't start (Windows for now) the interpreter runs it.\n;   Applies when the game starts"},
     {"jit_threads", "0",
      "Threads compiling for cpu_fallback=jit: 0 = every CPU the game may use but two (at most 8). They yield to the game.\n;   Applies when the game starts"},
     {NULL, NULL, NULL}};

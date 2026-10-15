@@ -94,9 +94,10 @@ Normal builds link the driver into the runtime; `SNX_TOOLS_ONLY` builds the same
 Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lookup` dispatches indirect branches
 through `CPU.disp` (relaxed loads: slots go from NULL to a function while threads run), and a pc without a function
 goes to `RtAPI.miss`. `CPU.rt` supplies `RtAPI` callbacks: SVC, UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE, poll,
-miss; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the module's interpreter, or with
-`cpu_fallback=jit` the runtime JIT's code (`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`)
-once it has some. A miss never waits for a compile: the pc is queued and the interpreter runs it meanwhile. Compile
+miss; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the runtime JIT's code once it has some
+(`cpu_fallback=jit`, the default: `src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`),
+and the module's interpreter until then. With `cpu_fallback=interp`, or where the JIT can't start, the interpreter
+runs it always. A miss never waits for a compile: the pc is queued and the interpreter runs it meanwhile. Compile
 threads (host threads, not guest threads) take the queued pcs in batches: the functions at them and their callees
 found by `snx_codegen_discover`, emitted by the LLVM backend into one module, loaded into a code arena with a copy of
 `rtlib.c` (`code_loader.c`, packed into shared memory mapped once executable and once writable) and published into

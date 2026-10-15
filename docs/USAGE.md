@@ -227,7 +227,7 @@ Fullscreen startup is controlled by `-f`/`--fullscreen`, not the INI; omit it fo
 | `shadows=0` | Skip shadow maps |
 | `language=1` | English (US); other IDs in INI |
 | `network=1` | Online through the computer's connection (bsd, sfdnsres, nifm); `0` offline, loopback only |
-| `cpu_fallback=interp` | Game code the recompiler missed runs in the interpreter. With `jit` it is compiled in the background and runs in the interpreter until then, and what earlier runs missed is compiled from the start (experimental, Linux) |
+| `cpu_fallback=jit` | Game code the recompiler missed is compiled in the background and runs in the interpreter until then, and what earlier runs missed is compiled from the start. `interp` keeps it in the interpreter. Where the JIT can't start (Windows for now) the interpreter runs it |
 | `jit_threads=0` | Threads compiling for `cpu_fallback=jit`; `0` uses every CPU the game may run on but two, at most 8. They run below the game's threads |
 | `log=2` | Verbose, adds runtime overhead |
 
