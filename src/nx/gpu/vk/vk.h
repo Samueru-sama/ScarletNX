@@ -392,9 +392,14 @@ VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 locati
 
 /* compute.c */
 void vk_dispatch(GpuChannel* ch, const u32* q, u64 code);
-void vk_compute_land(void);                      /* pending compute results into guest memory, now */
-void vk_compute_before_write(u64 gva, u64 size); /* gpu.c's g_gpu_before_write */
-void vk_compute_mem_need(u64 a, u64 n);          /* a read of [a, a + n): land results there first */
+void vk_compute_land(void);
+/* the compute results so far, submitted and put aside to land later: the batch to wait for (0: none pending) */
+u64 vk_compute_put_aside(void);
+void vk_compute_wait(u64 value); /* until the compute batch is done (any thread, without vk_lock) */
+void vk_compute_land_through(u64 value);
+    /* the batches up to it, done, land (vk_lock) */ /* pending compute results into guest memory, now */
+void vk_compute_before_write(u64 gva, u64 size);     /* gpu.c's g_gpu_before_write */
+void vk_compute_mem_need(u64 a, u64 n);              /* a read of [a, a + n): land results there first */
 /* a pending compute result covering [gva, gva + len): the arena buffer and offset to read it from on the GPU */
 int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */

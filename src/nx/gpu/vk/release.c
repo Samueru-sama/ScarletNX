@@ -7,8 +7,8 @@
    GPU thread goes on recording. The release thread waits for that submit on the GPU, lands its results and performs
    the releases it gates, in order. Whoever needs a queued release sooner (a stream that reads the semaphore, or writes
    over it) performs it itself.
-   Results the release still lands at once: storage images and the compute queue's (vk_gfx_image_land,
-   vk_compute_land). */
+   The compute queue's results are waited for the same way (its batches, put aside, land in order). Storage images
+   still land at the release (vk_gfx_image_land). */
 #include <string.h>
 #include "gpu/gpu.h"
 #include "gpu/vk/vk.h"
@@ -17,8 +17,9 @@
 #include "runtime/platform/plat.h"
 
 typedef struct {
-    u64 gate; /* the submit whose completion it waits for */
-    u64 gva;  /* the payload's address, or 0 for a syncpoint increment */
+    u64 gate;  /* the graphics submit whose completion it waits for */
+    u64 cgate; /* and the compute batch, 0 for none */
+    u64 gva;   /* the payload's address, or 0 for a syncpoint increment */
     u32 id, len;
     u8 data[16];
 } Release;
@@ -41,14 +42,16 @@ static void perform(const Release* r) {
         syncpt_incr(r->id);
     t_performing = 0;
 }
-/* lands the results of every submit up to gate (it has finished) and performs the releases it gates, in order */
-static void release_through(u64 gate) {
+/* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
+   releases they gate, in order */
+static void release_through(u64 gate, u64 cgate) {
     vk_lock();
+    vk_compute_land_through(cgate);
     vk_land_through(gate);
     for (;;) {
         Release r;
         pm_lock(&g_rlock);
-        if (g_rtail == g_rhead || g_rq[g_rtail % RQ_N].gate > gate) {
+        if (g_rtail == g_rhead || g_rq[g_rtail % RQ_N].gate > gate || g_rq[g_rtail % RQ_N].cgate > cgate) {
             pm_unlock(&g_rlock);
             break;
         }
@@ -64,13 +67,15 @@ static void release_through(u64 gate) {
 static void release_thread(void* p) {
     (void)p;
     for (;;) {
-        u64 gate;
+        u64 gate, cgate;
         pm_lock(&g_rlock);
         while (g_rtail == g_rhead) pc_wait(&g_rcv, &g_rlock, -1);
         gate = g_rq[g_rtail % RQ_N].gate;
+        cgate = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         vk_wait_submit(gate);
-        release_through(gate);
+        vk_compute_wait(cgate);
+        release_through(gate, cgate);
     }
 }
 
@@ -79,11 +84,11 @@ static void release(Release* r) {
     int queued;
     vk_lock();
     vk_gfx_image_land();
-    vk_compute_land();
+    r->cgate = vk_compute_put_aside();
     pm_lock(&g_rlock);
     queued = g_rtail != g_rhead;
     pm_unlock(&g_rlock);
-    if (!vk_buf_pending_any() && !queued) {
+    if (!vk_buf_pending_any() && !r->cgate && !queued) {
         vk_unlock();
         perform(r);
         return;
@@ -93,10 +98,11 @@ static void release(Release* r) {
     r->gate = vk_last_submit();
     pm_lock(&g_rlock);
     if (g_rhead - g_rtail == RQ_N) { /* full: the oldest goes now */
-        u64 oldest = g_rq[g_rtail % RQ_N].gate;
+        u64 oldest = g_rq[g_rtail % RQ_N].gate, coldest = g_rq[g_rtail % RQ_N].cgate;
         pm_unlock(&g_rlock);
         vk_wait_submit(oldest);
-        release_through(oldest);
+        vk_compute_wait(coldest);
+        release_through(oldest, coldest);
         pm_lock(&g_rlock);
     }
     g_rq[g_rhead % RQ_N] = *r;
@@ -129,7 +135,7 @@ void vk_release_incr(u32 id) {
 }
 /* the stream reads or writes [gva, gva + len): the queued releases up to the last one written there happen first */
 void vk_release_need(u64 gva, u64 len) {
-    u64 gate = 0, i;
+    u64 gate = 0, cgate = 0, i;
     int found = 0;
     if (t_performing) return;
     pm_lock(&g_rlock);
@@ -137,13 +143,15 @@ void vk_release_need(u64 gva, u64 len) {
         const Release* r = &g_rq[i % RQ_N];
         if (r->gva && r->gva < gva + len && gva < r->gva + r->len) {
             gate = r->gate;
+            cgate = r->cgate;
             found = 1;
         }
     }
     pm_unlock(&g_rlock);
     if (!found) return;
     vk_wait_submit(gate);
-    release_through(gate);
+    vk_compute_wait(cgate);
+    release_through(gate, cgate);
 }
 u32 vk_release_queued(u32 id) {
     u32 n;
