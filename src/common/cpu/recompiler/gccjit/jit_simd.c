@@ -302,22 +302,24 @@ static int ld1_multiple(SnxJit* j, SnxU32 w) {
     return 1;
 }
 
-/* LD1R and LD1/ST1 of one lane (one register) */
+/* LD1R-LD4R and LD1-4/ST1-4 of one lane: sel consecutive elements, one per register (Vt..Vt+sel-1, wrapping),
+   accessed one at a time in simd_ldst's order */
 static int ld1_single(SnxJit* j, SnxU32 w) {
     unsigned q = (w >> 30) & 1, l = (w >> 22) & 1, post = (w >> 23) & 1, rm = (w >> 16) & 31, rn = (w >> 5) & 31,
              rt = w & 31, r = (w >> 21) & 1, op = (w >> 13) & 7, s = (w >> 12) & 1, size = (w >> 10) & 3;
-    unsigned sc = op >> 1, esz, idx, i, n, bytes;
+    unsigned sc = op >> 1, sel = (((op & 1) << 1) | r) + 1, esz, idx, i, n, bytes, k;
     V address;
-    if ((op & 1) || r) return 0; /* LD2-4 and friends */
     address = jit_x(j, rn);
-    if (sc == 3) { /* LD1R: the element in every lane, the rest zero */
+    if (sc == 3) { /* LDnR: each element in every lane of its register, the rest zero */
         V value, lanes[16];
         if (!l || s) return 0;
         n = (q ? 128u : 64u) >> (3 + size);
-        value = jit_rd(j, address, 8u << size);
-        for (i = 0; i < n; ++i) lanes[i] = value;
-        write_q(j, rt, size, n, lanes, q);
-        bytes = 1u << size;
+        for (k = 0; k < sel; ++k) {
+            value = jit_val(j, jit_rd(j, ADD(address, K64((SnxU64)k << size)), 8u << size));
+            for (i = 0; i < n; ++i) lanes[i] = value;
+            write_q(j, (rt + k) & 31, size, n, lanes, q);
+        }
+        bytes = sel << size;
     } else {
         if (sc == 0) {
             esz = 0;
@@ -337,11 +339,14 @@ static int ld1_single(SnxJit* j, SnxU32 w) {
                 idx = (q << 1) | s;
             }
         }
-        if (l)
-            jit_set_ve(j, rt, esz, idx, jit_rd(j, address, 8u << esz));
-        else
-            jit_wr(j, address, 8u << esz, jit_ve(j, rt, esz, idx));
-        bytes = 1u << esz;
+        for (k = 0; k < sel; ++k) {
+            V a = ADD(address, K64((SnxU64)k << esz));
+            if (l)
+                jit_set_ve(j, (rt + k) & 31, esz, idx, jit_rd(j, a, 8u << esz));
+            else
+                jit_wr(j, a, 8u << esz, jit_ve(j, (rt + k) & 31, esz, idx));
+        }
+        bytes = sel << esz;
     }
     if (post) jit_set_x(j, rn, ADD(address, rm == 31 ? K64(bytes) : jit_x(j, rm)));
     return 1;
@@ -524,6 +529,153 @@ static V compare(SnxJit* j, enum gcc_jit_comparison op, unsigned u, unsigned eb,
     return u ? jit_cmp(j, op, a, b) : jit_cmp(j, op, as_signed(j, a, eb), as_signed(j, b, eb));
 }
 
+/* ---- integer lanes (ir_simd.c's vector forms, a lane at a time): the helpers' sx/zx arithmetic in a wider type
+   where it needs the room, unsigned wherever it may wrap ---- */
+
+static SnxU64 int_min(unsigned eb) { return (SnxU64)1 << (eb - 1); }
+static SnxU64 int_max(unsigned eb) { return int_min(eb) - 1; }
+static SnxU64 uint_max(unsigned eb) { return eb == 64 ? ~(SnxU64)0 : ((SnxU64)1 << eb) - 1; }
+/* x, a lane of eb bits, zero- or sign-extended (or truncated) to an unsigned of bits */
+static V ext(SnxJit* j, V x, unsigned eb, unsigned u, unsigned bits) {
+    V v = u ? jit_cast(j, x, jit_uint(j, eb)) : jit_cast(j, as_signed(j, x, eb), jit_sint(j, bits));
+    return jit_cast(j, v, jit_uint(j, bits));
+}
+/* QC's condition so far, or'ed with c */
+static V any_of(SnxJit* j, V so_far, V c) { return so_far ? jit_lor(j, so_far, c) : c; }
+/* a scalar result, zero-extended: the rest of Vd is zero */
+static void write_scalar(SnxJit* j, unsigned rd, V value) {
+    jit_set_vd(j, rd, 0, jit_val(j, jit_cast(j, value, j->t_u64)));
+    zero_high(j, rd);
+}
+/* the narrowing forms' m lanes: Vd's low half with the upper half zero, or (the "2" forms) its upper half with the
+   low half kept (simd_2misc's and simd_shimm's o = Q ? d : r) */
+static void write_narrow(SnxJit* j, unsigned rd, unsigned size, unsigned m, V const* values, unsigned upper) {
+    unsigned i;
+    if (!upper)
+        write_q(j, rd, size, m, values, 0);
+    else
+        for (i = 0; i < m; ++i) jit_set_ve(j, rd, size, m + i, values[i]);
+}
+/* x, a lane of 2*eb bits, clamped to eb bits: signed to signed (ssat), signed to unsigned (usat) or unsigned to
+   unsigned (UQXTN); *saturated or'ed with whether it changed */
+static V saturate_lane(SnxJit* j, V x, unsigned eb, unsigned from_signed, unsigned to_signed, V* saturated) {
+    unsigned wb = 2 * eb;
+    V over, r;
+    if (from_signed) {
+        T s = jit_sint(j, wb);
+        V v = jit_val(j, as_signed(j, x, wb)), hi = jit_k(j, s, to_signed ? int_max(eb) : uint_max(eb)), under;
+        /* INT_MIN cast up, so it sign-extends into 128 bits too (jit_k zero-extends a 128-bit constant) */
+        V lo = to_signed ? jit_cast(j, jit_k(j, jit_sint(j, eb), int_min(eb)), s) : jit_k(j, s, 0);
+        over = jit_val(j, GT(v, hi));
+        under = jit_val(j, LT(v, lo));
+        r = jit_sel(j, over, hi, jit_sel(j, under, lo, v));
+        over = jit_lor(j, over, under);
+    } else {
+        V v = jit_val(j, jit_cast(j, x, jit_uint(j, wb))), hi = jit_k(j, jit_uint(j, wb), uint_max(eb));
+        over = jit_val(j, GT(v, hi));
+        r = jit_sel(j, over, hi, v);
+    }
+    *saturated = any_of(j, *saturated, over);
+    return jit_val(j, jit_cast(j, r, jit_uint(j, eb)));
+}
+/* a == b == INT_MIN, the one product that overflows the doubling multiplies */
+static V both_min(SnxJit* j, V a, V b, unsigned eb) {
+    V min = jit_k(j, jit_uint(j, eb), int_min(eb));
+    return jit_val(j, jit_land(j, EQ(jit_cast(j, a, jit_uint(j, eb)), min), EQ(jit_cast(j, b, jit_uint(j, eb)), min)));
+}
+/* SQDMULL and the doubling in SQDMLAL/SQDMLSL: 2*a*b in twice the width, INT_MIN * INT_MIN saturating */
+static V doubling_long(SnxJit* j, V a, V b, unsigned eb, V* saturated) {
+    T wide = jit_uint(j, 2 * eb);
+    V p = SHL(MUL(ext(j, a, eb, 0, 2 * eb), ext(j, b, eb, 0, 2 * eb)), jit_k(j, wide, 1)), both = both_min(j, a, b, eb);
+    *saturated = any_of(j, *saturated, both);
+    return jit_val(j, jit_sel(j, both, jit_k(j, wide, int_max(2 * eb)), p));
+}
+/* SQDMULH, SQRDMULH: the high half of 2*a*b (plus 1<<(eb-1) rounding) in twice the width, INT_MIN * INT_MIN
+   saturating */
+static V doubling_high(SnxJit* j, V a, V b, unsigned eb, unsigned round, V* saturated) {
+    unsigned wb = 2 * eb;
+    T wide = jit_uint(j, wb);
+    V p = SHL(MUL(ext(j, a, eb, 0, wb), ext(j, b, eb, 0, wb)), jit_k(j, wide, 1)), both = both_min(j, a, b, eb);
+    if (round) p = ADD(p, jit_k(j, wide, int_min(eb)));
+    p = jit_cast(j, asr(j, p, wb, eb), jit_uint(j, eb));
+    *saturated = any_of(j, *saturated, both);
+    return jit_val(j, jit_sel(j, both, jit_k(j, jit_uint(j, eb), int_max(eb)), p));
+}
+/* PMUL, PMULL (bytes): the carry-less product of byte lanes a and b, 16 bits wide */
+static V poly_multiply(SnxJit* j, V a, V b) {
+    V x = jit_val(j, jit_cast(j, a, j->t_u16)), y = jit_val(j, jit_cast(j, b, j->t_u16)), p = jit_k(j, j->t_u16, 0);
+    unsigned k;
+    for (k = 0; k < 8; ++k)
+        p = XOR(p, AND(SUB(jit_k(j, j->t_u16, 0), AND(SHR(x, jit_k(j, j->t_u16, k)), jit_k(j, j->t_u16, 1))),
+                       SHL(y, jit_k(j, j->t_u16, k))));
+    return jit_val(j, p);
+}
+
+/* the long forms on narrow lanes a, b by three-different's opcode (ir_simd.c's long_op): [SU]ADDL 0, [SU]SUBL 2,
+   [SU]ABAL 5, [SU]ABDL 7, [SU]MLAL 8, SQDMLAL 9, [SU]MLSL 10, SQDMLSL 11, [SU]MULL 12, SQDMULL 13; z the accumulator */
+static V long_lane(SnxJit* j, unsigned op, unsigned u, unsigned eb, V a, V b, V z, V* saturated) {
+    unsigned wb = 2 * eb;
+    V x, y, r;
+    if (op == 9 || op == 11 || op == 13) {
+        V added = NULL;
+        r = doubling_long(j, a, b, eb, saturated);
+        if (op == 13) return r;
+        r = saturating(j, 0, op == 11, wb, z, r, &added);
+        *saturated = any_of(j, *saturated, added);
+        return r;
+    }
+    x = ext(j, a, eb, u, wb);
+    y = ext(j, b, eb, u, wb);
+    switch (op) {
+        case 0: r = ADD(x, y); break;
+        case 2: r = SUB(x, y); break;
+        case 5:
+        case 7:
+            r = jit_sel(j, compare(j, GCC_JIT_COMPARISON_GT, u, eb, a, b), SUB(x, y), SUB(y, x));
+            if (op == 5) r = ADD(jit_cast(j, z, jit_uint(j, wb)), r);
+            break;
+        case 8: r = ADD(jit_cast(j, z, jit_uint(j, wb)), MUL(x, y)); break;
+        case 10: r = SUB(jit_cast(j, z, jit_uint(j, wb)), MUL(x, y)); break;
+        default: r = MUL(x, y); break;
+    }
+    return jit_val(j, jit_cast(j, r, jit_uint(j, wb)));
+}
+/* the register shifts (SSHL, USHL, SRSHL, URSHL, SQSHL, UQSHL, SQRSHL, UQRSHL): vshl (helpers/simd.c) on a 64-bit copy
+   of lane a, the shift the signed low byte of lane b. Amounts are clamped below 64 (C's shifts by the width are
+   undefined) and the cases that clamping changes are selected away, as ir_simd.c's register_shift does */
+static V shift_lane(SnxJit* j, V a, V b, unsigned eb, unsigned u, unsigned round, unsigned sat, V* saturated) {
+    T s64 = j->t_s64, lane = jit_uint(j, eb);
+    V x = jit_val(j, ext(j, a, eb, u, 64)), sh = jit_val(j, jit_cast(j, as_signed(j, b, 8), s64));
+    V shu = jit_val(j, jit_cast(j, sh, j->t_u64)), k63 = K64(63), amount, shifted, left, right, negative;
+    amount = jit_val(j, jit_sel(j, GT(shu, k63), k63, shu));
+    shifted = jit_val(j, SHL(x, amount));
+    if (!sat)
+        left = jit_sel(j, GE(sh, jit_k(j, s64, eb)), K64(0), shifted);
+    else {
+        V back = u ? SHR(shifted, amount)
+                   : jit_cast(j, jit_op(j, GCC_JIT_BINARY_OP_RSHIFT, jit_cast(j, shifted, s64), amount), j->t_u64);
+        V fits = jit_land(j, EQ(ext(j, shifted, eb, u, 64), shifted), EQ(back, x)), top;
+        fits = jit_val(j, jit_lor(j, jit_land(j, fits, LT(sh, jit_k(j, s64, eb))), EQ(x, K64(0))));
+        top = u ? K64(uint_max(eb))
+                : jit_sel(j, LT(jit_cast(j, x, s64), jit_k(j, s64, 0)), K64(int_min(eb)), K64(int_max(eb)));
+        left = jit_sel(j, fits, shifted, top);
+        *saturated = any_of(j, *saturated, jit_land(j, GE(sh, jit_k(j, s64, 0)), jit_lnot(j, fits)));
+    }
+    /* right: n = -sh, 1..128; 64 or more leaves the sign (signed) or 0 */
+    negative = jit_val(j, jit_cast(j, SUB(jit_k(j, s64, 0), sh), j->t_u64));
+    amount = jit_val(j, jit_sel(j, GT(negative, k63), k63, negative));
+    if (u)
+        right = jit_sel(j, GT(negative, k63), K64(0), SHR(x, amount));
+    else
+        right = jit_cast(j, jit_op(j, GCC_JIT_BINARY_OP_RSHIFT, jit_cast(j, x, s64), amount), j->t_u64);
+    if (round) { /* + bit n-1, the last shifted out; past a shift of 64 nothing is left */
+        V last = jit_val(j, SUB(negative, K64(1)));
+        last = jit_sel(j, GT(last, k63), k63, last);
+        right = jit_sel(j, GT(negative, K64(64)), K64(0), ADD(right, AND(SHR(x, last), K64(1))));
+    }
+    return jit_val(j, jit_cast(j, jit_sel(j, LT(sh, jit_k(j, s64, 0)), right, left), lane));
+}
+
 /* three-same integer (vector): simd_3same for BSL/BIT/BIF, compares, MIN/MAX, ABD/ABA, MLA/MLS, MUL, pairwise
    ADDP/MAXP/MINP, and the saturating and halving adds */
 static int three_same(SnxJit* j, SnxU32 w) {
@@ -556,6 +708,7 @@ static int three_same(SnxJit* j, SnxU32 w) {
     switch (op) { /* the encodings handled here, before reading anything */
         case 0x00:
         case 0x02:
+        case 0x04:
         case 0x0C:
         case 0x0D:
         case 0x0E:
@@ -565,8 +718,11 @@ static int three_same(SnxJit* j, SnxU32 w) {
         case 0x15:
             if (eb == 64) return 0;
             break;
-        case 0x13:
-            if (eb == 64 || u) return 0; /* PMUL stays in snx_simd */
+        case 0x13: /* MUL, PMUL (bytes) */
+            if (eb == 64 || (u && size)) return 0;
+            break;
+        case 0x16:
+            if (size != 1 && size != 2) return 0;
             break;
         case 0x17:
             if (u) return 0;
@@ -575,6 +731,10 @@ static int three_same(SnxJit* j, SnxU32 w) {
         case 0x05:
         case 0x06:
         case 0x07:
+        case 0x08:
+        case 0x09:
+        case 0x0A:
+        case 0x0B:
         case 0x11: break;
         default: return 0;
     }
@@ -593,6 +753,16 @@ static int three_same(SnxJit* j, SnxU32 w) {
                 sat = sat ? jit_lor(j, sat, lane_sat) : lane_sat;
                 break;
             }
+            case 0x04: /* SHSUB, UHSUB: the difference in twice the width, halved arithmetically */
+                r[i] = asr(j, SUB(ext(j, x, eb, u, 2 * eb), ext(j, y, eb, u, 2 * eb)), 2 * eb, 1);
+                break;
+            case 0x08:
+            case 0x09:
+            case 0x0A:
+            case 0x0B:
+                r[i] = shift_lane(j, x, y, eb, u, op == 0x0A || op == 0x0B, op == 0x09 || op == 0x0B, &sat);
+                break;
+            case 0x16: r[i] = doubling_high(j, x, y, eb, u, &sat); break;
             case 0x06: r[i] = mask_of(j, compare(j, GCC_JIT_COMPARISON_GT, u, eb, x, y), size); break;
             case 0x07: r[i] = mask_of(j, compare(j, GCC_JIT_COMPARISON_GE, u, eb, x, y), size); break;
             case 0x11: r[i] = mask_of(j, u ? EQ(x, y) : NE(AND(x, y), klane(j, size, 0)), size); break;
@@ -607,7 +777,7 @@ static int three_same(SnxJit* j, SnxU32 w) {
                 if (op == 0x0F) r[i] = ADD(z[i], r[i]);
                 break;
             case 0x12: r[i] = u ? SUB(z[i], MUL(x, y)) : ADD(z[i], MUL(x, y)); break;
-            case 0x13: r[i] = MUL(x, y); break;
+            case 0x13: r[i] = u ? poly_multiply(j, x, y) : MUL(x, y); break;
             default: { /* pairwise: lanes 0..n/2-1 from pairs of a, the rest from pairs of b */
                 V* src = i < n / 2 ? a : b;
                 unsigned k = 2 * (i < n / 2 ? i : i - n / 2);
@@ -628,21 +798,50 @@ static int three_same(SnxJit* j, SnxU32 w) {
     return 1;
 }
 
-/* shift by immediate (vector): simd_shimm's SSHR/USHR, SSRA/USRA, SRSHR/URSHR, SRSRA/URSRA, SHL, SLI, SRI,
-   SSHLL/USHLL, SHRN */
-static int shift_immediate(SnxJit* j, SnxU32 w) {
-    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, immh = (w >> 19) & 15, immb = (w >> 16) & 7, op = (w >> 11) & 31,
-             rn = (w >> 5) & 31, rd = w & 31, size = 3, eb, imm, shr, shl, n, i;
-    V a[16], z[16], r[16];
+/* the narrowing shifts right on the wide lanes of Vn, shr 1..eb (ir_simd.c's shift_narrow): SHRN and RSHRN wrap,
+   the saturating ones clamp with QC (and have scalar forms); rounding adds the last bit shifted out */
+static int shift_narrow(SnxJit* j, unsigned q, unsigned u, unsigned op, unsigned size, unsigned shr, unsigned rn,
+                        unsigned rd, unsigned scalar) {
+    unsigned eb = 8u << size, m = scalar ? 1 : 64 / eb, rnd = op & 1, i;
+    V a[8], r[8], sat = NULL;
+    if (scalar && !u && op < 0x12) return 0;
+    read_lanes(j, rn, size + 1, m, a);
+    for (i = 0; i < m; ++i) {
+        V x = a[i], v;
+        if (!u && op < 0x12) { /* SHRN, RSHRN */
+            if (rnd) x = ADD(x, klane(j, size + 1, (SnxU64)1 << (shr - 1)));
+            r[i] = jit_val(j, jit_cast(j, SHR(x, klane(j, size + 1, shr)), lane_type(j, size)));
+            continue;
+        }
+        /* UQSHRN, UQRSHRN (unsigned source); SQSHRN, SQRSHRN, SQSHRUN, SQRSHRUN (signed) */
+        v = u && op >= 0x12 ? SHR(x, klane(j, size + 1, shr)) : asr(j, x, 2 * eb, shr);
+        if (rnd) v = ADD(v, AND(SHR(x, klane(j, size + 1, shr - 1)), klane(j, size + 1, 1)));
+        r[i] = saturate_lane(j, v, eb, !(u && op >= 0x12), !u, &sat);
+    }
+    if (sat) set_qc(j, sat);
+    if (scalar)
+        write_scalar(j, rd, r[0]);
+    else
+        write_narrow(j, rd, size, m, r, q);
+    return 1;
+}
+
+/* shift by immediate: simd_shimm's SSHR/USHR, SSRA/USRA, SRSHR/URSHR, SRSRA/URSRA, SHL, SLI, SRI, SQSHL/UQSHL,
+   SQSHLU, SSHLL/USHLL and the narrowing shifts; scalar, the 64-bit forms and the saturating left shifts of any size */
+static int shift_immediate(SnxJit* j, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, immh = (w >> 19) & 15, immb = (w >> 16) & 7,
+             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, size = 3, eb, imm, shr, shl, n, i;
+    V a[16], z[16], r[16], sat = NULL;
     if (!immh) return 0;
     while (!((immh >> size) & 1)) size--;
     eb = 8u << size;
     imm = (immh << 3) | immb;
     shr = 2 * eb - imm;
     shl = imm - eb;
+    if (op >= 0x10 && op <= 0x13) return size == 3 ? 0 : shift_narrow(j, q, u, op, size, shr, rn, rd, scalar);
     if (op == 0x14) { /* SSHLL, USHLL: the low or high half widened, shifted left */
         unsigned m;
-        if (size == 3) return 0;
+        if (size == 3 || scalar) return 0;
         m = 64 / eb;
         for (i = 0; i < m; ++i) a[i] = jit_ve(j, rn, size, (q ? m : 0) + i);
         for (i = 0; i < m; ++i) {
@@ -653,19 +852,12 @@ static int shift_immediate(SnxJit* j, SnxU32 w) {
         write_lanes(j, rd, size + 1, m, r);
         return 1;
     }
-    if (op == 0x10 && !u) { /* SHRN, SHRN2: the high half keeps Vd's low half */
-        unsigned m;
-        if (size == 3) return 0;
-        m = 64 / eb;
-        read_lanes(j, rn, size + 1, m, a);
-        for (i = 0; i < m; ++i) jit_set_ve(j, rd, size, (q ? m : 0) + i, SHR(a[i], klane(j, size + 1, shr)));
-        if (!q) zero_high(j, rd);
-        return 1;
-    }
-    if (size == 3 && !q) return 0;
-    if ((op == 0x08 && !u) || (op != 0x00 && op != 0x02 && op != 0x04 && op != 0x06 && op != 0x08 && op != 0x0A))
+    if (size == 3 && !q && !scalar) return 0;
+    if (scalar && size != 3 && op != 0x0C && op != 0x0E) return 0;
+    if (((op == 0x08 || op == 0x0C) && !u) ||
+        (op != 0x00 && op != 0x02 && op != 0x04 && op != 0x06 && op != 0x08 && op != 0x0A && op != 0x0C && op != 0x0E))
         return 0;
-    n = (q ? 128u : 64u) / eb;
+    n = scalar ? 1 : (q ? 128u : 64u) / eb;
     read_lanes(j, rn, size, n, a);
     if (op == 0x02 || op == 0x06 || op == 0x08 || (op == 0x0A && u)) read_lanes(j, rd, size, n, z);
     for (i = 0; i < n; ++i) {
@@ -694,6 +886,27 @@ static int shift_immediate(SnxJit* j, SnxU32 w) {
                     v = OR(AND(z[i], klane(j, size, ~m)), SHR(x, klane(j, size, shr)));
                 }
                 break;
+            case 0x0C:   /* SQSHLU: a negative lane gives 0, then as UQSHL */
+            case 0x0E: { /* SQSHL, UQSHL: saturated when shifting back does not give the lane, QC */
+                V shifted = jit_val(j, SHL(x, klane(j, size, shl))), lost, top;
+                if (!u) {
+                    lost = NE(asr(j, shifted, eb, shl), x);
+                    top = jit_sel(j, LT(as_signed(j, x, eb), jit_k(j, jit_sint(j, eb), 0)), klane(j, size, int_min(eb)),
+                                  klane(j, size, int_max(eb)));
+                } else {
+                    lost = NE(SHR(shifted, klane(j, size, shl)), x);
+                    top = klane(j, size, uint_max(eb));
+                }
+                lost = jit_val(j, lost);
+                v = jit_sel(j, lost, top, shifted);
+                if (op == 0x0C) {
+                    V negative = jit_val(j, LT(as_signed(j, x, eb), jit_k(j, jit_sint(j, eb), 0)));
+                    v = jit_sel(j, negative, klane(j, size, 0), v);
+                    lost = jit_lor(j, lost, negative);
+                }
+                sat = any_of(j, sat, lost);
+                break;
+            }
             default:
                 if (!u) /* SHL */
                     v = SHL(x, klane(j, size, shl));
@@ -705,7 +918,11 @@ static int shift_immediate(SnxJit* j, SnxU32 w) {
         }
         r[i] = jit_val(j, jit_cast(j, v, lane_type(j, size)));
     }
-    write_q(j, rd, size, n, r, q);
+    if (sat) set_qc(j, sat);
+    if (scalar)
+        write_scalar(j, rd, r[0]);
+    else
+        write_q(j, rd, size, n, r, q);
     return 1;
 }
 
@@ -954,17 +1171,493 @@ static int fp_fixed(SnxJit* j, SnxU32 w, unsigned scalar) {
     fp_lanes(j, &o, s, n, a, NULL, rd, q);
     return 1;
 }
+
+/* ---- the integer and data-movement rest of snx_simd (ir_simd.c's emitters, a lane at a time) ---- */
+
+/* DUP (element, scalar), the MOV Bd/Hd/Sd/Dd, Vn.T[i] alias: the element alone in Vd */
+static int scalar_dup(SnxJit* j, SnxU32 w) {
+    unsigned imm5 = (w >> 16) & 31, rn = (w >> 5) & 31, rd = w & 31, size = 0;
+    if (!imm5) return 0;
+    while (!((imm5 >> size) & 1)) size++;
+    if (size > 3) return 0;
+    write_scalar(j, rd, jit_ve(j, rn, size, imm5 >> (size + 1)));
+    return 1;
+}
+
+/* SMOV: the element sign-extended into Xd, or Wd zero-extended above it (fast_simd has UMOV) */
+static int smov(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, imm5 = (w >> 16) & 31, imm4 = (w >> 11) & 15, rn = (w >> 5) & 31,
+             rd = w & 31, size = 0;
+    V v;
+    if (u || imm4 != 5 || !imm5) return 0;
+    while (!((imm5 >> size) & 1)) size++;
+    if (size >= 3 || (size == 2 && !q)) return 0;
+    v = ext(j, jit_ve(j, rn, size, imm5 >> (size + 1)), 8u << size, 0, q ? 64 : 32);
+    if (rd != 31) jit_set_x(j, rd, jit_cast(j, v, j->t_u64));
+    return 1;
+}
+
+/* TBL, TBX: bytes of the 1-4 table registers Vn.. (wrapping) by Vm's indexes, from a local copy of the table; an
+   index past it gives 0 (TBL) or keeps Vd's byte (TBX), and reads byte 0 instead (the select evaluates both) */
+static int table_lookup(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, rm = (w >> 16) & 31, len = (w >> 13) & 3, tbx = (w >> 12) & 1, rn = (w >> 5) & 31,
+             rd = w & 31, n = q ? 16 : 8, k, i;
+    /* the table as 64-bit halves, read back a byte at a time through an unsigned char pointer (which may alias) */
+    gcc_jit_lvalue* table = jit_local(j, gcc_jit_context_new_array_type(j->ctx, NULL, j->t_u64, 8));
+    V bytes = gcc_jit_context_new_cast(j->ctx, NULL, gcc_jit_lvalue_get_address(table, NULL),
+                                       gcc_jit_type_get_pointer(j->t_u8));
+    V idx[16], d[16], r[16];
+    for (k = 0; k <= len; ++k)
+        for (i = 0; i < 2; ++i)
+            gcc_jit_block_add_assignment(j->block, NULL,
+                                         gcc_jit_context_new_array_access(j->ctx, NULL, gcc_jit_lvalue_as_rvalue(table),
+                                                                          jit_int(j, (int)(2 * k + i))),
+                                         jit_vd(j, (rn + k) & 31, i));
+    read_lanes(j, rm, 0, n, idx);
+    if (tbx) read_lanes(j, rd, 0, n, d);
+    for (i = 0; i < n; ++i) {
+        V in = jit_val(j, LT(idx[i], klane(j, 0, 16 * (len + 1)))), e;
+        e = gcc_jit_lvalue_as_rvalue(gcc_jit_context_new_array_access(
+            j->ctx, NULL, bytes, jit_cast(j, jit_sel(j, in, idx[i], klane(j, 0, 0)), j->t_int)));
+        r[i] = jit_val(j, jit_sel(j, in, e, tbx ? d[i] : klane(j, 0, 0)));
+    }
+    write_q(j, rd, 0, n, r, q);
+    return 1;
+}
+
+/* LD2-4/ST2-4 (multiple structures): element e of register s is at byte (e*sel + s)*esize. As LD1 here, guest memory
+   moves as 8-byte accesses in address order, each assembled from or split into its elements */
+static int ld_structures(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, l = (w >> 22) & 1, post = (w >> 23) & 1, rm = (w >> 16) & 31, rn = (w >> 5) & 31,
+             rt = w & 31, op = (w >> 12) & 15, size = (w >> 10) & 3, sel, bytes, eby, per, count, m, c;
+    V address, chunk[8], lanes[64];
+    sel = op == 0 ? 4 : op == 4 ? 3 : op == 8 ? 2 : 0;
+    if (!sel || (size == 3 && !q)) return 0;
+    bytes = q ? 16 : 8;
+    eby = 1u << size;
+    per = 8 / eby;             /* elements per 8-byte access */
+    count = sel * bytes / eby; /* elements, in memory order: element m is lane m/sel of register m%sel */
+    address = jit_x(j, rn);
+    if (l) {
+        for (c = 0; c < count / per; ++c) chunk[c] = jit_val(j, jit_rd(j, ADD(address, K64(8 * c)), 64));
+        for (m = 0; m < count; ++m)
+            jit_set_ve(j, (rt + m % sel) & 31, size, m / sel,
+                       jit_cast(j, SHR(chunk[m / per], K64(8 * eby * (m % per))), lane_type(j, size)));
+        if (!q)
+            for (m = 0; m < sel; ++m) zero_high(j, (rt + m) & 31);
+    } else {
+        for (m = 0; m < count; ++m) lanes[m] = jit_ve(j, (rt + m % sel) & 31, size, m / sel);
+        for (c = 0; c < count / per; ++c) {
+            V v = K64(0);
+            for (m = 0; m < per; ++m) v = OR(v, SHL(jit_cast(j, lanes[c * per + m], j->t_u64), K64(8 * eby * m)));
+            jit_wr(j, ADD(address, K64(8 * c)), 64, v);
+        }
+    }
+    if (post) jit_set_x(j, rn, ADD(address, rm == 31 ? K64((SnxU64)sel * bytes) : jit_x(j, rm)));
+    return 1;
+}
+
+/* three-different (vector): simd_3diff's long, wide and narrowing-high forms (ir_simd.c's three_different) */
+static int three_different(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, rm = (w >> 16) & 31, op = (w >> 12) & 15,
+             rn = (w >> 5) & 31, rd = w & 31, eb = 8u << size, m = 64 / eb, off = q ? 64 / eb : 0, i;
+    V a[8], b[8], z[8], r[8], sat = NULL;
+    if (size == 3) return 0;
+    switch (op) {
+        case 4:
+        case 6: /* ADDHN, SUBHN, RADDHN, RSUBHN: the high half of each wide sum or difference */
+            read_lanes(j, rn, size + 1, m, a);
+            read_lanes(j, rm, size + 1, m, b);
+            for (i = 0; i < m; ++i) {
+                V s = op == 4 ? ADD(a[i], b[i]) : SUB(a[i], b[i]);
+                if (u) s = ADD(s, klane(j, size + 1, int_min(eb)));
+                r[i] = jit_val(j, jit_cast(j, SHR(s, klane(j, size + 1, eb)), lane_type(j, size)));
+            }
+            write_narrow(j, rd, size, m, r, q);
+            return 1;
+        case 1:
+        case 3: /* [SU]ADDW, [SU]SUBW: Vn's wide lanes and the half of Vm widened */
+            read_lanes(j, rn, size + 1, m, a);
+            for (i = 0; i < m; ++i) b[i] = jit_ve(j, rm, size, off + i);
+            for (i = 0; i < m; ++i) {
+                V y = ext(j, b[i], eb, u, 2 * eb);
+                r[i] = jit_val(j, jit_cast(j, op == 1 ? ADD(a[i], y) : SUB(a[i], y), lane_type(j, size + 1)));
+            }
+            write_lanes(j, rd, size + 1, m, r);
+            return 1;
+        case 14: /* PMULL (bytes; the 1Q form stays with snx_simd) */
+            if (u || size) return 0;
+            for (i = 0; i < 8; ++i) {
+                a[i] = jit_ve(j, rn, 0, off + i);
+                b[i] = jit_ve(j, rm, 0, off + i);
+            }
+            for (i = 0; i < 8; ++i) r[i] = poly_multiply(j, a[i], b[i]);
+            write_lanes(j, rd, 1, 8, r);
+            return 1;
+        case 9:
+        case 11:
+        case 13:
+            if (u || !size) return 0;
+            break;
+        case 0:
+        case 2:
+        case 5:
+        case 7:
+        case 8:
+        case 10:
+        case 12: break;
+        default: return 0;
+    }
+    for (i = 0; i < m; ++i) {
+        a[i] = jit_ve(j, rn, size, off + i);
+        b[i] = jit_ve(j, rm, size, off + i);
+        z[i] = jit_ve(j, rd, size + 1, i);
+    }
+    for (i = 0; i < m; ++i) r[i] = long_lane(j, op, u, eb, a[i], b[i], z[i], &sat);
+    if (sat) set_qc(j, sat);
+    write_lanes(j, rd, size + 1, m, r);
+    return 1;
+}
+
+/* three-different (scalar): SQDMLAL, SQDMLSL, SQDMULL on lane 0, the rest of Vd zero */
+static int scalar_three_different(SnxJit* j, SnxU32 w) {
+    unsigned u = (w >> 29) & 1, size = (w >> 22) & 3, rm = (w >> 16) & 31, op = (w >> 12) & 15, rn = (w >> 5) & 31,
+             rd = w & 31;
+    V r, sat = NULL;
+    if (u || (op != 9 && op != 11 && op != 13) || (size != 1 && size != 2)) return 0;
+    r = long_lane(j, op, 0, 8u << size, jit_ve(j, rn, size, 0), jit_ve(j, rm, size, 0), jit_ve(j, rd, size + 1, 0),
+                  &sat);
+    if (sat) set_qc(j, sat);
+    write_scalar(j, rd, r);
+    return 1;
+}
+
+/* the leading zeros of x, a lane of eb < 64 bits: a marker bit just below the lane keeps __builtin_clzll's argument
+   nonzero (it is undefined at 0) and makes a zero lane count eb */
+static V lane_clz(SnxJit* j, V x, unsigned eb) {
+    V arg = OR(SHL(jit_cast(j, x, j->t_u64), K64(64 - eb)), K64((SnxU64)1 << (63 - eb)));
+    return jit_call(j, jit_builtin(j, "__builtin_clzll"), 1, &arg);
+}
+
+/* two-register misc, integer: simd_2misc's REV16/32/64, CLS, CLZ, ABS, NEG, SQABS, SQNEG, SUQADD, USQADD, the
+   compares against zero, [SU]ADDLP, [SU]ADALP, XTN, SQXTN, UQXTN, SQXTUN and SHLL, and the scalar forms
+   simd_2misc allows (ir_simd.c's int_misc) */
+static int int_misc(SnxJit* j, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
+             rn = (w >> 5) & 31, rd = w & 31, eb = 8u << size, n = scalar ? 1 : (q ? 128u : 64u) / eb,
+             m = scalar ? 1 : 64 / eb, i, k = (u << 5) | op;
+    V a[16], z[16], r[16], sat = NULL;
+    if (scalar && op != 0x12 && op != 0x14 && size != 3 && op != 0x03 && op != 0x07) return 0;
+    switch (op) {
+        case 0x12:
+        case 0x14:                                            /* XTN (wraps), SQXTUN, SQXTN, UQXTN */
+            if (size == 3 || (scalar && k == 0x12)) return 0; /* XTN has no scalar form */
+            read_lanes(j, rn, size + 1, m, a);
+            for (i = 0; i < m; ++i)
+                r[i] = k == 0x12 ? jit_val(j, jit_cast(j, a[i], lane_type(j, size)))
+                                 : saturate_lane(j, a[i], eb, k != 0x34, k == 0x14, &sat);
+            if (sat) set_qc(j, sat);
+            if (scalar)
+                write_scalar(j, rd, r[0]);
+            else
+                write_narrow(j, rd, size, m, r, q);
+            return 1;
+        case 0x03: /* SUQADD (signed Vd + unsigned Vn), USQADD (unsigned Vd + signed Vn): exact in twice the width */
+            if (size == 3 && !q && !scalar) return 0;
+            read_lanes(j, rn, size, n, a);
+            read_lanes(j, rd, size, n, z);
+            for (i = 0; i < n; ++i)
+                r[i] =
+                    saturate_lane(j, ADD(ext(j, z[i], eb, u, 2 * eb), ext(j, a[i], eb, !u, 2 * eb)), eb, 1, !u, &sat);
+            if (sat) set_qc(j, sat);
+            if (scalar)
+                write_scalar(j, rd, r[0]);
+            else
+                write_q(j, rd, size, n, r, q);
+            return 1;
+        case 0x13: /* SHLL: the half widened, shifted by the element size */
+            if (!u || size == 3 || scalar) return 0;
+            for (i = 0; i < m; ++i) a[i] = jit_ve(j, rn, size, (q ? m : 0) + i);
+            for (i = 0; i < m; ++i)
+                r[i] = jit_val(j, SHL(jit_cast(j, a[i], lane_type(j, size + 1)), klane(j, size + 1, eb)));
+            write_lanes(j, rd, size + 1, m, r);
+            return 1;
+        case 0x02:
+        case 0x06: /* [SU]ADDLP, [SU]ADALP: adjacent pairs summed in twice the width */
+            if (size == 3 || scalar) return 0;
+            read_lanes(j, rn, size, n, a);
+            if (op == 6) read_lanes(j, rd, size + 1, n / 2, z);
+            for (i = 0; i < n / 2; ++i) {
+                V s = ADD(ext(j, a[2 * i], eb, u, 2 * eb), ext(j, a[2 * i + 1], eb, u, 2 * eb));
+                if (op == 6) s = ADD(s, z[i]);
+                r[i] = jit_val(j, jit_cast(j, s, lane_type(j, size + 1)));
+            }
+            write_q(j, rd, size + 1, n / 2, r, q);
+            return 1;
+        default: break;
+    }
+    if (size == 3 && !q && !scalar) return 0;
+    switch (k) { /* the encodings handled here, before reading anything */
+        case 0x00:
+        case 0x20:
+        case 0x01:
+            if (eb >= (op == 1 ? 16u : u ? 32u : 64u) || scalar) return 0;
+            break;
+        case 0x04:
+        case 0x24:
+            if (size == 3) return 0;
+            break;
+        case 0x07:
+        case 0x27:
+        case 0x08:
+        case 0x28:
+        case 0x09:
+        case 0x29:
+        case 0x0A:
+        case 0x0B:
+        case 0x2B: break;
+        default: return 0;
+    }
+    read_lanes(j, rn, size, n, a);
+    for (i = 0; i < n; ++i) {
+        V x = a[i], s = as_signed(j, x, eb), zero = jit_k(j, jit_sint(j, eb), 0), negated = SUB(klane(j, size, 0), x),
+          v;
+        switch (k) {
+            case 0x00:
+            case 0x20:
+            case 0x01: { /* REV64, REV32, REV16: the elements of each container reversed */
+                unsigned per = (op == 1 ? 16u : u ? 32u : 64u) / eb;
+                v = a[i - i % per + per - 1 - i % per];
+                break;
+            }
+            case 0x04: /* CLS: the leading zeros of x ^ (x >> 1), less one */
+                v = SUB(jit_cast(j, lane_clz(j, XOR(x, asr(j, x, eb, 1)), eb), lane_type(j, size)), klane(j, size, 1));
+                break;
+            case 0x24: v = jit_cast(j, lane_clz(j, x, eb), lane_type(j, size)); break;
+            case 0x07: /* SQABS, SQNEG: INT_MIN saturates to INT_MAX with QC */
+            case 0x27: {
+                V min = jit_val(j, EQ(x, klane(j, size, int_min(eb))));
+                v = k == 0x27 ? negated : jit_sel(j, LT(s, zero), negated, x);
+                v = jit_sel(j, min, klane(j, size, int_max(eb)), v);
+                sat = any_of(j, sat, min);
+                break;
+            }
+            case 0x08: v = mask_of(j, GT(s, zero), size); break;
+            case 0x28: v = mask_of(j, GE(s, zero), size); break;
+            case 0x09: v = mask_of(j, EQ(s, zero), size); break;
+            case 0x29: v = mask_of(j, jit_cmp(j, GCC_JIT_COMPARISON_LE, s, zero), size); break;
+            case 0x0A: v = mask_of(j, LT(s, zero), size); break;
+            case 0x0B: v = jit_sel(j, LT(s, zero), negated, x); break;
+            default: v = negated; break;
+        }
+        r[i] = jit_val(j, jit_cast(j, v, lane_type(j, size)));
+    }
+    if (sat) set_qc(j, sat);
+    if (scalar)
+        write_scalar(j, rd, r[0]);
+    else
+        write_q(j, rd, size, n, r, q);
+    return 1;
+}
+
+/* across lanes: simd_across's ADDV, [SU]MAXV, [SU]MINV, [SU]ADDLV, and FMAXV, FMINV, FMAXNMV, FMINNMV through the
+   helper in its reduction order (ir_simd.c's across) */
+static int across(SnxJit* j, SnxU32 w) {
+    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31,
+             rd = w & 31, eb = 8u << size, n, i;
+    V a[16], r;
+    if (op == 0x0C || op == 0x0F) {
+        unsigned mn = size >> 1, numeric = op == 0x0C;
+        V p0, p1;
+        if (!u || !q || (size & 1)) return 0;
+        read_lanes(j, rn, 2, 4, a);
+        p0 = jit_val(j, jit_fp_minmax(j, a[0], a[1], 32, mn, numeric));
+        p1 = jit_val(j, jit_fp_minmax(j, a[2], a[3], 32, mn, numeric));
+        write_scalar(j, rd, jit_cast(j, jit_fp_minmax(j, p0, p1, 32, mn, numeric), j->t_u32));
+        return 1;
+    }
+    if (size == 3 || (size == 2 && !q)) return 0;
+    if (op != 0x03 && op != 0x0A && op != 0x1A && !(op == 0x1B && !u)) return 0;
+    n = (q ? 128u : 64u) / eb;
+    read_lanes(j, rn, size, n, a);
+    if (op == 0x03) { /* the long sum fits twice the width */
+        r = ext(j, a[0], eb, u, 2 * eb);
+        for (i = 1; i < n; ++i) r = jit_val(j, ADD(r, ext(j, a[i], eb, u, 2 * eb)));
+    } else {
+        r = a[0];
+        for (i = 1; i < n; ++i) {
+            if (op == 0x1B)
+                r = ADD(r, a[i]);
+            else
+                r = jit_sel(j, compare(j, op == 0x0A ? GCC_JIT_COMPARISON_GT : GCC_JIT_COMPARISON_LT, u, eb, a[i], r),
+                            a[i], r);
+            r = jit_val(j, jit_cast(j, r, lane_type(j, size)));
+        }
+    }
+    write_scalar(j, rd, r);
+    return 1;
+}
+
+/* scalar pairwise: ADDP Dd, Vn.2D, and FADDP, FMAXP, FMINP, FMAXNMP, FMINNMP of the two lanes */
+static int scalar_pairwise(SnxJit* j, SnxU32 w) {
+    unsigned u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31, rd = w & 31,
+             s = size & 1 ? 3 : 2;
+    FpOp o;
+    V x[1], y[1];
+    if (!u) {
+        if (op != 0x1B || size != 3) return 0;
+        write_scalar(j, rd, ADD(jit_vd(j, rn, 0), jit_vd(j, rn, 1)));
+        return 1;
+    }
+    memset(&o, 0, sizeof(o));
+    if (op == 0x0D && !(size >> 1))
+        o.kind = FP_LANES_ADD;
+    else if (op == 0x0C || op == 0x0F) {
+        o.kind = FP_LANES_MINMAX;
+        o.arg = size >> 1;
+        o.flag = op == 0x0C;
+    } else
+        return 0;
+    x[0] = jit_ve(j, rn, s, 0);
+    y[0] = jit_ve(j, rn, s, 1);
+    fp_lanes(j, &o, s, 1, x, y, rd, 0);
+    return 1;
+}
+
+/* by element, beyond fast_simd's FMLA/FMLS/FMUL: FMULX and simd_elem's integer forms (ir_simd.c's by_element) */
+static int by_element(SnxJit* j, SnxU32 w, unsigned scalar) {
+    static const unsigned char long_ops[16] = {0, 0, 8, 9, 0, 0, 10, 11, 0, 0, 12, 13, 0, 0, 0, 0};
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, l = (w >> 21) & 1,
+             mb = (w >> 20) & 1, rm = (w >> 16) & 15, op = (w >> 12) & 15, h = (w >> 11) & 1, rn = (w >> 5) & 31,
+             rd = w & 31, idx, m, n, eb = 8u << size, i;
+    V a[16], z[16], r[16], b, sat = NULL;
+    if (u ? op == 9 : (op == 1 || op == 5 || op == 9)) { /* FP */
+        unsigned sz = size & 1, s = sz ? 3 : 2;
+        FpOp o;
+        V y[4];
+        if (!u || size < 2 || (sz && l) || (sz && !q && !scalar)) return 0; /* (fast_simd has FMLA/FMLS/FMUL) */
+        n = scalar ? 1 : (q ? 16u : 8u) >> s;
+        memset(&o, 0, sizeof(o));
+        o.kind = FP_LANES_MULX;
+        b = jit_ve(j, (mb << 4) | rm, s, sz ? h : (h << 1) | l);
+        read_lanes(j, rn, s, n, a);
+        for (i = 0; i < n; ++i) y[i] = b;
+        fp_lanes(j, &o, s, n, a, y, rd, q);
+        return 1;
+    }
+    if (size != 1 && size != 2) return 0;
+    if (size == 1) {
+        idx = (h << 2) | (l << 1) | mb;
+        m = rm;
+    } else {
+        idx = (h << 1) | l;
+        m = (mb << 4) | rm;
+    }
+    if (op == 2 || op == 3 || op == 6 || op == 7 || op == 10 || op == 11) {
+        unsigned saturating_op = op == 3 || op == 7 || op == 11;
+        if ((u && saturating_op) || (scalar && !saturating_op)) return 0;
+        n = scalar ? 1 : 64 / eb;
+        b = jit_ve(j, m, size, idx);
+        for (i = 0; i < n; ++i) {
+            a[i] = jit_ve(j, rn, size, (q ? n : 0) + i);
+            z[i] = jit_ve(j, rd, size + 1, i);
+        }
+        for (i = 0; i < n; ++i) r[i] = long_lane(j, long_ops[op], u, eb, a[i], b, z[i], &sat);
+        if (sat) set_qc(j, sat);
+        if (scalar)
+            write_scalar(j, rd, r[0]);
+        else
+            write_lanes(j, rd, size + 1, n, r);
+        return 1;
+    }
+    if (u ? op != 0 && op != 4 : op != 8 && op != 12 && op != 13) return 0;
+    if (scalar && op < 12) return 0;
+    n = scalar ? 1 : (q ? 128u : 64u) / eb;
+    b = jit_ve(j, m, size, idx);
+    read_lanes(j, rn, size, n, a);
+    if (op == 0 || op == 4) read_lanes(j, rd, size, n, z);
+    for (i = 0; i < n; ++i) {
+        if (op >= 12)
+            r[i] = doubling_high(j, a[i], b, eb, op == 13, &sat);
+        else {
+            V p = MUL(a[i], b);
+            r[i] = jit_val(j, jit_cast(j, op == 8 ? p : op == 0 ? ADD(z[i], p) : SUB(z[i], p), lane_type(j, size)));
+        }
+    }
+    if (sat) set_qc(j, sat);
+    if (scalar)
+        write_scalar(j, rd, r[0]);
+    else
+        write_q(j, rd, size, n, r, q);
+    return 1;
+}
+
+/* three-same integer (scalar): simd_3same's SQADD, UQADD, SQSUB, UQSUB, SQSHL, UQSHL, SQRSHL, UQRSHL, SQDMULH and
+   SQRDMULH, and on D registers ADD, SUB, the compares and SSHL/USHL/SRSHL/URSHL (ir_simd.c's scalar_three_same) */
+static int scalar_three_same(SnxJit* j, SnxU32 w) {
+    unsigned u = (w >> 29) & 1, size = (w >> 22) & 3, rm = (w >> 16) & 31, op = (w >> 11) & 31, rn = (w >> 5) & 31,
+             rd = w & 31, eb = 8u << size;
+    V x, y, r, sat = NULL;
+    switch (op) {
+        case 0x01:
+        case 0x05:
+        case 0x09:
+        case 0x0B: break;
+        case 0x16:
+            if (size != 1 && size != 2) return 0;
+            break;
+        case 0x06:
+        case 0x07:
+        case 0x08:
+        case 0x0A:
+        case 0x10:
+        case 0x11:
+            if (size != 3) return 0;
+            break;
+        default: return 0;
+    }
+    x = jit_ve(j, rn, size, 0);
+    y = jit_ve(j, rm, size, 0);
+    switch (op) {
+        case 0x01:
+        case 0x05: r = saturating(j, u, op == 0x05, eb, x, y, &sat); break;
+        case 0x16: r = doubling_high(j, x, y, eb, u, &sat); break;
+        case 0x06: r = mask_of(j, compare(j, GCC_JIT_COMPARISON_GT, u, eb, x, y), size); break;
+        case 0x07: r = mask_of(j, compare(j, GCC_JIT_COMPARISON_GE, u, eb, x, y), size); break;
+        case 0x10: r = u ? SUB(x, y) : ADD(x, y); break;
+        case 0x11: r = mask_of(j, u ? EQ(x, y) : NE(AND(x, y), klane(j, size, 0)), size); break;
+        default: r = shift_lane(j, x, y, eb, u, op == 0x0A || op == 0x0B, op == 0x09 || op == 0x0B, &sat); break;
+    }
+    r = jit_val(j, jit_cast(j, r, lane_type(j, size)));
+    if (sat) set_qc(j, sat);
+    write_scalar(j, rd, r);
+    return 1;
+}
+
+/* in snx_simd's order (cpu_helpers.c), each group's emitters in turn; 0 leaves the word to snx_simd */
 int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
-    if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL) return ld1_multiple(j, w);
+    if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL)
+        return ld1_multiple(j, w) || ld_structures(j, w);
     if ((w & 0xBF000000UL) == 0x0D000000UL) return ld1_single(j, w);
     if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(j, w) || fp_three_same(j, w, 0);
-    if ((w & 0xDF200400UL) == 0x5E200400UL) return fp_three_same(j, w, 1);
-    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(j, w) || fp_sign_misc(j, w) || fp_misc(j, w, 0);
-    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(j, w, 1);
+    if ((w & 0xDF200400UL) == 0x5E200400UL) return scalar_three_same(j, w) || fp_three_same(j, w, 1);
+    if ((w & 0xBFE0FC00UL) == 0x0EE0E000UL) return 0; /* PMULL 1Q: snx_simd (ir_simd.c's is x86-only) */
+    if ((w & 0x9F200C00UL) == 0x0E200000UL) return three_different(j, w);
+    if ((w & 0xDF200C00UL) == 0x5E200000UL) return scalar_three_different(j, w);
+    if ((w & 0x9F3E0C00UL) == 0x0E200800UL)
+        return byte_misc(j, w) || fp_sign_misc(j, w) || fp_misc(j, w, 0) || int_misc(j, w, 0);
+    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(j, w, 1) || int_misc(j, w, 1);
+    if ((w & 0x9F3E0C00UL) == 0x0E300800UL) return across(j, w);
+    if ((w & 0xDF3E0C00UL) == 0x5E300800UL) return scalar_pairwise(j, w);
+    if ((w & 0x9FE08400UL) == 0x0E000400UL) return smov(j, w);
+    if ((w & 0xFFE0FC00UL) == 0x5E000400UL) return scalar_dup(j, w);
     if ((w & 0x9FF80400UL) == 0x0F000400UL) return modified_immediate(j, w);
-    if ((w & 0x9F800400UL) == 0x0F000400UL) return fp_fixed(j, w, 0) || shift_immediate(j, w);
-    if ((w & 0xDF800400UL) == 0x5F000400UL) return fp_fixed(j, w, 1);
+    if ((w & 0x9F800400UL) == 0x0F000400UL) return fp_fixed(j, w, 0) || shift_immediate(j, w, 0);
+    if ((w & 0xDF800400UL) == 0x5F000400UL) return fp_fixed(j, w, 1) || shift_immediate(j, w, 1);
+    if ((w & 0x9F000400UL) == 0x0F000000UL) return by_element(j, w, 0);
+    if ((w & 0xDF000400UL) == 0x5F000000UL) return by_element(j, w, 1);
     if ((w & 0xBF208C00UL) == 0x0E000800UL) return permute(j, w);
     if ((w & 0xBFE08400UL) == 0x2E000000UL) return extract(j, w);
+    if ((w & 0xBFE08C00UL) == 0x0E000000UL) return table_lookup(j, w);
     return 0;
 }

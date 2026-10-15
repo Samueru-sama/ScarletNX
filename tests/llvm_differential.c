@@ -32,7 +32,7 @@ typedef StepFn* (*TableFn)(void);
 
 #define MEMORY_SIZE 0x220000u
 #define PC_BASE     0x100000u
-#define DIRECTED    28u /* words directed() makes per round */
+#define DIRECTED    45u /* words directed() makes per round */
 
 static u64 seed = 0x9E3779B97F4A7C15ull;
 static u64 next_random(void) {
@@ -391,6 +391,52 @@ static size_t directed(const char* match, size_t want, Word* out) {
             words[25] = (r & 0x005F03FFUL) | 0x5E200400UL | t;
             words[26] = (r & 0x607F03FFUL) | 0x0F200400UL | f << 11;
             words[27] = (r & 0x207F03FFUL) | 0x5F200400UL | f << 11;
+        }
+        /* the integer and data-movement rest: scalar DUP, SMOV, TBL/TBX (1-4 registers), LD2-4/ST2-4 (multiple
+           structures), every single-structure form, three-different, integer two-register misc, across lanes, scalar
+           pairwise, by element (vector and scalar), the shifts by immediate beyond words[15] (vector and scalar), the
+           register shifts, SHSUB and SQDMULH/SQRDMULH, the scalar three-same integer ops, the scalar integer
+           two-register misc and three-different ops, and PMUL/PMULL on bytes */
+        {
+            static const unsigned char misc[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x07,
+                                                 0x08, 0x09, 0x0A, 0x0B, 0x12, 0x13, 0x14},
+                                       across[] = {0x03, 0x0A, 0x1A, 0x1B, 0x0C, 0x0F},
+                                       pairwise[] = {0x1B, 0x0D, 0x0C, 0x0F},
+                                       element[] = {0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13},
+                                       shifts[] = {0x04, 0x06, 0x0C, 0x0E, 0x10, 0x11, 0x12, 0x13},
+                                       scalar_shifts[] = {0x00, 0x02, 0x04, 0x06, 0x08, 0x0A,
+                                                          0x0C, 0x0E, 0x10, 0x11, 0x12, 0x13},
+                                       scalar_misc[] = {0x03, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x12, 0x14},
+                                       same[] = {0x04, 0x08, 0x09, 0x0A, 0x0B, 0x16},
+                                       scalar_same[] = {0x01, 0x05, 0x06, 0x07, 0x08, 0x09,
+                                                        0x0A, 0x0B, 0x10, 0x11, 0x16};
+            SnxU32 immh = 1u << (19 + (SnxU32)(next_random() % 4));
+            words[28] = (r & 0x001F03FFUL) | 0x5E000400UL;
+            words[29] = (r & 0x401F03FFUL) | 0x0E002C00UL;
+            words[30] = (r & 0x401F73FFUL) | 0x0E000000UL;
+            words[31] = (r & 0x40C0001FUL) | 0x0C000000UL | (SnxU32)(next_random() % 2) << 23 |
+                        (SnxU32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16 |
+                        (SnxU32) "\x00\x04\x08"[next_random() % 3] << 12 | ((r >> 10) & 3) << 10 | ((r >> 5) & 31) << 5;
+            words[32] = (r & 0x40FFFFFFUL & ~0x001F0000UL) | 0x0D000000UL |
+                        (SnxU32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16;
+            words[33] = (r & 0x60DFF3FFUL) | 0x0E200000UL;
+            words[34] = (r & 0x60C003FFUL) | 0x0E200800UL | (SnxU32)misc[next_random() % sizeof(misc)] << 12;
+            words[35] = (r & 0x60C003FFUL) | 0x0E300800UL | (SnxU32)across[next_random() % sizeof(across)] << 12;
+            words[36] = (r & 0x20C003FFUL) | 0x5E300800UL | (SnxU32)pairwise[next_random() % sizeof(pairwise)] << 12;
+            words[37] = (r & 0x60FF0BFFUL) | 0x0F000000UL | (SnxU32)element[next_random() % sizeof(element)] << 12 |
+                        (next_random() % 2 ? 0x50000000UL : 0);
+            words[38] = (r & 0x6007FBFFUL & ~0x0000F800UL) | 0x0F000400UL |
+                        (SnxU32)shifts[next_random() % sizeof(shifts)] << 11 | immh;
+            words[39] = (r & 0x2007FBFFUL & ~0x0000F800UL) | 0x5F000400UL |
+                        (SnxU32)scalar_shifts[next_random() % sizeof(scalar_shifts)] << 11 |
+                        (next_random() % 2 ? 1u << 22 : immh);
+            words[40] = (r & 0x60DF07FFUL) | 0x0E200400UL | (SnxU32)same[next_random() % sizeof(same)] << 11;
+            words[41] =
+                (r & 0x20DF07FFUL) | 0x5E200400UL | (SnxU32)scalar_same[next_random() % sizeof(scalar_same)] << 11;
+            words[42] =
+                (r & 0x20C003FFUL) | 0x5E200800UL | (SnxU32)scalar_misc[next_random() % sizeof(scalar_misc)] << 12;
+            words[43] = (r & 0x00DF03FFUL) | 0x5E200000UL | (SnxU32) "\x09\x0B\x0D"[next_random() % 3] << 12;
+            words[44] = (r & 0x401F03FFUL) | (next_random() % 2 ? 0x2E209C00UL : 0x0E20E000UL); /* PMUL, PMULL 8B */
         }
         for (k = 0; k < DIRECTED; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
