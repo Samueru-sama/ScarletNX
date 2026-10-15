@@ -108,6 +108,12 @@ void jit_fp_estimate_fast(SnxJit* jit, unsigned rsqrt, unsigned width, unsigned 
 /* ir_fp_step_fast's FRECPS (rsqrt 0) or FRSQRTS (1) */
 void jit_fp_step_fast(SnxJit* jit, unsigned rsqrt, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a,
                       gcc_jit_rvalue* const* b, SnxJitFpFast* out);
+/* ir_fp_narrow_fast's FCVTN (odd 0) or FCVTXN (odd 1) of float lanes of from bits to half that width (values
+   u(from/2)) */
+void jit_fp_narrow_fast(SnxJit* jit, unsigned from, unsigned lanes, gcc_jit_rvalue* const* bits, unsigned odd,
+                        SnxJitFpFast* out);
+/* one lane through snx_fp_convert from from bits to half that width, rounded per FPCR or (odd) to odd (result u64) */
+gcc_jit_rvalue* jit_fp_narrow(SnxJit* jit, gcc_jit_rvalue* bits, unsigned from, unsigned odd);
 /* one lane through snx_fp_unary, snx_fp_to_int and snx_fp_from_int (result u64) */
 gcc_jit_rvalue* jit_fp_unary(SnxJit* jit, gcc_jit_rvalue* bits, unsigned width, unsigned op);
 gcc_jit_rvalue* jit_fp_to_int(SnxJit* jit, gcc_jit_rvalue* bits, unsigned fp, unsigned integer, unsigned uns,

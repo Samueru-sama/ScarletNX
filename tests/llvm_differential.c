@@ -6,7 +6,10 @@
    guest memory; registers, flags, FP state, the exclusive monitor, memory, the returned pc and the runtime callbacks
    must all match.
      llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--quiet] [--jit]
-   --match keeps patterns whose name starts with NAME. --jit loads the LLVM steps with the JIT's loader
+                       [--portable]
+   --match keeps patterns whose name starts with NAME. --portable builds the LLVM steps without the host's x86
+   extensions (PSHUFB, PCLMULQDQ, AES-NI, GFNI, VPTERNLOG...), so the emitters' portable forms of those encodings
+   are the ones compared. --jit loads the LLVM steps with the JIT's loader
    (code_loader.c) instead of linking them into a shared object for dlopen, and checks that loaded code reaches the
    runtime's functions and data, outside the code arena. */
 #include "common.h"
@@ -35,7 +38,7 @@ typedef StepFn* (*TableFn)(void);
 
 #define MEMORY_SIZE 0x220000u
 #define PC_BASE     0x100000u
-#define DIRECTED    45u /* words directed() makes per round */
+#define DIRECTED    51u /* words directed() makes per round */
 
 static u64 seed = 0x9E3779B97F4A7C15ull;
 static u64 next_random(void) {
@@ -178,6 +181,31 @@ static u64 conversion_edge(void) {
     return lane[1] << 32 | lane[0];
 }
 
+/* for FCVTN and FCVTXN: two doubles or four floats (as the word's sz says) whose exponents, rebiased, are mostly the
+   narrower format's smallest and largest normal ones (the fast path's bounds) and now and then just outside them,
+   with dropped bits at or around half an ulp, or a fraction of all ones that rounds up into the next exponent */
+static u64 narrow_edge(unsigned doubles) {
+    static const u32 exponents64[] = {897, 898, 1149, 1150, 897, 898, 1150, 1150, 896, 1151},
+                     exponents32[] = {113, 114, 141, 142, 113, 114, 142, 142, 112, 143};
+    u64 k = next_random(), lane[2];
+    unsigned i, n = doubles ? 1 : 2, shift = doubles ? 29 : 13, mantissa = doubles ? 52 : 23;
+    for (i = 0; i < n; ++i, k >>= 16) {
+        u64 low = (u64)1 << (shift - 1), fraction;
+        switch (k % 6) {
+            case 0: fraction = 0; break;
+            case 1: fraction = low; break;
+            case 2: fraction = low + 1; break;
+            case 3: fraction = low - 1; break;
+            case 4: fraction = ((u64)1 << mantissa) - 1; break;
+            default: fraction = next_random() & (((u64)1 << mantissa) - 1); break;
+        }
+        if ((k >> 3) % 2 && k % 6 != 4) fraction ^= (next_random() << shift) & (((u64)1 << mantissa) - 1);
+        lane[i] = ((k >> 4) & 1) << (doubles ? 63 : 31) |
+                  (u64)(doubles ? exponents64[(k >> 5) % 10] : exponents32[(k >> 5) % 10]) << mantissa | fraction;
+    }
+    return doubles ? lane[0] : lane[1] << 32 | lane[0];
+}
+
 static void random_state(CPU* c, unsigned char* memory, const Word* w) {
     unsigned i;
     int addresses = memory_pattern(w->pattern->name);
@@ -221,12 +249,17 @@ static void random_state(CPU* c, unsigned char* memory, const Word* w) {
             c->v[rn].d[0] = conversion_edge();
             c->v[rn].d[1] = conversion_edge();
         }
+        if ((w->word & 0x8F3FFC00UL) == 0x0E216800UL && (r >> 52) % 4) { /* two-register misc 0x16: FCVTN, FCVTXN */
+            c->v[rn].d[0] = narrow_edge((w->word >> 22) & 1);
+            c->v[rn].d[1] = narrow_edge((w->word >> 22) & 1);
+        }
     }
     c->n = next_random() & 1;
     c->z = next_random() & 1;
     c->cf = next_random() & 1;
     c->vf = next_random() & 1;
     c->fpcr = fpcr[next_random() % 8] | (next_random() % 2 ? (u32)(next_random() & 0x07C00000u) : 0);
+    if ((w->word & 0x8F3FFC00UL) == 0x0E216800UL && next_random() % 2) c->fpcr &= ~(3u << 22); /* FCVTN: RNE */
     c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0xF800009Fu);
     c->tpidr = next_random();
     c->tpidrro = next_random();
@@ -488,6 +521,15 @@ static size_t directed(const char* match, size_t want, Word* out) {
             words[43] = (r & 0x00DF03FFUL) | 0x5E200000UL | (SnxU32) "\x09\x0B\x0D"[next_random() % 3] << 12;
             words[44] = (r & 0x401F03FFUL) | (next_random() % 2 ? 0x2E209C00UL : 0x0E20E000UL); /* PMUL, PMULL 8B */
         }
+        /* the scalar FP compares (FCMEQ, FCMGE, FCMGT, FACGE, FACGT and against #0.0), FCVTN/FCVTXN (vector, with Q
+           the "2" forms, and scalar), SHA1C/P/M, SHA1SU0, SHA256H/H2, SHA256SU1 (three registers, op 7 unallocated)
+           and SHA1H, SHA1SU1, SHA256SU0 (two, op 3 unallocated), with random U, sz and o2 */
+        words[45] = (r & 0x20DF03FFUL) | 0x5E200400UL | (0x1Cu + (SnxU32)(next_random() % 2)) << 11;
+        words[46] = (r & 0x204003FFUL) | 0x5EA00800UL | (0x0Cu + (SnxU32)(next_random() % 3)) << 12;
+        words[47] = (r & 0x604003FFUL) | 0x0E216800UL;
+        words[48] = (r & 0x204003FFUL) | 0x5E216800UL | (next_random() % 4 ? 0x20400000UL : 0);
+        words[49] = (r & 0x001F03FFUL) | 0x5E000000UL | (SnxU32)(next_random() % 8) << 12;
+        words[50] = (r & 0x000003FFUL) | 0x5E280800UL | (SnxU32)(next_random() % 4) << 12;
         for (k = 0; k < DIRECTED; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
             if (c->kind != SNX_FLOW_PLAIN) continue;
@@ -558,7 +600,7 @@ int main(int argc, char** argv) {
     TableFn table_p, table_l;
     StepFn *steps_p, *steps_l;
     RtAPI rt;
-    int quiet = 0, a, gccjit = 0, jit = 0;
+    int quiet = 0, a, gccjit = 0, jit = 0, portable = 0;
     SnxCodeLoader* loader = NULL;
 #ifdef SNX_TEST_GCCJIT
     TableFn table_g = NULL;
@@ -570,7 +612,7 @@ int main(int argc, char** argv) {
     unsigned long fallbacks, gccjit_fallbacks = 0;
     if (argc < 3) {
         fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] "
-              "[--quiet] [--gccjit] [--jit]\n",
+              "[--quiet] [--gccjit] [--jit] [--portable]\n",
               stderr);
         return 2;
     }
@@ -583,6 +625,8 @@ int main(int argc, char** argv) {
             gccjit = 1;
         else if (!strcmp(argv[a], "--jit"))
             jit = 1;
+        else if (!strcmp(argv[a], "--portable"))
+            portable = 1;
         else if (a + 1 < argc && !strcmp(argv[a], "--match"))
             match = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "--per-case"))
@@ -666,6 +710,11 @@ int main(int argc, char** argv) {
     if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
     ir = snx_ir_new("steps", '2', error, sizeof(error));
     if (!ir) return snx_error("%s", error);
+    if (portable) {
+        static SnxIrFeatures plain_x86; /* x86-64, none of its extensions */
+        plain_x86.x86 = ir->features->x86;
+        ir->features = &plain_x86;
+    }
     {
         LLVMValueRef *fns = (LLVMValueRef*)snx_alloc(count * sizeof(*fns)), table, getter;
         LLVMTypeRef type = LLVMArrayType(ir->t_ptr, (unsigned)count);

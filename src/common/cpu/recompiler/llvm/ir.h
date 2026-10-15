@@ -187,6 +187,13 @@ void ir_fp_estimate_fast(SnxIr* ir, unsigned rsqrt, unsigned width, unsigned lan
    (which also keeps out the infinity-times-zero lanes) */
 void ir_fp_step_fast(SnxIr* ir, unsigned rsqrt, unsigned width, unsigned lanes, LLVMValueRef a, LLVMValueRef b,
                      SnxFpFast* out);
+/* FCVTN (odd 0: FPCR's rounding, fast only in round to nearest) or FCVTXN (odd 1: round to odd, whatever the mode)
+   of float lanes of from bits (64 or 32) to half that width, in integer arithmetic: fast for normal operands whose
+   result is normal before rounding and finite after it (no flush, underflow, overflow, NaN or infinity, so FZ, DN
+   and AHP don't apply). value: <lanes x i(from/2)> or i(from/2); inexact when bits were dropped */
+void ir_fp_narrow_fast(SnxIr* ir, unsigned from, unsigned lanes, LLVMValueRef bits, unsigned odd, SnxFpFast* out);
+/* one lane through snx_fp_convert from from bits to half that width, rounded per FPCR or (odd) to odd (result i64) */
+LLVMValueRef ir_fp_narrow(SnxIr* ir, LLVMValueRef bits, unsigned from, unsigned odd);
 /* one lane through the helpers: snx_fp_binary, snx_fp_unary, snx_fp_to_int and snx_fp_from_int (result i64) */
 LLVMValueRef ir_fp_binary(SnxIr* ir, LLVMValueRef a, LLVMValueRef b, unsigned width, unsigned op);
 LLVMValueRef ir_fp_unary(SnxIr* ir, LLVMValueRef bits, unsigned width, unsigned op);

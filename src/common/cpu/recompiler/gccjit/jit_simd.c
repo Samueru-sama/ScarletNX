@@ -4,7 +4,7 @@
    semantics), and snx_simd itself for the rest. Written a lane at a time, as the templates' C is: every source lane is
    read before the first result is written (Vd may be Vn), and GCC's vectorizer turns the lanes into the host's
    vector instructions. ir_simd.c's x86-only forms (AES-NI, PCLMULQDQ, GFNI, VPTERNLOG) have no counterpart here: their
-   encodings take the generic lanes or snx_simd. */
+   encodings take the generic lanes (PMULL 1Q its portable product) or snx_simd (AES). */
 #include "jit.h"
 #include "cpu.h"
 #include <string.h>
@@ -1022,7 +1022,7 @@ static void fp_lanes(SnxJit* j, const FpOp* op, unsigned s, unsigned n, V const*
 
 /* FP three-same beyond fast_simd's arithmetic (ir_simd.c's fp_three_same): FADDP, FABD, FMULX, FRECPS, FRSQRTS,
    FMAX/FMIN/FMAXNM/FMINNM and their pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT; the scalar FABD, FMULX,
-   FRECPS and FRSQRTS */
+   FRECPS, FRSQRTS and compares */
 static int fp_three_same(SnxJit* j, SnxU32 w, unsigned scalar) {
     unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1,
              rm = (w >> 16) & 31, op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2,
@@ -1069,7 +1069,9 @@ static int fp_three_same(SnxJit* j, SnxU32 w, unsigned scalar) {
             break;
         default: return 0;
     }
-    if (scalar && o.kind != FP_LANES_ABD && o.kind != FP_LANES_MULX && o.kind != FP_LANES_STEP) return 0;
+    if (scalar && o.kind != FP_LANES_ABD && o.kind != FP_LANES_MULX && o.kind != FP_LANES_STEP &&
+        o.kind != FP_LANES_COMPARE)
+        return 0;
     read_lanes(j, rn, s, n, a);
     read_lanes(j, rm, s, n, b);
     for (i = 0; i < n; ++i) {
@@ -1091,8 +1093,8 @@ static int fp_three_same(SnxJit* j, SnxU32 w, unsigned scalar) {
     return 1;
 }
 
-/* FP two-register misc (ir_simd.c's fp_misc): FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector), FCVT[NPMZA][SU],
-   SCVTF, UCVTF, FRECPE and FRSQRTE (vector and scalar) and FSQRT (vector) */
+/* FP two-register misc (ir_simd.c's fp_misc): FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0, FCVT[NPMZA][SU], SCVTF, UCVTF,
+   FRECPE and FRSQRTE (vector and scalar) and FSQRT (vector) */
 static int fp_misc(SnxJit* j, SnxU32 w, unsigned scalar) {
     unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
              rn = (w >> 5) & 31, rd = w & 31, sz = size & 1, s = sz ? 3 : 2,
@@ -1108,7 +1110,7 @@ static int fp_misc(SnxJit* j, SnxU32 w, unsigned scalar) {
     o.flag = u;
     o.fbits = 0;
     read_lanes(j, rn, s, n, a);
-    if (op >= 0x0C && op <= 0x0E && (size >> 1) && !scalar) {
+    if (op >= 0x0C && op <= 0x0E && (size >> 1)) {
         if (op == 0x0C)
             o.arg = u ? SNX_JIT_CMP_GE : SNX_JIT_CMP_GT;
         else if (op == 0x0D)
@@ -1169,6 +1171,33 @@ static int fp_fixed(SnxJit* j, SnxU32 w, unsigned scalar) {
     o.fbits = 2 * (8u << s) - ((immh << 3) | immb);
     read_lanes(j, rn, s, n, a);
     fp_lanes(j, &o, s, n, a, NULL, rd, q);
+    return 1;
+}
+
+/* FCVTN, FCVTN2, FCVTXN, FCVTXN2 and the scalar FCVTXN (ir_simd.c's fp_narrow): snx_fp_convert's lanes into Vd's low
+   half (upper zero), its upper half (low kept) or, scalar, its low 32 bits */
+static void narrow_store(SnxJit* j, unsigned rd, unsigned size, unsigned n, V const* values, unsigned q) {
+    if (n == 1)
+        write_scalar(j, rd, values[0]);
+    else
+        write_narrow(j, rd, size, n, values, q);
+}
+static int fp_narrow(SnxJit* j, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
+             rn = (w >> 5) & 31, rd = w & 31, from = size & 1 ? 64 : 32, s = size & 1 ? 3 : 2,
+             n = scalar ? 1 : 128 / from, i;
+    gcc_jit_block *slow, *join;
+    SnxJitFpFast f;
+    V a[4], r[4];
+    if (op != 0x16 || (size >> 1) || (scalar && !u) || (u && from != 64)) return 0;
+    read_lanes(j, rn, s, n, a);
+    jit_fp_narrow_fast(j, from, n, a, u, &f);
+    join = jit_fp_branch(j, f.ok, &slow);
+    narrow_store(j, rd, s - 1, n, f.value, q);
+    jit_fp_else(j, join, slow, f.inexact);
+    for (i = 0; i < n; ++i) r[i] = jit_val(j, jit_cast(j, jit_fp_narrow(j, a[i], from, u), lane_type(j, s - 1)));
+    narrow_store(j, rd, s - 1, n, r, q);
+    jit_fp_join(j, join);
     return 1;
 }
 
@@ -1285,7 +1314,7 @@ static int three_different(SnxJit* j, SnxU32 w) {
             }
             write_lanes(j, rd, size + 1, m, r);
             return 1;
-        case 14: /* PMULL (bytes; the 1Q form stays with snx_simd) */
+        case 14: /* PMULL (bytes; pmull_1q has the 1Q form) */
             if (u || size) return 0;
             for (i = 0; i < 8; ++i) {
                 a[i] = jit_ve(j, rn, 0, off + i);
@@ -1634,6 +1663,112 @@ static int scalar_three_same(SnxJit* j, SnxU32 w) {
     return 1;
 }
 
+/* PMULL/PMULL2 Vd.1Q: ir_simd.c's carryless_multiply (which says why the masked products are carry-free) in u128 */
+static int pmull_1q(SnxJit* j, SnxU32 w) {
+    static const SnxU64 m = (SnxU64)0x11111111UL << 32 | 0x11111111UL;
+    unsigned q = (w >> 30) & 1, rm = (w >> 16) & 31, rn = (w >> 5) & 31, rd = w & 31, h, a, c;
+    T t = j->t_u128;
+    V x = jit_vd(j, rn, q), y = jit_vd(j, rm, q), yb[4], xa[4], r = NULL, half, part, z, k;
+    for (a = 0; a < 4; ++a) yb[a] = jit_val(j, jit_cast(j, AND(y, K64(m << a)), t));
+    for (h = 0; h < 2; ++h) {
+        half = h ? SHR(x, K64(32)) : AND(x, K64(0xFFFFFFFFUL));
+        for (a = 0; a < 4; ++a) xa[a] = jit_val(j, jit_cast(j, AND(half, K64(m << a)), t));
+        part = NULL;
+        for (c = 0; c < 4; ++c) {
+            z = MUL(xa[0], yb[c]);
+            for (a = 1; a < 4; ++a) z = XOR(z, MUL(xa[a], yb[(c - a) & 3]));
+            k = jit_k(j, t, m << c);
+            z = AND(z, OR(k, SHL(k, jit_k(j, t, 64))));
+            part = part ? OR(part, z) : z;
+        }
+        part = jit_val(j, part);
+        r = h ? jit_val(j, XOR(r, SHL(part, jit_k(j, t, 32)))) : part;
+    }
+    jit_set_vd(j, rd, 0, jit_cast(j, r, j->t_u64));
+    jit_set_vd(j, rd, 1, jit_cast(j, SHR(r, jit_k(j, t, 64)), j->t_u64));
+    return 1;
+}
+
+/* SHA1 and SHA256 (ir_simd.c's sha): crypto.c's v_sha1 and v_sha256 on u32 words, every operand read first */
+static V rol32(SnxJit* j, V x, unsigned n) { return OR(SHL(x, K32(n)), SHR(x, K32(32 - n))); }
+/* ror(x, a) ^ ror(x, b) ^ (c ? ror(x, c) : x >> d) */
+static V sigma(SnxJit* j, V x, unsigned a, unsigned b, unsigned c, unsigned d) {
+    return XOR(XOR(rol32(j, x, 32 - a), rol32(j, x, 32 - b)), c ? rol32(j, x, 32 - c) : SHR(x, K32(d)));
+}
+static int sha(SnxJit* j, SnxU32 w, unsigned op) {
+    unsigned rm = (w >> 16) & 31, rn = (w >> 5) & 31, rd = w & 31, i;
+    V x[4], y[4], m[4], r[4], t;
+    read_lanes(j, rd, 2, 4, x);
+    read_lanes(j, rn, 2, 4, y);
+    if (op < 0x10) read_lanes(j, rm, 2, 4, m);
+    switch (op) {
+        case 0: /* SHA1C, SHA1P, SHA1M */
+        case 1:
+        case 2: {
+            V e = y[0], f, next;
+            for (i = 0; i < 4; ++i) {
+                if (op == 0)
+                    f = OR(AND(x[1], x[2]), AND(NOT(x[1]), x[3]));
+                else if (op == 1)
+                    f = XOR(XOR(x[1], x[2]), x[3]);
+                else
+                    f = OR(OR(AND(x[1], x[2]), AND(x[1], x[3])), AND(x[2], x[3]));
+                e = jit_val(j, ADD(ADD(ADD(e, rol32(j, x[0], 5)), f), m[i]));
+                next = x[3];
+                x[3] = x[2];
+                x[2] = jit_val(j, rol32(j, x[1], 30));
+                x[1] = x[0];
+                x[0] = e;
+                e = next;
+            }
+            memcpy(r, x, sizeof(r));
+            break;
+        }
+        case 3: /* SHA1SU0 */
+            for (i = 0; i < 4; ++i) r[i] = jit_val(j, XOR(XOR(i < 2 ? x[i + 2] : y[i - 2], x[i]), m[i]));
+            break;
+        case 4: /* SHA256H, SHA256H2 */
+        case 5: {
+            V *a = op == 4 ? x : y, *b = op == 4 ? y : x, ch, maj, a3;
+            for (i = 0; i < 4; ++i) {
+                ch = XOR(AND(b[0], b[1]), AND(NOT(b[0]), b[2]));
+                maj = XOR(XOR(AND(a[0], a[1]), AND(a[0], a[2])), AND(a[1], a[2]));
+                t = jit_val(j, ADD(ADD(ADD(b[3], sigma(j, b[0], 6, 11, 25, 0)), ch), m[i]));
+                a3 = jit_val(j, ADD(a[3], t));
+                t = jit_val(j, ADD(ADD(t, sigma(j, a[0], 2, 13, 22, 0)), maj));
+                b[3] = b[2];
+                b[2] = b[1];
+                b[1] = b[0];
+                b[0] = a3;
+                a[3] = a[2];
+                a[2] = a[1];
+                a[1] = a[0];
+                a[0] = t;
+            }
+            memcpy(r, op == 4 ? a : b, sizeof(r));
+            break;
+        }
+        case 6: /* SHA256SU1 */
+            for (i = 0; i < 4; ++i)
+                r[i] = jit_val(
+                    j, ADD(ADD(x[i], sigma(j, i < 2 ? m[i + 2] : r[i - 2], 17, 19, 0, 10)), i < 3 ? y[i + 1] : m[0]));
+            break;
+        case 0x10: /* SHA1H */ write_scalar(j, rd, rol32(j, y[0], 30)); return 1;
+        case 0x11: /* SHA1SU1 */
+            for (i = 0; i < 4; ++i) r[i] = jit_val(j, i < 3 ? XOR(x[i], y[i + 1]) : x[3]);
+            t = jit_val(j, rol32(j, r[0], 2));
+            for (i = 0; i < 4; ++i) r[i] = jit_val(j, rol32(j, r[i], 1));
+            r[3] = XOR(r[3], t);
+            break;
+        case 0x12: /* SHA256SU0 */
+            for (i = 0; i < 4; ++i) r[i] = ADD(x[i], sigma(j, i < 3 ? x[i + 1] : y[0], 7, 18, 0, 3));
+            break;
+        default: return 0;
+    }
+    write_lanes(j, rd, 2, 4, r);
+    return 1;
+}
+
 /* in snx_simd's order (cpu_helpers.c), each group's emitters in turn; 0 leaves the word to snx_simd */
 int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
     if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL)
@@ -1641,12 +1776,12 @@ int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
     if ((w & 0xBF000000UL) == 0x0D000000UL) return ld1_single(j, w);
     if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(j, w) || fp_three_same(j, w, 0);
     if ((w & 0xDF200400UL) == 0x5E200400UL) return scalar_three_same(j, w) || fp_three_same(j, w, 1);
-    if ((w & 0xBFE0FC00UL) == 0x0EE0E000UL) return 0; /* PMULL 1Q: snx_simd (ir_simd.c's is x86-only) */
+    if ((w & 0xBFE0FC00UL) == 0x0EE0E000UL) return pmull_1q(j, w);
     if ((w & 0x9F200C00UL) == 0x0E200000UL) return three_different(j, w);
     if ((w & 0xDF200C00UL) == 0x5E200000UL) return scalar_three_different(j, w);
     if ((w & 0x9F3E0C00UL) == 0x0E200800UL)
-        return byte_misc(j, w) || fp_sign_misc(j, w) || fp_misc(j, w, 0) || int_misc(j, w, 0);
-    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(j, w, 1) || int_misc(j, w, 1);
+        return byte_misc(j, w) || fp_sign_misc(j, w) || fp_misc(j, w, 0) || fp_narrow(j, w, 0) || int_misc(j, w, 0);
+    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(j, w, 1) || fp_narrow(j, w, 1) || int_misc(j, w, 1);
     if ((w & 0x9F3E0C00UL) == 0x0E300800UL) return across(j, w);
     if ((w & 0xDF3E0C00UL) == 0x5E300800UL) return scalar_pairwise(j, w);
     if ((w & 0x9FE08400UL) == 0x0E000400UL) return smov(j, w);
@@ -1659,5 +1794,8 @@ int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
     if ((w & 0xBF208C00UL) == 0x0E000800UL) return permute(j, w);
     if ((w & 0xBFE08400UL) == 0x2E000000UL) return extract(j, w);
     if ((w & 0xBFE08C00UL) == 0x0E000000UL) return table_lookup(j, w);
+    if ((w & 0xFFFF0C00UL) == 0x4E280800UL) return 0; /* AES: snx_simd (ir_simd.c's is AES-NI only) */
+    if ((w & 0xFFE08C00UL) == 0x5E000000UL) return sha(j, w, (w >> 12) & 7);
+    if ((w & 0xFFFF0C00UL) == 0x5E280800UL) return ((w >> 12) & 31) < 3 && sha(j, w, 0x10 + ((w >> 12) & 31));
     return 0;
 }

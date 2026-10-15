@@ -614,12 +614,46 @@ static int aes(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
-/* PMULL/PMULL2 Vd.1Q (64x64 carry-less) with PCLMULQDQ (x86, CPUID pclmulqdq) */
+/* the 128-bit carry-less product of x and y (i64) from integer multiplies, for hosts without PCLMULQDQ (the
+   masked-multiply technique of BearSSL's ghash_ctmul, Thomas Pornin): with both operands masked to every fourth bit,
+   each bit of the integer product counts the pairs of set bits whose positions sum to it, and the count's parity is
+   the carry-less bit. Taking x 32 bits at a time keeps every count at 8 or below (8 bits of a half in each residue
+   class), so it never carries into the next position of its class: XORing the products of the class pairs and
+   masking to the class gives that class of the product. 32 multiplies of 64 by 64 bits to 128 */
+static V carryless_multiply(SnxIr* ir, V x, V y) {
+    static const SnxU64 m = (SnxU64)0x11111111UL << 32 | 0x11111111UL;
+    V yb[4], xa[4], r = NULL, half, part, z, k;
+    unsigned h, a, c;
+    for (a = 0; a < 4; ++a) yb[a] = LLVMBuildZExt(B, LLVMBuildAnd(B, y, ir_i64(ir, m << a), ""), ir->t_i128, "");
+    for (h = 0; h < 2; ++h) {
+        half = h ? LLVMBuildLShr(B, x, ir_i64(ir, 32), "") : LLVMBuildAnd(B, x, ir_i64(ir, 0xFFFFFFFFUL), "");
+        for (a = 0; a < 4; ++a) xa[a] = LLVMBuildZExt(B, LLVMBuildAnd(B, half, ir_i64(ir, m << a), ""), ir->t_i128, "");
+        part = NULL;
+        for (c = 0; c < 4; ++c) {
+            z = LLVMBuildMul(B, xa[0], yb[c], "");
+            for (a = 1; a < 4; ++a) z = LLVMBuildXor(B, z, LLVMBuildMul(B, xa[a], yb[(c - a) & 3], ""), "");
+            k = LLVMConstInt(ir->t_i128, m << c, 0);
+            k = LLVMBuildOr(B, k, LLVMBuildShl(B, k, LLVMConstInt(ir->t_i128, 64, 0), ""), "");
+            z = LLVMBuildAnd(B, z, k, "");
+            part = part ? LLVMBuildOr(B, part, z, "") : z;
+        }
+        r = h ? LLVMBuildXor(B, r, LLVMBuildShl(B, part, LLVMConstInt(ir->t_i128, 32, 0), ""), "") : part;
+    }
+    return r;
+}
+
+/* PMULL/PMULL2 Vd.1Q (64x64 carry-less): PCLMULQDQ where CPUID has it (x86), carryless_multiply otherwise */
 static int pmull_1q(SnxIr* ir, SnxU32 w) {
     unsigned q = (w >> 30) & 1, rm = (w >> 16) & 31, rn = (w >> 5) & 31, rd = w & 31;
     LLVMTypeRef t = LLVMVectorType(ir->t_i64, 2);
     V args[3], r;
-    if (!ir->features->x86 || !ir->features->pclmul) return 0;
+    if (!ir->features->x86 || !ir->features->pclmul) {
+        r = carryless_multiply(ir, ir_vd(ir, rn, q), ir_vd(ir, rm, q));
+        ir_set_vd(ir, rd, 0, LLVMBuildTrunc(B, r, ir->t_i64, ""));
+        ir_set_vd(ir, rd, 1,
+                  LLVMBuildTrunc(B, LLVMBuildLShr(B, r, LLVMConstInt(ir->t_i128, 64, 0), ""), ir->t_i64, ""));
+        return 1;
+    }
     args[0] = ir_load(ir, t, vreg(ir, rn));
     args[1] = ir_load(ir, t, vreg(ir, rm));
     LLVMSetAlignment(args[0], 8);
@@ -627,6 +661,103 @@ static int pmull_1q(SnxIr* ir, SnxU32 w) {
     args[2] = ir_i8(ir, q ? 0x11 : 0x00);
     r = ir_intrinsic(ir, "llvm.x86.pclmulqdq", NULL, args, 3);
     LLVMSetAlignment(LLVMBuildStore(B, r, vreg(ir, rd)), 8);
+    return 1;
+}
+
+/* ---- SHA1 and SHA256: crypto.c's v_sha1 and v_sha256 (the Arm ARM's SHA1C/P/M, SHA1SU0/SU1, SHA1H, SHA256H/H2,
+   SHA256SU0/SU1) on 32-bit words; every operand is read before Vd is written ---- */
+
+static V rol32(SnxIr* ir, V x, unsigned n) {
+    return LLVMBuildOr(B, LLVMBuildShl(B, x, ir_i32(ir, n), ""), LLVMBuildLShr(B, x, ir_i32(ir, 32 - n), ""), "");
+}
+/* SHA256's sigmas: ror(x, a) ^ ror(x, b) ^ (c ? ror(x, c) : x >> d) */
+static V sigma(SnxIr* ir, V x, unsigned a, unsigned b, unsigned c, unsigned d) {
+    V r = LLVMBuildXor(B, rol32(ir, x, 32 - a), rol32(ir, x, 32 - b), "");
+    return LLVMBuildXor(B, r, c ? rol32(ir, x, 32 - c) : LLVMBuildLShr(B, x, ir_i32(ir, d), ""), "");
+}
+static V add3(SnxIr* ir, V a, V b, V c) { return LLVMBuildAdd(B, LLVMBuildAdd(B, a, b, ""), c, ""); }
+
+/* snx_simd's SHA ops: three registers (0-6, (w >> 12) & 7) and two (0x10-0x12) */
+static int sha(SnxIr* ir, SnxU32 w, unsigned op) {
+    unsigned rm = (w >> 16) & 31, rn = (w >> 5) & 31, rd = w & 31, i;
+    V x[4], y[4], m[4], r[4], t;
+    for (i = 0; i < 4; ++i) {
+        x[i] = get(ir, vreg(ir, rd), 2, i);
+        y[i] = get(ir, vreg(ir, rn), 2, i);
+        m[i] = op < 0x10 ? get(ir, vreg(ir, rm), 2, i) : NULL;
+    }
+    switch (op) {
+        case 0: /* SHA1C, SHA1P, SHA1M: four rounds on the hash in Vd, E in Sn, the words in Vm */
+        case 1:
+        case 2: {
+            V e = y[0], f, next;
+            for (i = 0; i < 4; ++i) {
+                if (op == 0) /* Choose */
+                    f = LLVMBuildOr(B, LLVMBuildAnd(B, x[1], x[2], ""),
+                                    LLVMBuildAnd(B, LLVMBuildNot(B, x[1], ""), x[3], ""), "");
+                else if (op == 1) /* Parity */
+                    f = LLVMBuildXor(B, LLVMBuildXor(B, x[1], x[2], ""), x[3], "");
+                else /* Majority */
+                    f = LLVMBuildOr(
+                        B, LLVMBuildOr(B, LLVMBuildAnd(B, x[1], x[2], ""), LLVMBuildAnd(B, x[1], x[3], ""), ""),
+                        LLVMBuildAnd(B, x[2], x[3], ""), "");
+                e = LLVMBuildAdd(B, add3(ir, e, rol32(ir, x[0], 5), f), m[i], "");
+                next = x[3];
+                x[3] = x[2];
+                x[2] = rol32(ir, x[1], 30);
+                x[1] = x[0];
+                x[0] = e;
+                e = next;
+            }
+            memcpy(r, x, sizeof(r));
+            break;
+        }
+        case 3: /* SHA1SU0: Vn's low half above Vd's upper half, ^ Vd ^ Vm */
+            for (i = 0; i < 4; ++i)
+                r[i] = LLVMBuildXor(B, LLVMBuildXor(B, i < 2 ? x[i + 2] : y[i - 2], x[i], ""), m[i], "");
+            break;
+        case 4: /* SHA256H (the hash's first half in Vd, the second in Vn), SHA256H2 (the other way round) */
+        case 5: {
+            V *a = op == 4 ? x : y, *b = op == 4 ? y : x, ch, maj, a3;
+            for (i = 0; i < 4; ++i) {
+                ch = LLVMBuildXor(B, LLVMBuildAnd(B, b[0], b[1], ""),
+                                  LLVMBuildAnd(B, LLVMBuildNot(B, b[0], ""), b[2], ""), "");
+                maj = LLVMBuildXor(
+                    B, LLVMBuildXor(B, LLVMBuildAnd(B, a[0], a[1], ""), LLVMBuildAnd(B, a[0], a[2], ""), ""),
+                    LLVMBuildAnd(B, a[1], a[2], ""), "");
+                t = LLVMBuildAdd(B, add3(ir, b[3], sigma(ir, b[0], 6, 11, 25, 0), ch), m[i], "");
+                a3 = LLVMBuildAdd(B, a[3], t, "");
+                t = add3(ir, t, sigma(ir, a[0], 2, 13, 22, 0), maj);
+                /* the eight words rotate up one: a = (t, a0, a1, a2), b = (a3 + t1, b0, b1, b2) */
+                b[3] = b[2];
+                b[2] = b[1];
+                b[1] = b[0];
+                b[0] = a3;
+                a[3] = a[2];
+                a[2] = a[1];
+                a[1] = a[0];
+                a[0] = t;
+            }
+            memcpy(r, op == 4 ? a : b, sizeof(r));
+            break;
+        }
+        case 6: /* SHA256SU1: the next schedule words; the upper two use the lower two just computed */
+            for (i = 0; i < 4; ++i)
+                r[i] = add3(ir, x[i], sigma(ir, i < 2 ? m[i + 2] : r[i - 2], 17, 19, 0, 10), i < 3 ? y[i + 1] : m[0]);
+            break;
+        case 0x10: /* SHA1H: ROL(Sn, 30) alone */ write_lanes(ir, rd, rol32(ir, y[0], 30), 0); return 1;
+        case 0x11: /* SHA1SU1: (Vd ^ Vn >> 32) rotated by one, the top word also ^ the first rotated by two */
+            for (i = 0; i < 4; ++i) r[i] = i < 3 ? LLVMBuildXor(B, x[i], y[i + 1], "") : x[3];
+            t = rol32(ir, r[0], 2);
+            for (i = 0; i < 4; ++i) r[i] = rol32(ir, r[i], 1);
+            r[3] = LLVMBuildXor(B, r[3], t, "");
+            break;
+        case 0x12: /* SHA256SU0 */
+            for (i = 0; i < 4; ++i) r[i] = LLVMBuildAdd(B, x[i], sigma(ir, i < 3 ? x[i + 1] : y[0], 7, 18, 0, 3), "");
+            break;
+        default: return 0;
+    }
+    for (i = 0; i < 4; ++i) set(ir, vreg(ir, rd), 2, i, r[i]);
     return 1;
 }
 
@@ -1255,8 +1386,8 @@ static void fp_lanes(SnxIr* ir, const FpOp* op, unsigned s, unsigned n, V x, V y
 }
 
 /* FP three-same beyond fast_simd's arithmetic: simd_3same's FADDP, FABD, FMULX, FRECPS, FRSQRTS, FMAX/FMIN/FMAXNM/
-   FMINNM and their pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT; the scalar forms of FABD, FMULX, FRECPS and
-   FRSQRTS (simd_3same refuses the scalar pairwise, accumulating and min/max ones) */
+   FMINNM and their pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT; the scalar forms of FABD, FMULX, FRECPS,
+   FRSQRTS and the compares (simd_3same refuses the scalar pairwise, accumulating and min/max ones) */
 static int fp_three_same(SnxIr* ir, SnxU32 w, unsigned scalar) {
     unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1,
              rm = (w >> 16) & 31, op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2,
@@ -1303,7 +1434,9 @@ static int fp_three_same(SnxIr* ir, SnxU32 w, unsigned scalar) {
             break;
         default: return 0;
     }
-    if (scalar && o.kind != FP_LANES_ABD && o.kind != FP_LANES_MULX && o.kind != FP_LANES_STEP) return 0;
+    if (scalar && o.kind != FP_LANES_ABD && o.kind != FP_LANES_MULX && o.kind != FP_LANES_STEP &&
+        o.kind != FP_LANES_COMPARE)
+        return 0;
     x = get_lanes(ir, vreg(ir, rn), s, n);
     y = get_lanes(ir, vreg(ir, rm), s, n);
     if (pair) { /* lanes 0..n/2-1 from pairs of Vn, the rest from pairs of Vm: in Vn:Vm, elements 2i and 2i+1 */
@@ -1325,8 +1458,8 @@ static int fp_three_same(SnxIr* ir, SnxU32 w, unsigned scalar) {
     return 1;
 }
 
-/* FP two-register misc: simd_2misc's FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector), FCVT[NPMZA][SU], SCVTF,
-   UCVTF, FRECPE and FRSQRTE (vector and scalar) and FSQRT (vector) */
+/* FP two-register misc: simd_2misc's FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0, FCVT[NPMZA][SU], SCVTF, UCVTF, FRECPE
+   and FRSQRTE (vector and scalar) and FSQRT (vector) */
 static int fp_misc(SnxIr* ir, SnxU32 w, unsigned scalar) {
     unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
              rn = (w >> 5) & 31, rd = w & 31, sz = size & 1, s = sz ? 3 : 2,
@@ -1340,7 +1473,7 @@ static int fp_misc(SnxIr* ir, SnxU32 w, unsigned scalar) {
     o.arg = 0;
     o.flag = u;
     o.fbits = 0;
-    if (op >= 0x0C && op <= 0x0E && (size >> 1) && !scalar) {
+    if (op >= 0x0C && op <= 0x0E && (size >> 1)) {
         if (op == 0x0C)
             o.arg = u ? SNX_IR_CMP_GE : SNX_IR_CMP_GT;
         else if (op == 0x0D)
@@ -1399,6 +1532,34 @@ static int fp_fixed(SnxIr* ir, SnxU32 w, unsigned scalar) {
     o.flag = u;
     o.fbits = 2 * (8u << s) - ((immh << 3) | immb);
     fp_lanes(ir, &o, s, n, get_lanes(ir, vreg(ir, rn), s, n), NULL, rd, q);
+    return 1;
+}
+
+/* FCVTN, FCVTN2 (doubles to floats, floats to halves, FPCR's rounding) and FCVTXN, FCVTXN2 (doubles to floats,
+   round to odd, also scalar): simd_2misc's snx_fp_convert lanes, into Vd's low half with the upper half zero, its
+   upper half with the low half kept (the "2" forms), or for the scalar FCVTXN its low 32 bits */
+static int fp_narrow(SnxIr* ir, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
+             rn = (w >> 5) & 31, rd = w & 31, from = size & 1 ? 64 : 32, s = size & 1 ? 3 : 2,
+             n = scalar ? 1 : 128 / from, i;
+    LLVMTypeRef t = lane_type(ir, s - 1);
+    LLVMBasicBlockRef slow, join;
+    SnxFpFast f;
+    V x, r;
+    if (op != 0x16 || (size >> 1) || (scalar && !u) || (u && from != 64)) return 0;
+    x = get_lanes(ir, vreg(ir, rn), s, n);
+    ir_fp_narrow_fast(ir, from, n, x, u, &f);
+    join = ir_fp_branch(ir, f.ok, &slow);
+    write_narrow(ir, rd, f.value, q);
+    ir_fp_else(ir, join, slow, f.inexact);
+    r = n == 1 ? NULL : LLVMGetUndef(LLVMVectorType(t, n));
+    for (i = 0; i < n; ++i) {
+        V lane =
+            ir_cast(ir, ir_fp_narrow(ir, n == 1 ? x : LLVMBuildExtractElement(B, x, ir_i32(ir, i), ""), from, u), t, 0);
+        r = n == 1 ? lane : LLVMBuildInsertElement(B, r, lane, ir_i32(ir, i), "");
+    }
+    write_narrow(ir, rd, r, q);
+    ir_fp_join(ir, join);
     return 1;
 }
 
@@ -1837,8 +1998,9 @@ int snx_ir_more_simd(SnxIr* ir, SnxU32 w) {
     if ((w & 0x9F200C00UL) == 0x0E200000UL) return three_different(ir, w);
     if ((w & 0xDF200C00UL) == 0x5E200000UL) return scalar_three_different(ir, w);
     if ((w & 0x9F3E0C00UL) == 0x0E200800UL)
-        return byte_misc(ir, w) || fp_sign_misc(ir, w) || fp_misc(ir, w, 0) || int_misc(ir, w, 0);
-    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(ir, w, 1) || int_misc(ir, w, 1);
+        return byte_misc(ir, w) || fp_sign_misc(ir, w) || fp_misc(ir, w, 0) || fp_narrow(ir, w, 0) ||
+               int_misc(ir, w, 0);
+    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(ir, w, 1) || fp_narrow(ir, w, 1) || int_misc(ir, w, 1);
     if ((w & 0x9F3E0C00UL) == 0x0E300800UL) return across(ir, w);
     if ((w & 0xDF3E0C00UL) == 0x5E300800UL) return scalar_pairwise(ir, w);
     if ((w & 0x9FE08400UL) == 0x0E000400UL) return smov(ir, w);
@@ -1852,5 +2014,7 @@ int snx_ir_more_simd(SnxIr* ir, SnxU32 w) {
     if ((w & 0xBFE08400UL) == 0x2E000000UL) return extract(ir, w);
     if ((w & 0xBFE08C00UL) == 0x0E000000UL) return table_lookup(ir, w);
     if ((w & 0xFFFF0C00UL) == 0x4E280800UL) return aes(ir, w);
+    if ((w & 0xFFE08C00UL) == 0x5E000000UL) return sha(ir, w, (w >> 12) & 7);
+    if ((w & 0xFFFF0C00UL) == 0x5E280800UL) return ((w >> 12) & 31) < 3 && sha(ir, w, 0x10 + ((w >> 12) & 31));
     return 0;
 }

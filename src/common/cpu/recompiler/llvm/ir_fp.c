@@ -288,6 +288,10 @@ static V fprm(SnxIr* ir) {
     V fpcr = ir_cpu_load(ir, ir->t_i32, ir_off_fpcr());
     return LLVMBuildAnd(B, LLVMBuildLShr(B, fpcr, i32c(ir, 22), ""), i32c(ir, 3), "");
 }
+/* simd_2misc's FCVTN (FPRM) and FCVTXN (mode 5, round to odd) lane */
+V ir_fp_narrow(SnxIr* ir, V bits, unsigned from, unsigned odd) {
+    return convert(ir, bits, from, from / 2, odd ? i32c(ir, 5) : fprm(ir));
+}
 
 /* SETSB/SETDB/SETH(d,e): t=(uN)(e); c->v[d].d[1]=0; c->v[d].d[0]=t; */
 static void set_bits(SnxIr* ir, unsigned d, unsigned bits, V value) {
@@ -729,6 +733,47 @@ void ir_fp_step_fast(SnxIr* ir, unsigned rsqrt, unsigned width, unsigned lanes, 
         out->ok = LLVMBuildAnd(B, out->ok, exponent_in(ir, &s, half, 2, s.emax - 1), "");
         out->value = half;
     }
+}
+
+/* snx_fp_convert's fp_pack for a normal operand whose exponent, rebiased, is a normal one of the narrow format: the
+   magnitude shifted right by the difference of the fractions, less the difference of the biases in the exponent
+   field, is the truncated result; the dropped bits round it (fp_quantize: to nearest even, or to odd), and a carry
+   out of the fraction is the exponent's increment, as fp_pack's renormalization. Only round to nearest can carry
+   into the infinity encoding, which takes the helper (OFC) */
+void ir_fp_narrow_fast(SnxIr* ir, unsigned from, unsigned lanes, V bits, unsigned odd, SnxFpFast* out) {
+    Shape s;
+    unsigned to = from / 2, narrow_mantissa = from == 64 ? 23 : 10, narrow_emax = from == 64 ? 0xFF : 0x1F;
+    unsigned shift, rebias;
+    V sign, magnitude, truncated, dropped, lost, r, ok;
+    LLVMTypeRef t = LLVMIntTypeInContext(ir->ctx, to);
+    shape(ir, from, lanes, &s);
+    shift = s.mantissa - narrow_mantissa;
+    rebias = (s.emax >> 1) - (narrow_emax >> 1); /* 1023 - 127, 127 - 15 */
+    sign = LLVMBuildAnd(B, bits, kint(ir, &s, (SnxU64)1 << (from - 1)), "");
+    magnitude = LLVMBuildXor(B, bits, sign, "");
+    ok = lane_exponent_in(ir, &s, bits, rebias + 1, rebias + narrow_emax - 1);
+    truncated = LLVMBuildSub(B, LLVMBuildLShr(B, magnitude, kint(ir, &s, shift), ""),
+                             kint(ir, &s, (SnxU64)rebias << narrow_mantissa), "");
+    dropped = LLVMBuildAnd(B, magnitude, kint(ir, &s, ((SnxU64)1 << shift) - 1), "");
+    lost = LLVMBuildICmp(B, LLVMIntNE, dropped, kint(ir, &s, 0), "");
+    if (odd)
+        r = LLVMBuildOr(B, truncated, LLVMBuildZExt(B, lost, s.it, ""), "");
+    else {
+        V half = kint(ir, &s, (SnxU64)1 << (shift - 1));
+        V up = LLVMBuildOr(
+            B, LLVMBuildICmp(B, LLVMIntUGT, dropped, half, ""),
+            LLVMBuildAnd(B, LLVMBuildICmp(B, LLVMIntEQ, dropped, half, ""),
+                         LLVMBuildTrunc(B, truncated, lanes > 1 ? LLVMVectorType(ir->t_i1, lanes) : ir->t_i1, ""), ""),
+            "");
+        r = LLVMBuildAdd(B, truncated, LLVMBuildZExt(B, up, s.it, ""), "");
+        ok = LLVMBuildAnd(
+            B, ok, LLVMBuildICmp(B, LLVMIntULT, r, kint(ir, &s, (SnxU64)narrow_emax << narrow_mantissa), ""), "");
+    }
+    r = LLVMBuildOr(B, r, LLVMBuildLShr(B, sign, kint(ir, &s, from - to), ""), "");
+    out->value = LLVMBuildTrunc(B, r, lanes > 1 ? LLVMVectorType(t, lanes) : t, "");
+    out->ok = all(ir, &s, ok);
+    if (!odd) out->ok = LLVMBuildAnd(B, rounds_to_nearest(ir), out->ok, "");
+    out->inexact = any(ir, &s, lost);
 }
 
 /* FCVT_INT and FCVT_FIX: index = opcode | rmode << 3 | ftype << 5 | sf << 7 */

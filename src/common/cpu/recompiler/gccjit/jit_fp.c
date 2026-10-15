@@ -259,6 +259,10 @@ V jit_fp_from_int(SnxJit* j, V bits, unsigned integer, unsigned fp, unsigned uns
 static V fprm(SnxJit* j) {
     return jit_cast(j, AND(SHR(jit_ld(j, offsetof(CPU, fpcr), j->t_u32), K32(22)), K32(3)), j->t_int);
 }
+/* simd_2misc's FCVTN (FPRM) and FCVTXN (mode 5, round to odd) lane */
+V jit_fp_narrow(SnxJit* j, V bits, unsigned from, unsigned odd) {
+    return convert(j, bits, from, from / 2, odd ? jit_int(j, 5) : fprm(j));
+}
 
 /* SETSB/SETDB/SETH(d,e): t=(uN)(e); c->v[d].d[1]=0; c->v[d].d[0]=t; */
 static void set_bits(SnxJit* j, unsigned d, unsigned bits, V value) {
@@ -720,6 +724,38 @@ void jit_fp_step_fast(SnxJit* j, unsigned rsqrt, unsigned width, unsigned lanes,
         }
         out->ok = jit_val(j, ok);
     }
+}
+
+/* ir_fp_narrow_fast's integer narrowing (ir_fp.c says why it is fp_pack's result), a lane at a time */
+void jit_fp_narrow_fast(SnxJit* j, unsigned from, unsigned lanes, V const* bits, unsigned odd, SnxJitFpFast* out) {
+    Shape s;
+    unsigned to = from / 2, narrow_mantissa = from == 64 ? 23 : 10, narrow_emax = from == 64 ? 0xFF : 0x1F;
+    unsigned shift, rebias, i;
+    V ok = jit_true(j), lost = jit_false(j);
+    shape(j, from, &s);
+    shift = s.mantissa - narrow_mantissa;
+    rebias = (s.emax >> 1) - (narrow_emax >> 1); /* 1023 - 127, 127 - 15 */
+    for (i = 0; i < lanes; ++i) {
+        V x = jit_val(j, jit_cast(j, bits[i], s.it)), sign, magnitude, truncated, dropped, r;
+        sign = jit_val(j, AND(x, kint(j, &s, (SnxU64)1 << (from - 1))));
+        magnitude = jit_val(j, XOR(x, sign));
+        ok = jit_land(j, ok, exponent_in(j, &s, x, rebias + 1, rebias + narrow_emax - 1));
+        truncated = jit_val(j, SUB(SHR(magnitude, kint(j, &s, shift)), kint(j, &s, (SnxU64)rebias << narrow_mantissa)));
+        dropped = jit_val(j, AND(magnitude, kint(j, &s, ((SnxU64)1 << shift) - 1)));
+        lost = jit_lor(j, lost, NE(dropped, kint(j, &s, 0)));
+        if (odd)
+            r = OR(truncated, jit_sel(j, NE(dropped, kint(j, &s, 0)), kint(j, &s, 1), kint(j, &s, 0)));
+        else {
+            V half = kint(j, &s, (SnxU64)1 << (shift - 1));
+            V up = jit_lor(j, LT(half, dropped),
+                           jit_land(j, EQ(dropped, half), NE(AND(truncated, kint(j, &s, 1)), kint(j, &s, 0))));
+            r = jit_val(j, ADD(truncated, jit_sel(j, up, kint(j, &s, 1), kint(j, &s, 0))));
+            ok = jit_land(j, ok, LT(r, kint(j, &s, (SnxU64)narrow_emax << narrow_mantissa)));
+        }
+        out->value[i] = jit_val(j, jit_cast(j, OR(r, SHR(sign, kint(j, &s, from - to))), jit_uint(j, to)));
+    }
+    out->ok = jit_val(j, odd ? ok : jit_land(j, rounds_to_nearest(j), ok));
+    out->inexact = jit_val(j, lost);
 }
 
 /* FCVT_INT and FCVT_FIX: index = opcode | rmode << 3 | ftype << 5 | sf << 7 */
