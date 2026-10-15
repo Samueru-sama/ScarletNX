@@ -57,6 +57,8 @@ static const HostTarget* host_target(void) {
     return &host;
 }
 
+void snx_jit_init(void) { host_target(); }
+
 SnxJit* snx_jit_new(char opt) {
     SnxJit* jit = (SnxJit*)calloc(1, sizeof(*jit));
     const HostTarget* host = host_target();

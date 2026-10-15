@@ -2,8 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game module through libgccjit (--backend=gcc), for DEC Alpha EV67 hosts, where LLVM has no backend; elsewhere
    --backend=llvm is the one to use. module_llvm.c's structure: chunks of whole functions, each a context compiled
-   to an object file, then the module descriptor in a last context that GCC's driver links into the shared library
-   with the chunks and the runtime library (rtlib.c). */
+   to an object file, the chunks in parallel as module_llvm.c compiles its units, then the module descriptor in a
+   last context that GCC's driver links into the shared library with the chunks and the runtime library (rtlib.c).
+   The parallel workers are processes, not threads: libgccjit compiles one context at a time per process (GCC's
+   "big mutex" around the compile, gcc/jit/jit-playback.cc), so threads would all share one core. fork() hands the
+   workers the codegen and the queue copy-on-write; on Windows, which has no fork, they are threads (working, but
+   serialized inside libgccjit) and the LLVM backend is the one to use anyway. */
 #include "module_llvm.h"
 
 #ifndef SNX_WITH_GCCJIT
@@ -21,10 +25,212 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 /* the runtime library, compiled when the recompiler is built (rtlib.c, snx-rtlib-gen embed) */
 extern const unsigned char snx_rtlib_object[];
 extern const unsigned long snx_rtlib_object_size;
+
+/* One chunk of functions compiled to one object file, and the queue the workers take their chunks from. The queue
+   and the units live in memory the workers share (module_llvm.c's share an address space; forked ones need
+   MAP_SHARED to see the work handover, the results and the progress count), so the object path is a buffer here,
+   not a string each worker would own. */
+typedef struct {
+    size_t first, last; /* functions */
+    char object[1024];
+    unsigned long fallbacks;
+} Unit;
+
+typedef struct {
+    SnxCodegen* codegen;
+    const SnxLlvmBuild* build;
+    const char* dir; /* the temporary directory the object files are written to */
+    Unit* units;
+    size_t count, next, done;
+    int failed;
+    char error[1024];
+#ifdef _WIN32
+    CRITICAL_SECTION lock;
+#else
+    pthread_mutex_t lock;
+#endif
+} Queue;
+
+static void* shared_alloc(size_t size) {
+#ifdef _WIN32
+    return snx_alloc(size);
+#else
+    void* p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    return p == MAP_FAILED ? NULL : p;
+#endif
+}
+static void shared_free(void* p, size_t size) {
+#ifdef _WIN32
+    (void)size;
+    free(p);
+#else
+    if (p) munmap(p, size);
+#endif
+}
+
+static void lock(Queue* q) {
+#ifdef _WIN32
+    EnterCriticalSection(&q->lock);
+#else
+    pthread_mutex_lock(&q->lock);
+#endif
+}
+static void unlock(Queue* q) {
+#ifdef _WIN32
+    LeaveCriticalSection(&q->lock);
+#else
+    pthread_mutex_unlock(&q->lock);
+#endif
+}
+
+/* one chunk of functions, as a code_NNN.o the descriptor is linked with */
+static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
+    Unit* u = &q->units[index];
+    char name[32], *file, *path;
+    size_t i;
+    SnxJit* jit;
+    const char* message;
+    sprintf(name, "code_%03lu", (unsigned long)index);
+    jit = snx_jit_new(q->build->opt);
+    if (!jit) {
+        snprintf(error, error_size, "out of memory");
+        return -1;
+    }
+    for (i = u->first; i < u->last; ++i) snx_jit_guest_function(jit, q->codegen->functions[i].start, 1);
+    for (i = u->first; i < u->last; ++i) snx_jit_emit(jit, q->codegen, &q->codegen->functions[i]);
+    if (q->build->keep_ir) {
+        char* c_name = snx_format("%s.c", name);
+        char* path = snx_path_join(q->build->keep_ir, c_name);
+        gcc_jit_context_dump_to_file(jit->ctx, path, 0);
+        free(c_name);
+        free(path);
+    }
+    file = snx_format("%s.o", name);
+    path = snx_path_join(q->dir, file);
+    snprintf(u->object, sizeof(u->object), "%s", path);
+    free(file);
+    free(path);
+    gcc_jit_context_compile_to_file(jit->ctx, GCC_JIT_OUTPUT_KIND_OBJECT_FILE, u->object);
+    message = snx_jit_error(jit);
+    if (message) snprintf(error, error_size, "%s", message);
+    u->fallbacks = jit->fallbacks;
+    snx_jit_free(jit);
+    return message ? -1 : 0;
+}
+
+static void worker(Queue* q) {
+    char error[1024], name[32], *label;
+    double start, seconds;
+    for (;;) {
+        size_t i;
+        int rc;
+        lock(q);
+        if (q->failed || q->next == q->count) {
+            unlock(q);
+            return;
+        }
+        i = q->next++;
+        unlock(q);
+        sprintf(name, "code_%03lu", (unsigned long)i);
+        error[0] = 0;
+        start = snx_seconds();
+        rc = compile_unit(q, i, error, sizeof(error));
+        seconds = snx_seconds() - start;
+        label = rc || q->build->quiet ? NULL : snx_chunk_label(q->codegen, q->units[i].first, q->units[i].last);
+        lock(q);
+        ++q->done;
+        if (rc && !q->failed) {
+            q->failed = 1;
+            snprintf(q->error, sizeof(q->error), "libgccjit (%s): %.900s", name, error);
+        }
+        if (label) {
+            /* every unit: a line every few seconds or minutes, whichever the machine manages */
+            snx_report_unit(q->done, q->count + 1, name, label, 0, seconds); /* + the descriptor */
+        }
+        unlock(q);
+        free(label);
+    }
+}
+#ifdef _WIN32
+static DWORD WINAPI thread_main(LPVOID p) {
+    worker((Queue*)p);
+    return 0;
+}
+#endif
+
+static void run(Queue* q, unsigned jobs) {
+    unsigned i, created = 0;
+#ifdef _WIN32
+    HANDLE* threads;
+    InitializeCriticalSection(&q->lock);
+#else
+    pthread_mutexattr_t attr;
+    pid_t* children;
+    fflush(NULL); /* the workers must not flush a copy of the parent's buffered output on their way out */
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED); /* the workers are processes */
+    pthread_mutex_init(&q->lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+#endif
+    if (jobs > q->count) jobs = (unsigned)q->count;
+    if (jobs < 1) jobs = 1;
+#ifdef _WIN32
+    threads = snx_alloc(jobs * sizeof(*threads));
+    for (i = 1; i < jobs; ++i) {
+        HANDLE h = CreateThread(NULL, 0, thread_main, q, 0, NULL);
+        if (!h) break;
+        threads[created++] = h;
+    }
+    worker(q);
+    for (i = 0; i < created; ++i) {
+        WaitForSingleObject(threads[i], INFINITE);
+        CloseHandle(threads[i]);
+    }
+    DeleteCriticalSection(&q->lock);
+    free(threads);
+#else
+    children = (pid_t*)snx_alloc(jobs * sizeof(*children));
+    for (i = 1; i < jobs; ++i) {
+        pid_t pid = fork();
+        if (pid < 0) break;
+        if (!pid) {
+            worker(q);
+            _exit(0); /* not the caller's cleanup: the parent owns the output directory and the exit status */
+        }
+        children[created++] = pid;
+    }
+    worker(q);
+    for (i = 0; i < created; ++i) {
+        int status = 0;
+        waitpid(children[i], &status, 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+            /* a crash in a worker is a build failure, not a hang or a half-linked module */
+            lock(q);
+            if (!q->failed) {
+                q->failed = 1;
+                snprintf(q->error, sizeof(q->error), "libgccjit: a compiler process died (status %d)", status);
+            }
+            unlock(q);
+        }
+    }
+    pthread_mutex_destroy(&q->lock);
+    free(children);
+#endif
+}
 
 /* module.c's emit_module through libgccjit: the same tables and the same snx_module */
 static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenOptions* options,
@@ -200,13 +406,15 @@ static int failed(SnxJit* jit, const char* what) {
 
 int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
     SnxCodegen codegen;
+    Queue* q = NULL;
     SnxJit* jit = NULL;
-    size_t first, last, count, limit, i, units = 0, total, entry_count = 0;
+    size_t first, last, count, limit, i, entry_count = 0, qsize = 0, usize = 0;
     unsigned long fallbacks = 0;
-    char *dir = NULL, *rtlib = NULL, *tmp = NULL, **objects = NULL, error[1024];
+    char *dir = NULL, *rtlib = NULL, *tmp = NULL, error[1024];
     int rc = -1;
     memset(&codegen, 0, sizeof(codegen));
     if (!loaded->module_count) return snx_error("No modules to generate");
+    snx_jit_init(); /* the host target resolves here, before the workers start */
     if (!options->interp_only &&
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
         return -1;
@@ -221,50 +429,40 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
         goto done;
     }
     limit = options->chunk_instrs ? options->chunk_instrs : SNX_CHUNK_INSTRUCTIONS;
-    objects = (char**)snx_alloc((codegen.function_count + 1) * sizeof(*objects));
+    qsize = sizeof(*q);
+    usize = (codegen.function_count + 1) * sizeof(Unit);
+    q = (Queue*)shared_alloc(qsize);
+    if (!q) {
+        snx_error("cannot allocate the compile queue");
+        goto done;
+    }
+    memset(q, 0, qsize);
+    q->units = (Unit*)shared_alloc(usize);
+    if (!q->units) {
+        snx_error("cannot allocate the compile units");
+        goto done;
+    }
+    memset(q->units, 0, usize);
     for (first = 0; first < codegen.function_count; first = last) {
         last = first;
         count = 0;
         do { count += codegen.functions[last++].count; } while (last < codegen.function_count && count < limit);
-        ++units;
+        q->units[q->count].first = first;
+        q->units[q->count++].last = last;
     }
-    total = units;
+    q->codegen = &codegen;
+    q->build = build;
+    q->dir = dir;
     if (!options->quiet)
-        printf("libgccjit: %lu code unit%s and the module descriptor\n", (unsigned long)total, total == 1 ? "" : "s");
-    /* one context per chunk, compiled to an object file (libgccjit compiles one context at a time) */
-    units = 0;
-    for (first = 0; first < codegen.function_count; first = last) {
-        char name[32], *file;
-        double start = snx_seconds();
-        last = first;
-        count = 0;
-        do { count += codegen.functions[last++].count; } while (last < codegen.function_count && count < limit);
-        jit = snx_jit_new(build->opt);
-        for (i = first; i < last; ++i) snx_jit_guest_function(jit, codegen.functions[i].start, 1);
-        for (i = first; i < last; ++i) snx_jit_emit(jit, &codegen, &codegen.functions[i]);
-        sprintf(name, "code_%03lu", (unsigned long)units);
-        if (build->keep_ir) {
-            char* c_name = snx_format("%s.c", name);
-            char* path = snx_path_join(build->keep_ir, c_name);
-            gcc_jit_context_dump_to_file(jit->ctx, path, 0);
-            free(c_name);
-            free(path);
-        }
-        file = snx_format("%s.o", name);
-        objects[units] = snx_path_join(dir, file);
-        free(file);
-        gcc_jit_context_compile_to_file(jit->ctx, GCC_JIT_OUTPUT_KIND_OBJECT_FILE, objects[units]);
-        ++units;
-        if (failed(jit, name)) goto done;
-        fallbacks += jit->fallbacks;
-        snx_jit_free(jit);
-        jit = NULL;
-        if (!options->quiet) {
-            char* label = snx_chunk_label(&codegen, first, last);
-            snx_report_unit(units, total + 1, name, label, 0, snx_seconds() - start); /* + the descriptor */
-            free(label);
-        }
+        printf("libgccjit: %lu code unit%s and the module descriptor\n", (unsigned long)q->count,
+               q->count == 1 ? "" : "s");
+    /* one context per chunk, compiled to an object file: the chunks in parallel, up to build->jobs workers */
+    if (q->count) run(q, build->jobs);
+    if (q->failed) {
+        snx_error("%s", q->error);
+        goto done;
     }
+    for (i = 0; i < q->count; ++i) fallbacks += q->units[i].fallbacks;
     /* the descriptor, linked by GCC's driver with the chunks and the runtime library */
     jit = snx_jit_new(build->opt);
     if (emit_module(jit, &codegen, options, loaded, &entry_count, error, sizeof(error))) {
@@ -277,7 +475,7 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
         free(path);
     }
     gcc_jit_context_add_driver_option(jit->ctx, rtlib);
-    for (i = 0; i < units; ++i) gcc_jit_context_add_driver_option(jit->ctx, objects[i]);
+    for (i = 0; i < q->count; ++i) gcc_jit_context_add_driver_option(jit->ctx, q->units[i].object);
     tmp = snx_format("%s.tmp", build->output);
     gcc_jit_context_compile_to_file(jit->ctx, GCC_JIT_OUTPUT_KIND_DYNAMIC_LIBRARY, tmp);
     if (failed(jit, "module")) goto done;
@@ -296,7 +494,8 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
 done:
     snx_jit_free(jit);
     if (tmp && snx_is_file(tmp)) snx_remove_tree(tmp);
-    if (objects) snx_free_strings(objects, units);
+    if (q) shared_free(q->units, usize);
+    shared_free(q, qsize);
     if (dir) snx_remove_tree(dir);
     free(dir);
     free(rtlib);

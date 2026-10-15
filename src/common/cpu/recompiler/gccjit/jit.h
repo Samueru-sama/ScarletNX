@@ -43,6 +43,10 @@ typedef struct SnxJit {
     unsigned long fallbacks;
 } SnxJit;
 
+/* Once per process, before any other call; threads may then each own their SnxJit. The host's -march=native is
+   resolved here, on the caller's thread: host_target() is lazy and not thread-safe, as snx_ir_init is for the LLVM
+   backend */
+void snx_jit_init(void);
 /* opt: the -O letter */
 SnxJit* snx_jit_new(char opt);
 void snx_jit_free(SnxJit* jit);
