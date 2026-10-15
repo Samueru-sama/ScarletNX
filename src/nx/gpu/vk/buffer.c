@@ -569,6 +569,89 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     g_prep_tail = o;
     return 1;
 }
+/* An atlas page starts from guest memory, and the pending results over it are copied in on the GPU in the order they
+   were recorded, after the shaders that wrote them: an aliased draw doesn't wait for earlier results to land in guest
+   memory (TotK drew about four a frame, each landing everything with a vk_finish). Compute results that haven't
+   landed land for the atlas's pages alone. A result whose original bytes the guest has written since can't be copied
+   whole: it lands first, as in gfx_gpu_src, which submits, and the draw starts its setup over */
+static void atlas_barrier(VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access, VkPipelineStageFlags2 dst_stage,
+                          VkAccessFlags2 dst_access) {
+    VkMemoryBarrier2 b = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                          .srcStageMask = src_stage,
+                          .srcAccessMask = src_access,
+                          .dstStageMask = dst_stage,
+                          .dstAccessMask = dst_access};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &b};
+    vkCmdPipelineBarrier2(vk_cmd(), &d);
+}
+static void atlas_flush(VkBuffer src, VkBuffer atlas, const VkBufferCopy* regions, u32* n) {
+    if (*n) vkCmdCopyBuffer(vk_cmd(), src, atlas, *n, regions);
+    *n = 0;
+}
+static void atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 atlas_off) {
+    VkBufferCopy regions[64];
+    /* the atlas bytes copied since the last barrier: a later result over them waits for that copy (one copy command
+       mustn't overlap itself, and two unordered ones would land in either order), so it ends up on top */
+    u64 written[128][2];
+    u32 n = 0, nwritten = 0, k;
+    VkBuffer src = VK_NULL_HANDLE;
+    int copies = 0;
+    size_t i;
+    if (g_cs_any)
+        for (i = 0; i < unique; i++)
+            if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
+    for (i = 0; i < unique; i++) {
+        const u8* page = p[i].key & (1ull << 63) ? NULL : gmem_ptr_untracked(p[i].gva, 4096);
+        if (page)
+            memcpy(ptr + i * 4096, page, 4096);
+        else
+            memset(ptr + i * 4096, 0, 4096);
+    }
+    for (GfxOut* o = g_out; o && !g_out_landing; o = o->next)
+        for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e; g += 4096) {
+            u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e, dst, end;
+            u32 at = draw_page_index(p, unique, key);
+            const u8* host;
+            int overlap;
+            if (at >= unique || p[at].key != key) continue;
+            host = gmem_ptr_untracked(lo, hi - lo);
+            if (!host || memcmp(host, o->org + (lo - o->addr), hi - lo)) {
+                land_reason(WB_DRAW);
+                return;
+            }
+            if (!copies) { /* after the shaders and copies that wrote the results, and the atlas's host writes */
+                vk_render_end();
+                atlas_barrier(VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_COPY_BIT,
+                              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                copies = 1;
+            }
+            dst = atlas_off + at * 4096ull + (lo - g);
+            end = dst + (hi - lo);
+            overlap = nwritten == sizeof written / sizeof *written;
+            for (k = 0; k < nwritten && !overlap; k++) overlap = dst < written[k][1] && written[k][0] < end;
+            if (overlap) {
+                atlas_flush(src, atlas, regions, &n);
+                atlas_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                nwritten = 0;
+            }
+            if (n && (n == sizeof regions / sizeof *regions || o->buf != src)) atlas_flush(src, atlas, regions, &n);
+            src = o->buf;
+            regions[n++] = (VkBufferCopy){.srcOffset = o->off + (lo - o->addr), .dstOffset = dst, .size = hi - lo};
+            written[nwritten][0] = dst;
+            written[nwritten][1] = end;
+            nwritten++;
+        }
+    atlas_flush(src, atlas, regions, &n);
+    if (copies) /* before the draw reads and writes the atlas */
+        atlas_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+}
+
 /* All bindings of an aliasing draw index one page atlas. This also covers fragmented GPU mappings: the shader's
    word index is translated through its binding's page list, so a write through either VA reaches the same word. */
 int vk_buf_draw_prepare(VkDrawStorage* draw) {
@@ -600,12 +683,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw) {
             free(p);
             return 0;
         }
-        for (size_t i = 0; i < unique; i++) {
-            if (p[i].key & (1ull << 63))
-                memset(ptr + i * 4096, 0, 4096);
-            else
-                gmem_read(p[i].gva, ptr + i * 4096, 4096);
-        }
+        atlas_fill(p, unique, ptr, atlas, atlas_off);
         copy_note(1, atlas_size);
     }
     for (int s = 0; s < 2; s++) {

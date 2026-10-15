@@ -1429,12 +1429,6 @@ retry:
         g_vk_skipped++;
         return;
     }
-    if (alias) {
-        if (g_cs_any) vk_compute_land();
-        vk_buf_land(); /* a page atlas starts from the completed output of earlier draws */
-        if (setup_frame != vk_submit_number() && ++retries < 4) goto retry;
-        draw_storage_read(&storage, vs, fs); /* landing may have changed storage descriptors in c0 */
-    }
     if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) {
         g_vk_skipped++;
         return;
