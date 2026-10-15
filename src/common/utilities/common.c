@@ -2,6 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE   700
+/* MAP_ANONYMOUS (snx_vm_reserve) is POSIX only since 2024: older glibc and musl define it with this */
+#define _DEFAULT_SOURCE
 #include "common.h"
 #include <ctype.h>
 #include <errno.h>
@@ -758,13 +760,8 @@ void* snx_vm_reserve(size_t size) {
 #ifdef _WIN32
     return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
 #else
-    int flags = MAP_PRIVATE;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
     void* p;
-#ifdef MAP_ANONYMOUS
-    flags |= MAP_ANONYMOUS;
-#else
-    flags |= MAP_ANON;
-#endif
 #ifdef MAP_NORESERVE
     flags |= MAP_NORESERVE; /* address space only: no swap is set aside for pages never committed */
 #endif
