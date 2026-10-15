@@ -42,7 +42,8 @@ file holds the rules sessions get wrong and points to the skills that carry the 
 - Temporary files go in the session scratchpad, never in the repo root. Long runs use `run_in_background`.
 - Never `pkill`/`killall`, or a `kill $(pgrep -f PATTERN)` loop: they match the shell running the command, whose
   command line contains the pattern (twice that killed the session's own shell). List with `pgrep -a NAME` (or
-  `pgrep -x cc1`, by process name), then `kill PID` with the numbers in a separate command.
+  `pgrep -x cc1`, by process name), then `kill PID` with the numbers in a separate command. The same goes for waiting:
+  `until ! pgrep -f PATTERN` matches its own shell and never ends. Wait on a file the job writes, or `pgrep -x NAME`.
 - Don't build while a timing-sensitive test runs: the build deploys a new runtime into `games/` and loads the CPU.
 - No `sudo` and no system packages: the user installs those. `uvx` fetches ruff on its own.
 - Context is scarce. Never print a whole log (`games/Catherine.log` grows to megabytes), a whole disassembly or a
