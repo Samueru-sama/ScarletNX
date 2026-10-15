@@ -49,6 +49,7 @@ typedef struct {
     char name[16];
 } GenData;
 static int generic_disp(SvcObj* o, IpcCtx* c) {
+    if (!g_opt_auto_stub_ipc) return ipc_unknown(o, c);
     if (ipc_warn_once(((GenData*)o->data)->name, c->cmd))
         WARN("  [not implemented] %s cmd %u -> ok\n", ((GenData*)o->data)->name, c->cmd);
     return 0;

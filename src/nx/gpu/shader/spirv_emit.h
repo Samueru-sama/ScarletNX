@@ -109,11 +109,11 @@ uint32_t spv_emit_constant_vec4(SpvEmitter* e, uint32_t type, const uint32_t com
 uint32_t spv_emit_constant_vec2(SpvEmitter* e, uint32_t type, uint32_t x, uint32_t y);
 uint32_t spv_emit_constant_vec3(SpvEmitter* e, uint32_t type, uint32_t x, uint32_t y, uint32_t z);
 uint32_t spv_emit_storage_buffer(SpvEmitter* e, uint32_t struct_type, uint32_t set, uint32_t binding);
-uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t f32_type, uint32_t u32_type,
+uint32_t spv_emit_uniform_vec4_array(SpvEmitter* e, uint32_t vec4_type, uint32_t component_type, uint32_t u32_type,
                                      uint32_t set, uint32_t binding, uint32_t elements,
                                      uint32_t* component_pointer_type);
-uint32_t spv_emit_uniform_component_f32(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member,
-                                        uint32_t element, uint32_t component, uint32_t f32_type);
+uint32_t spv_emit_uniform_component(SpvEmitter* e, uint32_t pointer_type, uint32_t buffer, uint32_t member,
+                                    uint32_t element, uint32_t component, uint32_t component_type);
 uint32_t spv_emit_push_vec4(SpvEmitter* e, uint32_t vec4_type, uint32_t f32_type, uint32_t offset,
                             uint32_t* component_pointer_type);
 uint32_t spv_emit_push_component_f32(SpvEmitter* e, uint32_t pointer_type, uint32_t block, uint32_t member,

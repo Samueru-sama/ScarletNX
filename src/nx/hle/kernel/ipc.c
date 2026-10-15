@@ -5,6 +5,7 @@
 /* HIPC/CMIF (+domains). Requests are served on the calling thread, no server threads and
    no context switches. */
 #include "hle/kernel/kernel_int.h"
+#include "runtime/options.h"
 
 /* ============================================================ service objects */
 SvcObj* svcobj_new(const char* name, int (*dispatch)(SvcObj*, IpcCtx*), size_t ds) {
@@ -122,6 +123,7 @@ int ipc_warn_once(const char* name, u32 cmd) {
 /* "undeclared", not "stub": a declared @stub is silent, and this success carries none of the command's outputs, so a
    command that gives an object or a handle leaves the SDK holding null (fsp-srv 205 in Metroid Prime 4) */
 int stub_ok(SvcObj* o, IpcCtx* c) {
+    if (!g_opt_auto_stub_ipc) return ipc_unknown(o, c);
     if (ipc_warn_once(o->name, c->cmd)) LOG("  [undeclared] %s cmd %u -> ok\n", o->name, c->cmd);
     return 0;
 }

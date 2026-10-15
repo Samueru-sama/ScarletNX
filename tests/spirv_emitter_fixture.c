@@ -95,7 +95,7 @@ uint32_t* snx_test_spirv_graphics(int fragment, size_t* words) {
         uint32_t x = spv_emit_vec4_extract(&e, f32_type, varying, 0);
         uint32_t w = spv_emit_vec4_extract(&e, f32_type, coord, 3);
         uint32_t perspective = spv_emit_fdiv(&e, f32_type, x, w);
-        uint32_t constant = spv_emit_uniform_component_f32(&e, component_ptr, cbuf, idx0, idx0, idx0, f32_type);
+        uint32_t constant = spv_emit_uniform_component(&e, component_ptr, cbuf, idx0, idx0, idx0, f32_type);
         uint32_t uv = spv_emit_vec2_construct(&e, vec2_type, half, half);
         uint32_t texel = spv_emit_sample2d(&e, vec4_type, sampled_type, sampler, uv, 0);
         uint32_t compare = spv_emit_sample2d(&e, f32_type, shadow_type, shadow, uv, half);

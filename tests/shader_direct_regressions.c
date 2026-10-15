@@ -617,6 +617,72 @@ static void layer_capabilities(void) {
     g_shader_output_layer = g_shader_geometry = 1;
 }
 
+/* Loads from a constant buffer (a Uniform variable bound below 18) by result type: u32 or anything else. */
+static void cbuf_load_types(const u32* code, size_t words, int* integer, int* other) {
+    u32 bound = words > 5 ? code[3] : 0, uint_type = 0;
+    u32* binding = calloc(bound + 1, sizeof *binding); /* binding + 1, 0 for none */
+    u8* cbuf = calloc(bound + 1, 1);                   /* a constant buffer variable or a pointer into one */
+    *integer = *other = 0;
+    for (size_t i = 5; binding && cbuf && i < words;) {
+        u32 width = code[i] >> 16, op = code[i] & 0xffff;
+        if (!width || i + width > words) break;
+        if (op == 21 && width == 4 && code[i + 2] == 32 && !code[i + 3]) uint_type = code[i + 1];
+        if (op == 71 && width == 4 && code[i + 2] == 33 && code[i + 1] < bound) binding[code[i + 1]] = code[i + 3] + 1;
+        if (op == 59 && width >= 4 && code[i + 3] == 2 && code[i + 2] < bound && binding[code[i + 2]] &&
+            binding[code[i + 2]] <= 18)
+            cbuf[code[i + 2]] = 1;
+        if (op == 65 && width >= 4 && code[i + 3] < bound && cbuf[code[i + 3]] && code[i + 2] < bound)
+            cbuf[code[i + 2]] = 1;
+        if (op == 61 && width >= 4 && code[i + 3] < bound && cbuf[code[i + 3]])
+            ++*(code[i + 1] == uint_type ? integer : other);
+        i += width;
+    }
+    free(binding);
+    free(cbuf);
+}
+
+/* A constant buffer word is loaded as an integer, whatever reads it: a float load may flush integers whose bits look
+   like a denormal, such as the 0x140-0x280 entries of a BRX jump table, which then sends the program back to its
+   start forever. */
+static void cbuf_integer_loads(void) {
+    static const u64 graphics[] = {
+        0x4C98079008070005ull, /* MOV R5, c[4][0x200] */
+        0x3848000000270000ull, /* SHL R0, R0, 2 */
+        0xEF94001000070000ull, /* LDC R0, c[1][R0] */
+        0x4C68101001470C00ull, /* FMUL R0, R12, c[4][0x50] */
+    };
+    static const int stages[] = {ST_VS, ST_FS, ST_CS};
+    for (size_t i = 0; i < sizeof stages / sizeof *stages; i++) {
+        ShaderInfo info;
+        size_t words = 0;
+        int integer, other;
+        u32* code = translate(graphics, 4, stages[i], &info, &words, 1);
+        check(code && !info.unsupported, "constant buffer reads translate");
+        if (code) {
+            cbuf_load_types(code, words, &integer, &other);
+            check(integer >= 3 && !other, "constant buffer words are loaded as integers");
+        }
+        free(code);
+    }
+    /* the compute translator for straight-line programs */
+    u64 compute[64] = {0};
+    compute[10] = SCHED;
+    compute[11] = 0x4C98078000470004ull; /* MOV R4, c[0][0x10] */
+    compute[12] = EXIT;
+    ShaderInfo info;
+    memset(&info, 0, sizeof info);
+    info.cs_local[0] = info.cs_local[1] = info.cs_local[2] = 1;
+    size_t words = 0;
+    int integer, other;
+    u32* code = shader_compute_to_spirv((const u8*)compute, sizeof compute, &info, &words, 1, 1);
+    check(code != NULL, "compute constant buffer read translates");
+    if (code) {
+        cbuf_load_types(code, words, &integer, &other);
+        check(integer == 1 && !other, "compute constant buffer words are loaded as integers");
+    }
+    free(code);
+}
+
 /* a rejected instruction is logged with its word */
 static void unsupported_names_word(void) {
     ShaderInfo info;
@@ -696,6 +762,7 @@ int main(int argc, char** argv) {
     unfed_fragment_input();
     brx_length();
     invalid_ldc_bank();
+    cbuf_integer_loads();
     unsupported_names_word();
     f2i_modifiers();
     global_buffers();

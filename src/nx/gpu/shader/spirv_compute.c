@@ -28,8 +28,8 @@ static u32 cbread(CsDirect* c, u32 idx, u32 byte_off) {
     u32 member = c->zero;
     u32 element = cu(c, byte_off >> 4);
     u32 component = cu(c, (byte_off >> 2) & 3);
-    u32 f = spv_emit_uniform_component_f32(&c->e, c->cbptr[idx], c->cb[idx], member, element, component, c->f);
-    return spv_emit_bitcast(&c->e, c->u, f);
+    /* an integer load: a float one may flush words whose bits look like a denormal */
+    return spv_emit_uniform_component(&c->e, c->cbptr[idx], c->cb[idx], member, element, component, c->u);
 }
 static u32 right(CsDirect* c, u64 w, int kind) {
     if (kind == 0) return cr(c, B(w, 20, 8));
@@ -238,7 +238,7 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
     c->u = spv_emit_type_u32(&c->e);
     c->f = spv_emit_type_f32(&c->e);
     c->b = spv_emit_type_bool(&c->e);
-    u32 v3 = spv_emit_type_vec3(&c->e, c->u), v4 = spv_emit_type_vec4(&c->e, c->f);
+    u32 v3 = spv_emit_type_vec3(&c->e, c->u), v4 = spv_emit_type_vec4(&c->e, c->u);
     u32 fnt = spv_emit_type_function_void(&c->e, vt);
     u32 rp = spv_emit_type_function_pointer(&c->e, c->u), pp = spv_emit_type_function_pointer(&c->e, c->b);
     c->zero = cu(c, 0);
@@ -249,7 +249,7 @@ u32* shader_compute_to_spirv(const u8* code, u32 max_bytes, ShaderInfo* si, size
     if (needs_local) interfaces[ninterface++] = c->local = spv_emit_builtin_input_vec3(&c->e, v3, 27);
     for (u32 i = 0; i < 18; i++)
         if (cb_used[i]) {
-            c->cb[i] = spv_emit_uniform_vec4_array(&c->e, v4, c->f, c->u, 0, i, 4096, &c->cbptr[i]);
+            c->cb[i] = spv_emit_uniform_vec4_array(&c->e, v4, c->u, c->u, 0, i, 4096, &c->cbptr[i]);
             interfaces[ninterface++] = c->cb[i];
             meta.cbuf_mask |= 1u << i;
             meta.cbuf_max[i] = cb_max[i];

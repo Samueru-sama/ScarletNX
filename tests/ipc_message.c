@@ -20,6 +20,7 @@
 /* ============================================================ the kernel ipc.c calls */
 u8* g_mem;
 int g_verbose;
+int g_opt_auto_stub_ipc = 1;
 static int test_log; /* SNX_TEST_LOG=1 prints what ipc.c logs */
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
@@ -787,12 +788,27 @@ static void domain_requests(u32 h, SvcObj* root) {
     CHECK(send(h) == 0 && !got.calls && cmif_parse_response(msg(), 1, 0).result == RC(10, 211));
 }
 
+/* auto_stub_ipc: a command no interface declares answers success, or the console's UnknownCommandId when it's off */
+static void undeclared_commands(void) {
+    SvcObj o;
+    IpcCtx c;
+    memset(&o, 0, sizeof o);
+    memset(&c, 0, sizeof c);
+    o.name = "test:p";
+    c.cmd = 77;
+    CHECK(stub_ok(&o, &c) == 0 && c.out_size == 0);
+    g_opt_auto_stub_ipc = 0;
+    CHECK(stub_ok(&o, &c) == (int)RC(10, 221));
+    g_opt_auto_stub_ipc = 1;
+}
+
 int main(void) {
     user_buffers();
     test_log = getenv("SNX_TEST_LOG") != NULL;
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
 
+    undeclared_commands();
     SvcObj* root = test_object("test:p");
     u32 h = session_new(root);
     plain_requests(h, root);

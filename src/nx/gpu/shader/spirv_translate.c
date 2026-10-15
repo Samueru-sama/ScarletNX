@@ -474,17 +474,20 @@ static void vertex_depth_fix(DirectCtx* c, u32 position, u32 push, u32 push_poin
     spv_emit_label(&c->emit, merge);
 }
 
-static u32 cbuf_read(DirectCtx* c, u64 w) {
+/* A constant buffer word is loaded as an integer: a float load may flush the bits of an integer that look like a
+   denormal (Adreno does, in a shader that declares DenormFlushToZero), and a jump table of small offsets reads 0. */
+static u32 cbuf_word(DirectCtx* c, u64 w) {
     u32 idx = B(w, 34, 5), off = B(w, 20, 14) * 4;
     u32 member = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
     u32 element = spv_emit_constant_u32(&c->emit, c->u32_type, off >> 4);
     u32 component = spv_emit_constant_u32(&c->emit, c->u32_type, (off >> 2) & 3);
-    return spv_emit_uniform_component_f32(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element, component,
-                                          c->f32_type);
+    return spv_emit_uniform_component(&c->emit, c->cbuf_pointer[idx], c->cbuf[idx], member, element, component,
+                                      c->u32_type);
 }
+static u32 cbuf_read(DirectCtx* c, u64 w) { return spv_emit_bitcast(&c->emit, c->f32_type, cbuf_word(c, w)); }
 static u32 integer_right(DirectCtx* c, u64 w, int kind) {
     if (kind == 0) return reg_read(c, B(w, 20, 8));
-    if (kind == 1) return spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w));
+    if (kind == 1) return cbuf_word(c, w);
     u32 imm = B(w, 20, 19);
     return spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 56, 1) ? imm | 0xfff80000u : imm);
 }
@@ -910,9 +913,8 @@ static u32 cbuf_read_dynamic(DirectCtx* c, u32 bank, u32 address) {
     u32 element = spv_emit_shift_right_u32(&c->emit, c->u32_type, address, four);
     u32 component = spv_emit_bitwise_and_u32(&c->emit, c->u32_type,
                                              spv_emit_shift_right_u32(&c->emit, c->u32_type, address, two), three);
-    u32 value = spv_emit_uniform_component_f32(&c->emit, c->cbuf_pointer[bank], c->cbuf[bank], c->zero, element,
-                                               component, c->f32_type);
-    return spv_emit_bitcast(&c->emit, c->u32_type, value);
+    return spv_emit_uniform_component(&c->emit, c->cbuf_pointer[bank], c->cbuf[bank], c->zero, element, component,
+                                      c->u32_type);
 }
 
 static u32 double_source(DirectCtx* c, u32 vec2_u32, u64 w, int kind) {
@@ -2642,7 +2644,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     }
     for (u32 i = 0; i < 18; i++) {
         if (!cbuf_used[i]) continue;
-        c->cbuf[i] = spv_emit_uniform_vec4_array(&c->emit, vec4, c->f32_type, c->u32_type, shader_vk_set(stage), i,
+        c->cbuf[i] = spv_emit_uniform_vec4_array(&c->emit, vec4_u32, c->u32_type, c->u32_type, shader_vk_set(stage), i,
                                                  4096, &c->cbuf_pointer[i]);
         interfaces[count++] = c->cbuf[i];
     }
@@ -3158,7 +3160,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             u32 lhs = reg_read(c, a);
             u32 rhs = immediate32       ? spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 32))
                       : op == O_IMAD_RC ? reg_read(c, B(w, 39, 8))
-                      : op == O_IMAD_CR ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w))
+                      : op == O_IMAD_CR ? cbuf_word(c, w)
                                         : integer_right(c, w,
                                                         op == O_IMUL_R || op == O_IMAD_R ? 0
                                                         : op == O_IMUL_C                 ? 1
@@ -3171,7 +3173,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (mad) {
                 u32 mode;
                 addend = op == O_IMAD32I   ? reg_read(c, d)
-                         : op == O_IMAD_RC ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w))
+                         : op == O_IMAD_RC ? cbuf_word(c, w)
                                            : reg_read(c, B(w, 39, 8));
                 mode = B(w, immediate32 ? 55 : 51, 2);
                 if (mode == 2) rhs = spv_emit_isub_u32(&c->emit, c->u32_type, c->zero, rhs);
@@ -3423,7 +3425,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             u32 source = reg_read(c, B(w, 39, 8));
             u32 rhs = B(w, 52, 1) ? spv_emit_shift_right_u32(&c->emit, c->u32_type, source, half)
                                   : spv_emit_bitwise_and_u32(&c->emit, c->u32_type, source, mask);
-            u32 third = spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w));
+            u32 third = cbuf_word(c, w);
             if (B(w, 50, 2) == 1)
                 third = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, third, mask);
             else if (B(w, 50, 2) == 2)
@@ -3436,7 +3438,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             u32 sixteen = spv_emit_constant_u32(&c->emit, c->u32_type, 16);
             /* the constant buffer form keeps a 2-bit select at 50 (no CBCC), B's half at 52, PSL at 55, MRG at 56 */
             u32 lhs = xmad_half(c, i32_type, reg_read(c, a), B(w, 53, 1), B(w, 48, 1));
-            u32 source = spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w));
+            u32 source = cbuf_word(c, w);
             u32 rhs = xmad_half(c, i32_type, source, B(w, 52, 1), B(w, 49, 1));
             u32 product = spv_emit_imul_u32(&c->emit, c->u32_type, lhs, rhs);
             if (B(w, 55, 1)) product = spv_emit_shift_left_u32(&c->emit, c->u32_type, product, sixteen);
@@ -3995,7 +3997,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             reg_write(c, d, result);
         } else if (op == O_ICMP_R || op == O_ICMP_RC || op == O_ICMP_CR || op == O_ICMP_I) {
             u32 third = reg_read(c, B(w, 39, 8));
-            u32 right = op == O_ICMP_RC || op == O_ICMP_CR ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w))
+            u32 right = op == O_ICMP_RC || op == O_ICMP_CR ? cbuf_word(c, w)
                         : op == O_ICMP_I                   ? integer_right(c, w, 2)
                                                            : reg_read(c, b);
             u32 comparison = op == O_ICMP_RC ? right : third;
@@ -4007,15 +4009,14 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             u32 third = spv_emit_bitcast(&c->emit, c->f32_type, reg_read(c, B(w, 39, 8)));
             u32 comparison = op == O_FCMP_RC ? cbuf_read(c, w) : third;
             u32 alternative = op == O_FCMP_RC   ? reg_read(c, B(w, 39, 8))
-                              : op == O_FCMP_CR ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w))
+                              : op == O_FCMP_CR ? cbuf_word(c, w)
                               : op == O_FCMP_I  ? spv_emit_bitcast(&c->emit, c->u32_type, float_imm20(c, w))
                                                 : reg_read(c, b);
             u32 test = spv_emit_fcompare(&c->emit, c->bool_type, B(w, 48, 4), comparison, zero_f);
             reg_write(c, d, spv_emit_select(&c->emit, c->u32_type, test, reg_read(c, a), alternative));
         } else if (op == O_BFI_R || op == O_BFI_RC || op == O_BFI_CR || op == O_BFI_I) {
-            u32 base =
-                op == O_BFI_RC ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w)) : reg_read(c, B(w, 39, 8));
-            u32 packed = op == O_BFI_CR   ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w))
+            u32 base = op == O_BFI_RC ? cbuf_word(c, w) : reg_read(c, B(w, 39, 8));
+            u32 packed = op == O_BFI_CR   ? cbuf_word(c, w)
                          : op == O_BFI_RC ? reg_read(c, B(w, 39, 8))
                          : op == O_BFI_I  ? integer_right(c, w, 2)
                                           : reg_read(c, b);
@@ -4570,8 +4571,8 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                    IPA.MUL */
                 if (addr != 0x7c && needs_scale && component < 2) {
                     u32 zero_index = spv_emit_constant_u32(&c->emit, c->u32_type, 0);
-                    u32 scale = spv_emit_uniform_component_f32(&c->emit, c->scale_pointer, c->scale_buffer, zero_index,
-                                                               zero_index, zero_index, c->f32_type);
+                    u32 scale = spv_emit_uniform_component(&c->emit, c->scale_pointer, c->scale_buffer, zero_index,
+                                                           zero_index, zero_index, c->f32_type);
                     value = spv_emit_fmul(&c->emit, c->f32_type, value, scale);
                     spv_emit_no_contraction(&c->emit, value);
                 }
@@ -4649,7 +4650,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (reg_b)
                 raw_b = reg_read(c, op == O_HFMA2_RC ? B(w, 39, 8) : b);
             else if (cbuf_b)
-                raw_b = spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w));
+                raw_b = cbuf_word(c, w);
             else {
                 u32 lo = (B(w, 20, 9) << 6) | (B(w, 29, 1) << 15);
                 u32 hi = (B(w, 30, 9) << 6) | (B(w, 56, 1) << 15);
@@ -4669,7 +4670,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             rhs = half_pair_mod(c, vec2, half_pair(c, vec2, raw_b, swizzle_b), abs_b, neg_b);
             u32 pair;
             if (fma) {
-                u32 add_raw = rc ? spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w)) : reg_read(c, B(w, 39, 8));
+                u32 add_raw = rc ? cbuf_word(c, w) : reg_read(c, B(w, 39, 8));
                 u32 swizzle_c = rc ? 1 : cr ? B(w, 53, 2) : B(w, 35, 2);
                 u32 addend = half_pair_mod(c, vec2, half_pair(c, vec2, add_raw, swizzle_c), 0,
                                            rc || cr ? B(w, 51, 1) : B(w, 30, 1));
@@ -4687,7 +4688,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (op == O_HSET2_R)
                 raw_b = reg_read(c, b);
             else if (op == O_HSET2_C)
-                raw_b = spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w));
+                raw_b = cbuf_word(c, w);
             else {
                 u32 low = (B(w, 20, 9) << 6) | (B(w, 29, 1) << 15);
                 u32 high = (B(w, 30, 9) << 6) | (B(w, 56, 1) << 15);
@@ -4722,7 +4723,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             if (op == O_HSETP2_R)
                 raw_b = reg_read(c, b);
             else if (op == O_HSETP2_C)
-                raw_b = spv_emit_bitcast(&c->emit, c->u32_type, cbuf_read(c, w));
+                raw_b = cbuf_word(c, w);
             else {
                 u32 low = (B(w, 20, 9) << 6) | (B(w, 29, 1) << 15);
                 u32 high = (B(w, 30, 9) << 6) | (B(w, 56, 1) << 15);

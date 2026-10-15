@@ -21,6 +21,7 @@
 #include <string.h>
 
 int g_opt_diag = 0;
+int g_opt_auto_stub_ipc = 1;
 int g_opt_docked = 0, g_opt_lang = 1, g_opt_fps = SNX_FPS_GAME, g_opt_fullscreen = 0;
 float g_opt_resf = 1.0f;
 int g_opt_shadows = 1;
@@ -209,6 +210,10 @@ static const IniOpt INI_NETWORK[] = {
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL}};
 static const IniOpt INI_DBG[] = {
     {"log", "1", "Log detail: 1 = normal, 2 = everything (slow)", INI_INT, 0, &g_verbose, 0, 2, NULL},
+    {"auto_stub_ipc", "1",
+     "1 = a service command the runtime doesn't know answers success (logged as [undeclared]), 0 = it fails with "
+     "UnknownCommandId, as on a console",
+     INI_INT, 0, &g_opt_auto_stub_ipc, 0, 1, NULL},
     {"diag", "0", "1 = save the data of each new compute shader to captures/compute, for debugging", INI_INT, 0,
      &g_opt_diag, 0, 1, NULL},
     {"profile", "0", "1 = write profile.txt every 10 seconds (CPU profiler, Windows only)", INI_INT, INI_STARTUP,

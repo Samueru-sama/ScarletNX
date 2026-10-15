@@ -236,6 +236,7 @@ it for one run.
 | `cpu_fallback=jit` | Game code the recompiler missed is compiled in the background and runs in the interpreter until then, and what earlier runs missed is compiled from the start. `interp` keeps it in the interpreter. Where the JIT can't start (Windows for now) the interpreter runs it |
 | `jit_threads=0` | Threads compiling for `cpu_fallback=jit`; `0` uses every CPU the game may run on but two, at most 8. They run below the game's threads |
 | `log=2` | Verbose, adds runtime overhead |
+| `auto_stub_ipc=1` | A service command the runtime doesn't know answers success, logged as `[undeclared]`, and a service it doesn't have answers every command that way. `0` answers them with the console's UnknownCommandId instead, which shows the gap where the game makes the call |
 
 `audout` PCM playback and the audio renderer's device sink (`audren`) use SDL3's system-default output on
 Windows, Linux and supported Unix systems. Choose the output in your operating system's sound settings. The
