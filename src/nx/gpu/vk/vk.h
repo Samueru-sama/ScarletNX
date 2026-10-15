@@ -286,6 +286,7 @@ int vk_buf_draw_prepare(VkDrawStorage* draw);
 void vk_buf_writable_abort(void);
 void vk_buf_writable_commit(void);
 void vk_buf_mem_need(u64 gva, u64 len);
+int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
 void vk_buf_mem_need_map(u64 gva, u64 len);
 void vk_buf_before_write(u64 gva, u64 len);
 void vk_buf_land(void);

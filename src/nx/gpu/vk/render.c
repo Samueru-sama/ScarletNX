@@ -660,16 +660,23 @@ static int cb_get(int stage, int i, u32 sz, VkBuffer* buf, u64* off) {
         u64 off;
     } c[5][18];
     u64 a = g_vk_cb[stage][i];
-    /* Pending shader results there land first: the checks below only see guest memory. */
+    int pending;
+    /* Pending compute results there land first. A pending graphics result is newer than the guest memory the checks
+       below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
-    if (g_gfx_any && a) vk_buf_mem_need(a, sz);
-    if (a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch && c[stage][i].frame == vk_submit_number() &&
-        c[stage][i].sz >= sz && !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
+    pending = g_gfx_any && a && vk_buf_pending(a, sz);
+    if (!pending && a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch &&
+        c[stage][i].frame == vk_submit_number() && c[stage][i].sz >= sz &&
+        !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
         *buf = c[stage][i].buf;
         *off = c[stage][i].off;
         return 1;
     }
     if (!(cache && a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    if (pending) {
+        c[stage][i].a = 0;
+        return 1;
+    }
     c[stage][i].a = a;
     c[stage][i].gw = gpu_mem_generation();
     c[stage][i].frame = vk_submit_number();
