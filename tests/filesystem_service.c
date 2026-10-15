@@ -744,7 +744,18 @@ static void test_raw_romfs(SvcObj* proxy) {
     CHECK(!memcmp(GP(0x5000), expected + 2, sizeof expected - 2));
     CHECK(GP(0x5000)[sizeof expected - 2] == 0xcc);
     svcobj_unref(storage);
-    puts("PASS raw RomFS reads and cached image size");
+    /* OpenDataStorageWithProgramIndex (205): index 0 is this program's RomFS, another index fails with no storage */
+    request(&r, 205);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    storage = r.c.out_objs[0];
+    CHECK(get_size(storage) == sizeof expected);
+    svcobj_unref(storage);
+    request(&r, 205);
+    r.raw[0] = 1;
+    dispatch(proxy, &r, RC(2, 1002));
+    CHECK(r.c.nout_objs == 0);
+    puts("PASS raw RomFS reads, cached image size and the storage by program index");
 }
 
 /* OpenSaveDataFileSystem (51): the SaveDataSpaceId (u8) at 0 and the 0x40 byte SaveDataAttribute at 8, whose

@@ -21,14 +21,16 @@ static void usage(void) {
          "  -x, --extract          Extract XCI/NSP/DXCI/DNSP\n"
          "  -r, --recomp           Recompile ExeFS/NRO or prepare a dump without playing\n"
          "  -H, --headless         Run without a window or swapchain");
-    puts("  -f, --fullscreen      Start fullscreen (windowed when omitted)\n"
+    puts("  -f, --fullscreen       Start fullscreen for this run (--fullscreen=0: windowed)\n"
+         "                         Without either, the game's .ini decides\n"
          "  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
          "  --controls=0|1         The on-screen controls: hidden or shown (the game's menu sets them)");
     puts("  --backend=llvm|gcc     Select the recompiler backend for preparation\n"
          "  -x -h / -r -h          Extraction / recompilation options\n"
          "  --game=games/Game      Run a compiled game\n"
          "  --repo / --build-dir   Override this build's checkout / build directory\n"
-         "                         (without its checkout: the user's data folder,\n"
+         "                         (without its checkout: a games/ folder's beside the\n"
+         "                         AppImage or the program, else the user's data folder,\n"
 #ifdef _WIN32
          "                         %APPDATA%\\scarletnx)");
 #elif defined(__APPLE__)
@@ -170,6 +172,7 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
     command[n++] = game;
     if (flags & SNX_HEADLESS) command[n++] = "-H";
     if (flags & SNX_FULLSCREEN) command[n++] = "-f";
+    if (flags & SNX_WINDOWED) command[n++] = "--fullscreen=0";
     if (touch) command[n++] = touch;
     if (controls) command[n++] = controls;
     if (flags & SNX_STOP)
@@ -301,7 +304,7 @@ int snx_driver(int argc, char** argv) {
         result = snx_error("automatic preparation accepts one dump file. Pass game arguments after --");
         goto done;
     }
-    if ((flags & (SNX_EXTRACT | SNX_RECOMP)) && (flags & (SNX_HEADLESS | SNX_GDB | SNX_FULLSCREEN))) {
+    if ((flags & (SNX_EXTRACT | SNX_RECOMP)) && (flags & (SNX_HEADLESS | SNX_GDB | SNX_FULLSCREEN | SNX_WINDOWED))) {
         result = snx_error("window and debugger options apply to game execution, not preparation");
         goto done;
     }
@@ -323,21 +326,21 @@ int snx_driver(int argc, char** argv) {
         for (i = separator; i < argc; ++i) rest[n++] = argv[i];
     rest[n] = NULL;
     /* An installed build (the AppImage, the Windows zip) runs without the checkout it was built from: work/, games/ and
-       prod.keys are in the user's data folder then, unless --repo names a folder (the Android app does). Not the
-       current folder: the GUI, a desktop entry or Explorer start the driver wherever they happen to be, often
-       somewhere read-only (/, the AppImage's mount, Program Files) */
+       prod.keys are in its data folder then (snx_data_dir), unless --repo names one (the menu does). Not the current
+       folder: a desktop entry or Explorer start the driver wherever they happen to be, often somewhere read-only (/,
+       the AppImage's mount, Program Files) */
     if (!repo_given) {
-        checkout = snx_path_join(repo, "CMakeLists.txt");
-        if (!snx_is_file(checkout)) {
-            data = snx_user_data_dir();
-            if (data && snx_mkdirs(data)) {
-                free(checkout);
-                result = snx_error("cannot create the data folder %s", data);
-                goto done;
-            }
-            repo = data ? data : ".";
-        }
+        checkout = snx_executable(argv[0]);
+        exe = checkout ? snx_dirname(checkout) : NULL;
         free(checkout);
+        data = snx_data_dir(repo, exe);
+        free(exe);
+        exe = NULL;
+        if (data && snx_mkdirs(data)) {
+            result = snx_error("cannot create the data folder %s", data);
+            goto done;
+        }
+        repo = data ? data : ".";
     }
     snx_tool_console();
     r = snx_absolute(repo);

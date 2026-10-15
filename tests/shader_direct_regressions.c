@@ -572,6 +572,51 @@ static void between_stages(void) {
     }
 }
 
+/* whether the program decorates a variable BuiltIn Layer */
+static int has_layer(const u32* code, size_t words) {
+    for (size_t i = 5; i < words;) {
+        u32 width = code[i] >> 16;
+        if (!width || i + width > words) return -1;
+        if ((code[i] & 0xffff) == 71 && width == 4 && code[i + 2] == 11 && code[i + 3] == 9) return 1;
+        i += width;
+    }
+    return 0;
+}
+
+/* the layer takes ShaderLayer (the device's shaderOutputLayer) when a vertex program writes it, and a fragment
+   program reads it with Geometry (geometryShader) or ShaderLayer. Without the capability the write is dropped and
+   the read is 0, never a module the device can't take */
+static void layer_capabilities(void) {
+    const u64 write = 0xeff07f800647ff00ull; /* AST a[0x64], R0 */
+    const u64 read = 0xe003ff864ff7ff00ull;  /* IPA R0, a[0x64] */
+    for (int out = 0; out < 2; out++) {
+        g_shader_output_layer = out;
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(&write, 1, ST_VS, &info, &words, 1);
+        check(code && !info.unsupported, "a vertex program writing the layer translates");
+        if (code) {
+            check((count_opcode(code, words, 17, 69) == 1) == out, "a layer write takes ShaderLayer when it can");
+            check(has_layer(code, words) == out, "a layer write is dropped without ShaderLayer");
+            check(count_opcode(code, words, 17, 2) == 0, "a layer write never takes Geometry");
+        }
+        free(code);
+        for (int geometry = 0; geometry < 2; geometry++) {
+            g_shader_geometry = geometry;
+            code = translate(&read, 1, ST_FS, &info, &words, 1);
+            check(code && !info.unsupported, "a fragment program reading the layer translates");
+            if (code) {
+                check(count_opcode(code, words, 17, 2) == geometry, "a layer read takes Geometry when it can");
+                check(count_opcode(code, words, 17, 69) == (!geometry && out),
+                      "a layer read takes ShaderLayer without Geometry");
+                check(has_layer(code, words) == (geometry || out), "a layer read is 0 without either");
+            }
+            free(code);
+        }
+    }
+    g_shader_output_layer = g_shader_geometry = 1;
+}
+
 /* a rejected instruction is logged with its word */
 static void unsupported_names_word(void) {
     ShaderInfo info;
@@ -660,5 +705,6 @@ int main(int argc, char** argv) {
     nro_shader_modes();
     issue126_shader_modes();
     between_stages();
+    layer_capabilities();
     return failures ? 1 : 0;
 }

@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Startup-only switches, parsed before loading game code or showing any fatal error box. */
-#include "runtime/options.h"
+#include "runtime/startup.h"
 #include "runtime/cli.h"
 #include <stdio.h>
 
-int g_opt_headless, g_opt_fullscreen;
+int g_opt_headless, g_cli_fullscreen = -1;
 int g_opt_gdb, g_opt_gdb_stop;
 
 int snx_startup_options(int argc, char** argv) {
@@ -20,7 +20,7 @@ int snx_startup_options(int argc, char** argv) {
         }
     }
     g_opt_headless = !!(flags & SNX_HEADLESS);
-    g_opt_fullscreen = !!(flags & SNX_FULLSCREEN);
+    g_cli_fullscreen = flags & SNX_FULLSCREEN ? 1 : flags & SNX_WINDOWED ? 0 : -1;
     g_opt_gdb = !!(flags & SNX_GDB);
     g_opt_gdb_stop = !!(flags & SNX_STOP);
     return 0;

@@ -84,6 +84,12 @@ extern int g_shader_texture_arrays;
 /* set by the renderer: tessellation and geometry shaders may write the point size
    (shaderTessellationAndGeometryPointSize) */
 extern int g_shader_stage_point_size;
+/* set by the renderer: vertex and tessellation programs may write the layer (shaderOutputLayer, the ShaderLayer
+   capability). Without it their layer writes are dropped (layer 0); 1 for the offline translator */
+extern int g_shader_output_layer;
+/* set by the renderer: the device has geometryShader, which the Geometry capability (a fragment program reading the
+   layer) needs; 1 for the offline translator */
+extern int g_shader_geometry;
 /* in clip_enable: a later stage before rasterization follows this one (tessellation or geometry), and the last one
    applies the depth mode and the clip distances */
 #define SNX_SH_NOT_LAST (1u << 31)

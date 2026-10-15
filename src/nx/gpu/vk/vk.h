@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Vulkan renderer: shared state and the interfaces between its parts. Functions are loaded through volk from the
-   loader the window backend gives (SDL's), so nothing links against a Vulkan library.
+   loader the window backend gives (SDL's), or from libvulkan itself in headless runs (vk_init), so nothing links
+   against a Vulkan library.
 
    device.c    instance, device, queues, swapchain, memory allocator (VMA)
    cmd.c       frames in flight: the command buffer being recorded, staging and readback rings, deferred destruction
@@ -16,11 +17,12 @@
    compute.c   compute dispatches (on a queue of their own when there is one), landing their results in guest memory
    renderer.c  the renderer interface the GPU front end calls (gpu/renderer.h) and presenting
    renderdoc.c RenderDoc captures of chosen frames (SNX_RENDERDOC)
+   ui.c        the on-screen controls and the game's menu, drawn over the swapchain image
    vma.cpp     VulkanMemoryAllocator's implementation
 
-   Everything that records commands runs under vk_lock(), which is reentrant: submits come from the game's GPU channel
-   threads, presents from the thread that queues a buffer, and compute results land on whichever thread reads their
-   memory first. */
+   Everything that records commands runs under vk_lock(), which is reentrant: submits and presents come from the GPU
+   thread (gpu/gpu.c, hle/services/vi.c's present_queued), the menu's refresh from the main thread, and compute results
+   land on whichever thread reads their memory first. */
 #ifndef SNX_VK_H
 #define SNX_VK_H
 #include "cpu/aarch64/cpu.h"
@@ -50,7 +52,9 @@ typedef struct {
     int sc_win_w, sc_win_h; /* the window size it was made for (sc_extent: that as the surface takes it) */
     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
     VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
-    int sc_turned;          /* upright on a display held another way: Android calls each present suboptimal for it */
+    int sc_vsync;  /* the vsync setting it was made for (1: FIFO; 0 is FIFO too on a surface with nothing else) */
+    int sc_turned; /* upright on a display held another way: Android calls each present suboptimal for it */
+    int sc_lost;   /* the last create found the surface lost: show() has it made anew */
     u32 sc_count;
     VkImage sc_images[VK_SC_MAX];
     VkSemaphore sc_done[VK_SC_MAX]; /* per swapchain image: rendering into it finished, it can be presented */
@@ -58,16 +62,20 @@ typedef struct {
     VkPhysicalDeviceFeatures feat;
     int has_divisor;      /* VK_EXT_vertex_attribute_divisor: instance divisors above 1 */
     int has_border_color; /* VK_EXT_custom_border_color */
+    u32 border_color_max; /* maxCustomBorderColorSamplers: past it, samplers take the nearest built-in color */
     int has_mirror_clamp; /* samplerMirrorClampToEdge: VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE */
 } VkState;
 extern VkState g_vk;
 
 /* device.c */
 int vk_init(void);
-/* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one. 0 while
-   the window has no area (minimized) */
+/* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one, with
+   the present mode the vsync setting asks for, recorded in sc_vsync (show() makes a new one when the setting moves).
+   0 while the window has no area (minimized) or its surface can't be queried, the old swapchain staying, or when the
+   create failed: then there is none. A lost surface sets sc_lost; the next present tries again */
 int vk_swapchain_create(int srgb);
 int vk_surface_recreate(void);
+int vk_window_release(void); /* Renderer.release_window */
 /* logs a failed call with where it happened; evaluates to 1 on success */
 #define VK_OK(call) vk_ok_((call), #call, __FILE__, __LINE__)
 int vk_ok_(VkResult r, const char* what, const char* file, int line);
@@ -112,7 +120,7 @@ void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPi
                 VkAccessFlags2 dst_access, VkImageLayout to);
 /* a descriptor set from the current frame's pools, freed when the frame is reused */
 VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout);
-/* a descriptor pool's sizes (4 entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
+/* a descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
 #define VK_POOL_TYPES 5 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers */
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in the compute set, from SNX_VKB_IMGBUF */
@@ -167,7 +175,7 @@ void vk_view_formats(VkImageCreateInfo* ii, VkViewFormats* vf);
 
 /* gpu/vk/surface.c: a render target or a texture */
 typedef struct {
-    u64 key; /* view type | swizzle | format */
+    u64 key; /* view type | swizzle << 4 | format << 20 | stencil aspect << 60 (vk_tex_view) */
     VkImageView v;
 } SurfView;
 typedef struct Surf {
@@ -175,7 +183,8 @@ typedef struct Surf {
     u32 w, h, layers, levels;
     u32 sw, sh;  /* the image's size: render targets are w x h times the resolution scale */
     u32 depth3d; /* 3D textures: depth (layers is 1) */
-    u32 fkey;    /* guest format | 0x10000 for depth */
+    u32 fkey;    /* render targets: guest format | 0x10000 for depth. Textures: TIC word 0's format bits (0x7FFFF), sRGB
+                    in bit 31, raw (vk_tex_from_tic_raw) in bit 30 */
     VkFmt f;
     u32 bl, bh, bd, pitch; /* guest layout: block linear with block height 2^bh GOBs, or pitch linear */
     u64 layer_size;        /* bytes from one layer to the next in guest memory */
@@ -196,10 +205,13 @@ typedef struct Surf {
     u64 draw_hash;  /* fallback guest-memory hash at that baseline */
     u32 draw_wseen; /* CPU write-tracking clock at that baseline, zero after a reload */
     int draw_has_hash;
-    struct Surf* copy_dst; /* render targets: the texture last copied from it (gpu/vk/texture.c) */
-    u32 copy_wgen;         /* and its wgen then */
-    u32 copy_tgen;         /* and the texture's upload generation then */
-    u32 mem_wgen;          /* render targets: wgen when guest memory last held the same (written back or loaded) */
+    /* render targets: the two textures last copied from it (gpu/vk/texture.c), with its wgen and the texture's upload
+       generation then, so two textures over one target don't copy it again on each other's binds */
+    struct {
+        struct Surf* t;
+        u32 wgen, tgen;
+    } copied[2];
+    u32 mem_wgen; /* render targets: wgen when guest memory last held the same (written back or loaded) */
     u64 gw; /* gpu_mem_generation() when it last matched guest memory (textures) or was bound to draw (render targets) */
     /* textures: views by type and swizzle, and the change check (gpu/vk/texture.c) */
     SurfView sv[6];
@@ -227,6 +239,9 @@ Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h); /* the render target the guest 
 /* a render target read where its guest memory is (a texture, a present): keeps it from being evicted, and says
    once when the GPU front end wrote that memory after the target was last drawn */
 void vk_rt_note_read(Surf* s);
+/* an image of a scaled target's format at the guest's size with that many layers, a transfer's source and
+   destination: to move it to and from guest memory, or into a texture a blit can't reach. VK_NULL_HANDLE on failure */
+VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
 /* the stages a texture moved to SHADER_READ_ONLY_OPTIMAL is made visible to: all that sample, since a later read in
@@ -267,8 +282,11 @@ Surf* vk_tex_from_tic_raw(const u32* tic); /* UINT view of raw RGBA8 texel bytes
 VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkComponentMapping* map, int stencil);
 /* an empty texture of a view type: num 0 float, 1 unsigned, 2 signed integer, 3 depth at 1.0 (shadow samplers) */
 VkImageView vk_null_view(VkImageViewType type, int num);
-VkSampler vk_sampler(const u32* tsc);
-void vk_tex_frame(void); /* a frame was presented: evicts what wasn't used for a while */
+/* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
+   border color as integers (an integer texture) */
+VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
+void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
 
 /* gpu/vk/buffer.c: guest memory [gva, gva + len) as a buffer the GPU reads, valid until the next submit */
 int vk_buf_get(u64 gva, u64 len, VkBuffer* buf, u64* off);
@@ -429,10 +447,11 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
                     u32 instances);
 /* a texture binding, for draws and compute: the view type a declaration takes, the view of t with the header's
    swizzle (VK_NULL_HANDLE when t is NULL or not of the number type num: 0 float, 1 unsigned, 2 signed integer), and
-   the header's sampler with the declaration's comparison (integer textures unfiltered) */
+   the header's sampler with the declaration's comparison (integer textures unfiltered). The sampler's t and want,
+   the texture whose own view is bound (NULL for none) and its view type, say whether anisotropy= may raise it */
 VkImageViewType vk_tex_view_type(const ShTex* st);
 VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, int num);
-VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num);
+VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num, const Surf* t, VkImageViewType want);
 extern u64 g_vk_drawn, g_vk_skipped; /* draws recorded, and draws skipped (unsupported topology, failed shader) */
 
 #endif

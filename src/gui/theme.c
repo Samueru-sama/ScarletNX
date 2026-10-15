@@ -2,96 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 #include "theme.h"
 #include "common.h"
+#include "gui_themes.h"
 #include <stdlib.h>
 #include <string.h>
 
-static const GuiTheme builtins[] = {
-    {
-        .id = "default",
-        .author = "ScarletNX",
-        .format = GUI_THEME_FORMAT,
-        .warning = {255, 170, 0},
-        .name = "Default",
-        .page = {0, 0, 0},
-        .ink = {220, 220, 220},
-        .soft = {160, 170, 180},
-        .focus = {255, 255, 0},
-        .active = {255, 85, 255},
-        .failure = {255, 0, 0},
-        .dim = {80, 80, 80},
-        .head = GUI_STYLE_PLAIN,
-        .footer = GUI_STYLE_PLAIN,
-        .marker = "- ",
-        .run_colors = {.page = {0, 0, 0},
-                       .ink = {220, 220, 220},
-                       .soft = {160, 170, 180},
-                       .dim = {80, 80, 80},
-                       .failure = {255, 0, 0},
-                       .warning = {255, 170, 0}},
-        .typing_ms = 25,
-        .blink_ms = 500,
-        .splash_ms = 1000,
-        .splash_chance = 100,
-        .prompt =
-            {.align = GUI_ALIGN_CENTER, .open = "[ ", .close = " ]", .blink = 1, .lines = {[GUI_PROMPT_KEYS] = 1}},
-    },
-    {
-        .id = "yorha",
-        .author = "ScarletNX",
-        .format = GUI_THEME_FORMAT,
-        .warning = {0x8A, 0x6A, 0x2A},
-        .name = "YoRHa",
-        .page = {0xDA, 0xD6, 0xBE},
-        .ink = {0x45, 0x41, 0x3A},
-        .soft = {0x8A, 0x86, 0x76},
-        .focus = {0x45, 0x41, 0x3A},
-        .active = {0x8A, 0x6A, 0x2A},
-        .failure = {0xA5, 0x47, 0x3C},
-        .dim = {0xB4, 0xB0, 0x9C},
-        .head = GUI_STYLE_BAR,
-        .footer = GUI_STYLE_BAR,
-        .head_rule = 1,
-        .focus_bar = 1,
-        .marker = "\xE2\x96\xA0 ", /* U+25A0, the font's square */
-        .title = {"SCARLETNX  /  MENU", "SCARLETNX  /  GAMES", "SCARLETNX  /  KEYS", "COMPILING", "BOOTING"},
-        .run = GUI_RUN_STEPS,
-        .run_colors = {.page = {0x14, 0x14, 0x16},
-                       .ink = {0xE6, 0xE4, 0xDC},
-                       .soft = {0x8E, 0x8C, 0x86},
-                       .dim = {0x3E, 0x3E, 0x40},
-                       .failure = {0xD2, 0x46, 0x3A},
-                       .warning = {0xD9, 0xB2, 0x4A}},
-        .texture = 1,
-        .detailed = 1,
-        .ring = GUI_RING_RIGHT,
-        .line_in = GUI_LINE_TYPING,
-        .fade_in_ms = 250,
-        .fade_out_ms = 500,
-        .line_in_ms = 220,
-        .typing_ms = 5,
-        .blink_ms = 500,
-        .scroll_ms = 120,
-        .splash_page = {0xDA, 0xD6, 0xBE},
-        .splash_ms = 1000,
-        .splash_chance = 25,
-        .prompt =
-            {.align = GUI_ALIGN_CENTER, .open = "[ ", .close = " ]", .blink = 1, .lines = {[GUI_PROMPT_KEYS] = 1}},
-    },
-};
+/* the built-ins: each folder of src/gui/themes, its theme.ini compiled in (cmake/gui_themes.cmake) and read the
+   first time one is asked for. Their files are their only source: nothing here holds a value of theirs */
+static GuiTheme builtins[SNX_GUI_THEME_COUNT];
 /* a theme's id fits a slot of the theme list: an array of negative size otherwise */
 typedef char snx_gui_id_slot[sizeof(((GuiThemes*)0)->ids[0]) == sizeof(((GuiTheme*)0)->id) ? 1 : -1];
 static const char* const screens[GUI_SCREEN_COUNT] = {"menu", "games", "keys", "compiling", "loading"};
 static const char* const rings[] = {"none", "left", "right", "right-near-text"};
-
-const GuiTheme* gui_splash_theme(const GuiTheme* theme, int roll) {
-    return roll < (int)theme->splash_chance ? theme : gui_theme_builtin("default");
-}
-const GuiTheme* gui_theme_builtin(const char* id) {
-    size_t i;
-    for (i = 0; id && i < sizeof(builtins) / sizeof(*builtins); ++i)
-        if (!strcmp(builtins[i].id, id)) return &builtins[i];
-    return NULL;
-}
 
 static char* trim(char* s) {
     size_t n;
@@ -339,10 +260,33 @@ static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme*
     free(copy_of);
     return 1;
 }
+/* the built-ins, read from their files the first time: each one over nothing, as its file sets every key */
+static const GuiTheme* builtins_read(void) {
+    size_t i;
+    if (builtins[0].id[0]) return builtins;
+    for (i = 0; i < SNX_GUI_THEME_COUNT; ++i) {
+        GuiTheme* t = &builtins[i];
+        memset(t, 0, sizeof *t);
+        copy(t->id, sizeof t->id, snx_gui_theme_ids[i]);
+        if (!visit(snx_gui_theme_texts[i], strlen(snx_gui_theme_texts[i]), t, NULL, 0, 0)) t->id[0] = 0;
+    }
+    return builtins;
+}
+const GuiTheme* gui_splash_theme(const GuiTheme* theme, int roll) {
+    return roll < (int)theme->splash_chance ? theme : gui_theme_builtin("default");
+}
+const GuiTheme* gui_theme_builtin(const char* id) {
+    size_t i;
+    const GuiTheme* all = builtins_read();
+    for (i = 0; id && i < SNX_GUI_THEME_COUNT; ++i)
+        if (all[i].id[0] && !strcmp(all[i].id, id)) return &all[i];
+    return NULL;
+}
+
 int gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t size) {
     const GuiTheme* bases[3] = {NULL, NULL, NULL}; /* the base, ErET's layout, set when that is loading */
     if (!visit(text, size, theme, bases, 1, 0)) return 0;
-    *theme = bases[0] ? *bases[0] : bases[1] ? *bases[1] : builtins[0];
+    *theme = bases[0] ? *bases[0] : bases[1] ? *bases[1] : builtins_read()[0];
     copy(theme->id, sizeof theme->id, id);
     copy(theme->name, sizeof theme->name, id);
     return visit(text, size, theme, bases, 0, !bases[0] && bases[2]);
@@ -362,7 +306,7 @@ void gui_theme_load(GuiTheme* theme, const char* const* dirs, size_t count, cons
         if (read) return;
     }
     builtin = gui_theme_builtin(id);
-    *theme = builtin ? *builtin : builtins[0];
+    *theme = builtin ? *builtin : builtins_read()[0];
 }
 
 void gui_themes_free(GuiThemes* themes) {
@@ -379,11 +323,11 @@ static int listed(const GuiThemes* themes, const char* id) {
 void gui_themes_scan(GuiThemes* themes, const char* const* dirs, size_t count) {
     size_t total, capacity, i, d;
     gui_themes_free(themes);
-    total = sizeof(builtins) / sizeof(*builtins);
+    total = SNX_GUI_THEME_COUNT;
     capacity = total;
     themes->ids = calloc(capacity, sizeof *themes->ids);
     if (!themes->ids) return;
-    for (i = 0; i < total; ++i) memcpy(themes->ids[themes->count++], builtins[i].id, sizeof *themes->ids);
+    for (i = 0; i < total; ++i) memcpy(themes->ids[themes->count++], builtins_read()[i].id, sizeof *themes->ids);
     for (d = 0; d < count; ++d) {
         char** names = NULL;
         size_t found = 0;

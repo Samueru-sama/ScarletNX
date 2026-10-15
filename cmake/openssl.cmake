@@ -26,8 +26,10 @@ set(snx_openssl_env "")
 if(ANDROID)
     if(ANDROID_ABI STREQUAL "arm64-v8a")
         set(snx_openssl_target android-arm64)
+        set(snx_openssl_android_cc aarch64-linux-android${ANDROID_PLATFORM_LEVEL}-clang)
     elseif(ANDROID_ABI STREQUAL "x86_64")
         set(snx_openssl_target android-x86_64)
+        set(snx_openssl_android_cc x86_64-linux-android${ANDROID_PLATFORM_LEVEL}-clang)
     else()
         message(FATAL_ERROR "OpenSSL's Android build is only set up for arm64-v8a and x86_64 (cmake/openssl.cmake)")
     endif()
@@ -44,7 +46,6 @@ elseif(CMAKE_CROSSCOMPILING)
 endif()
 set(snx_openssl_args
     ${snx_openssl_target}
-    --prefix=${snx_openssl_prefix}
     --libdir=lib
     no-shared
     no-module
@@ -65,25 +66,46 @@ if(NOT WIN32)
     list(APPEND snx_openssl_args -fPIC)
 endif()
 
-# OpenSSL's make does not see the build's -j
-cmake_host_system_information(RESULT snx_openssl_jobs QUERY NUMBER_OF_LOGICAL_CORES)
-if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
-    set(snx_openssl_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+# The build's compiler launcher (ccache) wraps make's compiles only, as for FFmpeg. On Android the compiler is the
+# <triple><API>-clang the target picks
+set(snx_openssl_make_cc "")
+list(JOIN CMAKE_C_COMPILER_LAUNCHER " " snx_openssl_launcher)
+if(snx_openssl_launcher AND ANDROID)
+    set(snx_openssl_make_cc "CC=${snx_openssl_launcher} ${snx_openssl_android_cc}")
+elseif(snx_openssl_launcher)
+    set(snx_openssl_make_cc "CC=${snx_openssl_launcher} ${CMAKE_C_COMPILER}")
 endif()
-include(ExternalProject)
-ExternalProject_Add(openssl_build
-    SOURCE_DIR "${snx_openssl_src}"
-    BINARY_DIR "${CMAKE_BINARY_DIR}/openssl-build"
-    INSTALL_DIR "${snx_openssl_prefix}"
-    CONFIGURE_COMMAND ${snx_openssl_env} "${PERL_EXECUTABLE}" "${snx_openssl_src}/Configure" ${snx_openssl_args}
-    BUILD_COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" -j${snx_openssl_jobs} build_libs
-    # install_dev: the headers and libraries, without the programs and manuals
-    INSTALL_COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" install_dev
-    BUILD_BYPRODUCTS "${snx_openssl_prefix}/lib/libcrypto.a" "${snx_openssl_prefix}/lib/libssl.a"
-    LOG_CONFIGURE ON
-    LOG_BUILD ON
-    LOG_INSTALL ON
-    LOG_OUTPUT_ON_FAILURE ON)
+
+# Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
+# The install prefix stays out of the key: it is only OPENSSLDIR and MODULESDIR in the library, which a build without
+# modules and without a configuration file at startup never reads
+snx_deps_cached(openssl snx_openssl_cache "source: ${snx_openssl_sha256}" "configure: ${snx_openssl_args}"
+                "android: ${CMAKE_ANDROID_NDK} ${snx_openssl_android_cc}" "perl: ${PERL_VERSION_STRING}")
+if(snx_openssl_cache_FOUND)
+    set(snx_openssl_prefix "${snx_openssl_cache_DIR}")
+else()
+    # OpenSSL's make does not see the build's -j
+    cmake_host_system_information(RESULT snx_openssl_jobs QUERY NUMBER_OF_LOGICAL_CORES)
+    if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
+        set(snx_openssl_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+    endif()
+    include(ExternalProject)
+    ExternalProject_Add(openssl_build
+        SOURCE_DIR "${snx_openssl_src}"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/openssl-build"
+        INSTALL_DIR "${snx_openssl_prefix}"
+        CONFIGURE_COMMAND ${snx_openssl_env} "${PERL_EXECUTABLE}" "${snx_openssl_src}/Configure"
+                          --prefix=${snx_openssl_prefix} ${snx_openssl_args}
+        BUILD_COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" -j${snx_openssl_jobs} build_libs ${snx_openssl_make_cc}
+        # install_dev: the headers and libraries, without the programs and manuals
+        INSTALL_COMMAND ${snx_openssl_env} "${SNX_OPENSSL_MAKE}" install_dev
+        BUILD_BYPRODUCTS "${snx_openssl_prefix}/lib/libcrypto.a" "${snx_openssl_prefix}/lib/libssl.a"
+        LOG_CONFIGURE ON
+        LOG_BUILD ON
+        LOG_INSTALL ON
+        LOG_OUTPUT_ON_FAILURE ON)
+    snx_deps_publish(openssl_build openssl "${snx_openssl_prefix}" "${snx_openssl_cache_DIR}")
+endif()
 
 # The include folder is filled by the install step, but has to exist for the imported targets at configure time
 file(MAKE_DIRECTORY "${snx_openssl_prefix}/include")
@@ -93,7 +115,9 @@ add_library(OpenSSL::Crypto STATIC IMPORTED GLOBAL)
 set_target_properties(OpenSSL::Crypto PROPERTIES IMPORTED_LOCATION "${snx_openssl_prefix}/lib/libcrypto.a"
                                                  INTERFACE_INCLUDE_DIRECTORIES "${snx_openssl_prefix}/include"
                                                  SYSTEM OFF)
-add_dependencies(OpenSSL::Crypto openssl_build)
+if(TARGET openssl_build)
+    add_dependencies(OpenSSL::Crypto openssl_build)
+endif()
 if(WIN32)
     # the random seed (BCryptGenRandom), the Windows certificate store, and sockets for BIO
     target_link_libraries(OpenSSL::Crypto INTERFACE bcrypt crypt32 ws2_32 advapi32 user32)
@@ -103,4 +127,6 @@ endif()
 add_library(OpenSSL::SSL STATIC IMPORTED GLOBAL)
 set_target_properties(OpenSSL::SSL PROPERTIES IMPORTED_LOCATION "${snx_openssl_prefix}/lib/libssl.a" SYSTEM OFF)
 target_link_libraries(OpenSSL::SSL INTERFACE OpenSSL::Crypto)
-add_dependencies(OpenSSL::SSL openssl_build)
+if(TARGET openssl_build)
+    add_dependencies(OpenSSL::SSL openssl_build)
+endif()

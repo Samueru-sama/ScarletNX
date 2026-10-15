@@ -50,6 +50,10 @@ typedef struct Renderer {
     /* writes what should outlive the process (the pipeline cache): every 5 s from the frontend loop, and before an exit
        that skips the normal shutdown. Any thread, while the others still run. NULL when the renderer keeps nothing */
     void (*save)(void);
+    /* the window given up for a fatal error's screen (plat.c's fatal, backend/sdl3.c): the swapchain and the surface go,
+       as nothing else can draw in a window something presents to. Called on the failing thread, which never returns to
+       its callers, so it keeps no lock. 0 when another thread held the renderer too long. NULL without a window */
+    int (*release_window)(void);
 } Renderer;
 
 extern const Renderer vk_renderer;

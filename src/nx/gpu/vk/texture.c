@@ -151,22 +151,17 @@ static int tex_upload(Surf* t) {
             u64 lsz = t->bl ? bl_level_size(t->w, t->h, d3, f, t->bh, t->bd, l, &lbh, &lbd) : (u64)t->pitch * th * ld;
             u8* src = gmem_ptr(t->gva + at, lsz);
             u8* tmp = NULL;
-            if (!src) {
-                tmp = malloc(lsz ? lsz : 1);
-                if (!tmp) {
-                    complete = 0;
-                    goto done;
-                }
-                gmem_read(t->gva + at, tmp, lsz);
-                src = tmp;
-            }
             u64 lin_size = (u64)rowb * th * ld;
             u8* lin = malloc(lin_size ? lin_size : 1);
-            if (!lin) {
+            if (!src) tmp = src = malloc(lsz ? lsz : 1);
+            if (!src || !lin) { /* up to 512 MB: a level that doesn't fit is left as it was */
+                LOG_LIMIT(1, "vulkan: out of memory uploading a %ux%u texture level (left out)\n", lw, lh);
                 free(tmp);
-                complete = 0;
-                goto done;
+                free(lin);
+                at += lsz;
+                continue;
             }
+            if (tmp) gmem_read(t->gva + at, tmp, lsz);
             if (t->bl) {
                 /* a row's 16-byte pieces: the row's place (bl_offset at x 0), then a block of GOBs per 64 bytes, and
                    within a GOB's row 32-byte halves 256 bytes apart and 16-byte quarters 32 apart */
@@ -500,6 +495,10 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
         f.sint = 0;
     }
     if (type == 6 && f.bpp && w <= UINT32_MAX / f.bpp) pitch = w * f.bpp;
+    if (type == 6 && w > 16384) { /* the row of a 2D image: drawing has no texel buffer binding for it */
+        LOG_LIMIT(1, "vulkan: a buffer texture of %u texels is longer than a texture row here (read as zeros)\n", w);
+        return NULL;
+    }
     if (!f.bpp || !w || w > 16384 || h > 16384 || d > 2048) return NULL;
     if ((u64)w * h * d * (f.bw > 1 ? 1 : f.bpp) > (512ull << 20)) return NULL;
     if (!bl && pitch < (w + f.bw - 1) / f.bw * f.bpp) {
@@ -555,7 +554,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
                   "is loaded from memory\n",
                   f.bpp, (unsigned long long)gva, rt->f.bpp);
     }
-    /* loaded from memory: what render targets drew there is written back first */
+    /* loaded from memory, with what render targets drew into its layers and levels copied in after (tex_take_drawn) */
     /* what the device can make */
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     int cube = vt != VK_IMAGE_VIEW_TYPE_3D && layers >= 6 && w == h; /* created cube compatible */
@@ -566,12 +565,11 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
         LOG_LIMIT(1, "vulkan: a %ux%ux%u texture is bigger than the GPU's images can be (not drawn)\n", w, h, d);
         return NULL;
     }
-    u32 ilevels = levels; /* ASTC compute uploads include every mip level. */
     u32 fkey = (tic[0] & 0x7FFFF) | ((u32)srgb << 31) | ((u32)raw << 30);
     for (Surf* t = vk_surf_first(gva); t; t = t->next) {
         if (t->is_rt || t->gva != gva || t->w != w || t->h != h || t->layers != layers || t->depth3d != d3 ||
-            t->fkey != fkey || t->levels != ilevels || t->type != vt || t->bl != (u32)bl || t->bh != bh ||
-            t->bd != bd || t->pitch != pitch || t->layer_size != stride)
+            t->fkey != fkey || t->levels != levels || t->type != vt || t->bl != (u32)bl || t->bh != bh || t->bd != bd ||
+            t->pitch != pitch || t->layer_size != stride)
             continue;
         t->last_used = g_vk_present;
         /* an upload that ran out of memory or staging (here, or a re-upload below) is tried again once a frame. A
@@ -634,7 +632,7 @@ static Surf* tex_from_tic(const u32* tic, int raw) {
         return t->upload_valid ? t : NULL;
     }
     if (!format_samples(f.vk)) return NULL;
-    Surf* t = tex_create(gva, w, h, layers, d3, ilevels, vt, f, fkey, bl, bh, bd, pitch, stride);
+    Surf* t = tex_create(gva, w, h, layers, d3, levels, vt, f, fkey, bl, bh, bd, pitch, stride);
     if (!t) return NULL;
     /* this texture's levels in one layer; the layers before the last one take their whole stride */
     u64 sz = 0;
@@ -693,6 +691,10 @@ VkImageView vk_tex_view(Surf* s, VkImageViewType type, int srgb, const VkCompone
                                                      : s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT
                                                                   : VK_IMAGE_ASPECT_COLOR_BIT,
                                                      0, s->levels, 0, layers}};
+    /* a view in the image's sRGB twin is sampled only: storage, which a render target may have, has no sRGB format */
+    VkImageViewUsageCreateInfo vu = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                     .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
+    if (fmt != s->f.vk) vi.pNext = &vu;
     VkImageView v;
     if (!VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &v))) return VK_NULL_HANDLE;
     if (s->nsv == (int)(sizeof s->sv / sizeof s->sv[0])) { /* full: drop the oldest */
@@ -783,21 +785,24 @@ static VkSamplerAddressMode wrap(u32 m) {
 
 /* tsc[0] bit 9 compare, bits 10-12 the compare function; tsc[1] filters (gpu/vk/render.c forces nearest for integer
    textures and the compare mode the shader declares) */
-VkSampler vk_sampler(const u32* tsc) {
+int g_vk_anisotropy;
+VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
        of the table left free for probing, new sampler states get the first sampler made */
     enum { TAB = 4096, MAX = 3072 };
     static struct {
         u32 tsc[8];
+        int raise, integer;
         VkSampler s;
     } tab[TAB];
-    static u32 n;
+    static u32 n, ncustom;
     static VkSampler first;
     u32 hk = 2166136261u;
     for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
+    hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
     u32 j = hk & (TAB - 1);
     for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
-        if (!memcmp(tab[j].tsc, tsc, 32)) return tab[j].s;
+        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
     if (n >= MAX || tab[j].s) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
@@ -811,6 +816,11 @@ VkSampler vk_sampler(const u32* tsc) {
     if (lb < -lbmax) lb = -lbmax;
     static const float aniso_lut[8] = {1, 2, 4, 6, 8, 10, 12, 16}; /* Ryujinx's SamplerDescriptor */
     u32 aniso = (tsc[0] >> 20) & 7;
+    float af = aniso_lut[aniso];
+    /* anisotropy=N raises a mipmapped 2D texture's linear filtering (raise), a 3D scene's surfaces, to N. Nearest
+       filtering (2D art, the HUD), samplers without a mip filter and depth compares (shadow maps) keep the game's */
+    if (raise && (float)g_vk_anisotropy > af && min == 2 && mag == 2 && mip >= 2 && !((tsc[0] >> 9) & 1))
+        af = (float)g_vk_anisotropy;
     if ((tsc[1] >> 10) & 3)
         LOG_LIMIT(1, "vulkan: min/max sampler reduction isn't supported (filtered as an average)\n");
     if ((tsc[0] >> 13) & 1)
@@ -823,35 +833,61 @@ VkSampler vk_sampler(const u32* tsc) {
                               .addressModeV = wrap((tsc[0] >> 3) & 7),
                               .addressModeW = wrap((tsc[0] >> 6) & 7),
                               .mipLodBias = lb,
-                              .anisotropyEnable = aniso && g_vk.feat.samplerAnisotropy,
-                              .maxAnisotropy = aniso_lut[aniso],
+                              .anisotropyEnable = af > 1 && g_vk.feat.samplerAnisotropy,
+                              .maxAnisotropy = af,
                               .compareEnable = (tsc[0] >> 9) & 1,
                               .compareOp = (VkCompareOp)((tsc[0] >> 10) & 7),
                               .minLod = minl,
                               .maxLod = mip <= 1 ? minl + 0.25f : maxl, /* no mip filter: the base level only */
-                              .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
+                              .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK}; /* set below */
     if (si.maxAnisotropy > g_vk.props.limits.maxSamplerAnisotropy)
         si.maxAnisotropy = g_vk.props.limits.maxSamplerAnisotropy;
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
+    /* the border color: the TSC's four words as the texture's texels read, floats for a float view and integers for an
+       integer one (nouveau writes the integer ones as their bits), as Vulkan's FLOAT or INT colors. A custom color
+       takes one of the device's few custom-color samplers while there are any left, else the nearest built-in one */
     float bc[4];
+    i32 bi[4];
     memcpy(bc, &tsc[4], 16);
+    memcpy(bi, &tsc[4], 16);
+    int black = integer ? !bi[0] && !bi[1] && !bi[2] : bc[0] == 0 && bc[1] == 0 && bc[2] == 0;
+    int white = integer ? bi[0] == 1 && bi[1] == 1 && bi[2] == 1 : bc[0] == 1 && bc[1] == 1 && bc[2] == 1;
+    int clear = integer ? !bi[3] : bc[3] == 0, opaque = integer ? bi[3] == 1 : bc[3] == 1;
+    int custom = !((black && (clear || opaque)) || (white && opaque));
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType =
                                                       VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
-    if (bc[0] == 0 && bc[1] == 0 && bc[2] == 0 && bc[3] == 0)
-        si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
-    else if (bc[0] == 0 && bc[1] == 0 && bc[2] == 0 && bc[3] == 1)
-        si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-    else if (bc[0] == 1 && bc[1] == 1 && bc[2] == 1 && bc[3] == 1)
-        si.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-    else if (g_vk.has_border_color) {
-        memcpy(cb.customBorderColor.float32, bc, 16);
-        si.borderColor = VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
-        si.pNext = &cb;
+    if (custom && (!g_vk.has_border_color || ncustom >= g_vk.border_color_max)) {
+        float a = integer ? (float)bi[3] : bc[3];
+        float lum = integer ? ((float)bi[0] + (float)bi[1] + (float)bi[2]) / 3 : (bc[0] + bc[1] + bc[2]) / 3;
+        if (g_vk.has_border_color)
+            LOG_LIMIT(1,
+                      "vulkan: more than %u samplers with a border color of their own: the others take the nearest "
+                      "of black or white\n",
+                      g_vk.border_color_max);
+        custom = 0;
+        clear = !(a >= 0.5f); /* NaN: transparent, and black */
+        black = !(lum >= 0.5f);
     }
+    if (custom) {
+        if (integer)
+            memcpy(cb.customBorderColor.int32, bi, 16);
+        else
+            memcpy(cb.customBorderColor.float32, bc, 16);
+        si.borderColor = integer ? VK_BORDER_COLOR_INT_CUSTOM_EXT : VK_BORDER_COLOR_FLOAT_CUSTOM_EXT;
+        si.pNext = &cb;
+    } else if (clear)
+        si.borderColor = integer ? VK_BORDER_COLOR_INT_TRANSPARENT_BLACK : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    else if (black)
+        si.borderColor = integer ? VK_BORDER_COLOR_INT_OPAQUE_BLACK : VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+    else
+        si.borderColor = integer ? VK_BORDER_COLOR_INT_OPAQUE_WHITE : VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
     VkSampler s;
     if (!VK_OK(vkCreateSampler(g_vk.dev, &si, NULL, &s))) return VK_NULL_HANDLE;
     memcpy(tab[j].tsc, tsc, 32);
+    tab[j].raise = raise;
+    tab[j].integer = integer;
     tab[j].s = s;
+    ncustom += custom;
     if (!n++) first = s;
     return s;
 }
@@ -862,12 +898,67 @@ void vk_tex_frame(void) {
     if (g_vk_present % 60 == 0 && g_vk_present > 600) vk_surf_evict(g_vk_present - 600);
 }
 
+/* s copied into t, both unchanged since: kept for t and one other texture, so two textures over one target don't
+   copy it on each other's binds (a texture's upload generation is new even at an address reused) */
+static int copied_into(const Surf* s, const Surf* t) {
+    for (int i = 0; i < 2; i++)
+        if (s->copied[i].t == t && s->copied[i].wgen == s->wgen && s->copied[i].tgen == t->wgen) return 1;
+    return 0;
+}
+static void mark_copied(Surf* s, Surf* t) {
+    if (s->copied[0].t != t) s->copied[1] = s->copied[0];
+    s->copied[0].t = t;
+    s->copied[0].wgen = s->wgen;
+    s->copied[0].tgen = t->wgen;
+}
+/* a scaled target (resolution= other than 1) reaches a texture by a blit, which f's tiling has to take both ways */
+static int can_blit(VkFormat f) {
+    VkFormatProperties p = {0};
+    VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    vkGetPhysicalDeviceFormatProperties(g_vk.phys, f, &p);
+    return (p.optimalTilingFeatures & need) == need;
+}
+/* the command buffer with s ready to be read from and t written to, by copies or blits */
+static VkCommandBuffer copy_begin(Surf* s, Surf* t) {
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    return cb;
+}
+/* the first count layers of s into t's level l at layer or Z slice dst, w x h: copied, or blitted from s's scaled
+   size, nearest (sampling applies the texture's filter later). A blit into a 3D image takes one slice from layer 0, so
+   a scaled s goes into slices one at a time (count 1: layered targets take vk_unscaled_image's way there) */
+static void copy_layers(VkCommandBuffer cb, Surf* s, Surf* t, u32 l, u32 dst, u32 count, u32 w, u32 h, int z) {
+    VkImageAspectFlags aspect = t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT; /* a depth target */
+    VkImageSubresourceLayers from = {aspect, 0, 0, z ? 1 : count};
+    VkImageSubresourceLayers to = {aspect, l, z ? 0 : dst, z ? 1 : count};
+    i32 dz = z ? (i32)dst : 0;
+    if (s->sw == s->w && s->sh == s->h) { /* layers into layers, or into as many slices */
+        from.layerCount = count;
+        VkImageCopy c = {
+            .srcSubresource = from, .dstSubresource = to, .dstOffset = {0, 0, dz}, .extent = {w, h, z ? count : 1}};
+        vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &c);
+        return;
+    }
+    VkImageBlit b = {.srcSubresource = from,
+                     .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(w), (i32)vk_sc(h), 1}},
+                     .dstSubresource = to,
+                     .dstOffsets = {{0, 0, dz}, {(i32)w, (i32)h, dz + 1}}};
+    vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                   &b, VK_FILTER_NEAREST);
+}
+
 /* a texture whose layers, levels or 3D slices were drawn as render targets of their own is copied from those targets
-   on the GPU: they are never written back to its memory. Only a target matching one subresource, drawn this frame or
-   the last: an older one may share memory the game has reused since (Catherine draws a target where its copyright
-   text later goes) */
+   on the GPU: they are never written back to its memory. Only a target matching one subresource (or, layered, the
+   layers from one), drawn this frame or the last: an older one may share memory the game has reused since (Catherine
+   draws a target where its copyright text later goes). Targets are never block compressed: such a texture can't take
+   their texels */
 static void tex_take_drawn(Surf* t) {
-    if (!t || t->is_rt || t->f.conv || t->f.stencil) return;
+    if (!t || t->is_rt || t->f.conv || t->f.stencil || t->f.bw != 1) return;
     Surf* small[32];
     Surf** d = small;
     u64 stride = t->layer_size;
@@ -885,55 +976,55 @@ static void tex_take_drawn(Surf* t) {
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
         /* depth targets (D16, D32F) feed depth textures of the same host format, through the depth aspect */
-        if (s->f.depth != t->f.depth || s->f.stencil || s->f.bpp != t->f.bpp || (t->f.depth && s->f.vk != t->f.vk))
+        if (s->f.depth != t->f.depth || s->f.stencil || s->f.bpp != t->f.bpp || (t->f.depth && s->f.vk != t->f.vk) ||
+            copied_into(s, t))
             continue;
-        if (s->copy_dst == t && s->copy_wgen == s->wgen && s->copy_tgen == t->wgen) continue;
+        /* a blit converts formats where a copy keeps the bits: a scaled target only into a texture of its own format */
+        int scaled = s->sw != s->w || s->sh != s->h;
+        if (scaled && (s->f.vk != t->f.vk || !can_blit(t->f.vk))) continue;
         u64 off = s->gva - t->gva;
         if (t->type == VK_IMAGE_VIEW_TYPE_3D) {
             if (t->f.depth) continue;
             /* A layered color target can be sampled as a 3D texture at the same address. Its slices only exist in
-               the host image: guest memory is not updated by draws. Copy each array layer to the matching Z slice. */
+               the host image: guest memory is not updated by draws. Each array layer goes to the matching Z slice */
             if (s->layers > 1 && off == 0 && s->w == t->w && s->h == t->h && s->layers >= t->depth3d &&
                 s->f.vk == t->f.vk && vk_rt_drawn_fresh(s)) {
-                int scaled = s->sw != s->w || s->sh != s->h;
-                VkFormatProperties p = {0};
+                /* a blit can't take array layers into a 3D image's slices, only a copy can: scaled, the layers
+                   are blitted down to an array at the guest's size first, and copied into the slices from there */
+                VmaAllocation mm = VK_NULL_HANDLE;
+                VkImage mid = scaled ? vk_unscaled_image(s, t->depth3d, &mm) : VK_NULL_HANDLE;
+                if (scaled && !mid) continue;
+                VkCommandBuffer cb = copy_begin(s, t);
                 if (scaled) {
-                    vkGetPhysicalDeviceFormatProperties(g_vk.phys, t->f.vk, &p);
-                    VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
-                    if ((p.optimalTilingFeatures & need) != need) continue;
-                }
-                vk_render_end();
-                VkCommandBuffer cb = vk_cmd();
-                vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                            VK_ACCESS_2_TRANSFER_READ_BIT);
-                vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                for (u32 z = 0; z < t->depth3d; z++) {
-                    if (!scaled) {
-                        VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, z, 1},
-                                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                         .dstOffset = {0, 0, (i32)z},
-                                         .extent = {t->w, t->h, 1}};
-                        vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
-                    } else {
-                        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, z, 1},
-                                         .srcOffsets = {{0, 0, 0}, {(i32)s->sw, (i32)s->sh, 1}},
-                                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                         .dstOffsets = {{0, 0, (i32)z}, {(i32)t->w, (i32)t->h, (i32)z + 1}}};
-                        /* Sampling applies the texture's filter later; keep the LUT texels unchanged here. */
-                        vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
-                    }
-                }
-                s->copy_dst = t;
-                s->copy_wgen = s->wgen;
-                s->copy_tgen = t->wgen;
+                    VkImageSubresourceLayers all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, t->depth3d};
+                    VkImageBlit b = {.srcSubresource = all,
+                                     .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(t->w), (i32)vk_sc(t->h), 1}},
+                                     .dstSubresource = all,
+                                     .dstOffsets = {{0, 0, 0}, {(i32)t->w, (i32)t->h, 1}}};
+                    vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_NONE, 0,
+                               VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mid,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
+                    vk_barrier(cb, mid, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                    /* layer z into slice z, all in one region */
+                    VkImageCopy c = {.srcSubresource = all,
+                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                     .extent = {t->w, t->h, t->depth3d}};
+                    vkCmdCopyImage(cb, mid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
+                    vk_defer_image(mid, mm, VK_NULL_HANDLE, VK_NULL_HANDLE); /* freed once the frame is done */
+                } else
+                    copy_layers(cb, s, t, 0, 0, t->depth3d, t->w, t->h, 1);
+                mark_copied(s, t);
                 continue;
             }
             /* A 3D block-linear texture can be built a Z slice at a time through 2D targets. The target may be
                wider than the texture: its rows include the 64-byte GOB padding of a narrow slice. */
-            if (!t->bl || !s->bl || t->f.bw != 1 || s->f.vk != t->f.vk) continue;
+            if (!t->bl || !s->bl || s->f.vk != t->f.vk) continue;
             u64 lo = 0;
             for (u32 l = 0; l < t->levels; l++) {
                 u32 lw = t->w >> l ? t->w >> l : 1, lh = t->h >> l ? t->h >> l : 1;
@@ -952,45 +1043,14 @@ static void tex_take_drawn(Surf* t) {
                 u64 source_size = bl_level_size(s->w, s->h, 1, &s->f, s->bh, 0, 0, &sbh, NULL);
                 if (off >= lo && off - lo < slice * ld && (off - lo) % slice == 0 && s->w >= lw && s->h == lh &&
                     sbh == lbh && source_size == slice && vk_rt_drawn_fresh(s)) {
-                    int scaled = s->sw != s->w || s->sh != s->h;
-                    VkFormatProperties p = {0};
-                    if (scaled) {
-                        vkGetPhysicalDeviceFormatProperties(g_vk.phys, t->f.vk, &p);
-                        VkFormatFeatureFlags need = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
-                        if ((p.optimalTilingFeatures & need) != need) break;
-                    }
-                    vk_render_end();
-                    VkCommandBuffer cb = vk_cmd();
-                    vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                                VK_ACCESS_2_TRANSFER_READ_BIT);
-                    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                                VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                    u32 z = (u32)((off - lo) / slice);
-                    if (!scaled) {
-                        VkImageCopy c = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1},
-                                         .dstOffset = {0, 0, (i32)z},
-                                         .extent = {lw, lh, 1}};
-                        vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
-                    } else {
-                        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                         .srcOffsets = {{0, 0, 0}, {(i32)vk_sc(lw), (i32)vk_sc(lh), 1}},
-                                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1},
-                                         .dstOffsets = {{0, 0, (i32)z}, {(i32)lw, (i32)lh, (i32)z + 1}}};
-                        vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_NEAREST);
-                    }
-                    s->copy_dst = t;
-                    s->copy_wgen = s->wgen;
-                    s->copy_tgen = t->wgen;
+                    copy_layers(copy_begin(s, t), s, t, l, (u32)((off - lo) / slice), 1, lw, lh, 1);
+                    mark_copied(s, t);
                     break;
                 }
                 lo += size;
             }
             continue;
         }
-        if (s->sw != s->w || s->sh != s->h) continue;
         u32 layer = stride ? (u32)(off / stride) : 0;
         u64 rem = off - (u64)layer * stride, lo = 0;
         for (u32 l = 0; l < t->levels && layer < t->layers; l++) {
@@ -1001,21 +1061,12 @@ static void tex_take_drawn(Surf* t) {
                                   s->w > lw && (u64)s->w * s->f.bpp == 64 && (u64)lw * t->f.bpp < 64;
             if (rem == lo && (s->w == lw || padded_cube_row) && s->h == lh) {
                 if (!vk_rt_drawn_fresh(s)) break; /* newer guest memory at this address takes precedence */
-                vk_render_end();
-                VkCommandBuffer cb = vk_cmd();
-                vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                            VK_ACCESS_2_TRANSFER_READ_BIT);
-                vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                            VK_ACCESS_2_TRANSFER_WRITE_BIT);
-                VkImageAspectFlags aspect = t->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-                VkImageCopy c = {.srcSubresource = {aspect, 0, 0, 1},
-                                 .dstSubresource = {aspect, l, layer, 1},
-                                 .extent = {lw, lh, 1}};
-                vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->img,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
-                s->copy_dst = t;
-                s->copy_wgen = s->wgen;
-                s->copy_tgen = t->wgen;
+                /* a layered target spaced as the texture's layers fills as many of them as it has */
+                u32 count = 1;
+                if (s->layers > 1 && !s->volume && l == 0 && s->layer_size == stride) /* a volume's are GOB slices */
+                    count = s->layers < t->layers - layer ? s->layers : t->layers - layer;
+                copy_layers(copy_begin(s, t), s, t, l, layer, count, lw, lh, 0);
+                mark_copied(s, t);
                 break;
             }
             if (!t->bl) break;

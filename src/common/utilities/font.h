@@ -5,4 +5,6 @@
 #include <stdint.h>
 extern const uint8_t gui_vga_font[256 * 16];
 extern const uint16_t gui_codepage[256];
+/* the glyph of a code point: the font is CP437, and what it lacks becomes '?' (the menu's and the game's own panel) */
+unsigned char gui_glyph(uint32_t codepoint);
 #endif

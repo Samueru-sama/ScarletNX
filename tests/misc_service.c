@@ -10,7 +10,7 @@
 
 u8* g_mem;
 int g_verbose;
-int g_hle_docked, g_hle_lang;
+int g_opt_docked, g_opt_lang = 1;
 u64 g_title_id = 0x0100BF00112C0000ull;
 PMutex g_klock;
 static unsigned test_checks, test_objects, test_kobjs;

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "runtime/options.h"
+#include "runtime/startup.h"
 #include <stdio.h>
 
 static int check(int argc, char** argv, int expected, int value) {
@@ -28,15 +28,18 @@ int main(void) {
     {
         char *fullscreen[] = {"game", "--fullscreen"}, *short_fullscreen[] = {"game", "-f"};
         char *fullscreen_off[] = {"game", "--fullscreen=0"}, *fullscreen_on[] = {"game", "--fullscreen=1"};
+        char *fullscreen_bad[] = {"game", "--fullscreen=yes"}, *fullscreen_last[] = {"game", "-f", "--fullscreen=0"};
         char* fullscreen_boundary[] = {"game", "--", "-f"};
-        if (check(2, fullscreen, 0, 0) || !g_opt_fullscreen || check(2, short_fullscreen, 0, 0) || !g_opt_fullscreen ||
-            check(3, fullscreen_boundary, 0, 0) || g_opt_fullscreen || check(1, fullscreen, 0, 0) || g_opt_fullscreen ||
-            check(2, fullscreen_off, 2, 0) || check(2, fullscreen_on, 2, 0))
+        if (check(2, fullscreen, 0, 0) || g_cli_fullscreen != 1 || check(2, short_fullscreen, 0, 0) ||
+            g_cli_fullscreen != 1 || check(3, fullscreen_boundary, 0, 0) || g_cli_fullscreen != -1 ||
+            check(1, fullscreen, 0, 0) || g_cli_fullscreen != -1 || check(2, fullscreen_off, 0, 0) ||
+            g_cli_fullscreen != 0 || check(2, fullscreen_on, 0, 0) || g_cli_fullscreen != 1 ||
+            check(3, fullscreen_last, 0, 0) || g_cli_fullscreen != 0 || check(2, fullscreen_bad, 2, 0))
             return 1;
 #ifndef _WIN32
         {
             char* cluster[] = {"game", "-fHs"};
-            if (check(2, cluster, 0, 1) || !g_opt_fullscreen || !g_opt_gdb || !g_opt_gdb_stop) return 1;
+            if (check(2, cluster, 0, 1) || g_cli_fullscreen != 1 || !g_opt_gdb || !g_opt_gdb_stop) return 1;
         }
 #endif
     }

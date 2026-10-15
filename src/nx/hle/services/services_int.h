@@ -21,9 +21,6 @@ u32 ev_handle(KEvent* e);
 /* a handle to a new event for a reply, signaled or not, that only the game holds. Returns 0, for a handler */
 int new_event(u32* event, const char* name, int signaled);
 KEvent* owned_event(const char* name); /* a new event the service keeps a reference on, for events it keeps */
-/* the docked and language options as they were at startup: the .ini says they apply on restart, and ini_poll
-   reloads the globals while the game runs */
-extern int g_hle_docked, g_hle_lang;
 
 /* sm.c */
 SvcObj* new_sm(void);

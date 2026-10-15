@@ -142,8 +142,9 @@ static int device_score(VkPhysicalDevice pd, u32* gfx, u32* compute, u32* gfx_qu
     vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, q);
     *gfx = *compute = ~0u;
     for (u32 i = 0; i < nq; i++) {
-        VkBool32 present = VK_TRUE;
-        if (!g_opt_headless) vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, g_vk.surface, &present);
+        VkBool32 present = g_opt_headless; /* a query that fails is no support */
+        if (!g_opt_headless && vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, g_vk.surface, &present) != VK_SUCCESS)
+            present = VK_FALSE;
         VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT; /* ASTC uploads use compute */
         if ((q[i].queueFlags & required) == required && present && *gfx == ~0u) *gfx = i;
     }
@@ -252,6 +253,7 @@ static int create_device(void) {
 #undef WANT
     /* points out of tessellation and geometry programs take the size those write, as the vertex program's do */
     g_shader_stage_point_size = want->shaderTessellationAndGeometryPointSize != 0;
+    g_shader_geometry = want->geometryShader != 0;
     const char* ext[4];
     u32 next = 0;
     if (!g_opt_headless) ext[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -286,6 +288,13 @@ static int create_device(void) {
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
     g_vk.has_divisor = g_vk.has_divisor && fdiv.vertexAttributeInstanceRateDivisor;
     g_vk.has_border_color = g_vk.has_border_color && fbc.customBorderColors && fbc.customBorderColorWithoutFormat;
+    if (g_vk.has_border_color) { /* how many samplers may have a custom border color: as few as 32 */
+        VkPhysicalDeviceCustomBorderColorPropertiesEXT cbp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT};
+        VkPhysicalDeviceProperties2 cp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &cbp};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &cp2);
+        g_vk.border_color_max = cbp.maxCustomBorderColorSamplers;
+    }
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .shaderDrawParameters = q11.shaderDrawParameters};
     /* Enable mirror clamp and vertex shader Layer output when the device supports them. */
@@ -300,6 +309,7 @@ static int create_device(void) {
                                                 q12.shaderSampledImageArrayNonUniformIndexing};
     /* shaders pick an indexed texture per invocation from an array (SNX_VKB_TEXARRAY) */
     g_shader_texture_arrays = q12.shaderSampledImageArrayNonUniformIndexing != 0;
+    g_shader_output_layer = q12.shaderOutputLayer != 0; /* ShaderLayer: a vertex or tessellation program's layer */
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                             .pNext = &f12,
                                             .synchronization2 = VK_TRUE,
@@ -372,15 +382,44 @@ int vk_surface_recreate(void) {
     if (g_vk.swapchain) swapchain_retire();
     vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
     g_vk.surface = VK_NULL_HANDLE;
-    if (backend_vk_surface(g_vk.instance, &g_vk.surface)) return 1;
+    if (backend_vk_surface(g_vk.instance, &g_vk.surface)) {
+        VkBool32 present = VK_FALSE; /* the queue chosen for the old surface, asked again for the new one */
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(g_vk.phys, g_vk.gfx_family, g_vk.surface, &present) == VK_SUCCESS &&
+            present)
+            return 1;
+        WARN_LIMIT(4, "vulkan: the window's new surface can't be presented to from the graphics queue\n");
+        return 0;
+    }
     WARN_LIMIT(4, "vulkan: the window's surface could not be made again\n");
     return 0;
+}
+
+int vk_window_release(void) {
+    int waited = 0;
+    /* a thread that holds the renderer and doesn't let go (stuck on a lost device) must not keep the error unseen */
+    while (!vk_trylock()) {
+        if (++waited == 200) return 0;
+        plat_sleep_ns(10000000);
+    }
+    vkDeviceWaitIdle(g_vk.dev); /* a lost device answers at once */
+    if (g_vk.swapchain) swapchain_retire();
+    if (g_vk.surface) vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    /* every hold of this thread's at once: it won't return to the callers that took them */
+    t_vkdepth = 0;
+    pm_unlock(&g_vklock);
+    return 1;
 }
 
 int vk_swapchain_create(int srgb) {
     if (g_opt_headless) return 0; /* no WSI calls, even on a resize/recreate path */
     VkSurfaceCapabilitiesKHR caps;
-    if (!VK_OK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps))) return 0;
+    VkResult cr = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps);
+    if (cr != VK_SUCCESS) { /* asked again on each present while it fails: said a few times */
+        WARN_LIMIT(4, "vulkan: the window's surface could not be queried: %s (%d)\n", vk_result_str(cr), (int)cr);
+        if (cr == VK_ERROR_SURFACE_LOST_KHR) g_vk.sc_lost = 1;
+        return 0;
+    }
     if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
         WARN("vulkan: the window's surface can't be drawn to by copies, which presenting needs\n");
         return 0;
@@ -420,15 +459,17 @@ int vk_swapchain_create(int srgb) {
         LOG_LIMIT(1, "vulkan: the window has no sRGB format: frames in sRGB show darker\n");
     }
 
-    /* no vsync: the runtime paces frames itself (fps_limit) */
+    /* vsync=1: FIFO, which every device has. Otherwise mailbox, else immediate, else FIFO all the same. Read once: the
+       main thread's .ini reload writes it */
+    int vsync = __atomic_load_n(&g_opt_vsync, __ATOMIC_RELAXED);
     u32 nm = 0;
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, NULL);
     VkPresentModeKHR* ms = calloc(nm ? nm : 1, sizeof *ms);
     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &nm, ms);
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
-    for (u32 i = 0; i < nm; i++)
+    for (u32 i = 0; i < nm && !vsync; i++)
         if (ms[i] == VK_PRESENT_MODE_MAILBOX_KHR) mode = ms[i];
-    if (mode == VK_PRESENT_MODE_FIFO_KHR)
+    if (mode == VK_PRESENT_MODE_FIFO_KHR && !vsync)
         for (u32 i = 0; i < nm; i++)
             if (ms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = ms[i];
     free(ms);
@@ -460,13 +501,25 @@ int vk_swapchain_create(int srgb) {
                                    .presentMode = mode,
                                    .clipped = VK_TRUE,
                                    .oldSwapchain = old};
+    /* old is retired by the create, made or not: on any failure it goes too, and the next present starts anew */
     VkSwapchainKHR sc;
-    if (!VK_OK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &sc))) return 0;
-    u32 nimg = 0;
+    VkSemaphore done[VK_SC_MAX];
+    u32 nimg = 0, ndone = 0;
+    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    cr = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &sc);
+    if (cr != VK_SUCCESS) { /* tried again on each present while it fails: said a few times */
+        WARN_LIMIT(4, "vulkan: the swapchain could not be made: %s (%d)\n", vk_result_str(cr), (int)cr);
+        if (cr == VK_ERROR_SURFACE_LOST_KHR) g_vk.sc_lost = 1;
+        if (old) swapchain_retire();
+        return 0;
+    }
     vkGetSwapchainImagesKHR(g_vk.dev, sc, &nimg, NULL);
-    if (nimg > VK_SC_MAX) {
-        WARN("vulkan: the swapchain has %u images, more than the %d taken\n", nimg, VK_SC_MAX);
+    if (nimg > VK_SC_MAX) WARN("vulkan: the swapchain has %u images, more than the %d taken\n", nimg, VK_SC_MAX);
+    while (nimg <= VK_SC_MAX && ndone < nimg && VK_OK(vkCreateSemaphore(g_vk.dev, &si, NULL, &done[ndone]))) ndone++;
+    if (nimg > VK_SC_MAX || ndone < nimg) {
+        while (ndone) vkDestroySemaphore(g_vk.dev, done[--ndone], NULL);
         vkDestroySwapchainKHR(g_vk.dev, sc, NULL);
+        if (old) swapchain_retire();
         return 0;
     }
     if (old) swapchain_retire();
@@ -477,10 +530,10 @@ int vk_swapchain_create(int srgb) {
     g_vk.sc_srgb = fmt.format == VK_FORMAT_B8G8R8A8_SRGB || fmt.format == VK_FORMAT_R8G8B8A8_SRGB;
     g_vk.sc_format = fmt.format;
     g_vk.sc_turned = transform != caps.currentTransform;
+    g_vk.sc_vsync = vsync;
     g_vk.sc_count = nimg;
     vkGetSwapchainImagesKHR(g_vk.dev, sc, &g_vk.sc_count, g_vk.sc_images);
-    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    for (u32 i = 0; i < g_vk.sc_count; i++) vkCreateSemaphore(g_vk.dev, &si, NULL, &g_vk.sc_done[i]);
+    memcpy(g_vk.sc_done, done, sizeof done[0] * nimg);
     LOG("vulkan: swapchain %ux%u, %u images%s, %s\n", ext.width, ext.height, g_vk.sc_count,
         g_vk.sc_srgb ? ", sRGB" : "",
         mode == VK_PRESENT_MODE_MAILBOX_KHR     ? "mailbox"

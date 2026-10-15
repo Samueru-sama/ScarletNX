@@ -2,25 +2,19 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* vi's framebuffers: handed to the renderer, or converted to RGBA on the CPU when there is none */
-#include "runtime/clock.h"
+/* vi's framebuffers: handed to the renderer, and the pace the game's frames are shown at */
 #include "runtime/main.h"
 #include "runtime/options.h"
 #include "gpu/gpu.h"
 #include "gpu/renderer.h"
 #include "hle/services/nvdrv.h"
+#include "hle/services/vi.h"
 #include "memory/mem.h"
-#include "runtime/platform/backend.h"
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
 #include <stdlib.h>
 #include <string.h>
 
-static u32* g_frame;
-static int g_fw, g_fh;
-static PMutex g_flock;
-static u64 g_last_present;
-void present_init(void) { pm_init(&g_flock); }
 void vi_convert_cpu(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, u32* out) {
     u32 bpp = (fmt == 4 || fmt == 6 || fmt == 7) ? 2 : 4;
     /* a buffer per calling thread, kept for the next frame */
@@ -28,8 +22,9 @@ void vi_convert_cpu(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt
     static __thread size_t lin_cap;
     if ((size_t)w * h * bpp > lin_cap) {
         free(lin);
+        lin = malloc((size_t)w * h * bpp);
+        if (!lin) fatal("Out of memory converting a %ux%u frame", w, h);
         lin_cap = (size_t)w * h * bpp;
-        lin = malloc(lin_cap);
     }
     if (layout == 3 || layout == 2) {
         deswizzle(lin, w * bpp, GP(a), w * bpp, h, bhl);
@@ -78,49 +73,30 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
         WARN_LIMIT(5, "vi: buffer without memory (nvmap %u)\n", nvmap_id);
         return;
     }
-    a += offset;
-    if (g_renderer_up) {
-        g_renderer->present_buffer(a, w, h, pitch, layout, bhl, fmt, crop, transform);
-    } else {
-        pm_lock(&g_flock);
-        if (g_fw != (int)w || g_fh != (int)h) {
-            free(g_frame);
-            g_frame = malloc((size_t)w * h * 4);
-            g_fw = (int)w;
-            g_fh = (int)h;
-        }
-        vi_convert_cpu(a, w, h, pitch, layout, bhl, fmt, g_frame);
-        /* Android FlipH/FlipV apply to the display image, never to guest framebuffer memory. */
-        if (transform & 1)
-            for (u32 y = 0; y < h; y++)
-                for (u32 x = 0; x < w / 2; x++) {
-                    size_t a0 = (size_t)y * w + x, a1 = (size_t)y * w + w - 1 - x;
-                    u32 p = g_frame[a0];
-                    g_frame[a0] = g_frame[a1];
-                    g_frame[a1] = p;
-                }
-        if (transform & 2)
-            for (u32 y = 0; y < h / 2; y++)
-                for (u32 x = 0; x < w; x++) {
-                    size_t a0 = (size_t)y * w + x, a1 = (size_t)(h - 1 - y) * w + x;
-                    u32 p = g_frame[a0];
-                    g_frame[a0] = g_frame[a1];
-                    g_frame[a1] = p;
-                }
-        video_present_rgba(g_frame, (int)w, (int)h, (int)w);
-        pm_unlock(&g_flock);
-    }
+    /* the renderer runs before the game's first thread does: video_init ends the run when it can't start */
+    g_renderer->present_buffer(a + offset, w, h, pitch, layout, bhl, fmt, crop, transform);
     __atomic_add_fetch(&g_frames, 1, __ATOMIC_RELAXED);
-    /* fps_limit: 0 = no limit, 60 to 240 = that many fps, anything else = 60 */
-    if (g_opt_fps) {
-        u64 per = g_opt_fps >= 60 && g_opt_fps <= 240 ? 1000000000ull / (u64)g_opt_fps : 16666667ull;
-        if (g_opt_fps >= 10 && g_opt_fps < 60)
-            WARN_LIMIT(1, "fps_limit=%d would run the game at %d%% speed (one game step per image): using 60\n",
-                       g_opt_fps, g_opt_fps * 100 / 60);
-        u64 now = plat_ns();
-        u64 next = g_last_present + per;
-        if (g_last_present && now < next) plat_sleep_ns((i64)(next - now));
-        now = plat_ns();
-        g_last_present = (g_last_present && now - g_last_present < 2 * per) ? next : now;
-    }
+}
+/* fps_limit=game: the console's display keeps each frame for the swap interval it was queued with, so a game made
+   for 30 FPS (interval 2) runs at 30, and its game thread waits for a buffer until then. This wait is that one, before
+   the game is handed a buffer for its next frame: the GPU thread never waits for the display. A frame less than a
+   refresh late keeps its turn, so the game thread's own oversleep isn't lost. One later than that starts the schedule
+   from now: the frame after it isn't hurried to catch up, and a game slower than the limit keeps its own pace with no
+   wait added. The refresh is the display's (60 Hz) for the game's pace and the period itself for a number. Interval 0
+   asks for no wait (Ryujinx's SurfaceFlinger takes it the same way) */
+void present_pace(u32 interval) {
+    static PMutex lock = PMUTEX_INIT;                        /* a game may queue on more than one thread */
+    static u64 last;                                         /* the turn the previous frame was given */
+    int fps = __atomic_load_n(&g_opt_fps, __ATOMIC_RELAXED); /* F4 and reloads change it on the main thread */
+    u64 per, refresh, now, next;
+    if (!fps || (fps == SNX_FPS_GAME && !interval)) return;
+    refresh = fps == SNX_FPS_GAME ? 1000000000ull / VI_REFRESH_HZ : 1000000000ull / (u64)fps;
+    per = fps == SNX_FPS_GAME ? refresh * interval : refresh;
+    pm_lock(&lock);
+    now = plat_ns();
+    next = last + per;
+    if (!last || now > next + refresh) next = now; /* the first frame, or one more than a refresh late */
+    last = next;
+    pm_unlock(&lock);
+    if (next > now) plat_sleep_ns((i64)(next - now));
 }

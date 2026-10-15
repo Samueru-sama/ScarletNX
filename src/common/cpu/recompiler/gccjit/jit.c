@@ -43,7 +43,9 @@ static const HostTarget* host_target(void) {
                 char name[64];
                 p += 7;
                 while (*p == ' ' || *p == '\t') ++p;
-                if (sscanf(p, "%63s", name) == 1 && strcmp(name, "native")) sprintf(host.march, "-march=%s", name);
+                /* AArch64's GCC lists it empty: what follows is the next option */
+                if (*p != '\n' && *p != '\r' && sscanf(p, "%63s", name) == 1 && strcmp(name, "native"))
+                    sprintf(host.march, "-march=%s", name);
                 host.fma = enabled(output, "-mfma");
                 host.round = enabled(output, "-msse4.1");
             }

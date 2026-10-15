@@ -6,6 +6,7 @@
 #ifndef SNX_VPAD_H
 #define SNX_VPAD_H
 #include "runtime/platform/ui.h"
+#include "runtime/ini.h"
 
 /* in the order they are drawn: a finger presses the last one drawn under it */
 enum {
@@ -57,12 +58,14 @@ const char* vpad_name(int control); /* "A", "Left stick"... */
 void vpad_defaults(SnxVpadConfig* c);
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);
+extern const IniOpt g_vpad_ini[]; /* the settings: controls, controls_scale..., a control's place (controls_a) */
 /* a key of the game's .ini (controls, controls_scale..., controls_a...): applied, 1; not one of these, 0 */
 int vpad_ini(const char* key, const char* value);
 /* where changed settings go: called with each key and its value (the game's .ini) */
 void vpad_set_store(void (*store)(const char* key, const char* value));
-/* a setting's current value to the store: "controls", "controls_scale"..., or a control's ("controls_a") */
-void vpad_store(const char* key);
+/* a setting's current value to the store, named by its variable in vpad_config() (&cfg->scale); a control's place
+   with vpad_store_control */
+void vpad_store(const int* setting);
 void vpad_store_control(int control);
 
 /* Fingers, and the mouse as one, in window pixels; safe is the window's clear part (x, y, w, h). A finger that lands

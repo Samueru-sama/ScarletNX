@@ -108,6 +108,7 @@ static void build_dispatch(void) {
     g_code_hi = g_mod->code_hi;
     u64 n = (g_code_hi - g_code_lo) / 4;
     g_disp = calloc(n ? n : 1, sizeof(GuestFn));
+    if (!g_disp) fatal("Out of memory for the table of the game's functions");
     for (u32 i = 0; i < g_mod->nentries; i++) {
         u64 a = g_mod->entry_addr[i];
         if (a >= g_code_lo && a < g_code_hi) g_disp[(a - g_code_lo) / 4] = g_mod->entry_fn[i];
@@ -257,8 +258,6 @@ int snx_main(int argc, char** argv) {
     /* loaded before the .ini is opened, which writes one: a mistyped --game leaves no stray settings file */
     if (load_code()) fatal("Could not load the game's recompiled code.");
     if (g_mod->abi != SNX_ABI) fatal("The recompiled code is from another ScarletNX version.");
-    /* Fullscreen is opt-in on each launch, regardless of an older INI value. */
-    ini_override("fullscreen", g_opt_fullscreen ? "1" : "0");
     /* --key=value sets a setting for this run, over the .ini. The value is used where it is, so a long --script
        isn't cut */
     for (int i = 1; i < argc && strcmp(argv[i], "--"); i++) {
@@ -272,12 +271,14 @@ int snx_main(int argc, char** argv) {
             ini_override(k, e + 1);
         }
     }
+    /* -f, --fullscreen[=1] or --fullscreen=0, the last of them as startup.c read it, sets this run's fullscreen over the
+       .ini's (after the loop, which saw the --fullscreen= ones as they came); without any the .ini says */
+    if (g_cli_fullscreen >= 0) ini_override("fullscreen", g_cli_fullscreen ? "1" : "0");
     char ini[1400];
     snprintf(ini, sizeof ini, "%s%s.ini", g_exedir, g_exename);
     ini_open(ini);
     snprintf(g_datadir, sizeof g_datadir, "%s%s_data/", g_exedir, g_exename);
     hints_init();
-    present_init();
     plat_install_crash_handler();
     clock_start();
     LOG("ScarletNX - %s\n", g_exename);
@@ -313,7 +314,7 @@ int snx_main(int argc, char** argv) {
         video_poll();
         hid_update();
         vi_vsync_tick();
-        if (tick % 60 == 0) ini_poll();
+        if (tick % 60 == 0) ini_poll(0);
         frontend_frame();
         if (++tick % 300 == 0) {
             save_hints();
@@ -326,7 +327,7 @@ int snx_main(int argc, char** argv) {
             snprintf(p, sizeof p, "%sthreads.txt", g_exedir);
             FILE* f = fopen(p, "w");
             if (f) {
-                fprintf(f, "second %d, frames %d\n", tick / 60, g_frames);
+                fprintf(f, "second %d, frames %d\n", tick / 60, __atomic_load_n(&g_frames, __ATOMIC_RELAXED));
                 tls_log_redirect = f;
                 kernel_dump_threads();
                 tls_log_redirect = NULL;
@@ -335,24 +336,26 @@ int snx_main(int argc, char** argv) {
         }
         {
             static int last_frames = -1, still = 0, dumps = 0;
-            if (g_frames != last_frames) {
-                last_frames = g_frames;
+            int frames = __atomic_load_n(&g_frames, __ATOMIC_RELAXED); /* counted by the presenting thread */
+            if (frames != last_frames) {
+                last_frames = frames;
                 still = 0;
             } else if (++still == 60 * 15 && dumps < 4) {
                 dumps++;
                 still = 0;
-                LOG("warning: %d s without a new image (frames=%d, GPU submits=%llu)\n", 15, g_frames,
+                LOG("warning: %d s without a new image (frames=%d, GPU submits=%llu)\n", 15, frames,
                     (unsigned long long)g_gpu_submits);
                 kernel_dump_threads();
             }
         }
-        next += 16666667ull;
+        next += 1000000000ull / VI_REFRESH_HZ;
         u64 now = plat_ns();
         if (next > now)
             plat_sleep_ns((i64)(next - now));
         else if (now - next > 100000000ull)
             next = now;
     }
+    ini_poll(1); /* what changed in the game since the last poll (F4, the menu) is saved: it runs once a second */
     snx_save_before_exit();
     LOG("Exit.\n");
     plat_exit_now(0); /* the guest threads are still running: they aren't joined */

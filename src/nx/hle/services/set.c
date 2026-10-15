@@ -16,8 +16,9 @@ static void lang_code(int i, u8 code[8]) {
     memcpy(code, g_lang_codes[i], strlen(g_lang_codes[i]));
 }
 void set_language_code(int lang, u8 code[8]) { lang_code(lang >= 0 && lang < NLANG ? lang : 1, code); }
+int set_language_count(void) { return NLANG; }
 static int nn_settings_ISettingsServer_GetLanguageCode(SvcObj* self, nn_settings_LanguageCode* code) {
-    set_language_code(g_hle_lang, code->v);
+    set_language_code(g_opt_lang, code->v);
     return 0;
 }
 /* the language codes, in index order, as many as the buffer holds up to max */

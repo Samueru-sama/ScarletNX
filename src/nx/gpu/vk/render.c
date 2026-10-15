@@ -633,20 +633,25 @@ VkImageView vk_tex_bind_view(Surf* t, VkImageViewType want, const u32* tic, int 
     return vk_tex_view(t, want, (tic[4] >> 22) & 1, &map, stencil);
 }
 
-VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num) {
-    u32 t[8];
-    memcpy(t, tsc, sizeof t);
+/* the texture (NULL for none) and the view type say whether anisotropy= may raise its filtering: 2D textures with
+   mipmaps only, as the yuzu family and Ryujinx do (a cube, a 3D LUT or a copied target keeps the game's) */
+VkSampler vk_tex_bind_sampler(const u32* tsc, const ShTex* st, int num, const Surf* tex, VkImageViewType want) {
+    u32 tc[8];
+    memcpy(tc, tsc, sizeof tc);
     /* the compare mode is what the shader declares */
     if (st->shadow) {
-        if (!((t[0] >> 9) & 1)) t[0] = (t[0] & ~(7u << 10)) | 1u << 9 | 3u << 10; /* LEQUAL */
+        if (!((tc[0] >> 9) & 1)) tc[0] = (tc[0] & ~(7u << 10)) | 1u << 9 | 3u << 10; /* LEQUAL */
     } else
-        t[0] &= ~(1u << 9);
+        tc[0] &= ~(1u << 9);
     /* integer textures can't be filtered: nearest, and a linear mip filter becomes nearest */
     if (num) {
-        u32 mip = (t[1] >> 6) & 3;
-        t[1] = (t[1] & ~0xF3u) | 0x11u | (mip == 3 ? 2u : mip) << 6;
+        u32 mip = (tc[1] >> 6) & 3;
+        tc[1] = (tc[1] & ~0xF3u) | 0x11u | (mip == 3 ? 2u : mip) << 6;
     }
-    return vk_sampler(t);
+    /* raised only with anisotropy= set: without it the cache keeps one sampler per TSC */
+    int raise = g_vk_anisotropy > 1 && tex && tex->levels > 1 &&
+                (want == VK_IMAGE_VIEW_TYPE_2D || want == VK_IMAGE_VIEW_TYPE_2D_ARRAY);
+    return vk_sampler(tc, raise, num != 0);
 }
 
 /* a constant buffer's bytes for this draw, reused while the guest can't have changed them */
@@ -875,7 +880,7 @@ static int tex_table_set(GpuChannel* ch, int stage, const VkSh* s, int slot, Sur
             vk_surf_use(vk_cmd(), x.t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else
             view = none;
-        smp = vk_tex_bind_sampler(x.tsc, st, num);
+        smp = vk_tex_bind_sampler(x.tsc, st, num, view != none ? x.t : NULL, want);
         if (!smp) return 0;
         d->table[k].sampler = smp;
         d->table[k].imageView = view;
@@ -1012,6 +1017,7 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
                 LOG_LIMIT(1, "vulkan: a draw samples a target it renders to (read as empty)\n");
         } else
             view = vk_tex_bind_view(t, want, x->tic, num);
+        const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (view && depth_ro) {
             *zt_ro = 1; /* render_begin moves it to the read-only layout */
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -1020,7 +1026,7 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
         else
             view = vk_null_view(want, st->shadow ? 3 : num);
         if (!view) return VK_NULL_HANDLE;
-        VkSampler smp = vk_tex_bind_sampler(x->tsc, st, num);
+        VkSampler smp = vk_tex_bind_sampler(x->tsc, st, num, sampled, want);
         if (!smp) return VK_NULL_HANDLE;
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};

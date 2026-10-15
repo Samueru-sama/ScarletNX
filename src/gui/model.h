@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "font.h" /* gui_glyph */
 
 #ifndef SNX_GUI_HAS_GCCJIT
 #define SNX_GUI_HAS_GCCJIT 0
@@ -47,10 +48,22 @@ typedef struct {
     int recent, recent_focus, recent_open;
 } GuiMenu;
 void gui_menu_key(GuiMenu* menu, GuiKey key);
+/* The question a running run's abort asks first, or leaving the menu on a computer: shown or not, which one, and the
+   choice in focus, the one that stays first */
+enum { GUI_CONFIRM_KEEP, GUI_CONFIRM_ABORT };
+typedef struct {
+    bool shown;
+    bool exit; /* leaving the app, not aborting a run */
+    int selected;
+} GuiConfirm;
+/* A key on the question: the arrows move between its choices, Select takes the one in focus and Cancel keeps going,
+   both closing it. True when the run is to be aborted */
+bool gui_confirm_key(GuiConfirm* confirm, GuiKey key);
 const char* gui_setting_description(const GuiMenu* menu);
-/* Append up to GUI_LAUNCH_MAX Switch options; prepared games do not run a compiler. */
-#define GUI_LAUNCH_MAX 6
-size_t gui_launch_options(const GuiMenu* menu, bool prepared, const char** argv);
+/* Append up to GUI_LAUNCH_MAX Switch options; prepared games do not run a compiler. repo, when not NULL, is the folder
+   the driver keeps work/ and games/ in: the menu's own, so the two list the same games */
+#define GUI_LAUNCH_MAX 8
+size_t gui_launch_options(const GuiMenu* menu, bool prepared, const char* repo, const char** argv);
 /* the game's --touch=N and --controls=N for the menu's choices */
 const char* gui_touch_option(const GuiMenu* menu);
 const char* gui_controls_option(const GuiMenu* menu);
@@ -86,8 +99,6 @@ typedef struct {
 void gui_console_init(GuiConsole* console, int cols, int rows);
 void gui_console_resize(GuiConsole* console, int cols, int rows);
 void gui_console_feed(GuiConsole* console, const char* data, size_t size);
-/* The VGA BIOS font uses CP437. Unrepresentable Unicode becomes '?'. */
-unsigned char gui_glyph(uint32_t codepoint);
 /* SDL_DROP_FILE is already a path. DROP_TEXT/clipboard may contain a quoted path
    or a local file:// URI. Returns owned UTF-8, never shell-expanded. */
 char* gui_drop_path(const char* text, bool text_drop);

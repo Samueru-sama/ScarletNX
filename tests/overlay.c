@@ -3,6 +3,7 @@
 /* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
 #include "runtime/platform/overlay.h"
+#include "runtime/platform/backend.h"
 #include "runtime/platform/vpad.h"
 #include "runtime/platform/controls_atlas.h"
 #include "runtime/platform/plat.h"
@@ -70,6 +71,17 @@ int main(void) {
     assert(s == 2 && px == (SW - 640) / 2 && py == (SH - 6 * 32) / 2);
     overlay_place(500, 100, &x, &y, &sc);
     assert(sc == 1 && x == 90 && y == 2);
+    /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
+       picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
+    overlay_set_display_scale(408.0f / 160);
+    overlay_place(2510, 1156, &x, &y, &sc);
+    assert(sc == 3);
+    overlay_set_display_scale(420.0f / 160);
+    overlay_place(SW, SH, &x, &y, &sc);
+    assert(sc == 3);
+    overlay_set_display_scale(1.0f);
+    overlay_place(3840, 2160, &x, &y, &sc);
+    assert(sc == 4);
 
     /* the first page: the title on a band of ink, the items under it, the focused one on a band */
     draw();
@@ -188,6 +200,42 @@ int main(void) {
         assert(!ui_atlas(&w, &h, &version) && version == 1);
         free(sprites);
     }
-    puts("overlay: placing, pages, taps, keys, values, scrolling, look and the atlas passed");
+    /* a fatal error's panel: the menu's, centred on its own rows; the head, the game's name, the error in the
+       failure's colour, its hint, and Close in focus at its foot. UTF-8 comes out in the font's bytes, and on a short
+       picture the last paragraphs give up rows so the panel stays on it */
+    {
+        float top, row_h;
+        int total, i, close_band = -1;
+        list.n = 0;
+        overlay_error_draw(&list, SW, SH, "ENDER MAGNOLIA", "vulkan: the GPU device was lost (driver reset or crash)",
+                           "The menu's Share log sends the game's log, which has what ran last.");
+        overlay_place(SW, SH, &px, &py, &s);
+        row_h = 16.0f * (float)s;
+        top = list.q[0].y;
+        total = (int)(list.q[0].h / row_h);
+        assert(list.n > 4 && list.q[0].x == (float)px && list.q[0].w == (float)(OVERLAY_COLS * 8 * s));
+        assert(top >= 0 && top + list.q[0].h <= (float)SH && list.q[1].y == top && list.q[1].h == row_h);
+        py = (int)top;
+        assert(text_at(1, 0, "SCARLETNX  /  STOPPED") && text_at(1, 1, "ENDER MAGNOLIA"));
+        assert(text_at(1, 3, "vulkan: the GPU device was lost") && text_at(1, 4, "(driver reset or crash)"));
+        i = glyph_at(1, 3, 'v');
+        assert(i >= 0 && list.q[i].rgba == 0xFF3C47A5u);
+        assert(text_at(1, 6, "The GPU stopped answering and its"));
+        for (i = 0; i < list.n; ++i)
+            if (list.q[i].y == top + row_h * (float)(total - 2) && list.q[i].h == row_h && list.q[i].w == list.q[0].w)
+                close_band = i;
+        assert(close_band >= 0 && text_at(1, total - 2, "\xFE Close"));
+        list.n = 0;
+        overlay_error_draw(&list, SW, SH, "CAF\xC3\x89", "x", "y");
+        py = (int)list.q[0].y;
+        assert(text_at(1, 1, "CAF\x90"));
+        list.n = 0;
+        overlay_error_draw(
+            &list, SW, 200, "N", "message",
+            "a b c d e f g h i j k l m n o p q r s t u v w x y z a b c d e f g h i j k l m n o p q r s t u "
+            "v w x y z a b c d e f g h i j k l m n o p q r s t u v w x y z");
+        assert(list.q[0].y >= 0 && list.q[0].y + list.q[0].h <= 200.0f);
+    }
+    puts("overlay: placing, pages, taps, keys, values, scrolling, look, the error's panel and the atlas passed");
     return 0;
 }

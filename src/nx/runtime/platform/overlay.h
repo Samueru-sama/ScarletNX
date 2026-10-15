@@ -14,6 +14,8 @@ enum { OVERLAY_NONE, OVERLAY_CLOSE, OVERLAY_EXIT, OVERLAY_EDIT };
 /* whether it is open, for the renderer's thread too */
 int overlay_shown(void);
 void overlay_toggle(void);
+/* the display's own scale (SDL's: dpi / 160 on a phone), which the panel's letters follow; 1 until told */
+void overlay_set_display_scale(float scale);
 /* where the panel goes on a picture of sw x sh pixels: its corner and the whole number it is scaled by */
 void overlay_place(int sw, int sh, int* x, int* y, int* scale);
 int overlay_select(void);    /* the focused item's action: a page, a setting changed, or an OVERLAY_ for the caller */
@@ -23,8 +25,8 @@ int overlay_back(void);      /* the page above; OVERLAY_CLOSE from the first */
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 void overlay_draw(SnxUiList* l, int sw, int sh);
+/* a fatal error's panel (backend/sdl3.c), the menu's own: the head, the game's name, the error, what it means and what to
+   do, cut to its width, and Close in focus */
+void overlay_error_draw(SnxUiList* l, int sw, int sh, const char* name, const char* msg, const char* how);
 
-/* the game's touch screen as the menu shows and sets it (sdl3.c): 0 off, 1 the fingers, 2 the mouse too */
-int backend_touch_mode(void);
-void backend_touch_set(int mode);
 #endif

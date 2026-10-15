@@ -5,8 +5,9 @@
    Render targets, clears, draws (gpu/vk/render.c), compute (gpu/vk/compute.c), write-backs to and reloads from
    guest memory, and presenting the game's framebuffer from its render target (or from memory, converted on the CPU,
    when no render target holds it). Everything that records runs under vk_lock(), which is reentrant: submissions and
-   presents on the GPU thread (gpu/gpu.c), screenshots on the thread asking, and shader results landing on whichever
-   thread reads their memory first. */
+   presents on the GPU thread (gpu/gpu.c), the menu's refresh on the main thread (vkr_refresh), screenshots on the
+   thread asking, and shader results landing on whichever thread reads their memory first. Acquiring a swapchain image
+   never waits for the display: with every image still on it or queued for it, that frame isn't shown (counted). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +56,10 @@ static void vkr_mapping_end(void) { vk_unlock(); }
 /* 0 when Vulkan can't run here */
 static int vkr_start(void) {
     if (!vk_init()) return 0;
-    g_vk_scale = g_opt_resf >= 0.25f && g_opt_resf <= 4 ? g_opt_resf : 1.0f;
+    g_vk_scale = g_opt_resf;       /* the .ini keeps resolution within 0.25 to 4 (options.c) */
+    g_vk_anisotropy = g_opt_aniso; /* the sampler table keeps what it makes: anisotropy applies at start */
+    if (g_vk_anisotropy > 1 && !g_vk.feat.samplerAnisotropy)
+        LOG("vulkan: this GPU has no anisotropic filtering, so anisotropy=%d does nothing\n", g_vk_anisotropy);
     if (g_vk_scale != 1.0f) LOG("vulkan: render targets at %.2fx\n", g_vk_scale);
     vk_cmd_init();
     vk_pipeline_init();
@@ -65,7 +69,8 @@ static int vkr_start(void) {
     g_gpu_mem_changed = vk_mem_changed;
     VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     if (!g_opt_headless)
-        for (int i = 0; i < VK_FRAMES; i++) VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_acquired[i]));
+        for (int i = 0; i < VK_FRAMES; i++)
+            if (!VK_OK(vkCreateSemaphore(g_vk.dev, &sci, NULL, &g_acquired[i]))) return 0;
     g_renderer_up = 1; /* a renderer is active */
     return 1;
 }
@@ -155,6 +160,7 @@ static Surf* cpu_frame(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bh
     }
     if (!g_cpu_img) {
         g_cpu_img = calloc(1, sizeof *g_cpu_img);
+        if (!g_cpu_img) return NULL;
         g_cpu_img->w = g_cpu_img->sw = w;
         g_cpu_img->h = g_cpu_img->sh = h;
         g_cpu_img->f = vk_rt_format(0xD5); /* RGBA8 */
@@ -198,7 +204,20 @@ static int g_sc_srgb; /* what the swapchain was asked for (the surface may not h
 /* the window's surface: lost while the app is in the background (Android), made anew when it comes back */
 static u32 g_generation;
 static int g_lost;
-static u64 g_shown_ns; /* when the game last gave the window a frame */
+static u64 g_shown_ns; /* when the game last gave the window a frame (atomic: vkr_refresh reads it unlocked) */
+/* a blit's source flipped as the frame's Android transform says (FlipH 1, FlipV 2): the endpoints swapped */
+static void flip_src(VkImageBlit* b, u32 transform) {
+    if (transform & 1) {
+        i32 x = b->srcOffsets[0].x;
+        b->srcOffsets[0].x = b->srcOffsets[1].x;
+        b->srcOffsets[1].x = x;
+    }
+    if (transform & 2) {
+        i32 y = b->srcOffsets[0].y;
+        b->srcOffsets[0].y = b->srcOffsets[1].y;
+        b->srcOffsets[1].y = y;
+    }
+}
 
 /* The window's image: src's g_last_ rectangle (a frame of fw x fh, flipped by transform) letterboxed on black, or
    black alone, with the on-screen controls and the game's menu over it; then the frame's commands are submitted and
@@ -214,19 +233,32 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         g_generation = backend_window_generation();
     }
     shown = shown && !g_lost;
-    if (shown && ww > 0 && wh > 0 && (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || srgb != g_sc_srgb)) {
+    int tried = 0; /* a create already ran this frame: one that failed waits for the next frame */
+    /* a new vsync in the .ini takes a new swapchain, as a new size does */
+    if (shown && ww > 0 && wh > 0 &&
+        (ww != g_vk.sc_win_w || wh != g_vk.sc_win_h || srgb != g_sc_srgb ||
+         __atomic_load_n(&g_opt_vsync, __ATOMIC_RELAXED) != g_vk.sc_vsync)) {
         vk_finish();
         g_sc_srgb = srgb;
         vk_swapchain_create(srgb);
+        tried = 1;
     }
     VkSemaphore wait = VK_NULL_HANDLE, signal = VK_NULL_HANDLE;
     u32 idx = 0;
     int recreate = 0;
-    if (shown && (src || !game) && (g_vk.swapchain || vk_swapchain_create(srgb))) {
+    if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(srgb)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
         VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
-        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 1000000000ull, acq, VK_NULL_HANDLE, &idx);
-        if (r == VK_ERROR_OUT_OF_DATE_KHR)
+        /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
+           Every image still on the display or queued for it (FIFO behind) leaves this frame unshown */
+        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, &idx);
+        if (r == VK_NOT_READY || r == VK_TIMEOUT) {
+            /* the game faster than the display (vsync=1 with fps_limit over its refresh, or a 59.94 Hz one) */
+            static u64 dropped;
+            if (game && ++dropped % 600 == 1)
+                LOG("vulkan: %llu frames not shown, the display had every swapchain image\n",
+                    (unsigned long long)dropped);
+        } else if (r == VK_ERROR_OUT_OF_DATE_KHR)
             recreate = 1;
         else if (r == VK_ERROR_SURFACE_LOST_KHR)
             g_lost = 1;
@@ -272,17 +304,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
                                                    {(i32)(g_last_x + g_last_w), (i32)(g_last_y + g_last_h), 1}},
                                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                     .dstOffsets = {{dx, dy, 0}, {dx + (i32)dw, dy + (i32)dh, 1}}};
-                /* Android FlipH/FlipV reverse the cropped source endpoints. Render targets stay in guest order. */
-                if (transform & 1) {
-                    i32 x = blit.srcOffsets[0].x;
-                    blit.srcOffsets[0].x = blit.srcOffsets[1].x;
-                    blit.srcOffsets[1].x = x;
-                }
-                if (transform & 2) {
-                    i32 y = blit.srcOffsets[0].y;
-                    blit.srcOffsets[0].y = blit.srcOffsets[1].y;
-                    blit.srcOffsets[1].y = y;
-                }
+                flip_src(&blit, transform); /* render targets stay in guest order */
                 vkCmdBlitImage(cb, src->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
             }
@@ -329,9 +351,13 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         else
             VK_OK(r);
     }
-    if (recreate && !g_lost) {
+    if (recreate && !g_lost && !g_vk.sc_lost) { /* not when this frame's create found the surface lost */
         vk_finish();
         vk_swapchain_create(srgb);
+    }
+    if (g_vk.sc_lost) { /* a create found the surface lost: the next frame makes it anew */
+        g_vk.sc_lost = 0;
+        g_lost = 1;
     }
 }
 
@@ -373,7 +399,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
         g_last_h = (u32)((u64)src->sh * y1 / src->h) - g_last_y;
     }
     show(src, x1 - x0, y1 - y0, transform, 1);
-    g_shown_ns = plat_ns();
+    __atomic_store_n(&g_shown_ns, plat_ns(), __ATOMIC_RELAXED);
     vk_unlock();
 }
 
@@ -383,7 +409,9 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
 static void vkr_refresh(void) {
     static u64 last;
     u64 now = plat_ns();
-    if (!backend_window_shown() || now - g_shown_ns < 250000000ull || now - last < 33000000ull) return;
+    if (!backend_window_shown() || now - __atomic_load_n(&g_shown_ns, __ATOMIC_RELAXED) < 250000000ull ||
+        now - last < 33000000ull)
+        return;
     if (!vk_trylock()) return;
     last = now;
     vk_render_end();
@@ -426,17 +454,7 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
                         .srcOffsets = {{(i32)x, (i32)y, 0}, {(i32)(x + w), (i32)(y + h), 1}},
                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                         .dstOffsets = {{0, 0, 0}, {(i32)w, (i32)h, 1}}};
-    /* Screenshots show the same transform as the window, including offscreen/headless presents. */
-    if (transform & 1) {
-        i32 t = blit.srcOffsets[0].x;
-        blit.srcOffsets[0].x = blit.srcOffsets[1].x;
-        blit.srcOffsets[1].x = t;
-    }
-    if (transform & 2) {
-        i32 t = blit.srcOffsets[0].y;
-        blit.srcOffsets[0].y = blit.srcOffsets[1].y;
-        blit.srcOffsets[1].y = t;
-    }
+    flip_src(&blit, transform); /* screenshots show the window's transform, offscreen and headless presents too */
     vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmp, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                    &blit, VK_FILTER_NEAREST);
     vk_barrier(cb, tmp, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -505,5 +523,6 @@ const Renderer vk_renderer = {
     .screenshot = vkr_screenshot,
     .refresh = vkr_refresh,
     .save = vk_pipeline_save,
+    .release_window = vk_window_release,
 };
 const Renderer* g_renderer = &vk_renderer;

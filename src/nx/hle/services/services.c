@@ -26,8 +26,6 @@ int new_event(u32* event, const char* name, int signaled) {
     *event = ev_handle(e);
     return 0;
 }
-int g_hle_docked, g_hle_lang;
-
 /* an event the service keeps (for the whole run, or for an object's life, dropped in its destroy): its reference keeps
    it alive when the game closes the handles it was given */
 KEvent* owned_event(const char* name) {
@@ -37,8 +35,6 @@ KEvent* owned_event(const char* name) {
 }
 
 void svc_core_init(void) {
-    g_hle_docked = g_opt_docked;
-    g_hle_lang = g_opt_lang;
     am_init();
     audio_init();
     time_init();

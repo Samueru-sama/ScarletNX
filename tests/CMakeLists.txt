@@ -293,16 +293,30 @@ add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/llvm_dependency.cmake")
 
 add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-overlay 11)
 target_link_libraries(snx-test-overlay PRIVATE scarletnx-common m)
+include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
+target_include_directories(snx-test-overlay PRIVATE "${CMAKE_BINARY_DIR}/generated")
 add_test(NAME overlay COMMAND snx-test-overlay)
 
 add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common m)
 add_test(NAME vpad COMMAND snx-test-vpad)
+
+add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c")
+snx_test_target(snx-test-fatal-screen 11)
+target_link_libraries(snx-test-fatal-screen PRIVATE scarletnx-common)
+add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)
+
+add_executable(snx-test-ini ini.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
+snx_test_target(snx-test-ini 11)
+target_compile_options(snx-test-ini PRIVATE -UNDEBUG) # its checks are asserts
+add_test(NAME ini COMMAND snx-test-ini)
 
 # the controls' atlas and their shaders are generated and checked in: their sources must still make them
 find_package(Python3 QUIET COMPONENTS Interpreter)
@@ -312,7 +326,15 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ui_shaders_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
     add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
+    # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
+    add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
+    # the nightly release's title and notes (scripts/nightly-notes.py)
+    add_test(NAME nightly_notes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_notes_test.py")
 endif()
+
+# the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
+add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
 
 add_executable(snx-test-hid-touch hid_touch.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/touch.c"
     "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_touch.c")
@@ -336,6 +358,12 @@ snx_test_target(snx-test-driver 90)
 target_link_libraries(snx-test-driver PRIVATE snx_test_common)
 add_test(NAME driver_workflow COMMAND snx-test-driver)
 set_tests_properties(driver_workflow PROPERTIES TIMEOUT 60)
+if(UNIX)
+    add_executable(snx-test-data-dir data_dir.c)
+    snx_test_target(snx-test-data-dir 90)
+    target_link_libraries(snx-test-data-dir PRIVATE scarletnx-common)
+    add_test(NAME data_dir COMMAND snx-test-data-dir)
+endif()
 
 if(UNIX)
     add_executable(snx-test-gdbstub gdbstub.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/gdbstub.c")
@@ -568,7 +596,7 @@ if(UNIX)
     add_test(NAME kernel_cores COMMAND snx-test-kernel-cores)
 endif()
 
-add_executable(snx-test-unattended-script unattended_script.c)
+add_executable(snx-test-unattended-script unattended_script.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-unattended-script 11)
 target_link_libraries(snx-test-unattended-script PRIVATE m)
 add_test(NAME unattended_script COMMAND snx-test-unattended-script)

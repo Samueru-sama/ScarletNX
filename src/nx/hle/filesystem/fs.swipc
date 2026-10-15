@@ -146,6 +146,7 @@ interface nn::fssrv::sf::IFileSystemProxy is fsp-srv {
     [202] OpenDataStorageByDataId(nn::ncm::DataId data_id, nn::ncm::StorageId storage_id)
         -> object<nn::fssrv::sf::IStorage> storage;
     [203] OpenPatchDataStorageByCurrentProcess() -> object<nn::fssrv::sf::IStorage> storage;
+    [205] OpenDataStorageWithProgramIndex(u8 program_index) -> object<nn::fssrv::sf::IStorage> storage;
     [400] OpenDeviceOperator() -> object<nn::fssrv::sf::IDeviceOperator> device_operator;
     [500] OpenSdCardDetectionEventNotifier() -> object<nn::fssrv::sf::IEventNotifier> notifier;
     @stub [620] SetSdCardEncryptionSeed(nn::fs::EncryptionSeed seed);

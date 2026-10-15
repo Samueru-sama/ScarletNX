@@ -24,6 +24,13 @@
 #include <sys/stat.h>
 #endif
 
+/* the checkout the drivers were built from: a build tree's menu lists the games/ its driver makes */
+#ifdef SNX_SOURCE_DIR
+#define GUI_CHECKOUT SNX_SOURCE_DIR
+#else
+#define GUI_CHECKOUT NULL
+#endif
+
 typedef struct {
     SDL_Window* window;
     SDL_Renderer* renderer;
@@ -48,14 +55,21 @@ typedef struct {
     Uint64 entering_ms;         /* the menu fading out since, before a run fades in */
     const char* drivers;
     char *cwd, *file, *games_dir, *keys_path;
-    char* themes_dirs[2]; /* themes/ in the working directory, then beside the GUI */
+    char* data_dir;       /* games/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
+    char* themes_dirs[2]; /* themes/ in the data folder, then beside the GUI */
     char message[512];
     int cols, rows, scale, log_top;
+    int auto_scale; /* Text size Auto's scale, chosen when the window opens: a resize keeps the letters as they were */
     Uint64 sampled;
     bool has_output, finished, aborting, abnormal_exit;
+    GuiConfirm confirm; /* the question before a run is aborted, when ask_abort says to ask it */
+    bool ask_abort;     /* ESC asks first: on a phone it is Back, an edge swipe easily made by mistake */
     int native;
-    SDL_FingerID finger;      /* the finger on the screen, 0 for none */
+    Uint64 finger;            /* the finger on the screen (finger_id), 0 for none */
     float finger_x, finger_y; /* where it went down, 0 to 1 across the window */
+    float finger_mark;        /* the height a drag last moved the focus at, a row at a time */
+    bool pen_held;            /* a pen lifted: its hover leaves the focus where the lift put it until it moves away */
+    float pen_x, pen_y;       /* where it lifted, 0 to 1 across the window */
     Uint32 picked;            /* the event a file from the system's picker comes back as */
     SDL_Texture* splash;      /* the boot's splash, its icon, until splash_until */
     Uint64 splash_until;
@@ -202,14 +216,30 @@ static void band(App* app, int row, int rows, GuiRgb c) {
     SDL_SetRenderViewport(app->renderer, &safe);
 }
 /* a line between two rows, across the text area */
-static void rule(App* app, int row) {
+static void rule(App* app, int row, GuiRgb c) {
     SDL_FRect r;
     r.x = (float)(8 * app->scale);
     r.y = (float)(row * 16 * app->scale - app->scale);
     r.w = (float)((app->cols - 2) * 8 * app->scale);
     r.h = (float)app->scale;
-    SDL_SetRenderDrawColor(app->renderer, app->theme.soft.r, app->theme.soft.g, app->theme.soft.b, 255);
+    SDL_SetRenderDrawColor(app->renderer, c.r, c.g, c.b, 255);
     SDL_RenderFillRect(app->renderer, &r);
+}
+/* the footer from row: the usage, then the working folder, which games/ and themes/ are found in. The theme's bar style
+   puts them on a band of ink over rows rows, its plain one in soft and ink; a rule above when it says so */
+static void footer(App* app, int row, int rows, GuiRgb page, GuiRgb ink, GuiRgb soft) {
+    char usage[256];
+    int bar = app->theme.footer == GUI_STYLE_BAR;
+    if (bar) band(app, row, rows, ink);
+    if (app->theme.footer_rule) rule(app, row, soft);
+    if (app->usage.available)
+        snprintf(usage, sizeof(usage), "GUI + children: RAM %.1f MiB (sum RSS)  CPU %.1f%% (100%% = 1 core)",
+                 (double)app->usage.memory_bytes / 1048576, app->usage.cpu_percent);
+    else
+        snprintf(usage, sizeof(usage), "GUI + children: resource usage unavailable");
+    text(app, 1, row, usage, rgb(bar ? page : soft));
+    text(app, 1, row + 1, "CWD:", rgb(bar ? page : soft));
+    text(app, 6, row + 1, app->cwd ? app->cwd : "(unavailable)", rgb(bar ? page : ink));
 }
 /* a selectable line: activated, focused (in the focus colour, or on a band) or plain */
 static void entry(App* app, int x, int y, const char* label, int activated, int focused) {
@@ -234,15 +264,12 @@ static void next_theme(App* app) {
     while (i < app->themes.count && strcmp(app->themes.ids[i], app->theme.id)) ++i;
     if (app->themes.count) gui_theme_load(&app->theme, dirs, 2, app->themes.ids[(i + 1) % app->themes.count]);
 }
-/* a blank row between the items when they all fit so above the message and the description */
-static int menu_spacing(const App* app) { return 4 + 2 * (GUI_ITEM_COUNT - 1) < app->rows - 5 ? 2 : 1; }
 /* the recent games take a title row, a row each and a blank one above the items */
 static int recent_rows(const App* app) { return app->recent.count ? app->recent.count + 2 : 0; }
 /* the menu's last row: below it a blank, the message, and the focused item's description */
 static int menu_last_row(const App* app) { return app->rows - 7; }
 static int menu_row_in_full(const App* app, int item) {
-    return 4 + recent_rows(app) + item * menu_spacing(app) +
-           (app->menu.view != GUI_LOAD_NONE && item > app->menu.active ? 2 : 0);
+    return 4 + recent_rows(app) + item + (app->menu.view != GUI_LOAD_NONE && item > app->menu.active ? 2 : 0);
 }
 /* how far the menu slides up for the focus to show: only when its letters are too big for the screen */
 static int menu_offset(const App* app) {
@@ -297,18 +324,34 @@ static void menu_label(const App* app, int item, char* label, size_t size) {
 static int entering(const App* app) {
     return app->entering_ms && now_ms(app) < app->entering_ms + app->theme.fade_out_ms;
 }
+/* the rows Auto keeps at the least: a phone held wide is short, and its menu needs room for its items */
+#ifdef SDL_PLATFORM_ANDROID
+#define GUI_AUTO_ROWS 20
+#else
+#define GUI_AUTO_ROWS 16
+#endif
+/* Text size Auto's scale: twice the display's own (Android's dpi / 160), so a computer at 100% gets 2x and a phone's
+   letters come out as big to the eye, as long as rows rows fit in a window height pixels high */
+static int pick_auto_scale(float display_scale, int height, int rows) {
+    int scale = SDL_max(1, (int)(2.0f * display_scale));
+    while (scale > 1 && height / (16 * scale) < rows) --scale;
+    return scale;
+}
 static void layout(App* app) {
     int run;
-    int width, height;
+    int width, height, whole_width, whole_height;
     set_area(app);
     area(app, &width, &height);
-    app->scale = SDL_min(width / 640, height / 400);
-    /* a phone packs its pixels tight: the display's own scale, for text and taps of a size, as far as the menu still
-       fits with five recent games and a submenu (render) */
-    app->scale = SDL_max(app->scale, SDL_min((int)(SDL_GetWindowDisplayScale(app->window) + 0.5f),
-                                             height / (16 * (19 + GUI_ITEM_COUNT))));
-    /* the size Text size chose, as long as 16 rows still fit */
-    if (app->menu.text_size) app->scale = app->menu.text_size;
+    /* Auto's letters are the opening window's, measured whole: a phone's system bars may still show over it then, and
+       the safe area be short. The window then keeps room for 16 rows of them */
+    if (!app->auto_scale && SDL_GetWindowSizeInPixels(app->window, &whole_width, &whole_height) && whole_height > 0) {
+        app->auto_scale = pick_auto_scale(SDL_GetWindowDisplayScale(app->window), whole_height, GUI_AUTO_ROWS);
+        SDL_SetWindowMinimumSize(
+            app->window, 800,
+            SDL_max(480, (int)SDL_ceilf(256.0f * (float)app->auto_scale / SDL_GetWindowPixelDensity(app->window))));
+    }
+    app->scale = app->menu.text_size ? app->menu.text_size : app->auto_scale;
+    /* as long as 16 rows still fit: Auto's always do on a computer, a phone's not while Fullscreen is off */
     while (app->scale > 1 && height / (16 * app->scale) < 16) --app->scale;
     if (app->scale < 1) app->scale = 1;
     app->cols = SDL_min(width / (8 * app->scale), GUI_MAX_COLS);
@@ -441,6 +484,27 @@ static void clip_row(char run[3][112], size_t length[3], int note, int room) {
     snprintf(run[cut] + at, 112 - at, "%s", note ? "..." : "");
     length[cut] = left + marker;
 }
+/* how far each of rows rows has typed at now, total[r] characters that came at shown[r]: async, each from when it came;
+   sync, one after the other. A slow row types a character every typing_ms, any other the whole row in typing_ms, and
+   one above first, off the screen, at once. Returns the row being typed, -1 for none */
+static int type_rows(const GuiTheme* theme, int rows, int first, const size_t* total, const Uint64* shown,
+                     const int* slow, Uint64 now, size_t* typed) {
+    int r, typing = -1;
+    Uint64 free_at = 0;
+    for (r = 0; r < rows; ++r) {
+        Uint64 start, span = slow[r] ? (Uint64)theme->typing_ms * total[r] : theme->typing_ms;
+        typed[r] = total[r];
+        if (r < first || theme->line_in != GUI_LINE_TYPING || !theme->typing_ms) continue;
+        start = theme->typing_sync ? SDL_max(shown[r], free_at) : shown[r];
+        free_at = start + span;
+        if (now < start)
+            typed[r] = 0;
+        else if (now - start < span)
+            typed[r] = (size_t)((now - start) * total[r] / span);
+        if (now >= start && typed[r] < total[r]) typing = r;
+    }
+    return typing;
+}
 /* a run as a loading screen: the title, the name and the ring; the steps typed down the page, their status last;
    the progress bar and its percentage */
 static void render_steps(App* app) {
@@ -448,18 +512,18 @@ static void render_steps(App* app) {
        each ends before the right edge, with room for a step's dots and the cursor */
     enum { ROWS = GUI_STEPS_MAX + GUI_NOTES_MAX, SEGMENTS = 40 };
     static char runs[ROWS][3][112];
-    static size_t lengths[ROWS][3], typed[ROWS];
+    static size_t lengths[ROWS][3], typed[ROWS], totals[ROWS];
     static const GuiStep* owner[ROWS];
-    static int is_note[ROWS];
+    static int is_note[ROWS], slow[ROWS];
     static Uint64 shown[ROWS];
     static const GuiRgb white = {255, 255, 255};
     const GuiTheme* theme = &app->theme;
     const GuiPalette* colors = &theme->run_colors;
     /* since: a line that came while the menu faded out comes in with the run */
-    Uint64 now = now_ms(app), since = app->fade_ms, free_at = 0;
+    Uint64 now = now_ms(app), since = app->fade_ms;
     float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale;
-    int width, height, name_col, col, y, i, r, rows = 0, last_step = -1, typing = -1, top = 3, bottom, fit, first,
-                                               cursor;
+    int width, height, name_col, col, y, i, r, rows = 0, last_step = -1, typing, top = 3, bottom, fit, first, cursor;
+    int foot = theme->footer != GUI_STYLE_NONE ? 2 : 0; /* the footer's rows, over the ESC line */
     const char* title;
     char name[96], head[128];
     SDL_Color ink, soft, failure;
@@ -507,22 +571,16 @@ static void render_steps(App* app) {
             clip_row(runs[rows], lengths[rows], 1, app->cols - 5);
         }
     }
-    /* when each row types: async, each from when it came; sync, one after the other, a finished step's faster */
-    for (r = 0; r < rows; ++r) {
-        Uint64 start;
-        float per;
-        size_t total = lengths[r][0] + lengths[r][1] + lengths[r][2];
-        typed[r] = total;
-        if (theme->line_in != GUI_LINE_TYPING || !theme->typing_ms) continue;
-        per = (float)theme->typing_ms / (theme->typing_sync && owner[r]->state != GUI_STEP_ACTIVE ? 3.0f : 1.0f);
-        start = theme->typing_sync ? SDL_max(shown[r], free_at) : shown[r];
-        free_at = start + (Uint64)(per * (float)total);
-        typed[r] = now < start ? 0 : (size_t)SDL_min((float)total, (float)(now - start) / per);
-        if (now >= start && typed[r] < total) typing = r;
-    }
-    bottom = theme->bar ? app->rows - 5 : app->rows - 2;
+    bottom = (theme->bar ? app->rows - 5 : app->rows - 2) - foot;
     fit = SDL_max(1, bottom - top);
     first = SDL_max(0, rows - fit);
+    /* the newest row of a step still running types readably; a done step's, and one a newer row of its step passed,
+       at once but for a glimpse: a fast log keeps the cursor on its latest lines */
+    for (r = 0; r < rows; ++r) {
+        totals[r] = lengths[r][0] + lengths[r][1] + lengths[r][2];
+        slow[r] = owner[r]->state == GUI_STEP_ACTIVE && (r + 1 == rows || owner[r + 1] != owner[r]);
+    }
+    typing = type_rows(theme, rows, first, totals, shown, slow, now, typed);
     cursor = typing >= 0 ? typing : last_step;
     for (r = first; r < rows; ++r) {
         int working, blink, k;
@@ -557,10 +615,10 @@ static void render_steps(App* app) {
         int k, percent = gui_steps_percent(&app->steps);
         int filled = percent < 0 ? 0 : (percent * SEGMENTS + 50) / 100;
         float span = (float)(app->cols - 8) * cw, gap = 2.0f * (float)app->scale;
-        float seg = (span - gap * (SEGMENTS - 1)) / SEGMENTS, sy = ch * (float)(app->rows - 3) + ch * 0.3f;
+        float seg = (span - gap * (SEGMENTS - 1)) / SEGMENTS, sy = ch * (float)(app->rows - foot - 3) + ch * 0.3f;
         char number[16];
-        fill(app, cw, ch * (float)(app->rows - 4) + ch / 2, (float)(app->cols - 2) * cw, (float)app->scale, colors->dim,
-             255);
+        fill(app, cw, ch * (float)(app->rows - foot - 4) + ch / 2, (float)(app->cols - 2) * cw, (float)app->scale,
+             colors->dim, 255);
         for (k = 0; k < SEGMENTS; ++k) {
             SDL_FRect r;
             r.x = cw + (float)k * (seg + gap);
@@ -578,9 +636,10 @@ static void render_steps(App* app) {
             snprintf(number, sizeof number, " --%%");
         else
             snprintf(number, sizeof number, "%3d%%", percent);
-        text(app, app->cols - 6, app->rows - 3, number, ink);
-        text(app, 1, app->rows - 2, name, ink);
+        text(app, app->cols - 6, app->rows - foot - 3, number, ink);
+        text(app, 1, app->rows - foot - 2, name, ink);
     }
+    if (foot) footer(app, app->rows - 3, 2, colors->page, colors->ink, colors->soft);
     if (app->finished)
         prompt(app, app->abnormal_exit ? GUI_PROMPT_FAILED : GUI_PROMPT_DONE, 1, app->rows - 1, SAY_DONE, soft);
     else if (app->aborting)
@@ -611,6 +670,43 @@ static void overlay(App* app) {
     SDL_SetRenderViewport(app->renderer, NULL);
     fill(app, 0, 0, (float)width, (float)height, black, (Uint8)(a * 255));
     SDL_SetRenderViewport(app->renderer, &safe);
+}
+static const char* ask_question(const App* app) {
+    if (app->confirm.exit) return "Exit ScarletNX?";
+    return screen(app) == GUI_SCREEN_COMPILING ? "Abort the recompile? Its work is lost." : "Abort the run?";
+}
+/* the question's box, in cells: a blank row, the question, a blank row, its two choices and a blank row, two columns
+   either side of the question */
+static void ask_box(const App* app, int* col, int* row, int* cols) {
+    *cols = SDL_min(app->cols - 2, (int)SDL_utf8strlen(ask_question(app)) + 4);
+    *col = (app->cols - *cols) / 2;
+    *row = SDL_max(0, (app->rows - 6) / 2);
+}
+/* the question over a running run, in the run screen's colours, its choices as the menu's entries */
+static void render_ask(App* app) {
+    static const char* const choices[2][2] = {{"Keep going", "Abort"}, {"Stay", "Exit"}}; /* by exit, GUI_CONFIRM_* */
+    const GuiTheme* t = &app->theme;
+    int steps = t->run == GUI_RUN_STEPS && !app->confirm.exit, col, row, cols, i;
+    GuiRgb page = steps ? t->run_colors.page : t->page, ink = steps ? t->run_colors.ink : t->ink;
+    GuiRgb soft = steps ? t->run_colors.soft : t->soft, warning = steps ? t->run_colors.warning : t->warning;
+    float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale, line = (float)app->scale;
+    if (!app->confirm.shown || (!app->menu.running && !app->confirm.exit)) return;
+
+    ask_box(app, &col, &row, &cols);
+    fill(app, (float)col * cw, (float)row * ch, (float)cols * cw, 6 * ch, page, 255);
+    fill(app, (float)col * cw, (float)row * ch, (float)cols * cw, line, soft, 255);
+    fill(app, (float)col * cw, (float)(row + 6) * ch - line, (float)cols * cw, line, soft, 255);
+    fill(app, (float)col * cw, (float)row * ch, line, 6 * ch, soft, 255);
+    fill(app, (float)(col + cols) * cw - line, (float)row * ch, line, 6 * ch, soft, 255);
+    text(app, col + 2, row + 1, ask_question(app), rgb(warning));
+    for (i = 0; i < 2; ++i) {
+        char label[64];
+        int focused = app->confirm.selected == i, bar = focused && (steps || t->focus_bar);
+        snprintf(label, sizeof label, "%s%s", t->marker, choices[app->confirm.exit][i]);
+        if (bar)
+            fill(app, (float)col * cw + line, (float)(row + 3 + i) * ch, (float)cols * cw - 2 * line, ch, ink, 255);
+        text(app, col + 2, row + 3 + i, label, rgb(bar ? page : focused ? t->focus : ink));
+    }
 }
 /* the boot's splash: the program's icon on a theme's splash page, then the menu as the theme brings it in */
 static void splash_start(App* app) {
@@ -667,6 +763,7 @@ static void render(App* app) {
         SDL_SetRenderDrawColor(app->renderer, page.r, page.g, page.b, 255);
         SDL_RenderClear(app->renderer);
         render_steps(app);
+        render_ask(app);
         overlay(app);
         SDL_RenderPresent(app->renderer);
         return;
@@ -679,7 +776,7 @@ static void render(App* app) {
         if (theme->head == GUI_STYLE_BAR) band(app, 0, 1, theme->ink);
         text(app, 1, 0, title, theme->head == GUI_STYLE_BAR ? paper : ink);
     }
-    if (head && theme->head_rule) rule(app, 4);
+    if (head && theme->head_rule) rule(app, 4, theme->soft);
     if (app->menu.view == GUI_LOAD_GAMES && idle) {
         size_t i;
         if (head) {
@@ -776,21 +873,8 @@ static void render(App* app) {
              app->menu.recent_focus ? app->recent.game[app->menu.recent_focus - 1].path
                                     : gui_setting_description(&app->menu),
              ink);
-    if (foot) {
-        char footer[256];
-        int bar = theme->footer == GUI_STYLE_BAR;
-        if (bar) band(app, app->rows - 3, 3, theme->ink);
-        if (theme->footer_rule) rule(app, app->rows - 3);
-
-        if (app->usage.available)
-            snprintf(footer, sizeof(footer), "GUI + children: RAM %.1f MiB (sum RSS)  CPU %.1f%% (100%% = 1 core)",
-                     (double)app->usage.memory_bytes / 1048576, app->usage.cpu_percent);
-        else
-            snprintf(footer, sizeof(footer), "GUI + children: resource usage unavailable");
-        text(app, 1, app->rows - 3, footer, bar ? paper : soft);
-        text(app, 1, app->rows - 2, "CWD:", bar ? paper : soft);
-        text(app, 6, app->rows - 2, app->cwd ? app->cwd : "(unavailable)", bar ? paper : ink);
-    }
+    if (foot) footer(app, app->rows - 3, 3, theme->page, theme->ink, theme->soft);
+    render_ask(app);
     overlay(app);
     SDL_RenderPresent(app->renderer);
 }
@@ -824,6 +908,8 @@ static bool android_folder(App* app) {
     }
     SDL_free(app->cwd);
     app->cwd = cwd;
+    free(app->data_dir);
+    app->data_dir = snx_strdup(cwd);
     free(app->games_dir);
     app->games_dir = snx_path_join(cwd, "games");
     free(app->themes_dirs[0]);
@@ -836,7 +922,8 @@ static int play(App* app, const char* game) {
     const char* argv[5];
     int ok, n = 0;
     argv[n++] = option;
-    if (app->menu.fullscreen) argv[n++] = "-f"; /* the whole screen, the system's bars out of the way */
+    /* the whole screen, the system's bars out of the way. OFF says so over the game's .ini */
+    argv[n++] = app->menu.fullscreen ? "-f" : "--fullscreen=0";
     argv[n++] = gui_touch_option(&app->menu);
     argv[n++] = gui_controls_option(&app->menu);
     argv[n] = NULL;
@@ -895,6 +982,7 @@ static void pump(App* app) {
             else
                 snprintf(app->message, sizeof(app->message), "Driver exited with status %d.", status);
             app->aborting = false;
+            app->confirm.shown = false; /* a run that ended while asking has nothing left to abort */
             layout(app);
 #ifdef SDL_PLATFORM_ANDROID
             /* the game opens in its own activity, over this one: coming back from it is coming back to the menu */
@@ -968,7 +1056,7 @@ static void launch(App* app, char* absolute, bool prepared) {
     const char* argv[2 + GUI_LAUNCH_MAX + 1] = {native ? absolute : driver}; /* the driver, the file, NULL */
     size_t n = 1;
     if (!native) argv[n++] = absolute;
-    n += gui_launch_options(&app->menu, native, argv + n);
+    n += gui_launch_options(&app->menu, native, app->data_dir, argv + n);
     argv[n] = NULL;
     bool started = gui_process_start(app->process, argv, app->message, sizeof(app->message));
     if (started && app->run_log) {
@@ -1177,8 +1265,8 @@ static void list_games(App* app) {
     layout(app);
 }
 static void menu_key(App* app, GuiKey key) {
-#ifdef SDL_PLATFORM_ANDROID
     GuiLoadView before = app->menu.view; /* the screen this key was pressed on */
+#ifdef SDL_PLATFORM_ANDROID
     bool fullscreen = app->menu.fullscreen;
 #endif
     if (app->finished) {
@@ -1232,19 +1320,59 @@ static void menu_key(App* app, GuiKey key) {
     }
     if (key == GUI_CANCEL || (key == GUI_SELECT && app->menu.view == GUI_LOAD_KEYS)) app->message[0] = 0;
     if (app->menu.view == GUI_LOAD_GAMES) list_games(app);
+    /* Back or ESC with nothing open to close: on Android the app goes behind, as an app's first screen does; on a
+       computer the menu asks before it closes, as rEden does */
+    if (key == GUI_CANCEL && before == GUI_LOAD_NONE && app->menu.view == GUI_LOAD_NONE && !app->menu.running) {
+#ifdef SDL_PLATFORM_ANDROID
+        gui_android_background(app->message, sizeof(app->message));
+#else
+        app->confirm.shown = true;
+        app->confirm.exit = true;
+        app->confirm.selected = GUI_CONFIRM_KEEP;
+#endif
+    }
 }
 /* a label's cells, or its whole row for a finger, which is wider than a mouse pointer */
 static bool hit_text(const App* app, float x, float y, int col, int row, const char* label, bool touch) {
     int end = touch ? app->cols : SDL_min(app->cols - 1, col + (int)SDL_utf8strlen(label));
     return x >= (touch ? 0 : col) && x < end && y >= row && y < row + 1;
 }
+static void abort_run(App* app) {
+    if (app->aborting) return;
+    /* Do not ask a hung program to shut down or wait on it in the event
+       handler. Kill its tree now and let pump reap it without blocking. */
+    gui_process_terminate(app->process);
+    app->aborting = true;
+}
+/* the question's second choice taken: the app closes, or the run is aborted */
+static void confirmed(App* app) {
+    if (app->confirm.exit)
+        app->menu.quit = true;
+    else
+        abort_run(app);
+}
+/* the pointer on the question, at x, y in cells: on a choice it takes the focus, and a click takes the choice; a click
+   off the box keeps going */
+static void ask_pointer(App* app, float x, float y, bool click) {
+    int col, row, cols;
+    ask_box(app, &col, &row, &cols);
+    if (x >= (float)col && x < (float)(col + cols) && y >= (float)(row + 3) && y < (float)(row + 5)) {
+        app->confirm.selected = (int)y - row - 3;
+        if (click && gui_confirm_key(&app->confirm, GUI_SELECT)) confirmed(app);
+    } else if (click && (x < (float)col || x >= (float)(col + cols) || y < (float)row || y >= (float)(row + 6)))
+        gui_confirm_key(&app->confirm, GUI_CANCEL);
+}
 static void pointer(App* app, float window_x, float window_y, bool click, bool touch) {
-    if (app->menu.running || app->finished) return;
+    if ((app->menu.running && !app->confirm.shown) || app->finished) return;
     layout(app);
     float x, y;
     if (!SDL_RenderCoordinatesFromWindow(app->renderer, window_x, window_y, &x, &y)) return;
     x /= 8 * app->scale;
     y /= 16 * app->scale;
+    if (app->confirm.shown) {
+        ask_pointer(app, x, y, click);
+        return;
+    }
     if (app->menu.view == GUI_LOAD_KEYS) {
         if (click && hit_text(app, x, y, 1, 8, "Back [ESC]", touch)) menu_key(app, GUI_CANCEL);
 #ifdef SDL_PLATFORM_ANDROID
@@ -1317,21 +1445,45 @@ static void picked(App* app, const char* uri) {
         drop(app, path, false);
     free(path);
 }
-/* ESC: a run is aborted, anything else goes back */
+/* ESC: a run is aborted, or asked about first when ask_abort says so; anything else goes back */
 static void cancel(App* app) {
     if (!app->menu.running)
         menu_key(app, GUI_CANCEL);
-    else if (!app->aborting) {
-        /* Do not ask a hung program to shut down or wait on it in the event
-           handler. Kill its tree now and let pump reap it without blocking. */
-        gui_process_terminate(app->process);
-        app->aborting = true;
-    }
+    else if (app->ask_abort && !app->aborting) {
+        app->confirm.shown = true;
+        app->confirm.exit = false;
+        app->confirm.selected = GUI_CONFIRM_KEEP;
+    } else
+        abort_run(app);
 }
 /* the row of a running run's ESC line, -1 when it has none */
 static int escape_row(const App* app) {
     if (app->theme.run == GUI_RUN_STEPS) return app->rows - 1;
     return app->theme.head != GUI_STYLE_NONE ? 3 : -1;
+}
+/* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
+   give a first finger and any finger may have, and no real finger's id sets bit 63 */
+static Uint64 finger_id(const SDL_TouchFingerEvent* f) {
+    return (Uint64)f->fingerID | (f->touchID == SDL_PEN_TOUCHID ? 1ull << 63 : 0);
+}
+/* a drag up or down from where the finger went down, on a menu whose letters make it scroll */
+static bool drags(const App* app, float x, float y) {
+    float dx = x - app->finger_x, dy = y - app->finger_y;
+    return SDL_fabsf(dy) > 0.05f && SDL_fabsf(dy) > 2 * SDL_fabsf(dx) && app->menu.view != GUI_LOAD_GAMES &&
+           !app->menu.running && !app->finished && menu_row_in_full(app, GUI_EXIT) > menu_last_row(app);
+}
+/* the focus follows the finger, up as it goes up, a row each time it passes a row's height, so the highlight is seen
+   going */
+static void drag(App* app, float y) {
+    float row = 1.0f / (float)SDL_max(1, app->rows);
+    while (y <= app->finger_mark - row) {
+        menu_key(app, GUI_UP);
+        app->finger_mark -= row;
+    }
+    while (y >= app->finger_mark + row) {
+        menu_key(app, GUI_DOWN);
+        app->finger_mark += row;
+    }
 }
 /* a finger lifted at x, y (0 to 1 across the window): a swipe across turns the games' pages; a tap clicks there, is ESC
    on a finished run and on a running one's ESC line */
@@ -1343,11 +1495,8 @@ static void touch(App* app, float x, float y) {
             menu_key(app, dx < 0 ? GUI_PAGE_DOWN : GUI_PAGE_UP);
         return;
     }
-    /* a drag up or down moves the focus by the rows it went, when the menu's letters make it scroll */
-    if (SDL_fabsf(dy) > 0.05f && SDL_fabsf(dy) > 2 * SDL_fabsf(dx) && app->menu.view != GUI_LOAD_GAMES &&
-        !app->menu.running && !app->finished && menu_row_in_full(app, GUI_EXIT) > menu_last_row(app)) {
-        int steps = (int)(SDL_fabsf(dy) * (float)app->rows) / menu_spacing(app);
-        while (steps-- > 0) menu_key(app, dy < 0 ? GUI_DOWN : GUI_UP);
+    if (drags(app, x, y)) {
+        drag(app, y); /* what its last moves did not reach */
         return;
     }
     if (SDL_fabsf(dx) > 0.03f || SDL_fabsf(dy) > 0.03f) return; /* a drag, no tap */
@@ -1356,6 +1505,10 @@ static void touch(App* app, float x, float y) {
         return;
     }
     SDL_GetWindowSize(app->window, &w, &h);
+    if (app->confirm.shown) {
+        pointer(app, x * (float)w, y * (float)h, true, true);
+        return;
+    }
     if (app->menu.running) {
         layout(app);
         if (SDL_RenderCoordinatesFromWindow(app->renderer, x * (float)w, y * (float)h, &rx, &ry) &&
@@ -1375,7 +1528,25 @@ static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
     return true;
 }
 #endif
+/* the menu's key for a key press; false for none and for Enter or Space held down */
+static bool menu_key_of(const SDL_KeyboardEvent* k, GuiKey* key) {
+    switch (k->key) {
+        case SDLK_UP: *key = GUI_UP; return true;
+        case SDLK_DOWN: *key = GUI_DOWN; return true;
+        case SDLK_LEFT: *key = GUI_LEFT; return true;
+        case SDLK_RIGHT: *key = GUI_RIGHT; return true;
+        case SDLK_PAGEUP: *key = GUI_PAGE_UP; return true;
+        case SDLK_PAGEDOWN: *key = GUI_PAGE_DOWN; return true;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+        case SDLK_SPACE: *key = GUI_SELECT; return !k->repeat;
+        case SDLK_ESCAPE:
+        case SDLK_AC_BACK: *key = GUI_CANCEL; return true;
+        default: return false;
+    }
+}
 static void event(App* app, const SDL_Event* e) {
+    GuiKey key;
     if (e->type == SDL_EVENT_QUIT || e->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         app->menu.quit = true;
         return;
@@ -1396,14 +1567,23 @@ static void event(App* app, const SDL_Event* e) {
         return;
     }
     if (e->type == SDL_EVENT_FINGER_DOWN && !app->finger) {
-        app->finger = e->tfinger.fingerID;
+        app->finger = finger_id(&e->tfinger);
         app->finger_x = e->tfinger.x;
-        app->finger_y = e->tfinger.y;
+        app->finger_y = app->finger_mark = e->tfinger.y;
+        return;
+    }
+    if (e->type == SDL_EVENT_FINGER_MOTION && finger_id(&e->tfinger) == app->finger) {
+        if (drags(app, e->tfinger.x, e->tfinger.y)) drag(app, e->tfinger.y);
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
-        e->tfinger.fingerID == app->finger) {
+        finger_id(&e->tfinger) == app->finger) {
         app->finger = 0;
+        if (e->tfinger.touchID == SDL_PEN_TOUCHID) {
+            app->pen_held = true;
+            app->pen_x = e->tfinger.x;
+            app->pen_y = e->tfinger.y;
+        }
         if (e->type == SDL_EVENT_FINGER_UP) touch(app, e->tfinger.x, e->tfinger.y);
         return;
     }
@@ -1411,13 +1591,41 @@ static void event(App* app, const SDL_Event* e) {
         pointer(app, e->motion.x, e->motion.y, false, false);
         return;
     }
+    /* a hovering pen highlights as the mouse does (it sends no mouse motion). Touching, it is a finger, and once it
+       lifts its hover waits until it has moved away as far as a tap may: the focus a drag moved would otherwise jump
+       to the row under the hover at the lift, which SDL sends right after it */
+    if (e->type == SDL_EVENT_PEN_PROXIMITY_OUT) {
+        app->pen_held = false;
+        return;
+    }
+    if (e->type == SDL_EVENT_PEN_MOTION) {
+        int w, h;
+        if (e->pmotion.pen_state & SDL_PEN_INPUT_DOWN) return;
+        SDL_GetWindowSize(app->window, &w, &h);
+        if (app->pen_held && w > 0 && h > 0 && SDL_fabsf(e->pmotion.x / (float)w - app->pen_x) <= 0.03f &&
+            SDL_fabsf(e->pmotion.y / (float)h - app->pen_y) <= 0.03f)
+            return;
+        app->pen_held = false;
+        pointer(app, e->pmotion.x, e->pmotion.y, false, false);
+        return;
+    }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT) {
         pointer(app, e->button.x, e->button.y, true, false);
         return;
     }
     if (e->type != SDL_EVENT_KEY_DOWN) return;
+    /* a running run takes ESC, and the question, while it shows, every key; a held key asks and answers nothing */
     if (app->menu.running) {
-        if (e->key.key == SDLK_ESCAPE || e->key.key == SDLK_AC_BACK) cancel(app);
+        if (e->key.repeat || !menu_key_of(&e->key, &key)) return;
+        if (app->confirm.shown) {
+            if (gui_confirm_key(&app->confirm, key)) confirmed(app);
+        } else if (key == GUI_CANCEL)
+            cancel(app);
+        return;
+    }
+    /* the exit question takes every key while it shows */
+    if (app->confirm.shown) {
+        if (!e->key.repeat && menu_key_of(&e->key, &key) && gui_confirm_key(&app->confirm, key)) confirmed(app);
         return;
     }
     if (e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) &&
@@ -1427,22 +1635,7 @@ static void event(App* app, const SDL_Event* e) {
         SDL_free(clipboard);
         return;
     }
-    switch (e->key.key) {
-        case SDLK_UP: menu_key(app, GUI_UP); break;
-        case SDLK_DOWN: menu_key(app, GUI_DOWN); break;
-        case SDLK_LEFT: menu_key(app, GUI_LEFT); break;
-        case SDLK_RIGHT: menu_key(app, GUI_RIGHT); break;
-        case SDLK_PAGEUP: menu_key(app, GUI_PAGE_UP); break;
-        case SDLK_PAGEDOWN: menu_key(app, GUI_PAGE_DOWN); break;
-        case SDLK_RETURN:
-        case SDLK_KP_ENTER:
-        case SDLK_SPACE:
-            if (!e->key.repeat) menu_key(app, GUI_SELECT);
-            break;
-        case SDLK_ESCAPE:
-        case SDLK_AC_BACK: menu_key(app, GUI_CANCEL); break;
-        default: break;
-    }
+    if (menu_key_of(&e->key, &key)) menu_key(app, key);
 }
 static bool initialize(App* app) {
     SDL_WindowFlags flags;
@@ -1451,14 +1644,18 @@ static bool initialize(App* app) {
     app->theme = *gui_theme_builtin("yorha");
     app->menu.fullscreen = true; /* a phone plays on the whole screen; Fullscreen off shows the system's bars */
     app->menu.controls = true;   /* and has no buttons but these */
+    app->ask_abort = true;
     gui_android_start();
     /* back is ESC here: without this it would close the app */
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
 #else
     app->theme = *gui_theme_builtin("default");
 #endif
-    /* touch() takes the fingers: SDL would send each as a mouse too */
+    /* touch() takes the fingers, and a finger and the mouse each arrive once: SDL would also send each as the other,
+       and a pen as both (it stays a finger), so one tap would select twice */
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
     if (!SDL_Init(SDL_INIT_VIDEO)) return false;
 #ifdef SDL_PLATFORM_ANDROID
     /* the whole screen, the system's bars out of the way, as Fullscreen says: a phone held wide is short */
@@ -1467,7 +1664,6 @@ static bool initialize(App* app) {
     flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #endif
     if (!SDL_CreateWindowAndRenderer(snx_build_info(), 1280, 800, flags, &app->window, &app->renderer)) return false;
-    SDL_SetWindowMinimumSize(app->window, 800, 480);
     snx_window_icon(app->window);
     SDL_SetRenderVSync(app->renderer, 1);
     SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, true);
@@ -1475,13 +1671,16 @@ static bool initialize(App* app) {
     app->font = create_font(app->renderer);
     app->process = gui_process_create();
     app->cwd = SDL_GetCurrentDirectory();
-    app->games_dir = snx_path_join(app->cwd ? app->cwd : ".", "games");
-    app->themes_dirs[0] = snx_path_join(app->cwd ? app->cwd : ".", "themes");
 #ifdef SDL_PLATFORM_ANDROID
     app->drivers = gui_android_libraries();
+    app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
 #else
     app->drivers = SDL_GetBasePath();
+    app->data_dir = snx_data_dir(GUI_CHECKOUT, app->drivers);
+    if (!app->data_dir) app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
 #endif
+    app->games_dir = snx_path_join(app->data_dir, "games");
+    app->themes_dirs[0] = snx_path_join(app->data_dir, "themes");
     if (app->drivers) app->themes_dirs[1] = snx_path_join(app->drivers, "themes");
     app->keys_path = device_keys_path();
     gui_console_init(&app->console, 78, 17);
@@ -1501,6 +1700,7 @@ static void cleanup(App* app) {
 #endif
     gui_process_destroy(app->process);
     free(app->file);
+    free(app->data_dir);
     free(app->games_dir);
     free(app->themes_dirs[0]);
     free(app->themes_dirs[1]);

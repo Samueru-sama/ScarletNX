@@ -164,15 +164,16 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && strstr(argv[1], "option flags")) {
         int i = 2;
-        assert(argc == 7 + SNX_GUI_HAS_GCCJIT && !strcmp(argv[i++], "-f") && !strcmp(argv[i++], "--touch=1") &&
+        assert(argc == 9 + SNX_GUI_HAS_GCCJIT && !strcmp(argv[i++], "-f") && !strcmp(argv[i++], "--touch=1") &&
                !strcmp(argv[i++], "--controls=0"));
         if (SNX_GUI_HAS_GCCJIT) assert(!strcmp(argv[i++], "--backend=gcc"));
-        assert(!strcmp(argv[i++], "-S") && !strcmp(argv[i++], "-s") && i == argc);
+        assert(!strcmp(argv[i++], "-S") && !strcmp(argv[i++], "-s"));
+        assert(!strcmp(argv[i++], "--repo") && argv[i++][0] && i == argc);
         puts("Recompiling option flags\nScarletNX - option flags"); /* the runner's banner: now loading */
         return 0;
     }
     if (argc > 1) {
-        assert(argc == 2 || argc == 5);
+        assert(argc == 2 || argc == 7);
         assert(snx_is_file(argv[1]));
         if (strstr(argv[1], "Game00")) {
             assert(argc == 2 && strstr(argv[0], "gnuabi"));
@@ -182,8 +183,8 @@ int main(int argc, char** argv) {
         assert(strstr(argv[1], "game with spaces"));
         bool nx = strstr(argv[0], "mariko") != NULL;
         if (nx)
-            assert(argc == 5 && !strcmp(argv[2], "-f") && !strcmp(argv[3], "--touch=1") &&
-                   !strcmp(argv[4], "--controls=0"));
+            assert(argc == 7 && !strcmp(argv[2], "-f") && !strcmp(argv[3], "--touch=1") &&
+                   !strcmp(argv[4], "--controls=0") && !strcmp(argv[5], "--repo") && argv[6][0]);
         else
             assert(argc == 2);
         size_t size;
@@ -197,7 +198,15 @@ int main(int argc, char** argv) {
         return nx ? 0 : 7; /* Both successful and failed drivers need ESC acknowledgement. */
     }
     App app;
+    /* the menu's data folder from the test's own environment, never the user's */
+    SDL_setenv_unsafe("XDG_DATA_HOME", "/nonexistent/snx-gui-test", 1);
     assert(initialize(&app));
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID)
+    /* no checkout and no games/ beside the test: games/ and themes/ come from the user's data folder */
+    assert(!strcmp(app.data_dir, "/nonexistent/snx-gui-test/scarletnx"));
+    assert(!strcmp(app.games_dir, "/nonexistent/snx-gui-test/scarletnx/games"));
+    assert(!strcmp(app.themes_dirs[0], "/nonexistent/snx-gui-test/scarletnx/themes"));
+#endif
     /* the window says which build it is: commit, compiler, platform */
     assert(!strcmp(SDL_GetWindowTitle(app.window), snx_build_info()) && !strncmp(snx_build_info(), "ScarletNX ", 10));
     /* the boot's splash: the default theme's black page with the icon in the middle until its time; a key ends it and
@@ -447,8 +456,9 @@ int main(int argc, char** argv) {
     {
         size_t size;
         char* kept = (char*)snx_read_file(app.run_log, &size);
-        assert(kept && !app.run_out && !strncmp(kept, "$ ", 2) &&
-               strstr(kept, "game with spaces;literal.nro -f --touch=1 --controls=0\n"));
+        char* line = snx_format("game with spaces;literal.nro -f --touch=1 --controls=0 --repo %s\n", app.data_dir);
+        assert(kept && line && !app.run_out && !strncmp(kept, "$ ", 2) && strstr(kept, line));
+        free(line);
         assert(strstr(kept, "driver stdout") && strstr(kept, "driver stderr") && strstr(kept, "\n[ended, status 0]\n"));
         free(kept);
     }
@@ -660,6 +670,92 @@ int main(int argc, char** argv) {
         SDL_Delay(5);
     }
     assert(!app.menu.running && app.abnormal_exit);
+    /* where ESC is a back gesture made by mistake (ask_abort, Android's) it asks first: ESC again, a click off the box
+       or Keep going leave the run going; Abort aborts it. The ESC line's tap asks too, and a held key answers nothing */
+    {
+        int col, row, cols, pass;
+        SDL_Event held;
+        const GuiPalette* loading = &gui_theme_builtin("yorha")->run_colors;
+        app.ask_abort = true;
+        for (pass = 0; pass < 2; ++pass) {
+            assert(!snx_write_file(hung, "", 0));
+            launch(&app, snx_strdup(hung), false);
+            for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
+                unsigned char* data = snx_read_file(hung, &size);
+                ready = data && size == 5 && !memcmp(data, "ready", 5);
+                free(data);
+                pump(&app);
+            }
+            assert(ready && app.menu.running);
+            key(&app, SDLK_ESCAPE);
+            assert(app.confirm.shown && app.confirm.selected == GUI_CONFIRM_KEEP && !app.aborting && app.menu.running);
+            if (pass) break;
+            render(&app);
+            ask_box(&app, &col, &row, &cols);
+            assert(cols == 42 && col == (app.cols - 42) / 2 && row == (app.rows - 6) / 2);
+            colored_text_on(&app, col + 2, row + 1, "Abort the recompile? Its work is lost.", rgb(app.theme.warning),
+                            black);
+            colored_text_on(&app, col + 2, row + 3, "- Keep going", yellow, black);
+            colored_text_on(&app, col + 2, row + 4, "- Abort", normal, black);
+            key(&app, SDLK_ESCAPE);
+            assert(!app.confirm.shown && app.menu.running && !app.aborting);
+            key(&app, SDLK_AC_BACK);
+            key(&app, SDLK_DOWN);
+            assert(app.confirm.shown && app.confirm.selected == GUI_CONFIRM_ABORT);
+            render(&app);
+            colored_text_on(&app, col + 2, row + 3, "- Keep going", normal, black);
+            colored_text_on(&app, col + 2, row + 4, "- Abort", yellow, black);
+            key(&app, SDLK_ESCAPE); /* on Abort too */
+            assert(!app.confirm.shown && !app.aborting);
+            tap(&app, 20, escape_row(&app));
+            assert(app.confirm.shown && !app.aborting);
+            tap(&app, col + 2, row + 1); /* the question itself: nothing */
+            assert(app.confirm.shown);
+            tap(&app, col - 1, row + 4); /* beside Abort, off the box */
+            assert(!app.confirm.shown && !app.aborting && app.menu.running);
+            key(&app, SDLK_ESCAPE);
+            mouse(&app, col + 3, row + 4, false); /* the pointer moves the focus */
+            assert(app.confirm.shown && app.confirm.selected == GUI_CONFIRM_ABORT);
+            mouse(&app, col + 3, row + 3, true);
+            assert(!app.confirm.shown && !app.aborting && app.menu.running);
+            key(&app, SDLK_ESCAPE);
+            key(&app, SDLK_RETURN);
+            assert(!app.confirm.shown && !app.aborting);
+            SDL_zero(held);
+            held.type = SDL_EVENT_KEY_DOWN;
+            held.key.key = SDLK_ESCAPE;
+            held.key.repeat = true;
+            event(&app, &held);
+            assert(!app.confirm.shown);
+            /* YoRHa's loading screen: its colours, the focused choice on a band of its ink */
+            app.theme = *gui_theme_builtin("yorha");
+            app.fade_ms = 0;
+            key(&app, SDLK_ESCAPE);
+            render(&app);
+            colored_text_on(&app, col + 2, row + 1, "Abort the recompile?", rgb(loading->warning), rgb(loading->page));
+            colored_text_on(&app, col + 4, row + 3, "Keep going", rgb(loading->page), rgb(loading->ink));
+            colored_text_on(&app, col + 4, row + 4, "Abort", rgb(loading->ink), rgb(loading->page));
+            app.theme = *gui_theme_builtin("default");
+            tap(&app, col + 3, row + 4);
+            assert(app.aborting && !app.confirm.shown);
+            while (app.menu.running && SDL_GetTicks() < until) {
+                pump(&app);
+                SDL_Delay(5);
+            }
+            assert(!app.menu.running && app.abnormal_exit && !app.finished);
+            assert(!strcmp(app.message, "Program ended abnormally (force-terminated by ESC)."));
+        }
+        /* a run that ends on its own while asking takes the question with it */
+        gui_process_terminate(app.process);
+        while (app.menu.running && SDL_GetTicks() < until) {
+            pump(&app);
+            SDL_Delay(5);
+        }
+        assert(!app.menu.running && app.finished && app.abnormal_exit && !app.confirm.shown);
+        key(&app, SDLK_ESCAPE);
+        assert(!app.finished && !app.confirm.shown);
+        app.ask_abort = false;
+    }
     free(hung);
 
     /* Browser: missing/empty directories, filtering, page controls and both
@@ -752,18 +848,32 @@ int main(int argc, char** argv) {
     assert(app.games.count == 34);
     key(&app, SDLK_ESCAPE);
     key(&app, SDLK_ESCAPE);
-    /* Compact and spacious layouts share the renderer's mouse hit coordinates. */
-    const int sizes[][2] = {{800, 480}, {1280, 960}, {1280, 800}};
+    /* Compact and spacious layouts share the renderer's mouse hit coordinates. Text size Auto keeps the letters of
+       the window it opened in (1280x800: 2x), however the window is resized, and the window keeps 16 rows of them */
+    const int sizes[][4] = {{2560, 1440, 45, 160}, {1280, 960, 30, 80}, {800, 480, 16, 50}, {1280, 800, 25, 80}};
+    assert(app.auto_scale == 2);
+    /* Auto is twice the display's scale, as far as 16 rows fit on a computer: 100%, 125%, 150% and 200%; a phone keeps
+       20, so the Poco F8 (408 dpi, 1156 rows of pixels) and the Pixel 9 (420 dpi, 1080) get 3x, with 24 and 22 rows */
+    assert(pick_auto_scale(1.0f, 800, 16) == 2 && pick_auto_scale(1.25f, 1000, 16) == 2);
+    assert(pick_auto_scale(1.5f, 1200, 16) == 3 && pick_auto_scale(2.0f, 1600, 16) == 4);
+    assert(pick_auto_scale(408.0f / 160, 1156, 20) == 3 && pick_auto_scale(420.0f / 160, 1080, 20) == 3);
+    assert(pick_auto_scale(408.0f / 160, 1156, 16) == 4);
+    assert(pick_auto_scale(1.0f, 480, 16) == 1 && pick_auto_scale(0.5f, 800, 16) == 1 &&
+           pick_auto_scale(3.0f, 2400, 16) == 6);
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
         assert(SDL_SetWindowSize(app.window, sizes[i][0], sizes[i][1]));
         SDL_SyncWindow(app.window);
+        render(&app);
+        assert(app.scale == 2 && app.rows == sizes[i][2] && app.cols == sizes[i][3]);
+        assert(menu_row(&app, GUI_LINUX) == menu_row(&app, GUI_SWITCH) + 1); /* no blank rows between the items */
+        app.menu.selected = app.rows == 16 ? GUI_GDBSTUB : GUI_SWITCH;       /* 16 rows: the menu slides to its focus */
         render(&app);
         mouse(&app, 2, menu_row(&app, GUI_GDBSTUB), false);
         assert(app.menu.selected == GUI_GDBSTUB && !app.menu.gdbstub);
         render(&app);
         colored_text(&app, menu_row(&app, GUI_GDBSTUB), "- [OFF] Enable gdbstub", yellow);
         colored_text(&app, app.rows - 4, "Enables gdbstub on port 1234", normal);
-        assert(menu_row(&app, GUI_EXIT) < app.rows - 4);
+        assert(app.rows == 16 ? menu_offset(&app) > 0 : menu_row(&app, GUI_EXIT) < app.rows - 4);
     }
     /* a text size too big for the window: the menu slides up as the focus goes down, then back, and a size that
        would leave fewer than 16 rows falls back */
@@ -783,10 +893,32 @@ int main(int argc, char** argv) {
         app.menu.selected = GUI_SWITCH;
         render(&app);
         assert(!menu_offset(&app));
-        assert(SDL_SetWindowSize(app.window, 800, 480));
+        /* a drag down moves the focus down row by row while the finger goes, not all at once when it lifts */
+        {
+            SDL_Event e = {0};
+            float row = 1.0f / (float)app.rows;
+            e.tfinger.fingerID = 7;
+            e.tfinger.x = 0.5f;
+            e.tfinger.y = 0.2f;
+            e.type = SDL_EVENT_FINGER_DOWN;
+            event(&app, &e);
+            e.type = SDL_EVENT_FINGER_MOTION;
+            e.tfinger.y = 0.2f + 1.5f * row;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_LINUX);
+            e.tfinger.y = 0.2f + 3.2f * row;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_KEYS);
+            e.type = SDL_EVENT_FINGER_UP;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_KEYS && !app.finger);
+            app.menu.selected = GUI_SWITCH;
+            render(&app);
+        }
+        assert(SDL_SetWindowSize(app.window, 800, 480)); /* 800x512 at least: 4x would leave 8 rows */
         SDL_SyncWindow(app.window);
         render(&app);
-        assert(app.scale == 1);
+        assert(app.scale == 2 && app.rows == 16);
         app.menu.text_size = 0;
         assert(SDL_SetWindowSize(app.window, 1280, 800));
         SDL_SyncWindow(app.window);
@@ -920,39 +1052,86 @@ int main(int argc, char** argv) {
         app.finished = true;
         app.theme.prompt = gui_theme_builtin("yorha")->prompt;
         cell = 16.0f * (float)app.scale;
-        colored_text_on(&app, app.cols - 6, app.rows - 3, "    ", li, lp); /* YoRHa has no bar unless asked */
-        colored_text_on(&app, 1, app.rows - 2, "            ", li, lp);
-        assert(same_colour(pixel(&app, 8.0f * (float)app.scale + 2, cell * (float)(app.rows - 3) + cell / 2), lp));
+        /* the menu's footer over the ESC line, in the run's colours: YoRHa's bar style, a band of its ink */
+        colored_text_on(&app, 1, app.rows - 3, "GUI + children: ", lp, li);
+        colored_text_on(&app, 1, app.rows - 2, "CWD: ", lp, li);
+        app.theme.footer = GUI_STYLE_PLAIN;
+        render(&app);
+        colored_text_on(&app, 1, app.rows - 2, "CWD:", ls, lp);
+        app.theme.footer = GUI_STYLE_NONE;
+        render(&app);
+        colored_text_on(&app, 1, app.rows - 2, "    ", ls, lp);
+        app.theme.footer = GUI_STYLE_BAR;
+        colored_text_on(&app, app.cols - 6, app.rows - 5, "    ", li, lp); /* YoRHa has no bar unless asked */
+        colored_text_on(&app, 1, app.rows - 4, "            ", li, lp);
+        assert(same_colour(pixel(&app, 8.0f * (float)app.scale + 2, cell * (float)(app.rows - 5) + cell / 2), lp));
         app.theme.bar = true;
         render(&app);
-        colored_text_on(&app, app.cols - 6, app.rows - 3, "100%", li, lp);
-        colored_text_on(&app, 1, app.rows - 2, "OPTION FLAGS", li, lp);
-        assert(same_colour(pixel(&app, 8.0f * (float)app.scale + 2, cell * (float)(app.rows - 3) + cell / 2), li));
-        /* typing: three characters in, the cursor after them */
+        colored_text_on(&app, app.cols - 6, app.rows - 5, "100%", li, lp); /* above the footer */
+        colored_text_on(&app, 1, app.rows - 4, "OPTION FLAGS", li, lp);
+        assert(same_colour(pixel(&app, 8.0f * (float)app.scale + 2, cell * (float)(app.rows - 5) + cell / 2), li));
+        colored_text_on(&app, 1, app.rows - 2, "CWD: ", lp, li);
+        /* typing: five characters in, the cursor after them; async, each line from when it came. The run is over, so
+           a row types whole in typing_ms: 25 characters in 10 ms */
+        app.theme.typing_sync = false;
+        app.theme.typing_ms = 10;
         app.theme.fade_in_ms = app.theme.fade_out_ms = 0;
         app.theme.blink_ms = 0;
         launch_shown = app.steps.step[1].shown_ms;
         app.steps.step[1].shown_ms = entered + 1; /* it came while the menu still showed: it types once the run is in */
-        app.clock = faded + 3 * app.theme.typing_ms + 1;
+        app.clock = faded + 2;
         render(&app);
-        colored_text_on(&app, 1, 4, "LAU_", li, lp);
+        colored_text_on(&app, 1, 4, "LAUNC_", li, lp);
         app.steps.step[1].shown_ms = launch_shown;
         app.fade_ms = 0; /* in view from the start, for the lines below */
-        app.clock = shown + 3 * app.theme.typing_ms + 1;
+        app.clock = shown + 2;
         render(&app);
-        colored_text_on(&app, 1, 4, "LAU_", li, lp);
-        /* sync: one line at a time, a done one three times faster; the second waits for the first */
+        colored_text_on(&app, 1, 4, "LAUNC_", li, lp);
+        /* sync: one line at a time; the second waits for the first */
         app.theme.typing_sync = true;
         first_shown = app.steps.step[0].shown_ms;
         second_shown = app.steps.step[1].shown_ms;
-        app.steps.step[1].shown_ms = first_shown;          /* both lines came at once */
-        app.clock = first_shown + app.theme.typing_ms + 1; /* three characters at a third of typing_ms each */
+        app.steps.step[1].shown_ms = first_shown; /* both lines came at once */
+        app.clock = first_shown + 2;
         render(&app);
-        colored_text_on(&app, 1, 3, "REC", ls, lp); /* not the last line: soft, with the cursor typing it */
-        colored_text_on(&app, 4, 3, "_", li, lp);
+        colored_text_on(&app, 1, 3, "RECOM", ls, lp); /* not the last line: soft, with the cursor typing it */
+        colored_text_on(&app, 6, 3, "_", li, lp);
         colored_text_on(&app, 1, 4, "    ", li, lp);
         app.theme.typing_sync = false;
         app.steps.step[1].shown_ms = second_shown;
+        /* the newest row of a step still running types a character every typing_ms; a done step's, or one a newer
+           row of its step passed, whole in typing_ms; one above the screen at once, the visible ones from when they
+           came: a fast log keeps the cursor on its newest lines */
+        {
+            static size_t total[200], typed[200];
+            static Uint64 came[200];
+            static int slow[200];
+            GuiTheme t = *gui_theme_builtin("yorha");
+            int k;
+            t.typing_ms = 10;
+            for (k = 0; k < 200; ++k) {
+                total[k] = 50;
+                came[k] = 1000;
+                slow[k] = 0;
+            }
+            slow[199] = 1; /* 200 rows at once, the last its running step's newest; rows 180 to 199 on the screen */
+            assert(t.typing_sync && t.line_in == GUI_LINE_TYPING);
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000 + 5, typed) == 180);
+            assert(typed[0] == 50 && typed[179] == 50 && typed[180] == 25 && typed[181] == 0);
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000 + 19 * 10 - 1, typed) == 198);
+            assert(typed[180] == 50 && typed[198] == 45 && typed[199] == 0);
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000 + 19 * 10 + 30, typed) == 199 && typed[199] == 3);
+            slow[199] = 0; /* the step is done: its 20 rows on the screen take 200 ms */
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000 + 20 * 10 - 1, typed) == 199 && typed[199] == 45);
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000 + 20 * 10, typed) == -1 && typed[199] == 50);
+            slow[199] = 1;
+            t.typing_sync = 0; /* async: each row from when it came, at its own speed */
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000 + 30, typed) == 199);
+            assert(typed[180] == 50 && typed[198] == 50 && typed[199] == 3);
+            t.line_in = GUI_LINE_NONE;
+            assert(type_rows(&t, 200, 180, total, came, slow, 1000, typed) == -1 && typed[180] == 50 &&
+                   typed[199] == 50);
+        }
         /* detailed: a step's lines under it, indented; collapse folds a done step's lines, never a failed one's */
         kept = app.steps;
         lf = rgb(run->failure);
@@ -1000,6 +1179,14 @@ int main(int argc, char** argv) {
         render(&app);
         colored_text_on(&app, 16, 3, "..._", li, lp);
         colored_text_on(&app, 3, 4, "Functions: 2    ", ls, lp);
+        /* two lines at once: the one the newer passed types whole, the newer a character every typing_ms */
+        gui_steps_reset(&app.steps);
+        gui_steps_feed(&app.steps, live, strlen(live), shown);
+        gui_steps_feed(&app.steps, "Functions: 2\nBlocks: 3\n", 23, shown + 1000);
+        app.clock = shown + 1000 + 3 * app.theme.typing_ms + 1;
+        render(&app);
+        colored_text_on(&app, 3, 4, "Functions: 2", ls, lp);
+        colored_text_on(&app, 3, 5, "Blo", ls, lp);
         /* every line a step kept, down the screen; a row too wide for it ends at the edge */
         app.theme.collapse = app.theme.bar = false;
         gui_steps_reset(&app.steps);
@@ -1031,7 +1218,7 @@ int main(int argc, char** argv) {
             gui_steps_feed(&app.steps, line, strlen(line), shown);
         }
         render(&app);
-        last_row = app.rows - 3;
+        last_row = app.rows - 5; /* a blank row above the footer */
         colored_text_on(&app, 3, last_row, "line 19", ls, lp);
         colored_text_on(&app, 3, last_row - 1, "line 18", ls, lp);
         app.steps = kept;
@@ -1072,6 +1259,18 @@ int main(int argc, char** argv) {
         app.menu.gccjit = app.menu.gdbstub = false;
         free(steps_input);
     }
+    /* ESC on the menu's first screen asks before the app closes: ESC again stays, Exit closes */
+    assert(app.menu.view == GUI_LOAD_NONE && !app.menu.running && !app.finished && !app.confirm.shown);
+    key(&app, SDLK_ESCAPE);
+    assert(app.confirm.shown && app.confirm.exit && app.confirm.selected == GUI_CONFIRM_KEEP && !app.menu.quit);
+    render(&app);
+    key(&app, SDLK_ESCAPE);
+    assert(!app.confirm.shown && !app.menu.quit);
+    key(&app, SDLK_ESCAPE);
+    key(&app, SDLK_DOWN);
+    key(&app, SDLK_RETURN);
+    assert(!app.confirm.shown && app.menu.quit);
+    app.menu.quit = false;
     /* fingers: a tap clicks anywhere on a row, which a mouse does on the label only; a drag is no tap, nor a second
        finger; a swipe across turns the games' pages; back is ESC */
     {

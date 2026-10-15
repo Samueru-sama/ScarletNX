@@ -17,7 +17,7 @@ The driver runs each step as a child process and starts the game with `games/` a
 The name comes from the dump stem, retaining letters, digits, UTF-8, spaces, hyphens and underscores.
 `--repo DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
 `-H` (`--headless`) can precede or follow the dump and is passed to the game only.
-Omitting it selects windowed startup, unless the build has no window backend.
+Omitting it starts the game with a window, unless the build has no window backend.
 `-x` means `--extract`, and `-r` means `--recomp` (the old `--recomp` spelling was removed).
 On UNIX, short flags can be combined. Windows accepts separate short flags only.
 
@@ -33,9 +33,9 @@ Pass arguments to the game executable after `--`, for example:
 The argument boundary is retained when launching the deployed game, so game arguments
 cannot trigger launcher actions or overwrite runtime settings. This does not add a
 homebrew-loader guest argv block.
-`-f` (or `--fullscreen`) can also precede or follow the dump and is forwarded to
-the game. Omitting it starts windowed, regardless of an older INI value;
-`--fullscreen=0|1` is no longer accepted.
+`-f` (or `--fullscreen`, `--fullscreen=1`) can also precede or follow the dump and is forwarded to the game,
+which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts it windowed. Without either, the
+game's `.ini` decides (`fullscreen=1` starts fullscreen).
 `--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers (the default), or the
 fingers and the mouse's left button. The menu's *Touch* item passes it; the game's `.ini` keeps its own `touch`.
 `--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls) (the menu's *On-screen
@@ -205,10 +205,12 @@ chmod +x ScarletNX-x86_64.AppImage
 SDL_VIDEO_DRIVER=x11 games/Game
 ```
 
+On an ARM64 machine the image is `ScarletNX-aarch64.AppImage`.
 `--game` selects `Game_code.so`/`Game_data/`; or name the image `games/Game.AppImage` to load adjacent files.
 The AppImage also prepares dumps: `./ScarletNX-x86_64.AppImage Game.nsp`. Without the checkout it was built from
 (the AppImage, the Windows zip), the driver works in the user's data folder, wherever it was started from:
-`~/.local/share/scarletnx` (`$XDG_DATA_HOME/scarletnx`) on Linux and `%APPDATA%\scarletnx` on Windows. `work/` and
+`~/.local/share/scarletnx` (`$XDG_DATA_HOME/scarletnx`) on Linux and `%APPDATA%\scarletnx` on Windows; a portable copy
+keeps a `games/` folder beside the AppImage (or beside the zip's programs), and that folder is used instead. `work/` and
 `games/` go there, `prod.keys` is looked for there before `~/.switch`, and each game gets a copy of the AppImage (on
 Windows, of `scarletnx.exe` and the DLLs next to it).
 X11 bypasses Wayland. [Licenses](CREDITS.md).
@@ -216,14 +218,18 @@ X11 bypasses Wayland. [Licenses](CREDITS.md).
 ## Settings / input
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
-Restart for `docked`, `language`, `resolution`, `memory_gb`, `heap_max_mb`, `profile`, `cpu_fallback`, `jit_threads`.
-Fullscreen startup is controlled by `-f`/`--fullscreen`, not the INI; omit it for windowed startup.
+Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `heap_max_mb`, `profile`,
+`cpu_fallback`, `jit_threads`.
+`fullscreen=1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets
+it for one run.
 
 | Setting | Effect |
 | --- | --- |
 | `docked=1` | TV mode |
 | `resolution=1` | Native scale; range 0.25–4 |
-| `fps_limit=1` | 60 FPS; `0` uncapped; `60..240` explicit cap |
+| `fps_limit=game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
+| `vsync=1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
+| `anisotropy=0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
 | `shadows=0` | Skip shadow maps |
 | `language=1` | English (US); other IDs in INI |
 | `network=1` | Online through the computer's connection (bsd, sfdnsres, nifm); `0` offline, loopback only |
@@ -244,7 +250,9 @@ SDL gamepads use Switch positions; pads + keyboard share one guest controller.
 | Q / E / 1 / 3 | L / R / ZL / ZR |
 | Enter / Backspace | Plus / Minus |
 
-F1 help; F2 the game's menu; F3 screenshot; F4 FPS cap; F5 thread dump; F11/Alt+Enter fullscreen; Escape quit.
+F1 help; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F11/Alt+Enter fullscreen;
+Escape quit. A window shows at most one image per refresh and drops the rest unless images tear, and the game keeps
+the pace `fps_limit` sets.
 
 ### On-screen controls
 

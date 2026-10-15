@@ -18,7 +18,7 @@ static int nn_apm_IManager_OpenSession(SvcObj* self, SvcObj** session) {
     return 0;
 }
 static int nn_apm_IManager_GetPerformanceMode(SvcObj* self, nn_apm_PerformanceMode* mode) {
-    *mode = g_hle_docked;
+    *mode = g_opt_docked;
     return 0;
 }
 SvcObj* new_apm(void) { return nn_apm_IManager_new(0); }

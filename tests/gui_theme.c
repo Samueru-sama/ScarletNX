@@ -2,13 +2,112 @@
    Copyright 2026 the ScarletNX contributors */
 /* GUI themes: the built-ins, a theme.ini over its base, and the themes/ folders the GUI offers. */
 #include "common.h"
+#include "gui_theme_colors.h"
 #include "theme.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* every key of theme format 1, as section/key: the built-ins' files set each one, as they are the built-ins */
+static const char* const format_keys[] = {"theme/format",
+                                          "theme/name",
+                                          "theme/author",
+                                          "theme/layout",
+                                          "theme/base",
+                                          "colors/page",
+                                          "colors/ink",
+                                          "colors/soft",
+                                          "colors/focus",
+                                          "colors/active",
+                                          "colors/failure",
+                                          "colors/dim",
+                                          "colors/warning",
+                                          "head/style",
+                                          "head/rule",
+                                          "head/menu",
+                                          "head/games",
+                                          "head/keys",
+                                          "head/compiling",
+                                          "head/loading",
+                                          "body/marker",
+                                          "body/focus",
+                                          "footer/style",
+                                          "footer/rule",
+                                          "run/layout",
+                                          "run/page",
+                                          "run/ink",
+                                          "run/soft",
+                                          "run/dim",
+                                          "run/failure",
+                                          "run/warning",
+                                          "run/texture",
+                                          "run/bar",
+                                          "run/detailed",
+                                          "run/collapse",
+                                          "run/ring",
+                                          "prompt/align",
+                                          "prompt/open",
+                                          "prompt/close",
+                                          "prompt/blink",
+                                          "prompt/keys",
+                                          "prompt/done",
+                                          "prompt/failed",
+                                          "prompt/aborting",
+                                          "transitions/fade_in_ms",
+                                          "transitions/fade_out_ms",
+                                          "transitions/line_in",
+                                          "transitions/line_in_ms",
+                                          "transitions/typing_ms",
+                                          "transitions/typing",
+                                          "transitions/blink_ms",
+                                          "transitions/scroll_ms",
+                                          "splash/page",
+                                          "splash/ms",
+                                          "splash/chance"};
+/* ErET's keys the GUI reads too (docs/GUI.md) */
+static const char* const eret_keys[] = {"colors/texture", "header/ring_side", "loading/title"};
+
 static int same(GuiRgb a, GuiRgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+static int rgb_hex(GuiRgb a, unsigned long rgb) {
+    return a.r == (rgb >> 16 & 0xFF) && a.g == (rgb >> 8 & 0xFF) && a.b == (rgb & 0xFF);
+}
+static int listed_in(const char* const* list, size_t count, const char* key) {
+    size_t i;
+    for (i = 0; i < count; ++i)
+        if (!strcmp(list[i], key)) return 1;
+    return 0;
+}
+/* the section/key of each key line of text, as theme.c reads its lines, into keys[], NUL-separated; their count */
+static int key_lines(const char* text, size_t size, char* keys, size_t keys_size) {
+    char section[32] = "", line[256];
+    size_t at = 0, used = 0, n;
+    int count = 0;
+    while (at < size) {
+        char *s, *e;
+        n = 0;
+        while (at < size && text[at] != '\n') {
+            if (n + 1 < sizeof line) line[n++] = text[at];
+            ++at;
+        }
+        ++at;
+        line[n] = 0;
+        for (s = line; *s == ' ' || *s == '\t'; ++s) {}
+        if (!*s || *s == ';' || *s == '#') continue;
+        if (*s == '[') {
+            e = strchr(s, ']');
+            snprintf(section, sizeof section, "%.*s", e ? (int)(e - s - 1) : 0, s + 1);
+            continue;
+        }
+        e = strchr(s, '=');
+        if (!e) continue;
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t')) --e;
+        if (used + strlen(section) + (size_t)(e - s) + 2 > keys_size) break;
+        used += (size_t)sprintf(keys + used, "%s/%.*s", section, (int)(e - s), s) + 1;
+        ++count;
+    }
+    return count;
+}
 static int rgb_is(GuiRgb a, int r, int g, int b) { return a.r == r && a.g == g && a.b == b; }
 static void parse(GuiTheme* theme, const char* text) { assert(gui_theme_parse(theme, "mine", text, strlen(text))); }
 static void write(const char* dir, const char* name, const char* text) {
@@ -41,6 +140,7 @@ int main(void) {
     assert(def->run == GUI_RUN_CONSOLE && !def->fade_in_ms && !def->fade_out_ms && def->line_in == GUI_LINE_NONE);
     assert(loading->run == GUI_RUN_STEPS && loading->ring == GUI_RING_RIGHT && loading->texture && !loading->bar);
     assert(loading->line_in == GUI_LINE_TYPING && loading->typing_ms == 5 && loading->fade_out_ms == 500);
+    assert(loading->typing_sync && !def->typing_sync);  /* YoRHa types one line at a time */
     assert(yorha->scroll_ms == 120 && !def->scroll_ms); /* a long line slides in YoRHa, is cut in the default */
     assert(loading->detailed && !loading->collapse && !def->detailed && !def->collapse);
     for (b = def; b; b = b == def ? loading : NULL) {
@@ -182,6 +282,81 @@ int main(void) {
         assert(same(f.run_colors.dim, b->run_colors.dim) && same(f.run_colors.failure, b->run_colors.failure));
         assert(same(f.run_colors.warning, b->run_colors.warning));
         for (s = 0; s < GUI_SCREEN_COUNT; ++s) assert(!strcmp(f.title[s], b->title[s]));
+        assert(f.scroll_ms == b->scroll_ms && same(f.splash_page, b->splash_page) && f.splash_ms == b->splash_ms);
+        assert(f.splash_chance == b->splash_chance);
+    }
+    /* the built-ins are their files, read over nothing: each file sets every key of the format */
+    for (i = 0; i < sizeof ids / sizeof *ids; ++i) {
+        static char keys[8192];
+        size_t k, size = 0;
+        char* folder = snx_path_join(SNX_GUI_THEMES_DIR, ids[i]);
+        char* file = snx_path_join(folder, "theme.ini");
+        char* text = (char*)snx_read_file(file, &size);
+        int n, left, found;
+        const char* key;
+        assert(text);
+        n = key_lines(text, size, keys, sizeof keys);
+        for (k = 0; k < sizeof format_keys / sizeof *format_keys; ++k) {
+            for (found = 0, left = n, key = keys; left-- > 0 && !found; key += strlen(key) + 1)
+                found = !strcmp(key, format_keys[k]);
+            if (!found) printf("%s lacks %s (section/key)\n", file, format_keys[k]);
+            assert(found);
+        }
+        free(text);
+        free(file);
+        free(folder);
+    }
+    /* the runtime's colours of each built-in (gui_theme_colors.h, made from the files at build time) are the GUI's */
+    def = gui_theme_builtin("default");
+    yorha = gui_theme_builtin("yorha");
+    assert(rgb_hex(def->page, SNX_GUI_THEME_DEFAULT_PAGE) && rgb_hex(def->ink, SNX_GUI_THEME_DEFAULT_INK));
+    assert(rgb_hex(def->soft, SNX_GUI_THEME_DEFAULT_SOFT) && rgb_hex(def->focus, SNX_GUI_THEME_DEFAULT_FOCUS));
+    assert(rgb_hex(def->active, SNX_GUI_THEME_DEFAULT_ACTIVE) && rgb_hex(def->failure, SNX_GUI_THEME_DEFAULT_FAILURE));
+    assert(rgb_hex(def->dim, SNX_GUI_THEME_DEFAULT_DIM) && rgb_hex(def->warning, SNX_GUI_THEME_DEFAULT_WARNING));
+    assert(rgb_hex(def->run_colors.page, SNX_GUI_THEME_DEFAULT_RUN_PAGE));
+    assert(rgb_hex(def->run_colors.ink, SNX_GUI_THEME_DEFAULT_RUN_INK));
+    assert(rgb_hex(def->run_colors.soft, SNX_GUI_THEME_DEFAULT_RUN_SOFT));
+    assert(rgb_hex(def->run_colors.dim, SNX_GUI_THEME_DEFAULT_RUN_DIM));
+    assert(rgb_hex(def->run_colors.failure, SNX_GUI_THEME_DEFAULT_RUN_FAILURE));
+    assert(rgb_hex(def->run_colors.warning, SNX_GUI_THEME_DEFAULT_RUN_WARNING));
+    assert(rgb_hex(def->splash_page, SNX_GUI_THEME_DEFAULT_SPLASH_PAGE));
+    assert(rgb_hex(yorha->page, SNX_GUI_THEME_YORHA_PAGE) && rgb_hex(yorha->ink, SNX_GUI_THEME_YORHA_INK));
+    assert(rgb_hex(yorha->soft, SNX_GUI_THEME_YORHA_SOFT) && rgb_hex(yorha->focus, SNX_GUI_THEME_YORHA_FOCUS));
+    assert(rgb_hex(yorha->active, SNX_GUI_THEME_YORHA_ACTIVE) && rgb_hex(yorha->failure, SNX_GUI_THEME_YORHA_FAILURE));
+    assert(rgb_hex(yorha->dim, SNX_GUI_THEME_YORHA_DIM) && rgb_hex(yorha->warning, SNX_GUI_THEME_YORHA_WARNING));
+    assert(rgb_hex(yorha->run_colors.page, SNX_GUI_THEME_YORHA_RUN_PAGE));
+    assert(rgb_hex(yorha->run_colors.ink, SNX_GUI_THEME_YORHA_RUN_INK));
+    assert(rgb_hex(yorha->run_colors.soft, SNX_GUI_THEME_YORHA_RUN_SOFT));
+    assert(rgb_hex(yorha->run_colors.dim, SNX_GUI_THEME_YORHA_RUN_DIM));
+    assert(rgb_hex(yorha->run_colors.failure, SNX_GUI_THEME_YORHA_RUN_FAILURE));
+    assert(rgb_hex(yorha->run_colors.warning, SNX_GUI_THEME_YORHA_RUN_WARNING));
+    assert(rgb_hex(yorha->splash_page, SNX_GUI_THEME_YORHA_SPLASH_PAGE));
+    /* docs/GUI.md's example reads, and names no key the format lacks */
+    {
+        static char keys[8192];
+        size_t size = 0;
+        char* doc = (char*)snx_read_file(SNX_GUI_DOCS, &size);
+        char *from, *to;
+        const char* key;
+        int n;
+        assert(doc);
+        /* a checkout with CRLF lines (Windows) has the same block, each line ending in "\r\n" */
+        from = strstr(doc, "\n## Themes");
+        from = from ? strstr(from, "```ini") : NULL;
+        from = from ? strchr(from, '\n') : NULL;
+        to = from ? strstr(from, "\n```") : NULL;
+        assert(from && to);
+        ++from;
+        assert(gui_theme_parse(&theme, "doc", from, (size_t)(to - from)) && !strcmp(theme.name, "Night ink"));
+        n = key_lines(from, (size_t)(to - from), keys, sizeof keys);
+        assert(n > 40);
+        for (key = keys; n-- > 0; key += strlen(key) + 1) {
+            int known = listed_in(format_keys, sizeof format_keys / sizeof *format_keys, key) ||
+                        listed_in(eret_keys, sizeof eret_keys / sizeof *eret_keys, key);
+            if (!known) printf("docs/GUI.md's example has %s (section/key), which theme format 1 lacks\n", key);
+            assert(known);
+        }
+        free(doc);
     }
     /* a theme.ini's own scroll_ms over its base's */
     parse(&theme, "[theme]\nbase = default\n[transitions]\nscroll_ms = 40\n");

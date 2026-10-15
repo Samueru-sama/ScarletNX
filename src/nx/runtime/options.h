@@ -5,17 +5,23 @@
 /* the settings from <Game>.ini (options.c) */
 #ifndef SNX_OPTIONS_H
 #define SNX_OPTIONS_H
+#include <stddef.h>
 
-int snx_startup_options(int argc, char** argv); /* shared startup flags, before any window/error dialog */
-extern int g_opt_fullscreen;                    /* -f/--fullscreen; absent means windowed */
-extern int g_opt_headless;                      /* startup only, never changed by an INI reload */
-extern int g_opt_gdb, g_opt_gdb_stop;
+#include "runtime/startup.h"
+
+extern int g_opt_fullscreen; /* fullscreen: the .ini's, or the command line's for this run (startup.h) */
 
 void ini_override(const char* k, const char* v); /* a --key=value from the command line, before ini_open. Keeps v */
 void ini_set(const char* k, const char* v);
 void ini_open(const char* path); /* watch the file: ini_poll reloads it when it changes, and writes back what changed */
-void ini_poll(void);
-extern int g_opt_docked, g_opt_lang, g_opt_fps;
+/* final: at exit. An edit that hasn't settled is left for the next start, unless a toggle needs saving: then it is
+   read as it is */
+void ini_poll(int final);
+extern int g_opt_docked, g_opt_lang;
+/* fps_limit: 0 = no limit, SNX_FPS_GAME = the game's own pace (its swap interval), else frames a second (10 to 1000) */
+#define SNX_FPS_GAME (-1)
+extern int g_opt_fps;
+void fps_limit_text(int fps, char* out, size_t n); /* g_opt_fps as fps_limit's value: "game", "0", "30"... */
 extern int g_opt_diag, g_opt_shadows, g_opt_prof;
 extern int g_opt_network; /* network: 1 = the game is online through the host (hle/services/network) */
 /* cpu_fallback: what runs guest code the game module has no function for (RtAPI.miss, runtime/guest_jit.c). Startup only */
@@ -23,5 +29,7 @@ enum { CPU_FALLBACK_INTERP, CPU_FALLBACK_JIT };
 extern int g_opt_cpu_fallback;
 extern int g_opt_jit_threads; /* jit_threads: compile threads for cpu_fallback=jit, 0 by the CPUs. Startup only */
 extern float g_opt_resf;
+extern int g_opt_vsync; /* vsync: 1 = presents wait for the display's refresh (FIFO) */
+extern int g_opt_aniso; /* anisotropy: 0 = the game's, else at least that much for mipmapped 2D textures */
 
 #endif

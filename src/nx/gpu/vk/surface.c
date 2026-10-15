@@ -142,14 +142,13 @@ Surf* vk_rt_find(u64 gva) {
     return NULL;
 }
 
-/* an image of a scaled target's format at the guest's size, to move it to and from guest memory */
-static VkImage unscaled_image(const Surf* s, VmaAllocation* mem) {
+VkImage vk_unscaled_image(const Surf* s, u32 layers, VmaAllocation* mem) {
     VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                             .imageType = VK_IMAGE_TYPE_2D,
                             .format = s->f.vk,
                             .extent = {s->w, s->h, 1},
                             .mipLevels = 1,
-                            .arrayLayers = 1,
+                            .arrayLayers = layers,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -253,7 +252,7 @@ void vk_rt_reload(u64 gva) {
                                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
                                    .imageExtent = {s->w, s->h, 1}};
             VmaAllocation tm;
-            VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : unscaled_image(s, &tm);
+            VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
             if (!t)
                 vkCmdCopyBufferToImage(cb, buf, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &c);
             else {
@@ -305,7 +304,7 @@ void vk_surf_flush(Surf* s, const u8* original) {
             .imageSubresource = {s->f.depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1},
             .imageExtent = {s->w, s->h, 1}};
         VmaAllocation tm;
-        VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : unscaled_image(s, &tm);
+        VkImage t = s->sw == s->w && s->sh == s->h ? VK_NULL_HANDLE : vk_unscaled_image(s, 1, &tm);
         if (!t)
             vkCmdCopyImageToBuffer(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &c);
         else {

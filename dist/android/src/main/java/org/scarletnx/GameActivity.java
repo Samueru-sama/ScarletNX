@@ -24,6 +24,12 @@ public class GameActivity extends SDLActivity {
     }
 
     @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) MainActivity.hideBars(mSurface);
+    }
+
+    @Override
     protected String[] getArguments() {
         String[] args = getIntent().getStringArrayExtra("args");
         return args != null ? args : new String[0];

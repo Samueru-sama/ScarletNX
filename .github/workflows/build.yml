@@ -16,74 +16,195 @@ permissions:
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
 # and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan and SDL3 are built from
 # the pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's
-# Configure runs on. Downloads are cached in
-# .cache/cpm, one cache per job since each job fetches a different set. The artifacts are what `cmake --install` puts
-# in place: the binaries
-# with the licenses that go with them.
+# Configure runs on. Downloads are cached in .cache/cpm, one cache per job since each job fetches a different set.
+# Compiles go through ccache, whose .cache/ccache each compiling job restores from its newest run and saves trimmed to
+# what the run used. The artifacts are what `cmake --install` puts in place: the binaries with the licenses that go
+# with them.
 jobs:
   linux:
-    name: Linux
-    runs-on: ubuntu-26.04
+    name: Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
-    container: archlinux:latest
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+            container: archlinux:latest
+          # Arch's image is x86-64 only; pkgforge's (the AppImage's) is Arch Linux ARM on AArch64, with the same LLVM
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). libgccjit builds the
-      # optional --backend=gcc too, so its tests (gccjit_differential, native_recompiler_gcc) run here
+      # optional --backend=gcc too, so its tests (gccjit_differential, native_recompiler_gcc) run here. Mirrors drop a
+      # connection now and then (pkgforge's for aarch64 most), so each pacman install is tried 3 times, 5 s apart
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
+        run: |
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast ccache && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-${{ github.job }}-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      # ccache under every compile, FFmpeg's and OpenSSL's too, from the newest cache of this job on this branch, else
+      # on main. Each cmake gets it as its launcher: from the environment CMake would run its configure checks through
+      # it, and they only miss
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-${{ matrix.arch }}-
+      # FFmpeg's and OpenSSL's builds (cmake/deps_cache.cmake), from the newest cache of this job on this branch, else
+      # on main. The key named here is never saved: a run saves its own below, named after the builds it used
+      - uses: actions/cache/restore@v5
+        id: deps
+        with:
+          path: .cache/deps
+          key: deps-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-${{ matrix.arch }}-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            # paths in the keys relative to the checkout, and no build folder in them: build trees share entries
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
       - name: Build the runtime
         run: |
-          cmake --preset default
+          cmake --preset default -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default
           cmake --install build/default --prefix stage
       - name: Build the SDL3 fallback without a system package
         run: |
           cmake --preset default -B build/sdl-fallback -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
-            -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF
+            -DSNX_DEPLOY=OFF -DBUILD_TESTING=OFF -DSDL_WAYLAND=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/sdl-fallback --target scarletnx
       - name: Build SDL3 with headless Vulkan tests
         run: |
-          cmake --preset default -B build/headless -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON
+          cmake --preset default -B build/headless -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless
+      # Only what this run used is kept, so the cache saved is one build's worth
+      - name: Trim the compiler cache
+        run: |
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+      - uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # Only the dependency builds this run's trees used stay, under a key named after them: saved when they changed
+      - name: Name the dependency builds
+        id: deps-used
+        run: |
+          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
+          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
+          echo "key=deps-${{ github.job }}-${{ matrix.arch }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/deps
+          key: ${{ steps.deps-used.outputs.key }}
       - name: Test headless Vulkan and NX runtime
         run: ctest --test-dir build/headless -R '^(vulkan_headless|nx_runtime_homebrew)$' --output-on-failure
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src/common/cpu/aarch64 src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default --output-on-failure
+        run: ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
       - uses: actions/upload-artifact@v7
         with:
-          name: scarletnx-linux
+          name: scarletnx-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: stage
 
   appimage:
-    name: Linux AppImage
-    runs-on: ubuntu-26.04
+    name: Linux AppImage (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     # pkgforge's Arch image and tools (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
     container: ghcr.io/pkgforge-dev/archlinux:latest
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       # Before the checkout: without git, actions/checkout downloads the files without the history, and the AppImage's
-      # version (git describe) is unknown
+      # version (git describe) is unknown. Each pacman install is tried 3 times, as in the linux job
       - name: Install git
-        run: pacman -Syu --noconfirm --needed git
+        run: |
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed git && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+          key: cpm-${{ github.job }}-${{ matrix.arch }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      # ccache, set up as in the linux job
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-${{ matrix.arch }}-
+      # the dependency builds, as in the linux job
+      - uses: actions/cache/restore@v5
+        id: deps
+        with:
+          path: .cache/deps
+          key: deps-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-${{ matrix.arch }}-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
       # The action pins its own setup script only: the tools that script downloads are pinned here to a commit of
       # Anylinux-AppImages, and checked against their SHA-256 below
       - name: Install the packaging tools
@@ -102,21 +223,47 @@ jobs:
       # llvm for the recompiler; quick-sharun bundles the libLLVM the runtime links, with its own dependencies
       - name: Install the build tools and the debloated Mesa
         run: |
-          pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl clang llvm sdl3 libx11 mesa vulkan-icd-loader
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
           get-debloated-pkgs --add-common --prefer-nano
       - name: Build and install into /usr
         run: |
           git config --global --add safe.directory '*'
-          cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default
           cmake --install build/default
+      - name: Trim the compiler cache
+        run: |
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+      - uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Name the dependency builds
+        id: deps-used
+        run: |
+          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
+          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
+          echo "key=deps-${{ github.job }}-${{ matrix.arch }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/deps
+          key: ${{ steps.deps-used.outputs.key }}
       # The script names the AppImage after `git describe`
       - name: Make the AppImage
         run: scripts/make-appimage.sh
       # Only what the script made: dist/ also holds the tracked desktop entry and icon
       - uses: actions/upload-artifact@v7
         with:
-          name: AppImage-x86_64
+          name: AppImage-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: |
             dist/*.AppImage*
             dist/appinfo
@@ -129,11 +276,42 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
           key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      # ccache, set up as in the linux job
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-
+      # the dependency builds, as in the linux job
+      - uses: actions/cache/restore@v5
+        id: deps
+        with:
+          path: .cache/deps
+          key: deps-${{ github.job }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
       # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build.
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
@@ -156,6 +334,7 @@ jobs:
             mingw-w64-clang-x86_64-pkgconf
             mingw-w64-clang-x86_64-python
             mingw-w64-clang-x86_64-spirv-tools
+            mingw-w64-clang-x86_64-ccache
       - name: Check required dependencies
         run: |
           set -euo pipefail
@@ -178,9 +357,31 @@ jobs:
             -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
             -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
             -DSNX_OPENSSL_MAKE="$(cygpath -m /usr/bin/make.exe)" \
-            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_GCCJIT=OFF
+            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_GCCJIT=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel 4
           cmake --install build/default --prefix stage
+      - name: Trim the compiler cache
+        run: |
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+      - uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Name the dependency builds
+        id: deps-used
+        run: |
+          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
+          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
+          echo "key=deps-${{ github.job }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/deps
+          key: ${{ steps.deps-used.outputs.key }}
       # Explorer and the taskbar show the first icon of an executable's resources (runtime.rc)
       - name: Check the executables' icon
         run: |
@@ -202,7 +403,7 @@ jobs:
       - name: Test native tooling and indexed filesystems
         run: |
           set -euo pipefail
-          ctest --test-dir build/default --output-on-failure
+          ctest --test-dir build/default --output-on-failure --parallel 4
       - name: Bundle runtime DLLs and licenses
         run: |
           set -euo pipefail
@@ -233,7 +434,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v7
         with:
-          name: scarletnx-windows
+          name: scarletnx-windows-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
 
@@ -245,11 +446,19 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     strategy:
+      fail-fast: false
       matrix:
         abi: [x86_64, arm64-v8a]
     env:
       ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
@@ -260,22 +469,76 @@ jobs:
         with:
           path: android-llvm/${{ matrix.abi }}
           key: android-llvm-${{ matrix.abi }}-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
-      # The NDK named above, which the runner's image may no longer carry, and NASM for FFmpeg's x86-64 assembly
+      # The NDK named above, which the runner's image may no longer carry, and NASM for FFmpeg's x86-64 assembly.
+      # sdkmanager's download sometimes ends early ("Premature EOF"): tried 3 times, 5 s apart
       - name: Install the NDK and NASM
         run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${ANDROID_NDK_ROOT##*/}" > /dev/null
-          sudo apt-get update && sudo apt-get install -y nasm
+          for try in 1 2 3; do
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${ANDROID_NDK_ROOT##*/}" > /dev/null && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+          sudo apt-get update && sudo apt-get install -y nasm ccache
       - name: Build LLVM's libraries
         if: steps.llvm.outputs.cache-hit != 'true'
         run: scripts/android-llvm.sh ${{ matrix.abi }} "$PWD/android-llvm/${{ matrix.abi }}"
+      # ccache, set up as in the linux job
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-${{ matrix.abi }}-
+      # the dependency builds, as in the linux job
+      - uses: actions/cache/restore@v5
+        id: deps
+        with:
+          path: .cache/deps
+          key: deps-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-${{ matrix.abi }}-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            # the NDK is installed afresh on each run: its version, not its files' dates, says which compiler it is
+            echo "CCACHE_COMPILERCHECK=string:$ANDROID_NDK_ROOT"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
       - name: Build the native libraries and the APK
         run: |
-          JAVA_HOME=$JAVA_HOME_21_X64 scripts/android-apk.sh "$PWD/build/android" "$PWD/android-llvm" ${{ matrix.abi }}
-          cp build/android/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk ScarletNX-${{ matrix.abi }}.apk
+          JAVA_HOME=$JAVA_HOME_21_X64 scripts/android-apk.sh "$PWD/build/android" "$PWD/android-llvm" \
+            ${{ matrix.abi }} -- \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cp build/android/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk ScarletNX-${{ steps.commit.outputs.short }}-${{ matrix.abi }}.apk
+      - name: Trim the compiler cache
+        run: |
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+      - uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Name the dependency builds
+        id: deps-used
+        run: |
+          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
+          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
+          echo "key=deps-${{ github.job }}-${{ matrix.abi }}-$(sha256sum <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/deps
+          key: ${{ steps.deps-used.outputs.key }}
       # Not zipped: the artifact is the APK itself, named after it
       - uses: actions/upload-artifact@v7
         with:
-          path: ScarletNX-${{ matrix.abi }}.apk
+          path: ScarletNX-${{ steps.commit.outputs.short }}-${{ matrix.abi }}.apk
           archive: false
           if-no-files-found: error
       # What android-apk packs: the libraries, SDL's Java and the icon, without this APK's Gradle output
@@ -293,6 +556,13 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
@@ -302,12 +572,12 @@ jobs:
       - name: Pack the APK of both ABIs
         run: |
           JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android assembleDebug -Pscarletnx.stage="$PWD/stage"
-          cp stage/gradle/outputs/apk/debug/ScarletNX-debug.apk ScarletNX.apk
+          cp stage/gradle/outputs/apk/debug/ScarletNX-debug.apk ScarletNX-${{ steps.commit.outputs.short }}.apk
       # A library that needs one Android 5.0 lacks fails to load there, and the app with it
       - name: Check the APK's libraries
         run: |
           set -euo pipefail
-          apk=ScarletNX.apk
+          apk=ScarletNX-${{ steps.commit.outputs.short }}.apk
           readelf=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf
           mkdir apk && unzip -q "$apk" 'lib/*' -d apk
           system=" libc.so libm.so libdl.so liblog.so libandroid.so libz.so libEGL.so libGLESv1_CM.so libGLESv2.so libOpenSLES.so "
@@ -322,22 +592,37 @@ jobs:
           done
       - uses: actions/upload-artifact@v7
         with:
-          path: ScarletNX.apk
+          path: ScarletNX-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
 
   # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the
   # checkout sits where the package looks for one, and stands in for what an installed copy lacks
   appimage-check:
-    name: Linux AppImage, as installed
+    name: Linux AppImage (${{ matrix.arch }}), as installed
     needs: appimage
-    runs-on: ubuntu-26.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: AppImage-x86_64
+          name: AppImage-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: dist
       # Artifacts drop the executable bit
       - name: Run the AppImage as a user would
@@ -354,23 +639,31 @@ jobs:
       run:
         shell: bash
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
       # Not in the workspace root: the build's checkout was there, and the package would take this one for it
       - uses: actions/checkout@v7
         with:
           path: source
       - uses: actions/download-artifact@v8
         with:
-          name: scarletnx-windows
+          name: scarletnx-windows-${{ steps.commit.outputs.short }}
           path: package
       - name: Run the zip's scarletnx.exe as a user would
         run: bash source/scripts/check-package.sh package/bin/scarletnx.exe
 
-  # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with Linux and Windows builds.
+  # Every push to main that builds everywhere replaces the rolling "nightly" prerelease with Linux (x86-64 and
+  # AArch64), Windows and Android builds.
   # A newer push cancels a release still running, so an older commit never publishes last
   release:
     name: Nightly release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [linux, appimage, windows, appimage-check, windows-check]
+    needs: [linux, appimage, windows, appimage-check, windows-check, android-apk]
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     concurrency:
@@ -379,17 +672,39 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      # The history the notes list changes from, beside the files the release takes from the workspace
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          fetch-depth: 0
+      # Read before the action below deletes that release: its notes link the commit it was built from first
+      - name: Find the commit of the nightly this one replaces
+        id: previous
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          body=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null || true)
+          echo "sha=$(grep -o -m1 -E '[0-9a-f]{40}' <<<"$body" | head -n1)" >> "$GITHUB_OUTPUT"
+      # Both AppImages beside one appinfo (the same name and version), where the action takes *.AppImage*
       - uses: actions/download-artifact@v8
         with:
-          name: AppImage-x86_64
-      - name: Release the AppImage
+          pattern: AppImage-*-${{ steps.commit.outputs.short }}
+          merge-multiple: true
+      - name: Release the AppImages
         uses: pkgforge-dev/make-nightly-appimage-release@17cbe90fc0796286e424619a54a82a3a880efe4c # v1.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the Windows build
         uses: actions/download-artifact@v8
         with:
-          name: scarletnx-windows
+          name: scarletnx-windows-${{ steps.commit.outputs.short }}
           path: windows
       - name: Package the Windows nightly
         run: |
@@ -399,13 +714,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload nightly ScarletNX-windows-x86_64.zip --repo "$GITHUB_REPOSITORY" --clobber
-      # The GPL asks for the way to the source next to the binary
-      - name: Say where the source is
+      # Under a fixed name in the release, as the zip, so a link to it keeps working
+      - name: Download the Android APK
+        uses: actions/download-artifact@v8
+        with:
+          name: ScarletNX-${{ steps.commit.outputs.short }}.apk
+          path: android
+      - name: Publish the Android nightly
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit nightly --repo "$GITHUB_REPOSITORY" --notes "Built from commit $GITHUB_SHA, whose source is at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$GITHUB_SHA.
-
-          The third-party libraries built into the runtime are fetched from the release archives that cmake/dependencies.cmake lists at that commit, each checked against the SHA-256 written next to it. The AppImage also bundles libraries from Arch Linux packages. Its licenses are in share/licenses, with the package list in share/licenses/bundled-packages.txt.
-
-          ScarletNX-windows-x86_64.zip contains the Windows build, its required runtime DLLs and licenses under share/licenses. The MSYS2 build environment's package versions are recorded in share/licenses/msys2/build-packages.txt."
+          cp android/ScarletNX-${{ steps.commit.outputs.short }}.apk ScarletNX-android.apk
+          gh release upload nightly ScarletNX-android.apk --repo "$GITHUB_REPOSITORY" --clobber
+      # The title the action gives the release, with a number for the time, is replaced by the commit's date and hash.
+      # The notes say which file is for which system, what changed since the previous nightly and where the source
+      # is, which the GPL asks for beside the binaries (scripts/nightly-notes.py). A new file in the release needs its
+      # line in that script's SYSTEMS, or this step stops and names it
+      - name: Write the title and the notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS: ${{ steps.previous.outputs.sha }}
+        run: |
+          python3 source/scripts/nightly-notes.py "$GITHUB_SHA" "$PREVIOUS" --checkout source --repo "$GITHUB_REPOSITORY" \
+            --files ScarletNX-*.AppImage ScarletNX-windows-x86_64.zip ScarletNX-android.apk > notes.md
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --notes-file notes.md \
+            --title "$(python3 source/scripts/nightly-notes.py "$GITHUB_SHA" --checkout source --title)"

@@ -989,6 +989,15 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(SvcObj* 
     *storage = nn_fssrv_sf_IStorage_new(0);
     return 0;
 }
+/* nn::fs::QueryMountRomCacheSize(size_t*, int) and MountRom's program index overloads (Metroid Prime 4).
+   Index 0 is this program, the only one GetProgramIndexForAccessLog reports. Any other index names a program
+   the application doesn't have: TargetNotFound, never a success without a storage, which the SDK wraps as a
+   storage with a null backend and calls through. */
+static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageWithProgramIndex(SvcObj* self, u8 program_index,
+                                                                        SvcObj** storage) {
+    if (program_index) return RC(2, 1002);
+    return nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(self, storage);
+}
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByDataId(SvcObj* self, nn_ncm_DataId data_id,
                                                                 nn_ncm_StorageId storage_id, SvcObj** storage) {
     char p[64];

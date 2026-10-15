@@ -251,3 +251,11 @@ const uint16_t gui_codepage[256] = {
     0x03b5, 0x2229, 0x2261, 0x00b1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00f7, 0x2248, 0x00b0, 0x2219, 0x00b7, 0x221a,
     0x207f, 0x00b2, 0x25a0, 0x00a0,
 };
+
+unsigned char gui_glyph(uint32_t codepoint) {
+    int i;
+    if (codepoint < 128) return (unsigned char)codepoint;
+    for (i = 128; i < 256; ++i)
+        if (gui_codepage[i] == codepoint) return (unsigned char)i;
+    return '?';
+}

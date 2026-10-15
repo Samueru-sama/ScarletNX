@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "runtime/platform/overlay.h"
+#include "runtime/platform/backend.h"
+#include "runtime/platform/fatal_screen.h"
 #include "runtime/platform/vpad.h"
+#include "gui_theme_colors.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -27,11 +30,14 @@ static const char* const CONTROLS[C_COUNT] = {"Show controls", "Edit layout",  "
                                               "Opacity",       "Buttons",      "Relative stick center", "D-pad slide",
                                               "Haptics",       "Touch screen", "Reset layout",          "Back"};
 static int shown, page, focus, top; /* top: the first item showing */
-/* the YoRHa menu's colours, R G B A */
-#define PAGE_RGBA 0xF2BED6DAu
-#define INK       0xFF3A4145u
-#define SOFT      0xFF76868Au
-#define LIGHT     0xFFBED6DAu
+/* the YoRHa menu's colours, from its theme.ini (gui_theme_colors.h), as R G B A bytes; the page lets the game show
+   through a little */
+#define SNX_OVERLAY_RGBA(rgb, a) ((u32)(a) << 24 | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
+#define PAGE_RGBA                SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xF2u)
+#define INK                      SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_INK, 0xFFu)
+#define SOFT                     SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_SOFT, 0xFFu)
+#define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
+#define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
 
 static int items(void) { return page == PAGE_MAIN ? 2 : page == PAGE_CONTROLS ? C_COUNT : SNX_VPAD_COUNT + 2; }
 static void page_open(int p) {
@@ -75,14 +81,14 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         case C_STICK: snprintf(value, vsize, "%s", v->rel_center ? "On" : "Off"); break;
         case C_DPAD: snprintf(value, vsize, "%s", v->dpad_slide ? "On" : "Off"); break;
         case C_HAPTICS: snprintf(value, vsize, "%s", v->haptics ? "On" : "Off"); break;
-        case C_TOUCH: snprintf(value, vsize, "%s", touch[clamp(backend_touch_mode(), 0, 2)]); break;
+        case C_TOUCH: snprintf(value, vsize, "%s", touch[backend_touch_mode()]); break; /* 0 to 2, as the .ini clamps */
         case C_BUTTONS: snprintf(value, vsize, ">"); break;
         default: break;
     }
 }
-static void flip(int* v, const char* key) {
+static void flip(int* v) {
     *v = !*v;
-    vpad_store(key);
+    vpad_store(v);
 }
 /* the item i done, or its value stepped (step -1 or 1; 0 for a select) */
 static int act(int i, int step) {
@@ -107,16 +113,16 @@ static int act(int i, int step) {
         return OVERLAY_NONE;
     }
     switch (i) {
-        case C_SHOW: flip(&v->on, "controls"); break;
-        case C_SNAP: flip(&v->snap, "controls_snap"); break;
-        case C_STICK: flip(&v->rel_center, "controls_rel_center"); break;
-        case C_DPAD: flip(&v->dpad_slide, "controls_dpad_slide"); break;
-        case C_HAPTICS: flip(&v->haptics, "controls_haptics"); break;
+        case C_SHOW: flip(&v->on); break;
+        case C_SNAP: flip(&v->snap); break;
+        case C_STICK: flip(&v->rel_center); break;
+        case C_DPAD: flip(&v->dpad_slide); break;
+        case C_HAPTICS: flip(&v->haptics); break;
         case C_SCALE:
         case C_OPACITY: {
             int* n = i == C_SCALE ? &v->scale : &v->opacity;
             *n = clamp(*n + (step ? step : 1) * 10, 0, 100);
-            vpad_store(i == C_SCALE ? "controls_scale" : "controls_opacity");
+            vpad_store(n);
             break;
         }
         case C_TOUCH: backend_touch_set((backend_touch_mode() + (step < 0 ? 2 : 1)) % 3); break;
@@ -144,10 +150,20 @@ void overlay_toggle(void) {
 }
 /* the panel's rows: the page's items under the head, a blank row under them */
 static int rows(void) { return FIRST + (items() < VISIBLE ? items() : VISIBLE) + 1; }
+static int display_percent = 100; /* set on the event thread, read by the renderer's */
+void overlay_set_display_scale(float scale) {
+    __atomic_store_n(&display_percent, scale > 0.0f ? (int)(scale * 100.0f) : 100, __ATOMIC_RELAXED);
+}
 void overlay_place(int sw, int sh, int* x, int* y, int* scale) {
-    /* the tallest page sets the scale, so the letters keep their size from page to page */
+    /* the tallest page sets the scale, so the letters keep their size from page to page: half the picture, or twice
+       the display's scale as the menu's Text size Auto (src/gui) if that is more, within three quarters of it. A
+       phone's short picture held its letters at 2x by the half alone */
     int w = OVERLAY_COLS * 8, h = OVERLAY_ROWS * 16;
     int s = sw / 2 / w < sh / 2 / h ? sw / 2 / w : sh / 2 / h;
+    int dense = 2 * __atomic_load_n(&display_percent, __ATOMIC_RELAXED) / 100;
+    if (dense > s) s = dense;
+    if (s > sw * 3 / 4 / w) s = sw * 3 / 4 / w;
+    if (s > sh * 3 / 4 / h) s = sh * 3 / 4 / h;
     *scale = s < 1 ? 1 : s;
     *x = (sw - w * *scale) / 2;
     *y = (sh - rows() * 16 * *scale) / 2;
@@ -215,4 +231,43 @@ void overlay_draw(SnxUiList* l, int sw, int sh) {
     if (top) ui_text(l, (float)px + cw * (OVERLAY_COLS - 1), (float)py + ch * FIRST, s, "\x18", SOFT);
     if (top + VISIBLE < n)
         ui_text(l, (float)px + cw * (OVERLAY_COLS - 1), (float)py + ch * (FIRST + VISIBLE - 1), s, "\x19", SOFT);
+}
+void overlay_error_draw(SnxUiList* l, int sw, int sh, const char* name, const char* msg, const char* how) {
+    enum { PARAS = 4, LINES = 12 };
+    static char rows_of[PARAS][LINES][FATAL_ROW];
+    const char* text[PARAS] = {name, msg, fatal_hint(msg), how};
+    const u32 color[PARAS] = {SOFT, FAILURE, INK, SOFT};
+    char line[OVERLAY_COLS + 4];
+    int px, py, s, n[PARAS], k, i, total, room, row;
+    float cw, ch, x, y;
+    overlay_place(sw, sh, &px, &py, &s);
+    cw = 8.0f * (float)s;
+    ch = 16.0f * (float)s;
+    for (k = 0; k < PARAS; ++k) n[k] = text[k] ? fatal_wrap(text[k], OVERLAY_COLS - 2, rows_of[k], LINES) : 0;
+    /* the head, the name, then each paragraph after a blank row; a blank, Close and a blank. On a short picture the
+       last paragraphs lose rows first */
+    room = sh / (int)ch;
+    for (;;) {
+        total = 1 + 4;
+        for (k = 0; k < PARAS; ++k) total += (n[k] > LINES ? LINES : n[k]) + (k > 0 && n[k] ? 1 : 0);
+        for (k = PARAS - 1; k > 1 && !n[k]; --k) {}
+        if (total <= room || k < 1 || !n[k]) break;
+        n[k] = (n[k] > LINES ? LINES : n[k]) - 1;
+    }
+    x = (float)px;
+    y = (float)((sh - total * (int)ch) / 2);
+    ui_fill(l, x, y, cw * OVERLAY_COLS, ch * (float)total, PAGE_RGBA);
+    ui_fill(l, x, y, cw * OVERLAY_COLS, ch, INK);
+    ui_text(l, x + cw, y, s, "SCARLETNX  /  STOPPED", LIGHT);
+    row = 1;
+    for (k = 0; k < PARAS; ++k) {
+        if (k > 0 && n[k]) ++row;
+        for (i = 0; i < n[k] && i < LINES; ++i, ++row) {
+            fatal_cp437(rows_of[k][i], line, sizeof line);
+            ui_text(l, x + cw, y + ch * (float)row, s, line, color[k]);
+        }
+    }
+    row = total - 2;
+    ui_fill(l, x, y + ch * (float)row, cw * OVERLAY_COLS, ch, INK);
+    ui_text(l, x + cw, y + ch * (float)row, s, "\xFE Close", LIGHT);
 }

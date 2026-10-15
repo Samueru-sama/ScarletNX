@@ -20,4 +20,6 @@ const char* gui_android_libraries(void);
 int gui_android_play(const char* const* argv, char* message, size_t size);
 /* A file to the share sheet, for the user to send or keep; 0 with message when it cannot */
 int gui_android_share(const char* path, char* message, size_t size);
+/* The app behind the others, as it is, for Back on the menu's first screen; 0 with message when it cannot */
+int gui_android_background(char* message, size_t size);
 #endif

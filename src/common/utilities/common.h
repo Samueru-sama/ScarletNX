@@ -43,6 +43,10 @@ int snx_write_file(const char* path, const void* data, size_t size);
 int snx_write_changed(const char* path, const void* data, size_t size);
 char* snx_temp_dir(const char* parent);
 char* snx_user_data_dir(void);
+/* The folder work/, games/ and the keys are in when a run names none (--repo), and the menu's games/: the checkout a build
+   came from; else, when a games/ folder is beside it, the folder of the AppImage or of the program (a portable copy);
+   else the user's data folder. NULL when none can be named */
+char* snx_data_dir(const char* checkout, const char* program_dir);
 SnxU64 snx_free_space(const char* path);
 SnxU64 snx_file_size(const char* path);
 int snx_make_executable(const char* path);

@@ -6,19 +6,27 @@
 #ifndef SNX_BACKEND_H
 #define SNX_BACKEND_H
 #include "cpu/aarch64/cpu.h"
+#include "runtime/ini.h"
 
 void video_init(const char* title);
-void video_present_rgba(const u32* px, int w, int h, int stride); /* final RGBA8 image */
 void video_poll(void);
-void backend_ini(const char* k, const char* v);
+extern const IniOpt g_backend_ini[]; /* the backend's settings (touch) */
+/* a key of the .ini or the command line for the backend, the on-screen controls or the unattended-run options:
+   applied, 1; none of theirs, 0 */
+int backend_ini(const char* k, const char* v);
+/* the game's touch screen as the in-game menu shows and sets it: 0 off, 1 the fingers, 2 the mouse too. The set
+   is saved to the .ini */
+int backend_touch_mode(void);
+void backend_touch_set(int mode);
 void frontend_frame(void);
 /* the window's size in pixels for the Vulkan swapchain, or 0 x 0 when headless */
 void backend_window_size(int* w, int* h);
 /* the part of the window the system's bars and the camera's cutout leave clear, in pixels: all of it when
    fullscreen, where the bars are hidden */
 void backend_window_safe(int* x, int* y, int* w, int* h);
-/* Android takes the window's surface away while the app is in the background: whether it is there now, and a count
-   that moves each time it comes back made anew, its Vulkan surface to be made anew too */
+/* whether presenting can show anything now: not while Android has taken the window's surface away (the app in the
+   background), nor while the window is minimized or covered. And a count that moves each time the surface comes back
+   made anew, its Vulkan surface to be made anew too */
 int backend_window_shown(void);
 u32 backend_window_generation(void);
 /* fatal's error box, on every platform despite the name (a no-op where the backend has none), from any thread */

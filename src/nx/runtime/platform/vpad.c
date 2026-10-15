@@ -9,31 +9,40 @@
 
 enum { KIND_BUTTON, KIND_DPAD, KIND_STICK };
 typedef struct {
-    const char *key, *name;
+    const char* name;
     int sprite, kind;
     int bit;    /* its HidNpadButton bit, -1 for none */
     float size; /* its longer side, of the clear part's shorter one, as rEden sizes it */
     float x, y; /* where it starts: the console's controllers, the left one's on the left */
 } Info;
-static const Info INFO[SNX_VPAD_COUNT] = {
-    {"l", "L", SNX_SPRITE_L, KIND_BUTTON, 6, 0.26f, 0.09f, 0.21f},
-    {"r", "R", SNX_SPRITE_R, KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f},
-    {"zl", "ZL", SNX_SPRITE_ZL, KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f},
-    {"zr", "ZR", SNX_SPRITE_ZR, KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f},
-    {"minus", "-", SNX_SPRITE_MINUS, KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f},
-    {"plus", "+", SNX_SPRITE_PLUS, KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f},
-    {"capture", "Capture", SNX_SPRITE_CAPTURE, KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f},
-    {"home", "Home", SNX_SPRITE_HOME, KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f},
-    {"l3", "L3", SNX_SPRITE_L3, KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f},
-    {"r3", "R3", SNX_SPRITE_R3, KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f},
-    {"dpad", "D-pad", SNX_SPRITE_DPAD, KIND_DPAD, -1, 0.25f, 0.23f, 0.78f},
-    {"stick_l", "Left stick", SNX_SPRITE_STICK_RANGE, KIND_STICK, -1, 0.30f, 0.12f, 0.47f},
-    {"stick_r", "Right stick", SNX_SPRITE_STICK_RANGE, KIND_STICK, -1, 0.30f, 0.77f, 0.78f},
-    {"a", "A", SNX_SPRITE_A, KIND_BUTTON, 0, 0.11f, 0.93f, 0.47f},
-    {"b", "B", SNX_SPRITE_B, KIND_BUTTON, 1, 0.11f, 0.87f, 0.60f},
-    {"x", "X", SNX_SPRITE_X, KIND_BUTTON, 2, 0.11f, 0.87f, 0.34f},
-    {"y", "Y", SNX_SPRITE_Y, KIND_BUTTON, 3, 0.11f, 0.81f, 0.47f},
-};
+/* each control: its SNX_VPAD_ name, its .ini key, then its Info. INFO and the place rows of g_vpad_ini are made from
+   this one list, so a key can't drift from its control, and the order is checked against vpad.h's enum */
+#define VPAD_CONTROLS(ROW)                                                                                             \
+    ROW(L, "l", "L", SNX_SPRITE_L, KIND_BUTTON, 6, 0.26f, 0.09f, 0.21f)                                                \
+    ROW(R, "r", "R", SNX_SPRITE_R, KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f)                                                \
+    ROW(ZL, "zl", "ZL", SNX_SPRITE_ZL, KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f)                                            \
+    ROW(ZR, "zr", "ZR", SNX_SPRITE_ZR, KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f)                                            \
+    ROW(MINUS, "minus", "-", SNX_SPRITE_MINUS, KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f)                                   \
+    ROW(PLUS, "plus", "+", SNX_SPRITE_PLUS, KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f)                                      \
+    ROW(CAPTURE, "capture", "Capture", SNX_SPRITE_CAPTURE, KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f)                       \
+    ROW(HOME, "home", "Home", SNX_SPRITE_HOME, KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f)                                   \
+    ROW(L3, "l3", "L3", SNX_SPRITE_L3, KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f)                                           \
+    ROW(R3, "r3", "R3", SNX_SPRITE_R3, KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f)                                           \
+    ROW(DPAD, "dpad", "D-pad", SNX_SPRITE_DPAD, KIND_DPAD, -1, 0.25f, 0.23f, 0.78f)                                    \
+    ROW(STICK_L, "stick_l", "Left stick", SNX_SPRITE_STICK_RANGE, KIND_STICK, -1, 0.30f, 0.12f, 0.47f)                 \
+    ROW(STICK_R, "stick_r", "Right stick", SNX_SPRITE_STICK_RANGE, KIND_STICK, -1, 0.30f, 0.77f, 0.78f)                \
+    ROW(A, "a", "A", SNX_SPRITE_A, KIND_BUTTON, 0, 0.11f, 0.93f, 0.47f)                                                \
+    ROW(B, "b", "B", SNX_SPRITE_B, KIND_BUTTON, 1, 0.11f, 0.87f, 0.60f)                                                \
+    ROW(X, "x", "X", SNX_SPRITE_X, KIND_BUTTON, 2, 0.11f, 0.87f, 0.34f)                                                \
+    ROW(Y, "y", "Y", SNX_SPRITE_Y, KIND_BUTTON, 3, 0.11f, 0.81f, 0.47f)
+#define INFO_ROW(id, key, name, sprite, kind, bit, size, x, y) {name, sprite, kind, bit, size, x, y},
+static const Info INFO[SNX_VPAD_COUNT] = {VPAD_CONTROLS(INFO_ROW)};
+#define ORDER_INDEX(id, key, name, sprite, kind, bit, size, x, y) ORDER_##id,
+enum { VPAD_CONTROLS(ORDER_INDEX) ORDER_COUNT };
+#define ORDER_CHECK(id, key, name, sprite, kind, bit, size, x, y)                                                      \
+    typedef char vpad_order_##id[SNX_VPAD_##id == ORDER_##id ? 1 : -1];
+VPAD_CONTROLS(ORDER_CHECK)
+typedef char vpad_order_count[ORDER_COUNT == SNX_VPAD_COUNT ? 1 : -1];
 /* the D-pad's directions (HidNpadButton bits 12 to 15) */
 #define DPAD_LEFT  (1u << 12)
 #define DPAD_UP    (1u << 13)
@@ -43,13 +52,24 @@ static const Info INFO[SNX_VPAD_COUNT] = {
 #define STICK_KNOB 1.66f /* the ring is this many knobs wide (rEden) */
 #define DEADZONE   0.5f  /* of the D-pad's half: rEden's */
 
+/* the settings' defaults, for g_vpad, vpad_defaults and g_vpad_ini alike */
 #ifdef __ANDROID__
-#define DEFAULT_ON 1
+#define DEF_ON 1
 #else
-#define DEFAULT_ON 0
+#define DEF_ON 0
 #endif
+#define DEF_SCALE      50
+#define DEF_OPACITY    100
+#define DEF_SNAP       0
+#define DEF_REL_CENTER 1
+#define DEF_DPAD_SLIDE 1
+#define DEF_HAPTICS    1
+#define DEF_SIZE       100 /* a control's, in percent */
+#define TEXT_(v)       #v
+#define TEXT(v)        TEXT_(v)
 
-static SnxVpadConfig g_vpad = {DEFAULT_ON, 50, 100, 0, 1, 1, 1, {{0}}};
+static SnxVpadConfig g_vpad = {DEF_ON,         DEF_SCALE,      DEF_OPACITY, DEF_SNAP,
+                               DEF_REL_CENTER, DEF_DPAD_SLIDE, DEF_HAPTICS, {{0}}};
 static int g_placed; /* g_vpad.at has its defaults: set on first use, a static initializer cannot read INFO */
 static void (*g_store)(const char* key, const char* value);
 typedef struct {
@@ -67,16 +87,17 @@ static float g_middle[2][2]; /* each stick's middle while held, 0 to 1 across th
 static unsigned g_actions;
 static int g_edit, g_selected = -1;
 
+static void default_place(int c, SnxVpadPlace* p) {
+    p->x = INFO[c].x;
+    p->y = INFO[c].y;
+    p->size = DEF_SIZE;
+    p->shown = 1;
+}
 static void placed(void) {
     if (!g_placed) {
         int c;
         g_placed = 1;
-        for (c = 0; c < SNX_VPAD_COUNT; ++c) {
-            g_vpad.at[c].x = INFO[c].x;
-            g_vpad.at[c].y = INFO[c].y;
-            g_vpad.at[c].size = 100;
-            g_vpad.at[c].shown = 1;
-        }
+        for (c = 0; c < SNX_VPAD_COUNT; ++c) default_place(c, &g_vpad.at[c]);
     }
 }
 SnxVpadConfig* vpad_config(void) {
@@ -87,17 +108,14 @@ const char* vpad_name(int control) { return control >= 0 && control < SNX_VPAD_C
 void vpad_defaults(SnxVpadConfig* c) {
     int i;
     placed();
-    c->on = DEFAULT_ON;
-    c->scale = 50;
-    c->opacity = 100;
-    c->snap = 0;
-    c->rel_center = c->dpad_slide = c->haptics = 1;
-    for (i = 0; i < SNX_VPAD_COUNT; ++i) {
-        c->at[i].x = INFO[i].x;
-        c->at[i].y = INFO[i].y;
-        c->at[i].size = 100;
-        c->at[i].shown = 1;
-    }
+    c->on = DEF_ON;
+    c->scale = DEF_SCALE;
+    c->opacity = DEF_OPACITY;
+    c->snap = DEF_SNAP;
+    c->rel_center = DEF_REL_CENTER;
+    c->dpad_slide = DEF_DPAD_SLIDE;
+    c->haptics = DEF_HAPTICS;
+    for (i = 0; i < SNX_VPAD_COUNT; ++i) default_place(i, &c->at[i]);
 }
 void vpad_reset_layout(void) {
     SnxVpadConfig d;
@@ -111,66 +129,79 @@ void vpad_reset_layout(void) {
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-/* the settings that are a number, by their key */
-static int* number(const char* key, int* lo, int* hi) {
-    *lo = 0;
-    *hi = 1;
-    if (!strcmp(key, "controls")) return &g_vpad.on;
-    if (!strcmp(key, "controls_snap")) return &g_vpad.snap;
-    if (!strcmp(key, "controls_rel_center")) return &g_vpad.rel_center;
-    if (!strcmp(key, "controls_dpad_slide")) return &g_vpad.dpad_slide;
-    if (!strcmp(key, "controls_haptics")) return &g_vpad.haptics;
-    *hi = 100;
-    if (!strcmp(key, "controls_scale")) return &g_vpad.scale;
-    if (!strcmp(key, "controls_opacity")) return &g_vpad.opacity;
-    return NULL;
+static double clampd(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
+static void on_set(const IniOpt* o, const char* v);
+static void place_set(const IniOpt* o, const char* v);
+/* the settings; then a control's place, in the order of SNX_VPAD_ (VPAD_CONTROLS). A place deleted from the file
+   while the game runs stays where it is until the game starts again: it has no default the reload could put back */
+#define FIRST_PLACE 7
+#define PLACE_HELP                                                                                                     \
+    "A control's place, written once it is moved, hidden or reset: x y size shown. Its middle across the\n"            \
+    ";   screen from 0 to 1, its size in percent (" TEXT(SNX_VPAD_SIZE_MIN) " to " TEXT(                               \
+        SNX_VPAD_SIZE_MAX) "),\n"                                                                                      \
+                           ";   and 1 = shown, 0 = hidden"
+#define PLACE_ROW(id, key, name, sprite, kind, bit, size, x, y)                                                        \
+    {"controls_" key, NULL, SNX_VPAD_##id ? NULL : PLACE_HELP, INI_TEXT, 0, NULL, 0, 0, place_set},
+const IniOpt g_vpad_ini[] = {
+    {"controls", TEXT(DEF_ON),
+     "The on-screen controls: 1 = shown, 0 = hidden. The game's menu (Back, Home or F2) sets them", INI_INT, 0,
+     &g_vpad.on, 0, 1, on_set},
+    {"controls_scale", TEXT(DEF_SCALE), "Their size: 0 to 100, for 50% to 150%", INI_INT, 0, &g_vpad.scale, 0, 100,
+     NULL},
+    {"controls_opacity", TEXT(DEF_OPACITY), "Their opacity, in percent", INI_INT, 0, &g_vpad.opacity, 0, 100, NULL},
+    {"controls_snap", TEXT(DEF_SNAP), "1 = a control dragged in edit mode lands on a grid", INI_INT, 0, &g_vpad.snap, 0,
+     1, NULL},
+    {"controls_rel_center", TEXT(DEF_REL_CENTER), "1 = a stick's middle is where its finger lands", INI_INT, 0,
+     &g_vpad.rel_center, 0, 1, NULL},
+    {"controls_dpad_slide", TEXT(DEF_DPAD_SLIDE), "1 = a finger sliding on the D-pad changes its direction", INI_INT, 0,
+     &g_vpad.dpad_slide, 0, 1, NULL},
+    {"controls_haptics", TEXT(DEF_HAPTICS), "1 = a short buzz on each press and release (Android)", INI_INT, 0,
+     &g_vpad.haptics, 0, 1, NULL},
+    VPAD_CONTROLS(PLACE_ROW){NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL}};
+typedef char vpad_ini_places[sizeof g_vpad_ini / sizeof *g_vpad_ini == FIRST_PLACE + SNX_VPAD_COUNT + 1 ? 1 : -1];
+static void on_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+    if (!g_vpad.on) vpad_release();
 }
-static int control_of(const char* key) {
-    int c;
-    if (strncmp(key, "controls_", 9)) return -1;
-    for (c = 0; c < SNX_VPAD_COUNT; ++c)
-        if (!strcmp(key + 9, INFO[c].key)) return c;
-    return -1;
+static void place_set(const IniOpt* o, const char* v) { /* x y size shown */
+    int c = (int)(o - g_vpad_ini) - FIRST_PLACE, i;
+    double f[4];
+    char* end;
+    for (i = 0; i < 4; ++i, v = end) {
+        f[i] = strtod(v, &end);
+        if (end == v || f[i] != f[i]) return; /* not four numbers, or one NaN: the place stays */
+    }
+    g_vpad.at[c].x = (float)clampd(f[0], 0, 1);
+    g_vpad.at[c].y = (float)clampd(f[1], 0, 1);
+    g_vpad.at[c].size = (int)clampd(f[2], SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
+    g_vpad.at[c].shown = f[3] != 0;
 }
 int vpad_ini(const char* key, const char* value) {
-    int lo, hi, c, *n = number(key, &lo, &hi);
+    const IniOpt* o = ini_find(g_vpad_ini, key);
+    if (!o) return 0;
     placed();
-    if (n) {
-        *n = clampi(atoi(value), lo, hi);
-        if (n == &g_vpad.on && !g_vpad.on) vpad_release();
-        return 1;
-    }
-    c = control_of(key);
-    if (c >= 0) { /* x y size shown */
-        SnxVpadPlace p = g_vpad.at[c];
-        if (sscanf(value, "%f %f %d %d", &p.x, &p.y, &p.size, &p.shown) == 4) {
-            p.x = clampf(p.x, 0, 1);
-            p.y = clampf(p.y, 0, 1);
-            p.size = clampi(p.size, SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
-            p.shown = !!p.shown;
-            g_vpad.at[c] = p;
-        }
-        return 1;
-    }
-    return 0;
+    ini_read(o, value);
+    return 1;
 }
 void vpad_set_store(void (*store)(const char* key, const char* value)) { g_store = store; }
-void vpad_store(const char* key) {
+void vpad_store(const int* setting) {
     char v[64];
-    int lo, hi, c, *n = number(key, &lo, &hi);
-    if (n)
-        snprintf(v, sizeof v, "%d", *n);
-    else if ((c = control_of(key)) >= 0)
-        snprintf(v, sizeof v, "%.3f %.3f %d %d", g_vpad.at[c].x, g_vpad.at[c].y, g_vpad.at[c].size, g_vpad.at[c].shown);
-    else
-        return;
-    if (g_store) g_store(key, v);
+    const IniOpt* o;
+    for (o = g_vpad_ini; o < g_vpad_ini + FIRST_PLACE; ++o)
+        if (o->var == setting) {
+            ini_format(o, v, sizeof v);
+            if (g_store) g_store(o->key, v);
+            return;
+        }
 }
 void vpad_store_control(int control) {
-    char key[32];
+    char v[64];
+    const SnxVpadPlace* p;
     if (control < 0 || control >= SNX_VPAD_COUNT) return;
-    snprintf(key, sizeof key, "controls_%s", INFO[control].key);
-    vpad_store(key);
+    p = &g_vpad.at[control];
+    snprintf(v, sizeof v, "%.3f %.3f %d %d", p->x, p->y, p->size, p->shown);
+    if (g_store) g_store(g_vpad_ini[FIRST_PLACE + control].key, v);
 }
 
 /* a control's rectangle (x, y, w, h) on a clear part of safe */
@@ -329,9 +360,13 @@ void vpad_move(u64 id, float x, float y, const int safe[4]) {
         stick_at(f->control, x, y, safe);
 }
 static void lift(Finger* f) {
-    int c = f->control, i;
+    int c = f->control, moved = f->moved, i;
     *f = g_fingers[--g_nfingers];
-    if (g_edit || c < 0) return;
+    if (g_edit) { /* a control dragged in edit mode keeps its place however the drag ends: lifted, Done, the menu */
+        if (c >= 0 && moved) vpad_store_control(c);
+        return;
+    }
+    if (c < 0) return;
     for (i = 0; i < g_nfingers; ++i)
         if (g_fingers[i].control == c) return; /* another finger still holds it */
     g_held &= ~(1u << c);
@@ -342,7 +377,6 @@ static void lift(Finger* f) {
 int vpad_up(u64 id) {
     Finger* f = finger(id);
     if (!f) return 0;
-    if (g_edit && f->control >= 0 && f->moved) vpad_store_control(f->control);
     lift(f);
     return 1;
 }

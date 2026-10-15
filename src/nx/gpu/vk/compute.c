@@ -929,11 +929,12 @@ rebind:
                 t && (!t->f.depth || vk_tic_reads_stencil(tic)) ? vk_tex_bind_view(t, want, tic, num) : VK_NULL_HANDLE;
             VkImageLayout sampled_layout =
                 p->si.nimg ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
             else
                 v = vk_null_view(want, num);
-            VkSampler smp = vk_tex_bind_sampler(tsc, st, num);
+            VkSampler smp = vk_tex_bind_sampler(tsc, st, num, sampled, want);
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
                 g_vk_cs_skipped++;
                 cs_abandon_binding(originals);

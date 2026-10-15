@@ -65,7 +65,7 @@ const char* gui_android_libraries(void) {
     return folder[0] ? folder : NULL;
 }
 
-/* MainActivity's method, with one argument */
+/* MainActivity's method, with one argument (none for a "()V" one, which leaves it unread) */
 static int call(const char* method, const char* signature, jobject argument, char* message, size_t size) {
     JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
     jobject activity = (jobject)SDL_GetAndroidActivity();
@@ -117,3 +117,4 @@ int gui_android_share(const char* path, char* message, size_t size) {
     (*env)->DeleteLocalRef(env, s);
     return ok;
 }
+int gui_android_background(char* message, size_t size) { return call("toBack", "()V", NULL, message, size); }

@@ -183,6 +183,11 @@ CPM: [SHA-256-pinned sources](../cmake/dependencies.cmake), shared `.cache/cpm` 
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 
+FFmpeg and OpenSSL build with their own configure and make, in each build tree. With `SNX_DEPS_CACHE` (CMake or env)
+naming a folder, a tree reuses a finished build there whose inputs match (source, configure line, compiler, C headers
+and the cmake file that builds it, see [deps_cache.cmake](../cmake/deps_cache.cmake)) and publishes the ones it
+builds, so other trees and branches skip both. A change to any input is a new folder; old ones are only left behind.
+
 ## Build variants
 
 SDL3, Vulkan and FFmpeg are mandatory for the NX runtime, including when running with `-H`.
@@ -211,7 +216,7 @@ cmake --preset windows-cross && cmake --build --preset windows-cross
 # -> build/windows-cross/scarletnx.exe; requires llvm-mingw on PATH
 ```
 
-All NX builds use SDL3 and support `-H` at runtime. Omit the flag for windowed startup.
+All NX builds use SDL3 and support `-H` at runtime. Omit the flag to run with a window.
 [Software Vulkan / lavapipe setup](USAGE.md#headless-vulkan--lavapipe).
 
 Offscreen integration test, with an installed Vulkan 1.3 ICD (lavapipe works):
@@ -273,6 +278,6 @@ GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
 # -> dist/ScarletNX-<arch>.AppImage
 ```
 
-[Nightly AppImage](https://github.com/scarletnx/ScarletNX/releases/tag/nightly) · [Launch](USAGE.md).
+[Nightly AppImages](https://github.com/scarletnx/ScarletNX/releases/tag/nightly), x86_64 and aarch64 · [Launch](USAGE.md).
 
 [Licenses/credits](CREDITS.md) · [Architecture](ARCHITECTURE.md) · [Roadmap](ROADMAP.md).

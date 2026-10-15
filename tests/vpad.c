@@ -157,12 +157,14 @@ int main(void) {
     assert(vpad_ini("controls_b", "1.5 -2 900 1") && vpad_config()->at[SNX_VPAD_B].x == 1 &&
            vpad_config()->at[SNX_VPAD_B].y == 0 && vpad_config()->at[SNX_VPAD_B].size == SNX_VPAD_SIZE_MAX);
     assert(vpad_ini("controls_b", "nonsense") && vpad_config()->at[SNX_VPAD_B].x == 1);
+    assert(vpad_ini("controls_b", "nan 0.5 100 1") && vpad_config()->at[SNX_VPAD_B].x == 1); /* NaN isn't a place */
+    assert(vpad_ini("controls_b", "1 0 99999999999 1") && vpad_config()->at[SNX_VPAD_B].size == SNX_VPAD_SIZE_MAX);
     assert(vpad_ini("controls_scale", "300") && vpad_config()->scale == 100 && !vpad_ini("touch", "1") &&
            !vpad_ini("seconds", "5"));
     vpad_ini("controls_scale", "50");
-    vpad_store("controls_b");
+    vpad_store_control(SNX_VPAD_B);
     assert(!strcmp(stored_key, "controls_b") && !strcmp(stored_value, "1.000 0.000 200 1"));
-    vpad_store("controls_haptics");
+    vpad_store(&vpad_config()->haptics);
     assert(!strcmp(stored_key, "controls_haptics") && !strcmp(stored_value, "1"));
     /* the reset: every control back, each kept */
     stores = 0;
@@ -198,6 +200,13 @@ int main(void) {
         draw(&l); /* the grid's lines and the bar's text come first, then the controls */
         assert(l.n > SNX_VPAD_COUNT + 60);
         vpad_ini("controls_snap", "0");
+        /* a drag that edit mode's end cuts short (Esc, the menu) is kept too */
+        stores = 0;
+        assert(vpad_down(14, mx(SNX_VPAD_Y), my(SNX_VPAD_Y), safe));
+        vpad_move(14, mx(SNX_VPAD_Y) - 100, my(SNX_VPAD_Y) - 50, safe);
+        vpad_edit(0);
+        assert(stores == 1 && !strcmp(stored_key, "controls_y"));
+        vpad_edit(1);
     }
     /* the bar: + on the selected control sizes it, Done ends edit mode */
     {

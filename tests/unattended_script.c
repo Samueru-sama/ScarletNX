@@ -12,6 +12,7 @@ static u64 g_now;
 u64 test_ns(void) { return g_now; }
 int g_frames;
 void snx_save_before_exit(void) {}
+void ini_poll(int final) { (void)final; }
 void plat_exit_now(int code) { exit(code); }
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;

@@ -23,6 +23,8 @@ typedef struct {
 
 int g_shader_texture_arrays;
 int g_shader_stage_point_size;
+int g_shader_output_layer = 1;
+int g_shader_geometry = 1;
 
 static u32 reg_read(DirectCtx* c, u32 r) {
     return r >= 255 ? c->zero : spv_emit_load(&c->emit, c->u32_type, c->reg[r]);
@@ -2477,7 +2479,15 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     u32 tess_outer = 0, tess_inner = 0, patch_vars[30] = {0}, position_in = 0, primitive_id = 0, tess_coord = 0;
     u32 invocation_id = 0, patch_vertices = 0;
     int depth_fix = position_used && last && stage != ST_FS && stage != ST_CS;
-    if (layer_output_used || layer_input_used) spv_emit_layer_capability(&c->emit);
+    /* BuiltIn Layer takes the Geometry capability (a geometry program has it; the device's geometryShader) or
+       ShaderLayer (its shaderOutputLayer), which a vertex or tessellation program writing the layer needs. A fragment
+       program reads it with either. Without one a write is dropped and a read is 0 */
+    if (layer_output_used && stage != ST_GS && !g_shader_output_layer) layer_output_used = 0;
+    if (layer_input_used && !g_shader_geometry && !g_shader_output_layer) layer_input_used = 0;
+    if ((layer_output_used && stage != ST_GS) || (layer_input_used && !g_shader_geometry))
+        spv_emit_layer_capability(&c->emit);
+    else if (layer_input_used && stage != ST_GS)
+        spv_emit_capability(&c->emit, 2); /* Geometry */
     if (clip_used) spv_emit_clip_distance_capability(&c->emit);
     if (stage == ST_FS)
         for (u32 rt = 0; rt < 8; rt++)
@@ -3104,7 +3114,9 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                     continue;
                 }
                 if (location == 0x64) {
-                    spv_emit_store(&c->emit, layer_output, spv_emit_bitcast(&c->emit, i32_type, reg_read(c, d + k)));
+                    if (layer_output) /* none: the device can't take this stage's layer */
+                        spv_emit_store(&c->emit, layer_output,
+                                       spv_emit_bitcast(&c->emit, i32_type, reg_read(c, d + k)));
                     continue;
                 }
                 if (location >= 0x2c0) {
@@ -4533,9 +4545,10 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             u32 value;
             u32 interpolation = 0;
             if (addr == 0x64) {
-                value = spv_emit_bitcast(
-                    &c->emit, c->f32_type,
-                    spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_load(&c->emit, i32_type, layer_input)));
+                value = layer_input ? spv_emit_bitcast(&c->emit, c->f32_type,
+                                                       spv_emit_bitcast(&c->emit, c->u32_type,
+                                                                        spv_emit_load(&c->emit, i32_type, layer_input)))
+                                    : spv_emit_bitcast(&c->emit, c->f32_type, c->zero); /* no capability: layer 0 */
             } else if (addr == 0x3fc) {
                 u32 facing = spv_emit_load(&c->emit, c->bool_type, frontface);
                 u32 bits = spv_emit_select(&c->emit, c->u32_type, facing,

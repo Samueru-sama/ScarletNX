@@ -3,7 +3,8 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* vi + the nvnflinger buffer queue. There's no compositor: QueueBuffer has the GPU thread show the frame once the work
-   queued before it is done. */
+   queued before it is done, and DequeueBuffer waits out the last frame's turn on the display (its swap interval) before
+   handing the game a buffer for the next, as the console's compositor holds it (present_pace). */
 #include "hle/services/vi.h"
 #include "runtime/main.h"
 #include "runtime/options.h"
@@ -43,8 +44,14 @@ static struct {
     /* the last crop and transform QUEUE_BUFFER logged (lock) */
     u32 crop_transform;
     i32 crop[4];
+    u32 interval;                   /* the last queued frame's swap interval: the next DEQUEUE_BUFFER's pace (lock) */
     u64 managed_layer, stray_layer; /* the next CreateManagedLayer and CreateStrayLayer ids */
-} vi = {.width = 1280, .height = 720, .crop_transform = 0xFFFFFFFFu, .managed_layer = 100, .stray_layer = 200};
+} vi = {.width = 1280,
+        .height = 720,
+        .crop_transform = 0xFFFFFFFFu,
+        .interval = 1,
+        .managed_layer = 100,
+        .stray_layer = 200};
 
 /* ============================================================ parcels */
 typedef struct {
@@ -218,7 +225,12 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
         }
         case 3: { /* DEQUEUE_BUFFER */
             /* a slot is held from DEQUEUE until its frame is shown or cancelled. With every buffer held this waits
-               for one, as the console's blocking queue does, however long the GPU thread takes */
+               for one, as the console's blocking queue does, however long the GPU thread takes. First the last
+               frame's turn on the display is waited out, without vi's lock */
+            pm_lock(&vi.lock);
+            u32 pace = vi.interval;
+            pm_unlock(&vi.lock);
+            present_pace(pace);
             pm_lock(&vi.lock);
             int k = -1, nused = 0;
             for (int i = 0; i < 64; i++) nused += vi.slots[i].used;
@@ -243,8 +255,18 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                    (a RenderDoc capture, long pipeline compiles) or stuck */
                 if (pc_wait(&vi.free_cv, &vi.lock, 1000000000)) {
                     u64 held = 0;
-                    for (int i = 0; i < 64; i++)
+                    nused = 0;
+                    for (int i = 0; i < 64; i++) {
+                        nused += vi.slots[i].used;
                         if (vi.slots[i].used && vi.slots[i].queued) held |= 1ull << i;
+                    }
+                    if (!nused) { /* the buffers were detached meanwhile (SET_PREALLOCATED_BUFFER): none will come */
+                        pm_unlock(&vi.lock);
+                        pw_u32(out, 0);
+                        pw_u32(out, 0);
+                        pw_u32(out, (u32)-19); /* NO_INIT */
+                        return 0;
+                    }
                     WARN_LIMIT(8, "binder: DEQUEUE_BUFFER has waited 1 s with all %d buffers held (slots %llx)\n",
                                nused, (unsigned long long)held);
                 }
@@ -271,6 +293,13 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             QueuedFrame* q = calloc(1, sizeof *q);
             if (!q) fatal("Out of memory queueing a frame");
             q->slot = slot;
+            /* QueueBufferInput's swap interval (after async at 0x28): NVN's present interval, which the compositor
+               holds the frame on the display for. A game made for 30 FPS asks for 2. An s32: a negative one is no
+               interval the console takes, and one over 4 (15 FPS) a misread parcel that mustn't stall presenting */
+            i32 interval = 1;
+            if (len >= 0x30) memcpy(&interval, qi + 0x2C, 4);
+            if (interval < 0) interval = 1;
+            if (interval > 4) interval = 4;
             if (len >= 0x54) { /* the frame's fences */
                 memcpy(&q->nf, qi + 0x30, 4);
                 if (q->nf > 4) q->nf = 4;
@@ -297,7 +326,10 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                 vi.crop_transform = tr;
                 memcpy(vi.crop, cr, 16);
             }
+            int new_interval = vi.interval != (u32)interval;
+            vi.interval = (u32)interval;
             pm_unlock(&vi.lock);
+            if (new_interval) LOG_LIMIT(16, "vi: swap interval %d\n", interval); /* a game may switch every frame */
             if (changed) LOG("vi: crop (%d,%d)-(%d,%d), transform %x\n", cr[0], cr[1], cr[2], cr[3], tr);
             /* the compositor shows the frame once the GPU has drawn it (its acquire waits on the frame's fence), and
                QueueBuffer returns at once: shown here, it held the game's queue lock while the GPU thread caught up,
@@ -355,6 +387,7 @@ static int transact(i32 id, u32 code, IpcBuf parcel, IpcBuf reply) {
     in.pos = 0;
     pr_skip_token(&in);
     PW* out = calloc(1, sizeof(PW));
+    if (!out) fatal("Out of memory answering a binder transaction");
     binder_transact((u32)id, code, &in, out);
     pw_out(out, reply.addr, reply.size);
     free(out);
@@ -390,7 +423,7 @@ static int nn_visrv_sf_ISystemDisplayService_GetDisplayLogicalResolution(SvcObj*
 static int nn_visrv_sf_ISystemDisplayService_GetDisplayMode(SvcObj* self, u64 display_id, nn_vi_DisplayModeInfo* mode) {
     mode->width = (u32)vi.width;
     mode->height = (u32)vi.height;
-    mode->refresh_rate = 60.0f;
+    mode->refresh_rate = (float)VI_REFRESH_HZ;
     return 0;
 }
 static int nn_visrv_sf_IManagerDisplayService_CreateManagedLayer(SvcObj* self, u32 layer_flags, u64 display_id,
@@ -414,7 +447,7 @@ static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj*
    buffer has no room for it */
 static int native_window(IpcBuf b, u32 binder, i64* size) {
     *size = 0x3C;
-    if (!b.addr || b.size < 0x38) {
+    if (!b.addr || b.size < 0x3C) { /* the parcel: its 0x10 header, 0x28 bytes of data, the 4 of its object table */
         WARN("vi: no room for the native window parcel (%llu bytes)\n", (unsigned long long)b.size);
         return 0;
     }

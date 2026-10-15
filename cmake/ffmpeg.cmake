@@ -24,8 +24,14 @@ if(NOT SNX_FFMPEG_SH OR NOT SNX_FFMPEG_MAKE)
                         "Windows, scripts\\bootstrap.ps1 installs them with w64devkit. FFmpeg is required by the NX runtime.")
 endif()
 
+# The build's compiler launcher (ccache) wraps make's compiles only: configure's checks are one-off compiles no cache
+# hits, which through it took twice as long on Windows
+list(JOIN CMAKE_C_COMPILER_LAUNCHER " " snx_ffmpeg_launcher)
+set(snx_ffmpeg_make_cc "")
+if(snx_ffmpeg_launcher)
+    set(snx_ffmpeg_make_cc "CC=${snx_ffmpeg_launcher} ${CMAKE_C_COMPILER}")
+endif()
 set(snx_ffmpeg_args
-    --prefix=${snx_ffmpeg_prefix}
     --enable-static
     --disable-shared
     --enable-pic
@@ -86,31 +92,42 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
                                 "with -DSNX_FFMPEG_ASM=OFF to build FFmpeg without it (movies decode more slowly).")
         endif()
         list(APPEND snx_ffmpeg_args --x86asmexe=${SNX_NASM})
+        execute_process(COMMAND "${SNX_NASM}" -v OUTPUT_VARIABLE snx_ffmpeg_nasm OUTPUT_STRIP_TRAILING_WHITESPACE)
     else()
         list(APPEND snx_ffmpeg_args --disable-x86asm)
     endif()
 endif()
 
-# FFmpeg's make does not see the build's -j
-cmake_host_system_information(RESULT snx_ffmpeg_jobs QUERY NUMBER_OF_LOGICAL_CORES)
-if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
-    set(snx_ffmpeg_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+# Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
+# The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
+snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_sha256}" "configure: ${snx_ffmpeg_args}"
+                "nasm: ${snx_ffmpeg_nasm}")
+if(snx_ffmpeg_cache_FOUND)
+    set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
+else()
+    # FFmpeg's make does not see the build's -j
+    cmake_host_system_information(RESULT snx_ffmpeg_jobs QUERY NUMBER_OF_LOGICAL_CORES)
+    if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
+        set(snx_ffmpeg_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+    endif()
+    include(ExternalProject)
+    ExternalProject_Add(ffmpeg_build
+        SOURCE_DIR "${snx_ffmpeg_src}"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/ffmpeg-build"
+        INSTALL_DIR "${snx_ffmpeg_prefix}"
+        CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure" --prefix=${snx_ffmpeg_prefix}
+                          ${snx_ffmpeg_args}
+        BUILD_COMMAND "${SNX_FFMPEG_MAKE}" -j${snx_ffmpeg_jobs} ${snx_ffmpeg_make_cc}
+        INSTALL_COMMAND "${SNX_FFMPEG_MAKE}" install
+        BUILD_BYPRODUCTS "${snx_ffmpeg_prefix}/lib/libavcodec.a" "${snx_ffmpeg_prefix}/lib/libswresample.a"
+                         "${snx_ffmpeg_prefix}/lib/libavutil.a"
+        # configure and make print a lot: keep it in log files, shown when a step fails
+        LOG_CONFIGURE ON
+        LOG_BUILD ON
+        LOG_INSTALL ON
+        LOG_OUTPUT_ON_FAILURE ON)
+    snx_deps_publish(ffmpeg_build ffmpeg "${snx_ffmpeg_prefix}" "${snx_ffmpeg_cache_DIR}")
 endif()
-include(ExternalProject)
-ExternalProject_Add(ffmpeg_build
-    SOURCE_DIR "${snx_ffmpeg_src}"
-    BINARY_DIR "${CMAKE_BINARY_DIR}/ffmpeg-build"
-    INSTALL_DIR "${snx_ffmpeg_prefix}"
-    CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure" ${snx_ffmpeg_args}
-    BUILD_COMMAND "${SNX_FFMPEG_MAKE}" -j${snx_ffmpeg_jobs}
-    INSTALL_COMMAND "${SNX_FFMPEG_MAKE}" install
-    BUILD_BYPRODUCTS "${snx_ffmpeg_prefix}/lib/libavcodec.a" "${snx_ffmpeg_prefix}/lib/libswresample.a"
-                     "${snx_ffmpeg_prefix}/lib/libavutil.a"
-    # configure and make print a lot: keep it in log files, shown when a step fails
-    LOG_CONFIGURE ON
-    LOG_BUILD ON
-    LOG_INSTALL ON
-    LOG_OUTPUT_ON_FAILURE ON)
 
 # The include folder is filled by the install step, but has to exist for the imported targets at configure time
 file(MAKE_DIRECTORY "${snx_ffmpeg_prefix}/include")
@@ -120,7 +137,9 @@ add_library(FFmpeg::avutil STATIC IMPORTED GLOBAL)
 set_target_properties(FFmpeg::avutil PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libavutil.a"
                                                 INTERFACE_INCLUDE_DIRECTORIES "${snx_ffmpeg_prefix}/include"
                                                 SYSTEM OFF)
-add_dependencies(FFmpeg::avutil ffmpeg_build)
+if(TARGET ffmpeg_build)
+    add_dependencies(FFmpeg::avutil ffmpeg_build)
+endif()
 if(WIN32)
     # libavutil's random seed uses BCryptGenRandom
     target_link_libraries(FFmpeg::avutil INTERFACE bcrypt)
@@ -131,9 +150,13 @@ add_library(FFmpeg::swresample STATIC IMPORTED GLOBAL)
 set_target_properties(FFmpeg::swresample PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libswresample.a"
                                                     SYSTEM OFF)
 target_link_libraries(FFmpeg::swresample INTERFACE FFmpeg::avutil)
-add_dependencies(FFmpeg::swresample ffmpeg_build)
+if(TARGET ffmpeg_build)
+    add_dependencies(FFmpeg::swresample ffmpeg_build)
+endif()
 add_library(FFmpeg::avcodec STATIC IMPORTED GLOBAL)
 set_target_properties(FFmpeg::avcodec PROPERTIES IMPORTED_LOCATION "${snx_ffmpeg_prefix}/lib/libavcodec.a" SYSTEM OFF)
 # the Opus decoder in libavcodec calls libswresample
 target_link_libraries(FFmpeg::avcodec INTERFACE FFmpeg::swresample FFmpeg::avutil)
-add_dependencies(FFmpeg::avcodec ffmpeg_build)
+if(TARGET ffmpeg_build)
+    add_dependencies(FFmpeg::avcodec ffmpeg_build)
+endif()

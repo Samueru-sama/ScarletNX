@@ -24,8 +24,8 @@ esac
 api=${ANDROID_API:-21}
 ndk=${ANDROID_NDK_ROOT:-$(ls -d "${ANDROID_HOME:-$HOME/Android/Sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)}
 [ -f "$ndk/build/cmake/android.toolchain.cmake" ] || { echo "no NDK: set ANDROID_NDK_ROOT" >&2; exit 1; }
-version=${LLVM_VERSION:-22.1.8}
-work=$prefix.build
+version=${LLVM_VERSION:-23.1.3}
+work=$prefix.build/$version
 mkdir -p "$work"
 if [ -z "$source" ]; then
     source=$work/llvm-project-$version.src.tar.xz

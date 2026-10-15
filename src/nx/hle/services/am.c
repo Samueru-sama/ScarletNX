@@ -118,11 +118,11 @@ static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_A
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetOperationMode(SvcObj* self, u8* mode) {
-    *mode = (u8)g_hle_docked;
+    *mode = (u8)g_opt_docked;
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetPerformanceMode(SvcObj* self, u32* mode) {
-    *mode = (u32)g_hle_docked;
+    *mode = (u32)g_opt_docked;
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetCurrentFocusState(SvcObj* self, u8* state) {
@@ -139,8 +139,8 @@ static int nn_am_service_ICommonStateGetter_GetAcquiredSleepLockEvent(SvcObj* se
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
-    *width = g_hle_docked ? 1920 : 1280;
-    *height = g_hle_docked ? 1080 : 720;
+    *width = g_opt_docked ? 1920 : 1280;
+    *height = g_opt_docked ? 1080 : 720;
     return 0;
 }
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
@@ -194,7 +194,7 @@ static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, 
     return out_storage(storage, sizeof buf, buf);
 }
 static int nn_am_service_IApplicationFunctions_GetDesiredLanguage(SvcObj* self, nn_settings_LanguageCode* code) {
-    set_language_code(g_hle_lang, code->v);
+    set_language_code(g_opt_lang, code->v);
     return 0;
 }
 static int nn_am_service_IApplicationFunctions_GetDisplayVersion(SvcObj* self, nn_oe_DisplayVersion* version) {

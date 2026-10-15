@@ -6,6 +6,8 @@
 #ifndef SNX_VI_H
 #define SNX_VI_H
 
+#define VI_REFRESH_HZ 60 /* the console's display, which vsync ticks and the game's swap interval count in */
+
 void vi_vsync_tick(void);
 
 #endif

@@ -638,6 +638,28 @@ char* snx_user_data_dir(void) {
     return path;
 #endif
 }
+char* snx_data_dir(const char* checkout, const char* program_dir) {
+    const char *appimage = getenv("APPIMAGE"), *appdir = getenv("APPDIR");
+    char *path = checkout ? snx_path_join(checkout, "CMakeLists.txt") : NULL, *dir = NULL, *games;
+    int portable;
+    if (path && snx_is_file(path)) {
+        free(path);
+        return snx_strdup(checkout);
+    }
+    free(path);
+    /* an AppImage's programs run from its mount: the copy is the AppImage file. APPIMAGE is inherited, so it counts
+       only for a program inside the mount */
+    if (appimage && appimage[0] == '/' && appdir && appdir[0] && program_dir && snx_path_within(program_dir, appdir))
+        dir = snx_dirname(appimage);
+    else if (program_dir)
+        dir = snx_strdup(program_dir);
+    games = dir ? snx_path_join(dir, "games") : NULL;
+    portable = games && snx_is_dir(games);
+    free(games);
+    if (portable) return dir;
+    free(dir);
+    return snx_user_data_dir();
+}
 char* snx_temp_dir(const char* parent) {
     char* path;
 #ifdef _WIN32

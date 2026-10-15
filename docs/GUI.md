@@ -46,9 +46,13 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   creating the folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. A successful
   drop replaces them and returns to the menu; ESC cancels without changing them.
-- **[ON/OFF] Fullscreen** toggles the Switch game's startup setting, not the
-  launcher's window. ON passes `-f` (short for `--fullscreen`); OFF omits the flag
-  and starts windowed, regardless of an older INI value.
+- **[ON/OFF] Fullscreen** sets how the Switch game starts. ON passes `-f` (short for
+  `--fullscreen`) and OFF passes `--fullscreen=0`, so the launcher's choice wins over the
+  game's `.ini`. On Android it also puts the launcher itself on the whole screen.
+- **Touch** sets the game's touch screen: the fingers, the mouse too, or off. It passes
+  `--touch=1`, `--touch=2` or `--touch=0`.
+- **[ON/OFF] On-screen controls** shows or hides the pad drawn over the game. It passes
+  `--controls=1` or `--controls=0`, and the game's menu edits the pad.
 - **[ON/OFF] Enable libgccjit** passes `--backend=gcc` when preparing a Switch dump.
   It stays OFF if this build lacks libgccjit. Prepared executables in `games/`
   already have a compiled backend, so this setting does not recompile them.
@@ -60,6 +64,11 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   Switch options; they are never forwarded as Linux guest arguments or to the 3DS driver.
 - **Theme** switches to the next theme: the built-in Default and YoRHa, then each
   folder of `themes/` (see [Themes](#themes)). It lasts for the session.
+- **Text size** steps the menu's letters through Auto (fit the screen) and four sizes.
+  Bigger letters scroll the menu.
+- **Share log** saves the last run's output and game log to `scarletnx.log`. On the
+  desktop it goes in the working folder with its path copied. On Android it goes to
+  `/sdcard/ScarletNX/` and is shared.
 - **Exit** closes the launcher. Closing its window during a run terminates the
   entire owned process tree, so let the game exit normally to preserve its saves.
 - **Recent games**, above the items, lists the last five games run, newest first, by
@@ -83,8 +92,9 @@ bottom of the window. See [GNUABI](GNUABI.md) for supported Linux ELF applicatio
 ## Selecting an executable from games/
 
 **Select file from games/ instead** replaces the menu and old output with a file
-list. It reads `games/` relative to the working directory shown in the footer,
-not relative to the GUI executable. Each entry is displayed by basename, sorted
+list. It reads the `games/` of the folder the driver works in, which the menu passes
+it as `--repo`: the checkout of a build tree, else the folder of an AppImage (or of the
+GUI) that has a `games/` beside it, else the user's data folder (docs/USAGE.md). Each entry is displayed by basename, sorted
 alphabetically. Only immediate executable files are listed (execute permission
 on UNIX, `.exe` on Windows). Hidden files, shared libraries and directories are
 excluded. For **Load 3DS CIA**, only immediate non-hidden `.cia` files are listed
@@ -100,11 +110,12 @@ excluded. The list is refreshed each time it is opened.
 - Empty or missing directories show a diagnostic and still provide Back.
 
 For the Switch selection these are already-prepared native game launchers, so
-selecting one runs it directly with the fullscreen/debugger settings rather than trying to
-extract it as a dump. For the Linux selection, the selected file is passed to
-`scarletnx-gnuabi` as an ARM64 ELF. Output capture, resource accounting and the
-return to the main menu work the same way for both input methods. For the 3DS
-selection, the browser passes a CIA input to `scarletnx-3ds`; it never executes it directly.
+selecting one runs it directly with the fullscreen, touch, on-screen controls and
+debugger settings rather than trying to extract it as a dump. For the Linux
+selection, the selected file is passed to `scarletnx-gnuabi` as an ARM64 ELF.
+Output capture, resource accounting and the return to the main menu work the same
+way for both input methods. For the 3DS selection, the browser passes a CIA input
+to `scarletnx-3ds`; it never executes it directly.
 
 ## Output and resource use
 
@@ -154,12 +165,15 @@ with the recompile's percentage). The menu fades out to black as a run starts an
 fades the run out and the menu back in.
 
 A theme is also a folder holding a `theme.ini`, the folder's name its id, in
-`themes/` in the working directory or in `themes/` beside the GUI; the first one found
-wins, and a folder named like a built-in replaces it. The built-ins ship as such files
-(`src/gui/themes/`, copied beside the GUI in the build and installed with it): copy one
-under a new name to make a theme, or edit one to change the built-in. `[theme] base`
-picks the built-in a file starts from, and a key it leaves out, or that cannot be read,
-keeps the base's value.
+`themes/` in that same folder or in `themes/` beside the GUI; the first one found
+wins, and a folder named like a built-in replaces it. The built-ins are such files, and
+nothing else: each folder of `src/gui/themes/` is one, its `theme.ini` compiled into the GUI
+(`cmake/gui_themes.cmake`) and read as any other, setting every key. The runtime's game menu
+takes YoRHa's colours from the same file at build time. The files are copied beside the GUI
+in the build and installed with it: copy one under a new name to make a theme, or edit one
+to change the built-in. `[theme] base` picks the built-in a file starts from, and a key it
+leaves out, or that cannot be read, keeps the base's value. The theme builder at
+<https://scarletnx.github.io/theme/> writes a theme.ini with a preview drawn as the GUI draws.
 
 ```ini
 [theme]
@@ -229,7 +243,8 @@ fade_out_ms = 500
 line_in = typing
 line_in_ms = 220
 typing_ms = 5
-; async: every line types from when it comes; sync: one at a time, the done ones three times faster
+; async: every line types from when it comes; sync: one at a time. A running step's newest line
+; types a character each typing_ms, any other line whole in typing_ms
 typing = async
 blink_ms = 500
 ; a line too long for its row (big letters) slides left a column every scroll_ms and back; 0 cuts it
@@ -257,6 +272,27 @@ reads the keys it knows and leaves the others. From ErET's, the GUI also reads:
 | `[loading] title` | the loading screen's title |
 
 ErET needs `[theme] layout`, so the built-in files carry one: `debug` and `menu`.
+
+### Theme formats
+
+`[theme] format = N` names the theme format a file was written for; this GUI's is 1
+(`GUI_THEME_FORMAT`).
+
+- A file of a format the GUI knows reads the same in it and in every later GUI: each key
+  keeps its meaning, and each value reads to the same theme. `tests/gui_themes/<N>/` holds
+  files of format N as the theme builder writes them, with the theme each reads to
+  (`<name>.json`, the GUI's fields in the builder's names); `gui_theme_formats` checks them.
+  They are never changed: a field added to themes later is simply not in an older one's JSON.
+- A new key, or a new word for a key, keeps N: an older GUI leaves what it does not know, and
+  the base's value stays. A new key's value in the built-ins must keep an older file looking
+  as it did.
+- N goes up only when a key that exists has to mean something else. The GUI then reads the
+  older format's files with the older meaning, their fixtures stay, and the new format's go
+  in `tests/gui_themes/<N+1>/`.
+- A file of a newer format than the GUI's: the keys it knows still apply, the others are left.
+- The theme builder writes every key and the newest format it knows, so its files never lean
+  on a built-in's values, which may change. It reads an older file as that format reads, and
+  writes it in the current one.
 
 ## Building and testing
 
