@@ -159,6 +159,21 @@ class Module:
                 r_off, r_info, r_add = struct.unpack_from('<QQq', self.image, o)
                 if r_info & 0xFFFFFFFF == 1027 and self.in_text(r_add):  # R_AARCH64_RELATIVE
                     self.relptrs.add(r_add)
+        # and DT_RELR's packed relative ones, each word holding its addend: an even entry is an address, an odd one a
+        # bitmap of the 63 words after it (loader.c's parse_relr)
+        base = d.get(36)
+        where = 0
+        if base is not None:
+            for o in range(base, min(base + d.get(35, 0), len(self.image) - 7), 8):
+                e = self.u64(o)
+                if not e & 1:
+                    locations, where = [e], e + 8
+                else:
+                    locations = [where + i * 8 for i in range(63) if e >> (i + 1) & 1]
+                    where += 63 * 8
+                for at in locations:
+                    if at + 8 <= len(self.image) and self.in_text(self.u64(at)):
+                        self.relptrs.add(self.u64(at))
 
     # ---------------------------------------------------------------- eh_frame
     def read_enc(self, o, enc, base_for_pcrel=None, datarel=0):

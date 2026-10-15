@@ -192,6 +192,26 @@ static void test_nso(void) {
     CHECK(!snx_load_nso(path, "partial", &m, error, sizeof error));
     CHECK(m.eh_error && m.fde_count == 1 && m.function_count == 2 && m.functions[1] == 0x40);
     snx_free_module(&m);
+    /* DT_RELR at 0x320: the word at 0x3a0, then a bitmap of the words from 0x3a8 marking 0x3a8 and 0x3b8. The text
+       pointers among them (0x20, 0x60) join RELA's 0x30, the one into the data (0x200) doesn't */
+    memcpy(file_bytes, baseline, size);
+    put64(file_bytes + 0x100 + 0x170, 35);
+    put64(file_bytes + 0x100 + 0x178, 16);
+    put64(file_bytes + 0x100 + 0x180, 36);
+    put64(file_bytes + 0x100 + 0x188, 0x320);
+    put64(file_bytes + 0x100 + 0x320, 0x3a0);
+    put64(file_bytes + 0x100 + 0x328, 1 | 1 << 1 | 1 << 3);
+    put64(file_bytes + 0x100 + 0x3a0, 0x20);
+    put64(file_bytes + 0x100 + 0x3a8, 0x60);
+    put64(file_bytes + 0x100 + 0x3b8, 0x200);
+    CHECK(!snx_write_file(path, file_bytes, size));
+    CHECK(!snx_load_nso(path, "relr", &m, error, sizeof error));
+    CHECK(m.relptr_count == 3 && m.relptrs[0] == 0x20 && m.relptrs[1] == 0x30 && m.relptrs[2] == 0x60);
+    snx_free_module(&m);
+    put64(file_bytes + 0x100 + 0x178, 0x100);
+    CHECK(!snx_write_file(path, file_bytes, size));
+    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1);
+    CHECK(strstr(error, "RELR table") != NULL && !m.image);
     memcpy(file_bytes, baseline, size);
     put64(file_bytes + 0x100 + 0x148, 0);
     CHECK(!snx_write_file(path, file_bytes, size));
@@ -207,7 +227,7 @@ static void test_nso(void) {
     CHECK(snx_load_nso(path, NULL, &m, error, 3) == -1);
     CHECK(error[2] == 0 && error[3] == 0x7f);
     free(path);
-    puts("PASS NSO segments, LZ4 variants, symbols/imports, relocations, unwind and truncated bounds");
+    puts("PASS NSO segments, LZ4 variants, symbols/imports, RELA and RELR relocations, unwind and truncated bounds");
 }
 
 static unsigned nibble(char c) { return c <= '9' ? (unsigned)(c - '0') : (unsigned)(c - 'a' + 10); }
