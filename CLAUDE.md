@@ -1,7 +1,7 @@
 # ScarletNX (Linux fork)
 
 A Linux-first fork of SwitchRecomp by MZ Labs, a static recompiler for Switch games: ARM64 code is translated to C
-and compiled into `<Game>_code.so`, and the runtime in `runtime/` emulates the OS (kernel, IPC, services) and the GPU
+and compiled into `<Game>_code.so`, and the runtime in `src/nx/` emulates the OS (kernel, IPC, services) and the GPU
 (Maxwell command buffers and shaders, drawn with Vulkan). Catherine: Full Body (USA release, 0100BF00112C0000, with
 its v2.0 update) is the game every change is checked against. Until 2026-10-11 it was the Asian release
 (0100BC4010896000), so earlier game addresses in Git history refer to that release. `README.md` has
@@ -58,6 +58,7 @@ file holds the rules sessions get wrong and points to the skills that carry the 
 | Recompile a game | `build/default/scarletnx -r work/Game Game` |
 | Run with scripted input and a screenshot | `cd games && ./Catherine --seconds=60 --shot=/path/out --script=ms:hexbuttons,...` |
 | Name addresses / disassemble game code | `tools/symbols.py work/Catherine ADDR...` / `tools/disasm.py work/Catherine FUNC` |
+| Run the tests | `ctest` in `build/default` (`ctest -R swipc` for the IPC generator) |
 | Format / check | `scripts/format.sh` / `scripts/format.sh --check` |
 
 Clang is the only compiler: the configure stops on any other; the recompiler builds game code with LLVM (required) or
@@ -79,7 +80,8 @@ silently. Bumping `SNX_ABI` makes the runtime refuse every module built before i
 | C90 host driver (`src/nx/runtime/driver/`) | `driver.c` (dispatch), `extract.c` (XCI/NSP), `recompile.c` (AOT workflow/data), `toolchain.c` (runtime deploy build, shader prebuild); `src/nx/loader/loader.c` (NSO/NRO, metadata), `src/common/cpu/recompiler/codegen.c` (functions, and their C for the interpreter and gnuabi) + `src/common/cpu/aarch64/a64.c` + `a64_templates.inc` (the instructions' C), `src/common/utilities/common.c` (host APIs); `--backend=llvm` (default): `src/common/cpu/recompiler/llvm/` (IR emitters, ELF/COFF linkers, `rtlib.c`) + `src/nx/loader/module_llvm.c`; `--backend=gcc` (optional, DEC Alpha EV67): `src/common/cpu/recompiler/gccjit/` + `src/nx/loader/module_gccjit.c` |
 | Generated-code ABI | `src/common/cpu/aarch64/`: `cpu.h` (with `SNX_ABI`), `cpu_helpers.c` (compiled into each game module, with the topic files it includes from `helpers/`: `fp.c`, `integer.c`, `simd.c`, `crypto.c`, `simd_mem.c`) |
 | Startup | `src/nx/runtime/`: `main.c` (startup, loading the game module), `options.c` (the .ini), `clock.c` (guest time), `rtapi.c` (what the game module calls), `crash.c`, `present.c` (vi's CPU-side present), `loader.c`, `entry.c`, `startup.c` (switches parsed before loading), `gdbstub.c` |
-| Kernel and memory | `src/nx/hle/kernel/`: `kernel.c` (handles, waits, events), `thread.c` (threads, the per-core lock), `sync.c` (mutexes, condition variables, address arbitration, WaitSynchronization), `debug.c` (backtraces, dumps), `ipc.c` (helpers `in32`, `out32`, `buf_in`, `buf_out`, `out_obj`...); `src/nx/hle/svc/`: `svc.c` (the SVC dispatch), `svc_mem.c` (memory SVCs, GetInfo); `src/nx/memory/mem.c` |
+| Kernel and memory | `src/nx/hle/kernel/`: `kernel.c` (handles, waits, events), `thread.c` (threads, the per-core lock), `sync.c` (mutexes, condition variables, address arbitration, WaitSynchronization), `debug.c` (backtraces, dumps), `ipc.c` (HIPC/CMIF parsing and replies, sessions, domains, the service registry); `src/nx/hle/svc/`: `svc.c` (the SVC dispatch), `svc_mem.c` (memory SVCs, GetInfo); `src/nx/memory/mem.c` |
+| IPC interfaces | Every service interface is declared in a `.swipc` file beside its C file (SwIPC's language, `docs/IPC.md`). `tools/swipc/swipc.c` (C90) generates the dispatchers into the build folder (`snx_swipc` in `cmake/swipc.cmake`, the list in `src/nx/CMakeLists.txt`). A service's C file includes its generated `.swipc.inc` and defines one static handler per command that isn't a `@stub`, `nn_ns_IFoo_Command(SvcObj* self, args..., outs...)`. A new command goes in the `.swipc` file first |
 | Services | `src/nx/hle/services/`: one file per service family (`sm.c`, `am.c`, `set.c`, `time.c`, `acc.c`, `audio.c` (hwopus decodes with FFmpeg), `misc.c` for the small ones, `services.c` registers them), `audren.c` (the audio renderer's update), `pl.c` (shared fonts), `hid.c`, `vi.c`, `ldr.c`, `network/` (bsd, nifm, dns), `nvdrv.c` (nvhost devices, syncpoints); `src/nx/hle/filesystem/` (`fs.c`, `fs_tree.c`) |
 | GPU | `src/nx/gpu/`: `gpu.c` (GPFIFO, the GPU thread), `maxwell/` (`engines.c` 3D engine methods, `mme.c` macros, `compute.c`, `fermi2d.c`, `dma.c`, `maxwell3d.c`, `write_pages.c`: the last GPU-side write to each page), `renderer.h` (the `Renderer` table for Vulkan, `g_renderer`), `renderer.c` (shared renderer state), `shader/` (Maxwell to SPIR-V: `shader.c` handles program hashing and flow, `decode.c` the instruction table, `spirv_translate.c` and `spirv_compute.c` emit stages through `spirv_emit.c`, `corpus.c` records shaders), `texture/` (`astc.c` CPU reference for tests, `etc2.c`, `depth.c`: packed depth/stencil texels), `nvn_trace.c` (`SNX_NVN_TRACE`: the NVN functions a game resolves and calls), `nvn_control.c` and `nvn_command_gap.c` (decoders of NVN's macro calls and Maxwell methods' write effects, built into their tests; `docs/NVN_HLE.md`) |
 | Vulkan renderer | `src/nx/gpu/vk/`: `vk.h` (lists the parts), `device.c` (instance, device, queues, swapchain, VMA), `cmd.c` (frames in flight, staging), `surface.c` and `format.c` (render targets, formats), `texture.c` (textures, samplers), `astc.c` (ASTC compute uploads), `buffer.c` (guest memory as buffers), `pipeline.c` (shader modules, pipelines), `render.c` (rendering passes, clears, draws), `compute.c` (compute on the compute queue, results landing in guest memory), `renderer.c` (its side of the renderer interface, presenting), `vma.cpp` (VMA's implementation); Vulkan-Headers, volk and VMA are CPM packages (`cmake/dependencies.cmake`) |
@@ -90,7 +92,7 @@ silently. Bumping `SNX_ABI` makes the runtime refuse every module built before i
 The NX runtime components are CMake object libraries in `src/nx/CMakeLists.txt`: `core`, `kernel`, `hle`, `video`,
 `gpu`, `platform`, `shader` and `vk`. Game modules compile the ABI helpers separately. Includes are written
 from `src/nx/` (`#include "gpu/vk/vk.h"`). A function or global that another file uses is
-declared once, in the header next to the file that defines it (`kernel/kernel.c` and `kernel/kernel.h`), and
+declared once, in the header next to the file that defines it (`hle/kernel/kernel.c` and `hle/kernel/kernel.h`), and
 everything else is static. The build enforces it: `-Werror=missing-prototypes` and `missing-variable-declarations`.
 
 ## Skills and agents
@@ -100,6 +102,7 @@ Skills in `.claude/skills/`:
 - `snx-run`: running the game unattended: scripted input, screenshots, logs, repeat runs for intermittent bugs.
 - `snx-crash`: from a crash report or `svcBreak` to the mechanism, with the symbol and disassembly tools.
 - `snx-service`: implementing or fixing an HLE service against what the game's SDK code expects.
+- `snx-code-quality`: RFC #142's C rules (strict ANSI C, no redundant state, one allocation per owner) for C in `src/`.
 - `import-upstream`: bringing a new MZ Labs release into `main`.
 - `record-lesson`: where a lesson goes so the next session finds it.
 - `code-audit`: the multi-pass audit-and-fix loop, with the `snx-*-reviewer` agents in `.claude/agents/review/`.
@@ -137,7 +140,7 @@ comments and developer docs under `.claude/` are out of scope.
 ## Lessons that cost a session
 
 - NVIDIA's stream library sizes its per-syncpoint tables at 128 (`NvRmChannelNumSyncPoints` is a stub that fails).
-  Every syncpoint comes from `syncpt_alloc()` in `hle/nvdrv.c`.
+  Every syncpoint comes from `syncpt_alloc()` in `hle/services/nvdrv.c`.
 - The SDK asserts (`svcBreak`) when a service answers in a way real hardware never does, like an npad reporting two
   styles. Look for the assert's condition in the caller before changing anything else.
 - Services that "do nothing" can still stall a game: CRI's movie player waits for released audio buffers.

@@ -18,10 +18,7 @@
 #endif
 
 /* Including the production file exposes its service constructors without test hooks in the runtime. */
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunused-parameter"
 #include "hle/filesystem/fs.c"
-#pragma clang diagnostic pop
 
 u8* g_mem;
 char g_datadir[1024], g_exename[256], g_exedir[1024];
@@ -184,18 +181,27 @@ void svcobj_unref(SvcObj* obj) {
     free(obj);
     test_objects--;
 }
-void out_obj(IpcCtx* c, SvcObj* obj) {
-    CHECK(c->nout_objs < 8 && obj != NULL);
+void out_obj(IpcCtx* c, SvcObj* obj) { /* NULL from a failed command, which ipc.c drops */
+    CHECK(c->nout_objs < 8);
     c->out_objs[c->nout_objs++] = obj;
 }
 void svc_register(const char* name, SvcCtor ctor) {
     (void)name;
     (void)ctor;
 }
-SvcObj* svc_generic(const char* name) { return svcobj_new(name, stub_ok, 0); }
+/* sf's InvalidCmifRequest, for a request that doesn't send what its command declares */
+int ipc_bad_request(SvcObj* o, IpcCtx* c) {
+    (void)o, (void)c;
+    return RC(11, 420);
+}
+/* sf's InvalidNumInObjects, for a domain request with another number of objects */
+int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
+    (void)o, (void)c;
+    return RC(10, 235);
+}
 int stub_ok(SvcObj* obj, IpcCtx* c) {
     fprintf(stderr, "Unexpected stub: %s command %u\n", obj->name, c->cmd);
-    test_fail("requested a implemented command", __LINE__);
+    test_fail("requested a command the service does not declare", __LINE__);
     return -1;
 }
 void ipc_out_overflow(IpcCtx* c) {
@@ -203,27 +209,9 @@ void ipc_out_overflow(IpcCtx* c) {
     test_fail("IPC output overflow", __LINE__);
 }
 
-static int test_buffer(IpcBuf* bufs, int count, int idx, u64* addr, u64* size) {
-    *addr = *size = 0;
-    if (idx < 0 || idx >= count) return 0;
-    *addr = bufs[idx].addr;
-    *size = bufs[idx].size;
-    CHECK(*addr <= 0x10000 && *size <= 0x10000 - *addr);
-    return 1;
-}
-int buf_xs(IpcCtx* c, int idx, u64* addr, u64* size) { return test_buffer(c->x, c->nx, idx, addr, size); }
-int buf_in(IpcCtx* c, int idx, u64* addr, u64* size) {
-    if (idx < c->na && c->a[idx].addr && c->a[idx].size) return test_buffer(c->a, c->na, idx, addr, size);
-    return test_buffer(c->x, c->nx, idx, addr, size);
-}
-int buf_out(IpcCtx* c, int idx, u64* addr, u64* size) {
-    if (idx < c->nb) return test_buffer(c->b, c->nb, idx, addr, size);
-    return test_buffer(c->c, c->nc, idx, addr, size);
-}
-
 typedef struct {
     IpcCtx c;
-    u8 raw[64];
+    u8 raw[0x80];
 } Request;
 
 static void request(Request* r, u32 cmd) {
@@ -254,8 +242,14 @@ static u64 output64(Request* r) {
     memcpy(&value, r->c.out, sizeof value);
     return value;
 }
+/* the dispatcher, then what ipc.c does with a failed request's reply: no data, handles or objects */
 static void dispatch(SvcObj* obj, Request* r, u32 expected) {
     u32 result = (u32)obj->dispatch(obj, &r->c);
+    if (result) {
+        for (int i = 0; i < r->c.nout_objs; i++) svcobj_unref(r->c.out_objs[i]);
+        r->c.nout_copy = r->c.nout_move = r->c.nout_objs = 0;
+        r->c.out_size = 0;
+    }
     if (result != expected)
         fprintf(stderr, "%s command %u returned %u, expected %u\n", obj->name, r->c.cmd, result, expected);
     CHECK(result == expected);
@@ -415,9 +409,10 @@ static void test_file_contracts(SvcObj* fs) {
                 argument64(&r, 8, cases[i].off);
                 argument64(&r, 16, cases[i].size);
                 output_buffer(&r, 16);
-                if (cmd) {
+                if (cmd) { /* Write sends its data in A, and no B */
                     r.c.a[0] = (IpcBuf){0x3000, cases[i].capacity, 0};
                     r.c.na = 1;
+                    r.c.nb = 0;
                 } else
                     r.c.b[0].size = cases[i].capacity;
                 dispatch(target, &r, cases[i].result);
@@ -601,9 +596,10 @@ static void test_storage_contracts(SvcObj* storage, u64 size) {
             argument64(&r, 0, cases[i].off);
             argument64(&r, 8, cases[i].size);
             output_buffer(&r, 16);
-            if (cmd) {
+            if (cmd) { /* Write sends its data in A, and no B */
                 r.c.a[0] = (IpcBuf){0x3000, cases[i].capacity, 0};
                 r.c.na = 1;
+                r.c.nb = 0;
             } else
                 r.c.b[0].size = cases[i].capacity;
             dispatch(storage, &r, cmd ? cases[i].write_result : cases[i].read_result);
@@ -651,8 +647,11 @@ static void test_virtual_services(SvcObj* fs, SvcObj* proxy) {
     u64 header_size;
     memcpy(&header_size, GP(0x5000), sizeof header_size);
     CHECK(header_size == 0x50);
-    request(&r, 1);
-    CHECK(archive->dispatch(archive, &r.c) != 0);
+    request(&r, 1); /* Write (offset 0, size at 8) of one byte from its A buffer: the archive's backend refuses it */
+    argument64(&r, 8, 1);
+    r.c.a[0] = (IpcBuf){0x3000, 1, 0};
+    r.c.na = 1;
+    dispatch(archive, &r, RC(2, 6300));
     svcobj_unref(archive);
     puts("PASS HLE readonly virtual files and synthetic system archive");
 }
@@ -748,6 +747,95 @@ static void test_raw_romfs(SvcObj* proxy) {
     puts("PASS raw RomFS reads and cached image size");
 }
 
+/* OpenSaveDataFileSystem (51): the SaveDataSpaceId (u8) at 0 and the 0x40 byte SaveDataAttribute at 8, whose
+   SaveDataType is at 0x20 in it, 0x28 in the request. The other bytes are filled with types that would pick another
+   folder if they were read instead */
+static SvcObj* open_save_data(SvcObj* proxy, u32 command, u8 type) {
+    Request r;
+    request(&r, command);
+    r.raw[0] = 1;                         /* User */
+    memset(r.raw + 8, 4, 0x20);           /* program id, uid and system save data id: Temporary */
+    memset(r.raw + 0x29, 2, 0x48 - 0x29); /* rank, index and reserved: Bcat */
+    r.raw[0x28] = type;
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1 && r.c.out_size == 0);
+    return r.c.out_objs[0];
+}
+static int tree_has(const char* path) {
+    FsNode* node;
+    pm_lock(&fsp.tree.lock);
+    int found = !fs_tree_lookup(&fsp.tree, NULL, path, &node);
+    pm_unlock(&fsp.tree.lock);
+    return found;
+}
+static void test_save_data(SvcObj* proxy) {
+    /* each SaveDataType has its folder: System (0), Account (1), Bcat (2), Device (3) */
+    SvcObj* system = open_save_data(proxy, 51, 0);
+    CHECK(tree_has("save/system") && !tree_has("save/user"));
+    SvcObj* bcat = open_save_data(proxy, 51, 2);
+    SvcObj* device = open_save_data(proxy, 51, 3);
+    CHECK(tree_has("save/bcat") && tree_has("save/device") && !tree_has("save/temp"));
+    fs_command(system, 0, "/system.bin", 4, 0);
+    fs_command(bcat, 7, "/system.bin", 0, FS_NOTFOUND);
+    fs_command(device, 7, "/system.bin", 0, FS_NOTFOUND);
+    CHECK(tree_has("save/system/system.bin"));
+    fs_command(system, 1, "/system.bin", 0, 0);
+    svcobj_unref(bcat);
+    svcobj_unref(device);
+
+    /* an Account save with save/system empty: nothing to move, save/user is made beside it */
+    SvcObj* user = open_save_data(proxy, 51, 1);
+    CHECK(tree_has("save/user") && tree_has("save/system"));
+    svcobj_unref(user);
+    pm_lock(&fsp.tree.lock);
+    CHECK(!fs_tree_remove(&fsp.tree, NULL, "save/user", 1, 1, 0));
+    pm_unlock(&fsp.tree.lock);
+    /* saves an earlier version put in save/system (it read the type from a byte that is always 0) move to save/user
+       the first time an Account save is opened, if there is no save/user yet */
+    fs_command(system, 0, "/slot.bin", 4, 0);
+    svcobj_unref(system);
+    user = open_save_data(proxy, 51, 1);
+    CHECK(tree_has("save/user/slot.bin") && !tree_has("save/system"));
+    fs_command(user, 7, "/slot.bin", 0, 0);
+    svcobj_unref(user);
+    /* save/system starts again empty, and save/user, which exists now, keeps what it has */
+    system = open_save_data(proxy, 51, 0);
+    fs_command(system, 7, "/slot.bin", 0, FS_NOTFOUND);
+    fs_command(system, 0, "/other.bin", 4, 0);
+    user = open_save_data(proxy, 51, 1);
+    fs_command(user, 7, "/slot.bin", 0, 0);
+    fs_command(user, 7, "/other.bin", 0, FS_NOTFOUND);
+    CHECK(tree_has("save/system/other.bin"));
+    svcobj_unref(user);
+    /* a type past the known ones is a System save, and so is one opened by its system save data id (52) */
+    SvcObj* unknown = open_save_data(proxy, 51, 0x7F);
+    fs_command(unknown, 7, "/other.bin", 0, 0);
+    svcobj_unref(unknown);
+    SvcObj* by_id = open_save_data(proxy, 52, 0);
+    fs_command(by_id, 7, "/other.bin", 0, 0);
+    svcobj_unref(by_id);
+    fs_command(system, 1, "/other.bin", 0, 0);
+    svcobj_unref(system);
+
+    /* IsSdCardAccessible (631): the card OpenSdCardFileSystem serves is always in */
+    Request r;
+    request(&r, 631);
+    dispatch(proxy, &r, 0);
+    u32 v;
+    CHECK(r.c.out_size == 4);
+    memcpy(&v, r.c.out, 4);
+    CHECK(v == 1);
+    /* GetProgramIndexForAccessLog (1011): program 0 of 1 */
+    request(&r, 1011);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.out_size == 8);
+    memcpy(&v, r.c.out, 4);
+    CHECK(v == 0);
+    memcpy(&v, r.c.out + 4, 4);
+    CHECK(v == 1);
+    puts("PASS SaveDataType folders, the save/system migration, IsSdCardAccessible and the access log's program index");
+}
+
 static void cleanup_service(void) {
     pm_lock(&fsp.tree.lock);
     for (unsigned i = 0; i < NOPEN; i++)
@@ -808,6 +896,7 @@ int main(int argc, char** argv) {
     test_index_and_paths(fs);
     test_virtual_services(fs, proxy);
     test_extracted_romfs(proxy);
+    test_save_data(proxy);
     svcobj_unref(fs);
     svcobj_unref(proxy);
     CHECK(test_objects == 0);

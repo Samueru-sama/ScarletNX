@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# swipc refuses: two process id slots
+interface test::I {
+    [0] A(pid, aruid a);
+}

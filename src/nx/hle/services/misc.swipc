@@ -1,0 +1,357 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The smaller services (misc.c): apm, lm, pctl, friend, ns, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc,
+# irs, mii, ldn, ectx, spl, btm, audin. Names and argument types from Switchbrew, libnx and the SDK's own symbols
+
+# ================================================================ apm
+type nn::apm::PerformanceMode = i32;
+type nn::apm::PerformanceConfiguration = u32;
+
+# apm:p is nn::apm::IManagerPrivileged on the console, with the same command 0
+interface nn::apm::IManager is apm, apm:p, apm:am {
+    [0] OpenSession() -> object<nn::apm::ISession> session;
+    [1] GetPerformanceMode() -> nn::apm::PerformanceMode mode;
+    @stub [6] IsCpuOverclockEnabled() -> b8 enabled;
+}
+@fallback(quiet_ok)
+interface nn::apm::ISession {
+    @stub [0] SetPerformanceConfiguration(nn::apm::PerformanceMode mode, nn::apm::PerformanceConfiguration config);
+    [1] GetPerformanceConfiguration(nn::apm::PerformanceMode mode) -> nn::apm::PerformanceConfiguration config;
+}
+
+# ================================================================ lm
+@fallback(quiet_ok)
+interface nn::lm::ILogService is lm {
+    [0] OpenLogger(pid) -> object<nn::lm::ILogger> logger;
+}
+@fallback(quiet_ok)
+interface nn::lm::ILogger {
+    [0] Log(buffer<u8, 0x21> message);
+}
+
+# ================================================================ pctl
+@fallback(quiet_ok)
+interface nn::pctl::detail::ipc::IParentalControlServiceFactory is pctl, pctl:a, pctl:s, pctl:r {
+    [0] CreateService(pid) -> object<nn::pctl::detail::ipc::IParentalControlService> service;
+    [1] CreateServiceWithoutInitialize(pid) -> object<nn::pctl::detail::ipc::IParentalControlService> service;
+}
+interface nn::pctl::detail::ipc::IParentalControlService {
+    @stub [1] Initialize();
+    @stub [1001] CheckFreeCommunicationPermission();
+    @stub [1002] ConfirmLaunchApplicationPermission(nn::ncm::ApplicationId application_id,
+                                                    array<i8, 9> restriction_bitset, b8 nacp_flag);
+    @stub [1004] ConfirmSnsPostPermission();
+    @stub [1031] IsRestrictionEnabled() -> b8 enabled;
+    @stub [1032] GetSafetyLevel() -> i32 safety_level;
+    @stub [1039] GetFreeCommunicationApplicationListCount() -> i32 count;
+    [1065] IsStereoVisionPermitted() -> b8 permitted;
+    @stub [1403] IsPairingActive() -> b8 active;
+    [1432] GetSynchronizationEvent() -> handle<copy, event> event;
+    @stub [1453] IsPlayTimerEnabled() -> b8 enabled;
+    [1457] GetPlayTimerEventToRequestSuspension() -> handle<copy, event> event;
+    [1473] GetUnlinkedEvent() -> handle<copy, event> event;
+}
+
+# ================================================================ friend
+type nn::friends::detail::ipc::SizedFriendFilter = bytes<0x10, 8>;
+type nn::friends::detail::ipc::SizedNotificationInfo = bytes<0x10, 8>;
+type nn::friends::detail::FriendImpl = bytes<0x200>;
+
+@fallback(quiet_ok)
+interface nn::friends::detail::ipc::IServiceCreator is friend:u, friend:v, friend:a {
+    [0] CreateFriendService() -> object<nn::friends::detail::ipc::IFriendService> service;
+    [1] CreateNotificationService(nn::account::Uid uid)
+        -> object<nn::friends::detail::ipc::INotificationService> service;
+    [2] CreateDaemonSuspendSessionService()
+        -> object<nn::friends::detail::ipc::IDaemonSuspendSessionService> service;
+}
+# no friends, and no network to fetch any
+interface nn::friends::detail::ipc::IFriendService {
+    [0] GetCompletionEvent() -> handle<copy, event> event;
+    @stub [10100] GetFriendListIds(i32 offset, nn::account::Uid uid, nn::friends::detail::ipc::SizedFriendFilter filter,
+                                   pid, array<nn::account::NetworkServiceAccountId, 0xa> ids) -> i32 count;
+    @stub [10101] GetFriendList(i32 offset, nn::account::Uid uid, nn::friends::detail::ipc::SizedFriendFilter filter,
+                                pid, array<nn::friends::detail::FriendImpl, 6> friends) -> i32 count;
+    @stub [10102] UpdateFriendInfo(nn::account::Uid uid, pid, array<nn::account::NetworkServiceAccountId, 9> ids,
+                                   array<nn::friends::detail::FriendImpl, 6> friends);
+}
+interface nn::friends::detail::ipc::INotificationService {
+    [0] GetEvent() -> handle<copy, event> event;
+    [2] Pop() -> nn::friends::detail::ipc::SizedNotificationInfo info;
+}
+@fallback(quiet_ok)
+interface nn::friends::detail::ipc::IDaemonSuspendSessionService {
+}
+
+# ================================================================ ns
+interface nn::ns::detail::IServiceGetterInterface is ns:am2, ns:ec, ns:rid, ns:rt, ns:web, ns:ro {
+    [7988] GetDynamicRightsInterface() -> object<nn::ns::detail::IDynamicRightsInterface> iface;
+    [7989] GetReadOnlyApplicationControlDataInterface()
+        -> object<nn::ns::detail::IReadOnlyApplicationControlDataInterface> iface;
+    [7991] GetReadOnlyApplicationRecordInterface() -> object<nn::ns::detail::IReadOnlyApplicationRecordInterface> iface;
+    [7992] GetECommerceInterface() -> object<nn::ns::detail::IECommerceInterface> iface;
+    [7993] GetApplicationVersionInterface() -> object<nn::ns::detail::IApplicationVersionInterface> iface;
+    [7994] GetFactoryResetInterface() -> object<nn::ns::detail::IFactoryResetInterface> iface;
+    [7995] GetAccountProxyInterface() -> object<nn::ns::detail::IAccountProxyInterface> iface;
+    [7996] GetApplicationManagerInterface() -> object<nn::ns::detail::IApplicationManagerInterface> iface;
+    [7997] GetDownloadTaskInterface() -> object<nn::ns::detail::IDownloadTaskInterface> iface;
+    [7998] GetContentManagementInterface() -> object<nn::ns::detail::IContentManagementInterface> iface;
+    [7999] GetDocumentInterface() -> object<nn::ns::detail::IDocumentInterface> iface;
+}
+# what ns hands out: each command succeeds
+@fallback(quiet_ok) interface nn::ns::detail::IDynamicRightsInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IReadOnlyApplicationControlDataInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IReadOnlyApplicationRecordInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IECommerceInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IApplicationVersionInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IFactoryResetInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IAccountProxyInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IApplicationManagerInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IDownloadTaskInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IContentManagementInterface {}
+@fallback(quiet_ok) interface nn::ns::detail::IDocumentInterface {}
+
+# ================================================================ ssl
+type nn::ssl::sf::SslVersion = u32;
+
+@fallback(quiet_ok)
+interface nn::ssl::sf::ISslService is ssl {
+    [0] CreateContext(nn::ssl::sf::SslVersion ssl_version, pid) -> object<nn::ssl::sf::ISslContext> context;
+}
+@fallback(quiet_ok)
+interface nn::ssl::sf::ISslContext {
+}
+
+# ================================================================ prepo, caps, ectx: nothing served
+interface nn::prepo::detail::ipc::IPrepoService is prepo:u, prepo:a, prepo:a2 {
+}
+# caps:u, caps:a, caps:su and caps:ss are four interfaces on the console
+interface nn::capsrv::sf::IAlbumApplicationService is caps:u, caps:a, caps:su, caps:ss {
+}
+interface nn::err::context::IWriterForApplication is ectx:aw {
+    [0] CreateContextRegistrar() -> object<nn::err::context::IContextRegistrar> registrar;
+}
+@fallback(quiet_ok) interface nn::err::context::IContextRegistrar {}
+
+# ================================================================ psm
+type nn::psm::ChargerType = u32;
+
+interface nn::psm::IPsmServer is psm {
+    [0] GetBatteryChargePercentage() -> u32 percentage;
+    [1] GetChargerType() -> nn::psm::ChargerType charger_type;
+    @stub [4] IsBatteryChargingEnabled() -> b8 enabled;
+    @stub [5] AcquireControllerPowerSupply();
+    [7] OpenSession() -> object<nn::psm::IPsmSession> session;
+}
+interface nn::psm::IPsmSession {
+    [0] BindStateChangeEvent() -> handle<copy, event> event;
+}
+
+# ================================================================ fatal:u
+type nn::fatalsrv::CpuContext = bytes<0x248, 8>;
+
+# a game that calls it is done
+interface nn::fatalsrv::IService is fatal:u {
+    [0] ThrowFatal(u32 result, pid);
+    [1] ThrowFatalWithPolicy(u32 result, u32 policy, pid);
+    [2] ThrowFatalWithCpuContext(u32 result, u32 policy, pid, buffer<nn::fatalsrv::CpuContext, 0x15> context);
+}
+
+# ================================================================ csrng, spl
+interface nn::spl::detail::IRandomInterface is csrng {
+    [0] GenerateRandomBytes(buffer<u8, 6> data);
+}
+# spl:mig is nn::spl::detail::ICryptoInterface on the console, with the same ids
+interface nn::spl::detail::IGeneralInterface is spl:, spl:mig {
+    @stub [0] GetConfig(u32 config_item) -> u64 value;
+    [7] GenerateRandomBytes(buffer<u8, 0xa> data);
+}
+
+# ================================================================ mm:u
+type nn::mmnv::Module = u32;
+type nn::mmnv::Priority = u32;
+type nn::mmnv::Setting = u32;
+
+# multimedia clock requests. The old forms name the module instead of a request id
+interface nn::mmnv::IRequest is mm:u {
+    [0] InitializeOld(nn::mmnv::Module module, nn::mmnv::Priority priority, u32 event_clear_mode);
+    [1] FinalizeOld(nn::mmnv::Module module);
+    [2] SetAndWaitOld(nn::mmnv::Module module, nn::mmnv::Setting min, nn::mmnv::Setting max);
+    [3] GetOld(nn::mmnv::Module module) -> nn::mmnv::Setting current;
+    [4] Initialize(nn::mmnv::Module module, nn::mmnv::Priority priority, u32 event_clear_mode) -> u32 request_id;
+    [5] Finalize(u32 request_id);
+    [6] SetAndWait(u32 request_id, nn::mmnv::Setting min, nn::mmnv::Setting max);
+    [7] Get(u32 request_id) -> nn::mmnv::Setting current;
+}
+
+# ================================================================ nfp:user, nfc:user
+type nn::nfc::DeviceHandle = bytes<8, 4>;
+
+# nfc:user is nn::nfc::detail::IUserManager on the console. Its IUser shares only Initialize (0) and Finalize (1) with
+# nfp's, and its other commands (2, 3, 400 and up) answer success from stub_ok
+@fallback(quiet_ok)
+interface nn::nfp::detail::IUserManager is nfp:user, nfc:user {
+    [0] CreateUserInterface() -> object<nn::nfp::detail::IUser> user;
+}
+interface nn::nfp::detail::IUser {
+    @stub [1] Finalize();
+    [17] AttachActivateEvent(nn::nfc::DeviceHandle device_handle) -> handle<copy, event> event;
+    [18] AttachDeactivateEvent(nn::nfc::DeviceHandle device_handle) -> handle<copy, event> event;
+    [19] GetState() -> u32 state;
+}
+
+# ================================================================ bcat
+# an offline console: sync done at once, the cache empty
+type nn::bcat::DirectoryName = bytes<0x20>;
+type nn::bcat::FileName = bytes<0x20>;
+type nn::bcat::Digest = bytes<0x10>;
+type nn::bcat::DeliveryCacheDirectoryEntry = struct {
+    nn::bcat::FileName name;
+    i64 size;
+    nn::bcat::Digest digest;
+};
+type nn::bcat::detail::DeliveryCacheProgressImpl = bytes<0x200, 8>;
+
+interface nn::bcat::detail::ipc::IServiceCreator is bcat:u, bcat:a {
+    [0] CreateBcatService(pid) -> object<nn::bcat::detail::ipc::IBcatService> service;
+    [1] CreateDeliveryCacheStorageService(pid) -> object<nn::bcat::detail::ipc::IDeliveryCacheStorageService> service;
+    [2] CreateDeliveryCacheStorageServiceWithApplicationId(nn::ApplicationId application_id)
+        -> object<nn::bcat::detail::ipc::IDeliveryCacheStorageService> service;
+}
+interface nn::bcat::detail::ipc::IBcatService {
+    [10100] RequestSyncDeliveryCache() -> object<nn::bcat::detail::ipc::IDeliveryCacheProgressService> progress;
+    [10101] RequestSyncDeliveryCacheWithDirectoryName(nn::bcat::DirectoryName directory_name)
+        -> object<nn::bcat::detail::ipc::IDeliveryCacheProgressService> progress;
+    [20100] RequestSyncDeliveryCacheWithApplicationId(nn::ApplicationId application_id, u32 unknown)
+        -> object<nn::bcat::detail::ipc::IDeliveryCacheProgressService> progress;
+    [20101] RequestSyncDeliveryCacheWithApplicationIdAndDirectoryName(nn::ApplicationId application_id, u32 unknown,
+                                                                      nn::bcat::DirectoryName directory_name)
+        -> object<nn::bcat::detail::ipc::IDeliveryCacheProgressService> progress;
+    [20300] GetDeliveryCacheStorageUpdateNotifier(nn::ApplicationId application_id)
+        -> object<nn::bcat::detail::ipc::INotifierService> notifier;
+    [20301] RequestSuspendDeliveryTask(nn::ApplicationId application_id)
+        -> object<nn::bcat::detail::ipc::IDeliveryTaskSuspensionService> suspension;
+}
+interface nn::bcat::detail::ipc::IDeliveryCacheProgressService {
+    [0] GetEvent() -> handle<copy, event> event;
+    [1] GetImpl(buffer<nn::bcat::detail::DeliveryCacheProgressImpl, 0x1a> impl);
+}
+interface nn::bcat::detail::ipc::IDeliveryCacheStorageService {
+    [0] CreateFileService() -> object<nn::bcat::detail::ipc::IDeliveryCacheFileService> file;
+    [1] CreateDirectoryService() -> object<nn::bcat::detail::ipc::IDeliveryCacheDirectoryService> directory;
+    @stub [10] EnumerateDeliveryCacheDirectory(array<nn::bcat::DirectoryName, 6> directories) -> i32 count;
+}
+interface nn::bcat::detail::ipc::IDeliveryCacheFileService {
+    [0] Open(nn::bcat::DirectoryName directory_name, nn::bcat::FileName file_name);
+    @stub [1] Read(i64 offset, buffer<u8, 6> data) -> u64 size;
+    @stub [2] GetSize() -> i64 size;
+    @stub [3] GetDigest() -> nn::bcat::Digest digest;
+}
+interface nn::bcat::detail::ipc::IDeliveryCacheDirectoryService {
+    @stub [0] Open(nn::bcat::DirectoryName directory_name);
+    @stub [1] Read(array<nn::bcat::DeliveryCacheDirectoryEntry, 6> entries) -> i32 count;
+    @stub [2] GetCount() -> i32 count;
+}
+# the storage is never updated
+interface nn::bcat::detail::ipc::INotifierService {
+    [0] GetEvent() -> handle<copy, event> event;
+}
+# holding it suspends the delivery task, which never runs here
+interface nn::bcat::detail::ipc::IDeliveryTaskSuspensionService {
+}
+
+# ================================================================ aoc:u: no add-on content
+type nn::ec::srv::detail::PurchasedProductInfo = bytes<0x80, 8>;
+
+interface nn::aocsrv::detail::IAddOnContentManager is aoc:u {
+    @stub [0] CountAddOnContentByApplicationId(nn::ncm::ApplicationId application_id) -> i32 count;
+    @stub [1] ListAddOnContentByApplicationId(i32 offset, i32 count, nn::ncm::ApplicationId application_id,
+                                              array<i32, 6> indices) -> i32 out_count;
+    @stub [2] CountAddOnContent(pid) -> i32 count;
+    @stub [3] ListAddOnContent(i32 offset, i32 count, pid, array<i32, 6> indices) -> i32 out_count;
+    [4] GetAddOnContentBaseIdByApplicationId(nn::ncm::ApplicationId application_id) -> u64 base_id;
+    [5] GetAddOnContentBaseId(pid) -> u64 base_id;
+    @stub [6] PrepareAddOnContentByApplicationId(i32 index, nn::ncm::ApplicationId application_id);
+    @stub [7] PrepareAddOnContent(i32 index, pid);
+    [8] GetAddOnContentListChangedEvent() -> handle<copy, event> event;
+    # 9 and 11 to 50: answered with nothing (as Eden does), declared as the SDK's client sends them
+    @stub [9] GetAddOnContentLostErrorCode(array<i32, 5> indices, pid) -> bytes<8, 4> error_code;
+    [10] GetAddOnContentListChangedEventWithProcessId(pid) -> handle<copy, event> event;
+    @stub [11] NotifyMountAddOnContent(nn::ncm::DataId data_id, pid);
+    @stub [12] NotifyUnmountAddOnContent(nn::ncm::DataId data_id, pid);
+    @stub [13] IsAddOnContentMountedForDebug(nn::ncm::DataId data_id, pid) -> b8 mounted;
+    @stub [50] CheckAddOnContentMountStatus(pid);
+    [100] CreateEcPurchasedEventManager() -> object<nn::ec::IPurchaseEventManager> manager;
+    [101] CreatePermanentEcPurchasedEventManager(pid) -> object<nn::ec::IPurchaseEventManager> manager;
+    [110] CreateContentsServiceManager() -> object<nn::ec::IContentsServiceManager> manager;
+    @stub [200] SetRequiredAddOnContentsOnContentsAvailabilityTransition(array<i32, 5> indices, pid);
+}
+# a token from the network, which an offline console can't get
+interface nn::ec::IContentsServiceManager {
+    [0] RequestContentsAuthorizationToken(bytes<0x41> nonce, pid, buffer<u8, 5> data)
+        -> (handle<copy, event> event, object<nn::ec::detail::IAsyncData> async);
+}
+# never made: the token request that gives it fails offline. The SDK's commands are 0 GetSize, 1 Get and 2 Cancel
+interface nn::ec::detail::IAsyncData {
+}
+interface nn::ec::IPurchaseEventManager {
+    @stub [0] SetDefaultDeliveryTarget(array<i32, 5> indices, pid);
+    @stub [1] SetDeliveryTarget(u64 unknown, array<i32, 5> indices);
+    [2] GetPurchasedEventReadableHandle() -> handle<copy, event> event;
+    [3] PopPurchasedProductInfo() -> nn::ec::srv::detail::PurchasedProductInfo info;
+    [4] PopPurchasedProductInfoWithUid(nn::account::Uid uid) -> nn::ec::srv::detail::PurchasedProductInfo info;
+}
+
+# ================================================================ irs
+type nn::irsensor::IrCameraHandle = bytes<4>;
+
+interface nn::irsensor::IIrSensorServer is irs {
+    @stub [303] DeactivateIrsensor(aruid aruid);
+    [304] GetIrsensorSharedMemoryHandle(aruid aruid) -> handle<copy, shared_memory> shared_memory;
+    @stub [311] GetNpadIrCameraHandle(u32 npad_id) -> nn::irsensor::IrCameraHandle handle;
+}
+
+# ================================================================ mii: an empty database
+type nn::mii::CharInfoElement = bytes<0x5c, 4>;
+
+@fallback(quiet_ok)
+interface nn::mii::detail::IStaticService is mii:e, mii:u {
+    [0] GetDatabaseService(i32 key_code) -> object<nn::mii::detail::IDatabaseService> database;
+}
+interface nn::mii::detail::IDatabaseService {
+    @stub [0] IsUpdated(i32 source_flag) -> b8 updated;
+    @stub [2] GetCount(i32 source_flag) -> i32 count;
+    @stub [3] Get(i32 source_flag, array<nn::mii::CharInfoElement, 6> elements) -> i32 count;
+}
+
+# ================================================================ ldn:u: local wireless. Opening an access point or a
+# station, scanning and connecting are not implemented and log
+interface nn::ldn::detail::IUserServiceCreator is ldn:u {
+    [0] CreateUserLocalCommunicationService() -> object<nn::ldn::detail::IUserLocalCommunicationService> service;
+}
+interface nn::ldn::detail::IUserLocalCommunicationService {
+    [0] GetState() -> u32 state;
+    [100] AttachStateChangeEvent() -> handle<copy, event> event;
+    [400] Initialize(pid);
+    [401] Finalize();
+    [402] InitializeWithVersion(i32 version, pid);
+}
+
+# ================================================================ btm:u: BLE is not emulated, its events never signal
+interface nn::btm::IBtmUser is btm:u {
+    [0] GetCore() -> object<nn::btm::IBtmUserCore> core;
+}
+interface nn::btm::IBtmUserCore {
+    [0] AcquireBleScanEvent() -> (b8 success, handle<copy, event> event);
+    [17] AcquireBleConnectionEvent() -> (b8 success, handle<copy, event> event);
+    [21] AcquireBlePairingEvent() -> (b8 success, handle<copy, event> event);
+    [26] AcquireBleServiceDiscoveryEvent() -> (b8 success, handle<copy, event> event);
+    [33] AcquireBleMtuConfigEvent() -> (b8 success, handle<copy, event> event);
+}
+
+# ================================================================ audin:u: no microphones
+interface nn::audio::detail::IAudioInManager is audin:u {
+    @stub [0] ListAudioIns(array<nn::audio::AudioDeviceName, 6> names) -> u32 count;
+    @stub [2] ListAudioInsAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
+    @stub [4] ListAudioInsAutoFiltered(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
+}

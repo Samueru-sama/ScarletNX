@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# two handles push the largest reply past the message
+interface test::I {
+    [0] Big() -> (bytes<0xd0> big, handle<copy, event> a, handle<copy, event> b);
+}

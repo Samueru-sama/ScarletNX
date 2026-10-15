@@ -2,10 +2,12 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* nvdrv: nvmap, nvhost-as-gpu, nvhost-ctrl, nvhost-ctrl-gpu, nvhost-gpu. Enough for NVN and deko3d. */
+/* nvdrv: nvmap, nvhost-as-gpu, nvhost-ctrl, nvhost-ctrl-gpu, nvhost-gpu, and nvhost-nvdec and nvhost-vic (host1x
+   channels, gpu/video/host1x.c). Enough for NVN and deko3d. */
 #include "hle/services/nvdrv.h"
 #include "gpu/gpu.h"
 #include "hle/kernel/ipc.h"
+#include "hle/services/nvdrv.swipc.inc"
 #include "hle/kernel/kernel.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
@@ -51,6 +53,10 @@ typedef struct {
        on first query and never signaled: nothing here raises them */
     KEvent* ev[4];
     void* h1x; /* DEV_NVDEC, DEV_VIC: the fd's host1x channel (host1x_open) */
+    /* the ioctls running on the fd. Close during one only marks it closed, and the last ioctl to leave releases it:
+       the entry and its channel stay while an ioctl uses them, and Open doesn't hand the fd out again meanwhile */
+    u32 users;
+    int closed;
 } NvFile;
 #define SYNCPT_N 128 /* the syncpoint ids syncpt_alloc hands out (see there) */
 /* nv_init sets the two fields that don't start at 0: an initializer would put the whole table in the binary */
@@ -347,14 +353,22 @@ void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* 
     gpu_call(fn, arg);
     pm_unlock(&nv.submit_lk);
 }
-/* a GPU channel's syncpoint, allocated on first use. Read once per ioctl: a close of the fd clears it */
+/* a GPU channel's syncpoint, allocated on first use. Two ioctls on the fd at once may both allocate: the one that
+   stores it first under nv.lock wins, the other gives its id back (there are 108 to hand out) */
 static u32 gpu_channel_syncpt(NvFile* f) {
-    if (f->syncpt) return f->syncpt;
-    u32 sp = syncpt_alloc();
-    pm_lock(&nv.sync_lk);
-    nv.syncpt_gpu[sp] = 1;
+    pm_lock(&nv.lock);
+    u32 sp = f->syncpt;
+    pm_unlock(&nv.lock);
+    if (sp) return sp;
+    u32 mine = syncpt_alloc();
+    pm_lock(&nv.sync_lk); /* a GPU channel's before any ioctl can submit on it */
+    nv.syncpt_gpu[mine] = 1;
     pm_unlock(&nv.sync_lk);
-    f->syncpt = sp;
+    pm_lock(&nv.lock);
+    if (!f->syncpt) f->syncpt = mine;
+    sp = f->syncpt;
+    pm_unlock(&nv.lock);
+    if (sp != mine) syncpt_free(mine); /* clears its syncpt_gpu too */
     return sp;
 }
 /* on the GPU thread, after the jobs queued on the channel before its fd closed */
@@ -678,7 +692,9 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
         case 0x1A: {
             u32 id;
             memcpy(&id, d, 4);
+            pm_lock(&nv.sync_lk); /* submissions raise it under the lock */
             u32 v = nv.syncpt_max[id & 255];
+            pm_unlock(&nv.sync_lk);
             memcpy(d + 4, &v, 4);
             return 0;
         }
@@ -700,6 +716,9 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
             LOG_LIMIT(2, "nvdrv: event %u signaled by the game\n", slot);
             return 0;
         }
+        /* EVENT_WAIT and EVENT_WAIT_ASYNC {u32 id, thresh; i32 timeout; u32 value}. NvRmChannelSyncPointWaitTimeout
+           sends only 0x1E: value is a slot it registered with 0x1F and queried as 0x10000000 | slot, it waits on that
+           event itself on 5, and cancels the wait with 0x1C when its own wait times out */
         case 0x1D:
         case 0x1E: {
             u32 id, th;
@@ -928,150 +947,177 @@ static u32 ioctl_gpu(NvFile* f, u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
     return 0;
 }
 
-static int nvdrv_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: {
-            u64 a, s;
-            buf_in(c, 0, &a, &s);
-            char name[64] = {0};
-            memcpy(name, GP(a), s < 63 ? s : 63);
-            int dev = !strcmp(name, "/dev/nvmap")             ? DEV_NVMAP
-                      : !strcmp(name, "/dev/nvhost-as-gpu")   ? DEV_AS
-                      : !strcmp(name, "/dev/nvhost-ctrl")     ? DEV_CTRL
-                      : !strcmp(name, "/dev/nvhost-ctrl-gpu") ? DEV_CTRLGPU
-                      : !strcmp(name, "/dev/nvhost-gpu")      ? DEV_GPU
-                      : !strcmp(name, "/dev/nvhost-nvdec")    ? DEV_NVDEC
-                      : !strcmp(name, "/dev/nvhost-vic")      ? DEV_VIC
-                                                              : DEV_OTHER;
-            /* an NVDEC or VIC fd is a host1x channel of its own, with its registers, syncpoints and decoder */
-            int h1x_dev = dev == DEV_NVDEC || dev == DEV_VIC;
-            void* h1x = h1x_dev ? host1x_open(dev == DEV_VIC) : NULL;
-            int fd = -1;
-            pm_lock(&nv.lock);
-            for (int i = 1; i < 256 && (h1x || !h1x_dev); i++)
-                if (!nv.nvf[i].dev) {
-                    fd = i;
-                    memset(&nv.nvf[i], 0, sizeof nv.nvf[i]);
-                    nv.nvf[i].dev = dev;
-                    nv.nvf[i].h1x = h1x;
-                    break;
-                }
-            pm_unlock(&nv.lock);
-            if (fd < 0) host1x_close(h1x);
-            LOG("nvdrv: open %s -> %d\n", name, fd);
-            out32(c, (u32)fd);
-            out32(c, fd < 0 ? 0x30003u : 0); /* FileOperationFailed when every fd is taken (or no memory) */
-            return 0;
+static int nns_nvdrv_INvDrvServices_Open(SvcObj* self, IpcBuf path, u32* fd, u32* error) {
+    char name[64] = {0};
+    if (path.addr) memcpy(name, GP(path.addr), path.size < 63 ? path.size : 63);
+    int dev = !strcmp(name, "/dev/nvmap")             ? DEV_NVMAP
+              : !strcmp(name, "/dev/nvhost-as-gpu")   ? DEV_AS
+              : !strcmp(name, "/dev/nvhost-ctrl")     ? DEV_CTRL
+              : !strcmp(name, "/dev/nvhost-ctrl-gpu") ? DEV_CTRLGPU
+              : !strcmp(name, "/dev/nvhost-gpu")      ? DEV_GPU
+              : !strcmp(name, "/dev/nvhost-nvdec")    ? DEV_NVDEC
+              : !strcmp(name, "/dev/nvhost-vic")      ? DEV_VIC
+                                                      : DEV_OTHER;
+    /* an NVDEC or VIC fd is a host1x channel of its own, with its registers, syncpoints and decoder */
+    int h1x_dev = dev == DEV_NVDEC || dev == DEV_VIC;
+    void* h1x = h1x_dev ? host1x_open(dev == DEV_VIC) : NULL;
+    int slot = -1;
+    pm_lock(&nv.lock);
+    for (int i = 1; i < 256 && (h1x || !h1x_dev); i++)
+        if (!nv.nvf[i].dev) {
+            slot = i;
+            memset(&nv.nvf[i], 0, sizeof nv.nvf[i]);
+            nv.nvf[i].dev = dev;
+            nv.nvf[i].h1x = h1x;
+            break;
         }
-        case 1:
-        case 11:
-        case 12: {
-            u32 fd = in32(c, 0), cmd = in32(c, 4);
-            u64 ia = 0, is = 0, oa = 0, os = 0, ea = 0, es = 0;
-            buf_in(c, 0, &ia, &is);
-            buf_out(c, 0, &oa, &os);
-            if (c->cmd == 11) { buf_in(c, 1, &ea, &es); }
-            if (c->cmd == 12) { buf_out(c, 1, &ea, &es); }
-            u32 size = (cmd >> 16) & 0x3FFF;
-            u8 tmp[0x4000];
-            memset(tmp, 0, sizeof tmp);
-            u64 isz = is, osz = os;
-            if (ia) memcpy(tmp, GP(ia), isz > sizeof tmp ? sizeof tmp : isz);
-            /* nb is what the command's size field (or the larger buffer) says, n what the device may touch: both stay
-               inside tmp */
-            u64 nb64 = size ? size : (isz > osz ? isz : osz);
-            u32 nb = (u32)(nb64 > sizeof tmp ? sizeof tmp : nb64);
-            u32 n = (u32)(isz > nb ? (isz > sizeof tmp ? sizeof tmp : isz) : nb);
-            if (fd >= 256 || !nv.nvf[fd].dev) {
-                out32(c, 8);
-                return 0;
-            }
-            NvFile* f = &nv.nvf[fd];
-            u32 r = 0;
-            {
-                static u32 seen[256];
-                static int nseen;
-                int k;
-                for (k = 0; k < nseen; k++)
-                    if (seen[k] == (cmd ^ ((u32)f->dev << 28))) break;
-                if (k == nseen && nseen < 256) {
-                    seen[nseen++] = cmd ^ ((u32)f->dev << 28);
-                    LOG("nvdrv: ioctl %08x (disp %d, ipc %u, in %llu out %llu extra %llu)\n", cmd, f->dev, c->cmd,
-                        (unsigned long long)is, (unsigned long long)os, (unsigned long long)es);
-                }
-            }
-            switch (f->dev) {
-                case DEV_NVMAP: r = ioctl_nvmap(cmd, tmp, nb); break;
-                case DEV_AS:
-                    pm_lock(&nv.aslock);
-                    r = ioctl_as(cmd, tmp, n, (c->cmd == 12 && ea) ? GP(ea) : NULL, (u32)es);
-                    pm_unlock(&nv.aslock);
-                    break;
-                case DEV_CTRL: r = ioctl_ctrl(cmd, tmp, nb); break;
-                case DEV_CTRLGPU: r = ioctl_ctrlgpu(cmd, tmp, nb, (c->cmd == 12 && ea) ? GP(ea) : NULL, (u32)es); break;
-                case DEV_GPU: r = ioctl_gpu(f, cmd, tmp, n, ea ? GP(ea) : NULL, (u32)es); break;
-                case DEV_NVDEC:
-                case DEV_VIC: r = host1x_ioctl(f->h1x, cmd, tmp, n); break;
-                default: WARN("nvdrv: ioctl %x to unknown device\n", cmd); break;
-            }
-            if (oa) memcpy(GP(oa), tmp, osz > sizeof tmp ? sizeof tmp : osz);
-            out32(c, r);
-            return 0;
-        }
-        case 2: {
-            u32 fd = in32(c, 0);
-            NvFile old;
-            memset(&old, 0, sizeof old);
-            pm_lock(&nv.lock);
-            if (fd < 256 && nv.nvf[fd].dev) {
-                old = nv.nvf[fd];
-                memset(&nv.nvf[fd], 0, sizeof nv.nvf[fd]);
-            }
-            pm_unlock(&nv.lock);
-            /* the channel and its syncpoint go with the fd, once the GPU thread has run the jobs queued on it: freed now,
-               the id could go to a new channel those jobs would then increment */
-            if (old.dev == DEV_GPU && old.syncpt) gpu_call(gpu_channel_retire, (void*)(uintptr_t)old.syncpt);
-            host1x_close(old.h1x); /* NVDEC, VIC: the channel, its decoder and syncpoints go with the fd */
-            for (int k = 0; k < 4; k++)
-                if (old.ev[k]) kobj_unref(&old.ev[k]->o);
-            out32(c, 0);
-            return 0;
-        }
-        case 3: out32(c, 0); return 0;
-        case 4: { /* QueryEvent: the ctrl fd's ids name event slots, a channel's ids its own events */
-            u32 fd = in32(c, 0), id = in32(c, 4);
-            KEvent* e = NULL;
-            pm_lock(&nv.lock);
-            int dev = fd < 256 ? nv.nvf[fd].dev : DEV_NONE;
-            if (dev != DEV_NONE && dev != DEV_CTRL && id >= 1 && id <= 3) {
-                if (!nv.nvf[fd].ev[id]) {
-                    nv.nvf[fd].ev[id] = kevent_new("nv channel event");
-                    kobj_ref(&nv.nvf[fd].ev[id]->o); /* the fd's reference, dropped on close */
-                }
-                e = nv.nvf[fd].ev[id];
-            }
-            pm_unlock(&nv.lock);
-            if (!e && (dev == DEV_NONE || dev == DEV_CTRL) && (((id >> 28) & 0xF) == 1 || id < 64)) {
-                nvev_lock();
-                e = nvev_get(id & 63);
-                nvev_unlock();
-            }
-            if (!e) e = kevent_new("nv query");
-            LOG_LIMIT(8, "nvdrv: QueryEvent fd %u (device %d) id %x\n", fd, dev, id);
-            out_copy_h(c, h_new(&e->o));
-            out32(c, 0);
-            return 0;
-        }
-        case 5:
-        case 6:
-        case 8:
-        case 9:
-        case 10:
-        case 13: out32(c, 0); return 0;
-    }
-    return stub_ok(o, c);
+    pm_unlock(&nv.lock);
+    if (slot < 0) host1x_close(h1x);
+    LOG("nvdrv: open %s -> %d\n", name, slot);
+    *fd = (u32)slot;
+    *error = slot < 0 ? 0x30003u : 0; /* FileOperationFailed when every fd is taken (or no memory) */
+    return 0;
 }
-static SvcObj* new_nvdrv(void) { return svcobj_new("nvdrv", nvdrv_disp, 0); }
+/* what goes with a closed fd: the channel and its syncpoint once the GPU thread has run the jobs queued on it (freed
+   now, the id could go to a new channel those jobs would then increment), an NVDEC or VIC channel with its decoder
+   and syncpoints, and the fd's references to its events */
+static void nv_release(NvFile* old) {
+    if (old->dev == DEV_GPU && old->syncpt) gpu_call(gpu_channel_retire, (void*)(uintptr_t)old->syncpt);
+    host1x_close(old->h1x);
+    for (int k = 0; k < 4; k++)
+        if (old->ev[k]) kobj_unref(&old->ev[k]->o);
+}
+/* Ioctl, Ioctl2 (extra is a second input) and Ioctl3 (extra is a second output): the ioctl's in and out buffers go
+   through tmp, the extra one straight to the device. A GPU channel takes Ioctl2's and Ioctl3's, as-gpu and ctrl-gpu
+   only Ioctl3's. ipc is the command, for the log */
+static u32 nv_ioctl(u32 fd, u32 cmd, IpcBuf in, IpcBuf out, IpcBuf extra, int extra_out, u32 ipc) {
+    u64 ea = extra.addr, es = extra.size;
+    u32 size = (cmd >> 16) & 0x3FFF;
+    u8 tmp[0x4000];
+    memset(tmp, 0, sizeof tmp);
+    u64 isz = in.size, osz = out.size;
+    if (in.addr) memcpy(tmp, GP(in.addr), isz > sizeof tmp ? sizeof tmp : isz);
+    /* nb is what the command's size field (or the larger buffer) says, n what the device may touch: both stay inside
+       tmp */
+    u64 nb64 = size ? size : (isz > osz ? isz : osz);
+    u32 nb = (u32)(nb64 > sizeof tmp ? sizeof tmp : nb64);
+    u32 n = (u32)(isz > nb ? (isz > sizeof tmp ? sizeof tmp : isz) : nb);
+    pm_lock(&nv.lock);
+    if (fd >= 256 || !nv.nvf[fd].dev || nv.nvf[fd].closed) {
+        pm_unlock(&nv.lock);
+        return 8;
+    }
+    NvFile* f = &nv.nvf[fd];
+    f->users++;
+    pm_unlock(&nv.lock);
+    u32 r = 0;
+    { /* each device's ioctl logged once: game threads issue them at once */
+        static u32 seen[256];
+        static int nseen;
+        static PMutex seen_lk = PMUTEX_INIT;
+        int k, first = 0;
+        pm_lock(&seen_lk);
+        for (k = 0; k < nseen; k++)
+            if (seen[k] == (cmd ^ ((u32)f->dev << 28))) break;
+        if (k == nseen && nseen < 256) {
+            seen[nseen++] = cmd ^ ((u32)f->dev << 28);
+            first = 1;
+        }
+        pm_unlock(&seen_lk);
+        if (first)
+            LOG("nvdrv: ioctl %08x (disp %d, ipc %u, in %llu out %llu extra %llu)\n", cmd, f->dev, ipc,
+                (unsigned long long)isz, (unsigned long long)osz, (unsigned long long)es);
+    }
+    switch (f->dev) {
+        case DEV_NVMAP: r = ioctl_nvmap(cmd, tmp, nb); break;
+        case DEV_AS:
+            pm_lock(&nv.aslock);
+            r = ioctl_as(cmd, tmp, n, (extra_out && ea) ? GP(ea) : NULL, (u32)es);
+            pm_unlock(&nv.aslock);
+            break;
+        case DEV_CTRL: r = ioctl_ctrl(cmd, tmp, nb); break;
+        case DEV_CTRLGPU: r = ioctl_ctrlgpu(cmd, tmp, nb, (extra_out && ea) ? GP(ea) : NULL, (u32)es); break;
+        case DEV_GPU: r = ioctl_gpu(f, cmd, tmp, n, ea ? GP(ea) : NULL, (u32)es); break;
+        case DEV_NVDEC:
+        case DEV_VIC: r = host1x_ioctl(f->h1x, cmd, tmp, n); break;
+        default: WARN("nvdrv: ioctl %x to unknown device\n", cmd); break;
+    }
+    if (out.addr) memcpy(GP(out.addr), tmp, osz > sizeof tmp ? sizeof tmp : osz);
+    NvFile old;
+    int release = 0;
+    pm_lock(&nv.lock);
+    if (!--f->users && f->closed) {
+        old = *f;
+        memset(f, 0, sizeof *f);
+        release = 1;
+    }
+    pm_unlock(&nv.lock);
+    if (release) nv_release(&old);
+    return r;
+}
+static int nns_nvdrv_INvDrvServices_Ioctl(SvcObj* self, u32 fd, u32 request, IpcBuf in, IpcBuf out, u32* error) {
+    IpcBuf none = {0, 0, 0};
+    *error = nv_ioctl(fd, request, in, out, none, 0, 1);
+    return 0;
+}
+static int nns_nvdrv_INvDrvServices_Ioctl2(SvcObj* self, u32 fd, u32 request, IpcBuf in, IpcBuf inline_in, IpcBuf out,
+                                           u32* error) {
+    *error = nv_ioctl(fd, request, in, out, inline_in, 0, 11);
+    return 0;
+}
+static int nns_nvdrv_INvDrvServices_Ioctl3(SvcObj* self, u32 fd, u32 request, IpcBuf in, IpcBuf out, IpcBuf inline_out,
+                                           u32* error) {
+    *error = nv_ioctl(fd, request, in, out, inline_out, 1, 12);
+    return 0;
+}
+static int nns_nvdrv_INvDrvServices_Close(SvcObj* self, u32 fd, u32* error) {
+    NvFile old;
+    int release = 0, open = 0;
+    pm_lock(&nv.lock);
+    if (fd < 256 && nv.nvf[fd].dev && !nv.nvf[fd].closed) {
+        open = 1;
+        if (nv.nvf[fd].users) { /* the last ioctl releases it */
+            nv.nvf[fd].closed = 1;
+        } else {
+            old = nv.nvf[fd];
+            memset(&nv.nvf[fd], 0, sizeof nv.nvf[fd]);
+            release = 1;
+        }
+    }
+    pm_unlock(&nv.lock);
+    if (release) nv_release(&old);
+    *error = open ? 0 : 8; /* an fd that isn't open, or closed already: the NvError the ioctls answer for it */
+    return 0;
+}
+/* the ctrl fd's ids name event slots, a channel's ids its own events */
+static int nns_nvdrv_INvDrvServices_QueryEvent(SvcObj* self, u32 fd, u32 event_id, u32* error, u32* event) {
+    KEvent* e = NULL;
+    int held = 0;
+    pm_lock(&nv.lock);
+    int dev = fd < 256 && !nv.nvf[fd].closed ? nv.nvf[fd].dev : DEV_NONE;
+    if (dev != DEV_NONE && dev != DEV_CTRL && event_id >= 1 && event_id <= 3) {
+        if (!nv.nvf[fd].ev[event_id]) {
+            nv.nvf[fd].ev[event_id] = kevent_new("nv channel event");
+            kobj_ref(&nv.nvf[fd].ev[event_id]->o); /* the fd's reference, dropped on close */
+        }
+        e = nv.nvf[fd].ev[event_id];
+        kobj_ref(&e->o); /* a Close before h_new would drop the last reference */
+        held = 1;
+    }
+    pm_unlock(&nv.lock);
+    if (!e && (dev == DEV_NONE || dev == DEV_CTRL) && (((event_id >> 28) & 0xF) == 1 || event_id < 64)) {
+        nvev_lock();
+        e = nvev_get(event_id & 63);
+        nvev_unlock();
+    }
+    if (!e) e = kevent_new("nv query");
+    LOG_LIMIT(8, "nvdrv: QueryEvent fd %u (device %d) id %x\n", fd, dev, event_id);
+    *event = h_new(&e->o);
+    if (held) kobj_unref(&e->o);
+    *error = 0;
+    return 0;
+}
+static SvcObj* new_nvdrv(void) { return nns_nvdrv_INvDrvServices_new(0); }
 
 void nv_init(void) {
     nv.nvh_next = 1;
@@ -1083,8 +1129,5 @@ void nv_init(void) {
     pm_init(&nv.submit_lk);
     pc_init(&nv.sync_cv);
     nv.gmmu = calloc(GL1, sizeof(u64*));
-    svc_register("nvdrv", new_nvdrv);
-    svc_register("nvdrv:a", new_nvdrv);
-    svc_register("nvdrv:s", new_nvdrv);
-    svc_register("nvdrv:t", new_nvdrv);
+    nns_nvdrv_INvDrvServices_register(new_nvdrv);
 }

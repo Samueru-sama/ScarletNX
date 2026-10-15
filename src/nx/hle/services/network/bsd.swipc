@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# bsd:u, bsd:a, bsd:s and bsdcfg: sockets (bsd.c). The socket commands, 2 (Socket) to 32, answer the BSD result and
+# errno
+
+type nn::socket::sf::LibraryConfigData = struct {
+    u32 version;
+    u32 tcp_tx_buf_size;
+    u32 tcp_rx_buf_size;
+    u32 tcp_tx_buf_max_size;
+    u32 tcp_rx_buf_max_size;
+    u32 udp_tx_buf_size;
+    u32 udp_rx_buf_size;
+    u32 sb_efficiency;
+};
+# libnx's BsdSelectTimeval
+type nn::socket::sf::SelectTimeval = struct {
+    i64 sec;
+    i64 usec;
+    b8 is_null;
+};
+
+# bsd:s is the system's: DuplicateSocket and raw sockets
+@fallback(bsd_unknown)
+interface nn::socket::sf::IClient is bsd:u, bsd:a, bsd:s {
+    @stub [0] RegisterClient(nn::socket::sf::LibraryConfigData config, pid, u64 transfer_memory_size,
+                             handle<copy, transfer_memory> transfer_memory) -> u32 bsd_errno;
+    @stub [1] StartMonitoring(pid);
+    [2] Socket(i32 domain, i32 type, i32 protocol) -> (i32 ret, u32 bsd_errno);
+    [3] SocketExempt(i32 domain, i32 type, i32 protocol) -> (i32 ret, u32 bsd_errno);
+    [4] Open(u32 flags, buffer<u8, 0x21> path) -> (i32 ret, u32 bsd_errno);
+    [5] Select(i32 nfds, nn::socket::sf::SelectTimeval timeout, buffer<u8, 0x21> readfds_in,
+               buffer<u8, 0x21> writefds_in, buffer<u8, 0x21> errorfds_in, buffer<u8, 0x22> readfds_out,
+               buffer<u8, 0x22> writefds_out, buffer<u8, 0x22> errorfds_out) -> (i32 ret, u32 bsd_errno);
+    [6] Poll(i32 nfds, i32 timeout, buffer<u8, 0x21> fds_in, buffer<u8, 0x22> fds_out) -> (i32 ret, u32 bsd_errno);
+    # no raw input: the name and the new value in, the old value out, and its length (the SDK's proxy)
+    [7] Sysctl(buffer<u8, 0x21> name, buffer<u8, 0x22> old_value, buffer<u8, 0x21> new_value)
+        -> (i32 ret, u32 bsd_errno, u32 old_length);
+    [8] Recv(i32 fd, i32 flags, buffer<u8, 0x22> message) -> (i32 ret, u32 bsd_errno);
+    [9] RecvFrom(i32 fd, i32 flags, buffer<u8, 0x22> message, buffer<u8, 0x22> addr)
+        -> (i32 ret, u32 bsd_errno, u32 addrlen);
+    [10] Send(i32 fd, i32 flags, buffer<u8, 0x21> message) -> (i32 ret, u32 bsd_errno);
+    [11] SendTo(i32 fd, i32 flags, buffer<u8, 0x21> message, buffer<u8, 0x21> addr) -> (i32 ret, u32 bsd_errno);
+    [12] Accept(i32 fd, buffer<u8, 0x22> addr) -> (i32 ret, u32 bsd_errno, u32 addrlen);
+    [13] Bind(i32 fd, buffer<u8, 0x21> addr) -> (i32 ret, u32 bsd_errno);
+    [14] Connect(i32 fd, buffer<u8, 0x21> addr) -> (i32 ret, u32 bsd_errno);
+    [15] GetPeerName(i32 fd, buffer<u8, 0x22> addr) -> (i32 ret, u32 bsd_errno, u32 addrlen);
+    [16] GetSockName(i32 fd, buffer<u8, 0x22> addr) -> (i32 ret, u32 bsd_errno, u32 addrlen);
+    [17] GetSockOpt(i32 fd, i32 level, i32 option_name, buffer<u8, 0x22> option_value)
+        -> (i32 ret, u32 bsd_errno, u32 option_len);
+    [18] Listen(i32 fd, i32 backlog) -> (i32 ret, u32 bsd_errno);
+    [19] Ioctl(i32 fd, u32 request, i32 bufcount, buffer<u8, 0x21> in0, buffer<u8, 0x21> in1, buffer<u8, 0x21> in2,
+               buffer<u8, 0x21> in3, buffer<u8, 0x22> out0, buffer<u8, 0x22> out1, buffer<u8, 0x22> out2,
+               buffer<u8, 0x22> out3) -> (i32 ret, u32 bsd_errno);
+    [20] Fcntl(i32 fd, i32 cmd, i32 arg) -> (i32 ret, u32 bsd_errno);
+    [21] SetSockOpt(i32 fd, i32 level, i32 option_name, buffer<u8, 0x21> option_value) -> (i32 ret, u32 bsd_errno);
+    [22] Shutdown(i32 fd, i32 how) -> (i32 ret, u32 bsd_errno);
+    [23] ShutdownAllSockets(i32 how) -> (i32 ret, u32 bsd_errno);
+    [24] Write(i32 fd, buffer<u8, 0x21> message) -> (i32 ret, u32 bsd_errno);
+    [25] Read(i32 fd, buffer<u8, 0x22> message) -> (i32 ret, u32 bsd_errno);
+    [26] Close(i32 fd) -> (i32 ret, u32 bsd_errno);
+    [27] DuplicateSocket(i32 fd, u64 reserved) -> (i32 ret, u32 bsd_errno);
+    [31] EventFd(u64 initval, u32 flags) -> (i32 ret, u32 bsd_errno);
+    # SDK 8 sends the pid slot alone, SDK 13 a u8 before it: declared as the shorter, which both send at least
+    @stub [32] RegisterResourceStatisticsName(buffer<u8, 0x21> name, pid) -> (i32 ret, u32 bsd_errno);
+    @stub [33] RegisterClientShared(nn::socket::sf::LibraryConfigData config, pid, u64 work_buffer_size)
+        -> u32 bsd_errno;
+}
+
+# the interface configuration, which the system's own services use: nothing a game changes
+interface nn::bsdsocket::cfg::ServerInterface is bsdcfg {
+}

@@ -7,6 +7,7 @@
 #include "hle/filesystem/fs.h"
 #include "hle/services/services.h"
 #include "hle/kernel/ipc.h"
+#include "hle/services/pl.swipc.inc"
 #include "hle/kernel/kernel.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
@@ -172,7 +173,8 @@ static void fonts_fill(u8* shm, u64 cap) {
     }
     if (fb) free(fb);
 }
-static int pl_disp(SvcObj* o, IpcCtx* c) {
+/* the font shared memory, filled the first time a game asks for anything */
+static KShmem* font_shm(void) {
     pm_lock(&pl.font_lock);
     KShmem* shm = pl.font_shm;
     if (!shm) {
@@ -183,37 +185,56 @@ static int pl_disp(SvcObj* o, IpcCtx* c) {
         pl.font_shm = shm;
     }
     pm_unlock(&pl.font_lock);
-    u32 id = in32(c, 0);
-    if (id > 5) id = 0;
-    switch (c->cmd) {
-        case 0: return 0;                             /* RequestLoad */
-        case 1: out32(c, 1); return 0;                /* GetLoadState: loaded */
-        case 2: out32(c, pl.font_size[id]); return 0; /* GetSize */
-        case 3: out32(c, pl.font_off[id]); return 0;  /* GetSharedMemoryAddressOffset */
-        case 4: out_copy_h(c, h_new(&shm->o)); return 0;
-        case 5:
-        case 6: { /* GetSharedFontInOrderOfPriority */
-            u64 a0 = 0, s0 = 0, a1 = 0, s1 = 0, a2 = 0, s2 = 0;
-            buf_out(c, 0, &a0, &s0);
-            buf_out(c, 1, &a1, &s1);
-            buf_out(c, 2, &a2, &s2);
-            u32 n = 6;
-            for (u32 i = 0; i < n; i++) {
-                if (a0 && (i + 1) * 4 <= s0) gw32(a0 + i * 4, i);
-                if (a1 && (i + 1) * 4 <= s1) gw32(a1 + i * 4, pl.font_off[i]);
-                if (a2 && (i + 1) * 4 <= s2) gw32(a2 + i * 4, pl.font_size[i]);
-            }
-            out8(c, 1);
-            c->out_size = 4;
-            out32(c, n);
-            return 0;
-        }
-    }
-    return stub_ok(o, c);
+    return shm;
 }
-static SvcObj* new_pl(void) { return svcobj_new("pl:u", pl_disp, 0); }
+static u32 font_index(u32 font_type) { return font_type > 5 ? 0 : font_type; }
+static int nn_pl_detail_IPlatformServiceManager_RequestLoad(SvcObj* self, u32 font_type) {
+    font_shm();
+    return 0;
+}
+static int nn_pl_detail_IPlatformServiceManager_GetLoadState(SvcObj* self, u32 font_type, u32* state) {
+    font_shm();
+    *state = 1; /* loaded */
+    return 0;
+}
+static int nn_pl_detail_IPlatformServiceManager_GetSize(SvcObj* self, u32 font_type, u32* size) {
+    font_shm();
+    *size = pl.font_size[font_index(font_type)];
+    return 0;
+}
+static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryAddressOffset(SvcObj* self, u32 font_type, u32* offset) {
+    font_shm();
+    *offset = pl.font_off[font_index(font_type)];
+    return 0;
+}
+static int nn_pl_detail_IPlatformServiceManager_GetSharedMemoryNativeHandle(SvcObj* self, u32* shared_memory) {
+    *shared_memory = h_new(&font_shm()->o);
+    return 0;
+}
+/* every font, in index order, whatever the language */
+static int fonts_in_order(IpcBuf codes, IpcBuf offsets, IpcBuf sizes, u8* loaded, u32* count) {
+    font_shm();
+    for (u32 i = 0; i < 6; i++) {
+        if (codes.addr && (i + 1) * 4 <= codes.size) gw32(codes.addr + i * 4, i);
+        if (offsets.addr && (i + 1) * 4 <= offsets.size) gw32(offsets.addr + i * 4, pl.font_off[i]);
+        if (sizes.addr && (i + 1) * 4 <= sizes.size) gw32(sizes.addr + i * 4, pl.font_size[i]);
+    }
+    *loaded = 1;
+    *count = 6;
+    return 0;
+}
+static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriority(
+    SvcObj* self, const nn_settings_LanguageCode* language_code, IpcBuf font_codes, IpcBuf offsets, IpcBuf sizes,
+    u8* loaded, u32* count) {
+    return fonts_in_order(font_codes, offsets, sizes, loaded, count);
+}
+static int nn_pl_detail_IPlatformServiceManager_GetSharedFontInOrderOfPriorityForSystem(
+    SvcObj* self, const nn_settings_LanguageCode* language_code, IpcBuf font_codes, IpcBuf offsets, IpcBuf sizes,
+    u8* loaded, u32* count) {
+    return fonts_in_order(font_codes, offsets, sizes, loaded, count);
+}
+static SvcObj* new_pl(void) { return nn_pl_detail_IPlatformServiceManager_new(0); }
 void svc_pl_init(void) {
     pm_init(&pl.font_lock);
-    svc_register("pl:u", new_pl);
-    svc_register("pl:s", new_pl);
+    nn_pl_detail_IPlatformServiceManager_register(new_pl);
 }

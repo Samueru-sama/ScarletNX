@@ -6,13 +6,29 @@
    audio.c, misc.c, ldr.c and network/ */
 #include "hle/services/services_int.h"
 #include "hle/services/network/network.h"
+#include "hle/services/acc.swipc.h"
+#include "hle/services/am.swipc.h"
+#include "hle/services/audio.swipc.h"
+#include "hle/services/misc.swipc.h"
+#include "hle/services/network/bsd.swipc.h"
+#include "hle/services/network/dns.swipc.h"
+#include "hle/services/network/nifm.swipc.h"
+#include "hle/services/set.swipc.h"
+#include "hle/services/sm.swipc.h"
+#include "hle/services/time.swipc.h"
 
 /* ================================================================ shared events */
 u32 ev_handle(KEvent* e) { return h_new(&e->o); }
+int new_event(u32* event, const char* name, int signaled) {
+    KEvent* e = kevent_new(name);
+    e->signaled = signaled;
+    *event = ev_handle(e);
+    return 0;
+}
 int g_hle_docked, g_hle_lang;
 
-/* the service keeps these events for the whole run: its reference keeps them alive when the game closes the
-   handles it was given */
+/* an event the service keeps (for the whole run, or for an object's life, dropped in its destroy): its reference keeps
+   it alive when the game closes the handles it was given */
 KEvent* owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
@@ -27,73 +43,45 @@ void svc_core_init(void) {
     time_init();
     network_init();
     plat_thread(audio_clock, NULL, 64 * 1024);
-    svc_register("sm:", new_sm);
+    nn_sm_detail_IUserInterface_register(new_sm);
     svc_register("ldr:ro", new_ldr);
     svc_register("ro:1", new_ro1);
-    svc_register("appletOE", new_appletoe);
-    svc_register("appletAE", new_appletae);
-    svc_register("set", new_set);
-    svc_register("set:sys", new_setsys);
-    svc_register("time:u", new_time);
-    svc_register("time:a", new_time);
-    svc_register("time:s", new_time);
-    svc_register("acc:u0", new_acc);
-    svc_register("acc:u1", new_acc);
-    svc_register("acc:su", new_acc);
-    svc_register("apm", new_apm);
-    svc_register("apm:p", new_apm);
-    svc_register("apm:am", new_apm);
-    svc_register("lm", new_lm);
-    svc_register("pctl", new_pctl);
-    svc_register("pctl:a", new_pctl);
-    svc_register("pctl:s", new_pctl);
-    svc_register("pctl:r", new_pctl);
-    svc_register("nifm:u", new_nifm);
-    svc_register("nifm:a", new_nifm);
-    svc_register("nifm:s", new_nifm);
-    svc_register("friend:u", new_friend);
-    svc_register("friend:a", new_friend);
-    svc_register("friend:v", new_friend);
-    svc_register("ns:am2", new_ns);
-    svc_register("ns:ec", new_ns);
-    svc_register("ns:rid", new_ns);
-    svc_register("ns:rt", new_ns);
-    svc_register("ns:web", new_ns);
-    svc_register("ns:ro", new_ns);
-    svc_register("audren:u", new_audren);
-    svc_register("audout:u", new_audout);
-    svc_register("audin:u", new_audin);
-    svc_register("hwopus", new_hwopus);
+    nn_am_service_IApplicationProxyService_register(new_appletoe);
+    nn_am_service_IAllSystemAppletProxiesService_register(new_appletae);
+    nn_settings_ISettingsServer_register(new_set);
+    nn_settings_ISystemSettingsServer_register(new_setsys);
+    nn_timesrv_detail_service_IStaticService_register(new_time);
+    nn_account_IAccountServiceForApplication_register(new_acc);
+    nn_apm_IManager_register(new_apm);
+    nn_lm_ILogService_register(new_lm);
+    nn_pctl_detail_ipc_IParentalControlServiceFactory_register(new_pctl);
+    nn_nifm_detail_IStaticService_register(new_nifm);
+    nn_friends_detail_ipc_IServiceCreator_register(new_friend);
+    nn_ns_detail_IServiceGetterInterface_register(new_ns);
+    nn_audio_detail_IAudioRendererManager_register(new_audren);
+    nn_audio_detail_IAudioOutManager_register(new_audout);
+    nn_audio_detail_IAudioInManager_register(new_audin);
+    nn_codec_detail_IHardwareOpusDecoderManager_register(new_hwopus);
     svc_register("bsd:u", new_bsd_u);
     svc_register("bsd:a", new_bsd_u);
     svc_register("bsd:s", new_bsd_s);
-    svc_register("bsdcfg", new_bsdcfg);
-    svc_register("sfdnsres", new_sfdnsres);
-    svc_register("nsd:u", new_nsd);
-    svc_register("nsd:a", new_nsd);
-    svc_register("ssl", new_ssl);
-    svc_register("prepo:u", new_prepo);
-    svc_register("prepo:a", new_prepo);
-    svc_register("prepo:a2", new_prepo);
-    svc_register("psm", new_psm);
-    svc_register("fatal:u", new_fatal);
-    svc_register("csrng", new_csrng);
-    svc_register("mm:u", new_mm);
-    svc_register("nfp:user", new_nfp);
-    svc_register("nfc:user", new_nfp);
-    svc_register("caps:u", new_caps);
-    svc_register("caps:a", new_caps);
-    svc_register("caps:su", new_caps);
-    svc_register("caps:ss", new_caps);
-    svc_register("bcat:u", new_bcat);
-    svc_register("bcat:a", new_bcat);
-    svc_register("aoc:u", new_aoc);
-    svc_register("irs", new_irs);
-    svc_register("mii:e", new_mii);
-    svc_register("mii:u", new_mii);
-    svc_register("ldn:u", new_ldn);
-    svc_register("ectx:aw", new_ectx);
-    svc_register("spl:", new_spl);
-    svc_register("spl:mig", new_spl);
-    svc_register("btm:u", new_btmu);
+    nn_bsdsocket_cfg_ServerInterface_register(new_bsdcfg);
+    nn_socket_resolver_IResolver_register(new_sfdnsres);
+    nn_nsd_detail_IManager_register(new_nsd);
+    nn_ssl_sf_ISslService_register(new_ssl);
+    nn_prepo_detail_ipc_IPrepoService_register(new_prepo);
+    nn_psm_IPsmServer_register(new_psm);
+    nn_fatalsrv_IService_register(new_fatal);
+    nn_spl_detail_IRandomInterface_register(new_csrng);
+    nn_mmnv_IRequest_register(new_mm);
+    nn_nfp_detail_IUserManager_register(new_nfp);
+    nn_capsrv_sf_IAlbumApplicationService_register(new_caps);
+    nn_bcat_detail_ipc_IServiceCreator_register(new_bcat);
+    nn_aocsrv_detail_IAddOnContentManager_register(new_aoc);
+    nn_irsensor_IIrSensorServer_register(new_irs);
+    nn_mii_detail_IStaticService_register(new_mii);
+    nn_ldn_detail_IUserServiceCreator_register(new_ldn);
+    nn_err_context_IWriterForApplication_register(new_ectx);
+    nn_spl_detail_IGeneralInterface_register(new_spl);
+    nn_btm_IBtmUser_register(new_btmu);
 }

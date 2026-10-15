@@ -3,14 +3,16 @@
    Ported from Eden's src/core/hle/service/sockets/bsd.cpp (branch lizzie/refactor-networking-12):
      SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project, GPL-3.0-or-later
      SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project, GPL-2.0-or-later
-   bsd:u and bsd:s, Horizon's BSD sockets, on the emulated network stack (src/common/network). Requests are served on
-   the guest thread that sends them, without its core (ipc_handle), so a blocking call blocks that thread only, as
-   on the console where each of the SDK's sessions has a server thread. Every reply is the call's result and its
-   errno (Linux's numbering, the stack's too); the constants are FreeBSD's, translated with the tables in abi/.
+   bsd:u, bsd:a and bsd:s, Horizon's BSD sockets, on the emulated network stack (src/common/network). Requests are
+   served on the guest thread that sends them, without its core (ipc_handle), so a blocking call blocks that thread
+   only, as on the console where each of the SDK's sessions has a server thread. A socket command's reply is the
+   call's result and its errno (Linux's numbering, the stack's too); the constants are FreeBSD's, translated with the
+   tables in abi/.
 
    Eden stubs Read, Select and EventFd, answers GetSockOpt for SO_ERROR only, and shuts down the read side of a
    SocketExempt socket; those are real here. */
 #include "hle/services/network/network.h"
+#include "hle/services/network/bsd.swipc.inc"
 #include <time.h>
 
 #define BSD_MAX_FD 128
@@ -204,59 +206,73 @@ static void bsd_destroy(SvcObj* o) {
 }
 
 /* ============================================================ replies */
-static int reply(IpcCtx* c, int64_t r) {
-    out32(c, r < 0 ? (u32)-1 : (u32)r);
-    out32(c, r < 0 ? (u32)-r : 0);
+/* the BSD result a socket command answers: -1 and the errno, or the result and 0 */
+static int reply(int64_t r, i32* ret, u32* bsd_errno) {
+    *ret = r < 0 ? -1 : (i32)r;
+    *bsd_errno = r < 0 ? (u32)-r : 0;
     return 0;
 }
-static int reply_len(IpcCtx* c, int64_t r, u32 len) {
-    reply(c, r);
-    out32(c, r < 0 ? 0 : len);
+/* and an address's or an option's length, 0 on failure */
+static int reply_len(int64_t r, u32 len, i32* ret, u32* bsd_errno, u32* out_len) {
+    *out_len = r < 0 ? 0 : len;
+    return reply(r, ret, bsd_errno);
+}
+/* a command bsd doesn't have answers EOPNOTSUPP, in the result a socket command starts with */
+static int bsd_unknown(SvcObj* self, IpcCtx* c) {
+    if (ipc_warn_once(self->name, c->cmd)) WARN("  [not implemented] %s cmd %u -> EOPNOTSUPP\n", self->name, c->cmd);
+    out32(c, (u32)-1);
+    out32(c, SNX_EOPNOTSUPP);
     return 0;
 }
 #define WITH_SOCKET(fdarg)                                                                                             \
     BsdFd d;                                                                                                           \
     SnxSocket* s = fd_get(b, (i32)(fdarg), &d);                                                                        \
-    if (!s) return reply(c, -SNX_EBADF)
+    if (!s) return reply(-SNX_EBADF, ret, bsd_errno)
 
 /* ============================================================ commands */
-static int bsd_socket(Bsd* b, IpcCtx* c, int exempt) {
-    u32 gdom = in32(c, 0), gtype = in32(c, 4), proto = in32(c, 8);
+static int bsd_socket(Bsd* b, i32 gdom_in, i32 gtype_in, i32 proto_in, int exempt, i32* ret, u32* bsd_errno) {
+    u32 gdom = (u32)gdom_in, gtype = (u32)gtype_in, proto = (u32)proto_in;
     int dom = domain_in(gdom), type = (int)(gtype & ~(u32)(BSD_SOCK_NONBLOCK | BSD_SOCK_CLOEXEC));
-    if (dom < 0) return reply(c, -SNX_EAFNOSUPPORT);
+    if (dom < 0) return reply(-SNX_EAFNOSUPPORT, ret, bsd_errno);
     /* bsd:u: no raw or seqpacket sockets, except raw ICMP (Eden) */
     if (!b->system && (type == SNX_SOCK_SEQPACKET || type == SNX_SOCK_RAW) &&
         !(type == SNX_SOCK_RAW && dom == SNX_AF_INET && proto == SNX_IPPROTO_ICMP))
-        return reply(c, -SNX_EINVAL);
+        return reply(-SNX_EINVAL, ret, bsd_errno);
     SnxSocket* s;
     int r = snx_socket_open(&s, dom, type, (int)proto);
     if (r) {
         LOG("bsd: Socket(%u, %u, %u) failed: errno %d\n", gdom, gtype, proto, -r);
-        return reply(c, r);
+        return reply(r, ret, bsd_errno);
     }
     if (gtype & BSD_SOCK_NONBLOCK) snx_socket_set_nonblocking(s, 1);
     r = fd_add(b, s, (gtype & BSD_SOCK_NONBLOCK) ? BSD_O_NONBLOCK_NX : 0, exempt);
     LOGV("bsd: Socket(%u, %u, %u) = %d\n", gdom, gtype, proto, r);
-    return reply(c, r);
+    return reply(r, ret, bsd_errno);
 }
-static int bsd_select(Bsd* b, IpcCtx* c) {
-    /* {i32 nfds, timeval {u64 sec, u64 usec}, bool null} and the read, write and error fd_sets in and out */
-    i32 nfds = (i32)in32(c, 0);
-    u64 sec = in64(c, 8), usec = in64(c, 16);
-    int null_timeout = in8(c, 24);
-    u64 ia[3], is[3], oa[3], os[3];
-    for (int k = 0; k < 3; k++) {
-        buf_in(c, k, &ia[k], &is[k]);
-        buf_out(c, k, &oa[k], &os[k]);
-    }
-    if (nfds < 0 || nfds > BSD_MAX_FD) return reply(c, -SNX_EINVAL);
+static int nn_socket_sf_IClient_Socket(SvcObj* self, i32 domain, i32 type, i32 protocol, i32* ret, u32* bsd_errno) {
+    return bsd_socket(self->data, domain, type, protocol, 0, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_SocketExempt(SvcObj* self, i32 domain, i32 type, i32 protocol, i32* ret,
+                                             u32* bsd_errno) {
+    return bsd_socket(self->data, domain, type, protocol, 1, ret, bsd_errno);
+}
+/* no devices */
+static int nn_socket_sf_IClient_Open(SvcObj* self, u32 flags, IpcBuf path, i32* ret, u32* bsd_errno) {
+    return reply(-SNX_ENOENT, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Select(SvcObj* self, i32 nfds, const nn_socket_sf_SelectTimeval* timeout,
+                                       IpcBuf readfds_in, IpcBuf writefds_in, IpcBuf errorfds_in, IpcBuf readfds_out,
+                                       IpcBuf writefds_out, IpcBuf errorfds_out, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    IpcBuf in[3] = {readfds_in, writefds_in, errorfds_in}, out[3] = {readfds_out, writefds_out, errorfds_out};
+    if (nfds < 0 || nfds > BSD_MAX_FD) return reply(-SNX_EINVAL, ret, bsd_errno);
     SnxPollEntry e[BSD_MAX_FD];
     int which[BSD_MAX_FD], n = 0;
     int64_t r = 0;
     for (i32 fd = 0; fd < nfds; fd++) {
         uint16_t ev = 0;
         for (int k = 0; k < 3; k++)
-            if (ia[k] && (u64)fd / 8 < is[k] && (((u8*)GP(ia[k]))[fd / 8] >> (fd % 8) & 1))
+            if (in[k].addr && (u64)fd / 8 < in[k].size && (((u8*)GP(in[k].addr))[fd / 8] >> (fd % 8) & 1))
                 ev |= k == 0 ? SNX_POLLIN : k == 1 ? SNX_POLLOUT : SNX_POLLPRI;
         if (!ev) continue;
         SnxSocket* s = fd_get(b, fd, NULL);
@@ -271,8 +287,8 @@ static int bsd_select(Bsd* b, IpcCtx* c) {
     }
     if (!r) {
         int ms = -1;
-        if (!null_timeout) {
-            u64 t = sec * 1000 + (usec + 999) / 1000;
+        if (!timeout->is_null) {
+            u64 t = (u64)timeout->sec * 1000 + ((u64)timeout->usec + 999) / 1000;
             ms = t > 0x7FFFFFFF ? 0x7FFFFFFF : (int)t;
         }
         r = snx_net_poll(e, (size_t)n, ms);
@@ -294,29 +310,34 @@ static int bsd_select(Bsd* b, IpcCtx* c) {
                 }
         }
         for (int k = 0; k < 3; k++)
-            if (oa[k]) {
-                memset(GP(oa[k]), 0, os[k]);
-                memcpy(GP(oa[k]), sets[k], os[k] < sizeof sets[k] ? os[k] : sizeof sets[k]);
+            if (out[k].addr) {
+                memset(GP(out[k].addr), 0, out[k].size);
+                memcpy(GP(out[k].addr), sets[k], out[k].size < sizeof sets[k] ? out[k].size : sizeof sets[k]);
             }
     }
     for (int i = 0; i < n; i++) snx_socket_unref(e[i].socket);
-    return reply(c, r);
+    return reply(r, ret, bsd_errno);
 }
-static int bsd_poll(Bsd* b, IpcCtx* c) {
-    i32 nfds = (i32)in32(c, 0), timeout = (i32)in32(c, 4);
-    u64 ia, is, oa, os;
-    buf_in(c, 0, &ia, &is);
-    buf_out(c, 0, &oa, &os);
+/* the stack has no sysctl tree: every name is unsupported, with nothing in the old value */
+static int nn_socket_sf_IClient_Sysctl(SvcObj* self, IpcBuf name, IpcBuf old_value, IpcBuf new_value, i32* ret,
+                                       u32* bsd_errno, u32* old_length) {
+    LOG_LIMIT(4, "bsd: Sysctl -> EOPNOTSUPP\n");
+    return reply(-SNX_EOPNOTSUPP, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Poll(SvcObj* self, i32 nfds, i32 timeout, IpcBuf fds_in, IpcBuf fds_out, i32* ret,
+                                     u32* bsd_errno) {
+    Bsd* b = self->data;
+    u64 ia = fds_in.addr, is = fds_in.size, oa = fds_out.addr, os = fds_out.size;
     /* Eden: no entries is -1 with errno 0 */
     if (!nfds) {
-        out32(c, (u32)-1);
-        out32(c, 0);
+        *ret = -1;
         return 0;
     }
-    if (nfds < 0) return reply(c, -SNX_EINVAL);
-    if (nfds > 4096 || !ia || is < (u64)nfds * 8 || (oa && os < (u64)nfds * 8)) return reply(c, -SNX_EINVAL);
+    if (nfds < 0) return reply(-SNX_EINVAL, ret, bsd_errno);
+    if (nfds > 4096 || !ia || is < (u64)nfds * 8 || (oa && os < (u64)nfds * 8))
+        return reply(-SNX_EINVAL, ret, bsd_errno);
     SnxPollEntry* e = calloc((size_t)nfds, sizeof *e);
-    if (!e) return reply(c, -SNX_ENOMEM);
+    if (!e) return reply(-SNX_ENOMEM, ret, bsd_errno);
     const u8* in = GP(ia);
     int bad = 0;
     for (i32 i = 0; i < nfds; i++) {
@@ -345,11 +366,10 @@ static int bsd_poll(Bsd* b, IpcCtx* c) {
         snx_socket_unref(e[i].socket);
     }
     free(e);
-    return reply(c, r);
+    return reply(r, ret, bsd_errno);
 }
-static int64_t do_recv(Bsd* b, IpcCtx* c, i32 fd, u32 gflags, u64 addr_buf, u64 addr_cap, u32* addrlen) {
-    u64 a, n;
-    buf_out(c, 0, &a, &n);
+static int64_t do_recv(Bsd* b, IpcBuf message, i32 fd, u32 gflags, IpcBuf addr, u32* addrlen) {
+    u64 a = message.addr, n = message.size;
     SnxSocket* s = fd_get(b, fd, NULL);
     if (!s) return -SNX_EBADF;
     SnxSockAddr from = {0};
@@ -359,20 +379,19 @@ static int64_t do_recv(Bsd* b, IpcCtx* c, i32 fd, u32 gflags, u64 addr_buf, u64 
     else if (!a)
         r = -SNX_EFAULT;
     else
-        r = snx_socket_recv(s, a ? GP(a) : NULL, n, msg_in(gflags), addrlen ? &from : NULL, NULL);
+        r = snx_socket_recv(s, GP(a), n, msg_in(gflags), addrlen ? &from : NULL, NULL);
     /* a connected stream socket names no sender (Eden clears the address for connection based sockets) */
     if (r >= 0 && addrlen) {
         if (from.family && snx_socket_type(s) != SNX_SOCK_STREAM)
-            *addrlen = addr_out(&from, addr_buf, addr_cap);
+            *addrlen = addr_out(&from, addr.addr, addr.size);
         else
             *addrlen = 0;
     }
     snx_socket_unref(s);
     return r;
 }
-static int64_t do_send(Bsd* b, IpcCtx* c, i32 fd, u32 gflags, const SnxSockAddr* to) {
-    u64 a, n;
-    buf_in(c, 0, &a, &n);
+static int64_t do_send(Bsd* b, IpcBuf message, i32 fd, u32 gflags, const SnxSockAddr* to) {
+    u64 a = message.addr, n = message.size;
     SnxSocket* s = fd_get(b, fd, NULL);
     if (!s) return -SNX_EBADF;
     int64_t r;
@@ -385,22 +404,89 @@ static int64_t do_send(Bsd* b, IpcCtx* c, i32 fd, u32 gflags, const SnxSockAddr*
     snx_socket_unref(s);
     return r;
 }
-static int bsd_name(Bsd* b, IpcCtx* c, int peer) {
-    u64 a, n;
-    buf_out(c, 0, &a, &n);
-    SnxSocket* s = fd_get(b, (i32)in32(c, 0), NULL);
-    if (!s) return reply_len(c, -SNX_EBADF, 0);
+static const IpcBuf no_buffer = {0, 0, 0};
+static int nn_socket_sf_IClient_Recv(SvcObj* self, i32 fd, i32 flags, IpcBuf message, i32* ret, u32* bsd_errno) {
+    return reply(do_recv(self->data, message, fd, (u32)flags, no_buffer, NULL), ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Read(SvcObj* self, i32 fd, IpcBuf message, i32* ret, u32* bsd_errno) {
+    return reply(do_recv(self->data, message, fd, 0, no_buffer, NULL), ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_RecvFrom(SvcObj* self, i32 fd, i32 flags, IpcBuf message, IpcBuf addr, i32* ret,
+                                         u32* bsd_errno, u32* addrlen) {
+    u32 alen = 0;
+    int64_t r = do_recv(self->data, message, fd, (u32)flags, addr, &alen);
+    return reply_len(r, alen, ret, bsd_errno, addrlen);
+}
+static int nn_socket_sf_IClient_Send(SvcObj* self, i32 fd, i32 flags, IpcBuf message, i32* ret, u32* bsd_errno) {
+    return reply(do_send(self->data, message, fd, (u32)flags, NULL), ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Write(SvcObj* self, i32 fd, IpcBuf message, i32* ret, u32* bsd_errno) {
+    return reply(do_send(self->data, message, fd, 0, NULL), ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_SendTo(SvcObj* self, i32 fd, i32 flags, IpcBuf message, IpcBuf addr, i32* ret,
+                                       u32* bsd_errno) {
+    SnxSockAddr to;
+    if (!addr.addr || !addr.size) return reply(do_send(self->data, message, fd, (u32)flags, NULL), ret, bsd_errno);
+    int r = addr_in(addr.addr, addr.size, &to);
+    return reply(r ? r : do_send(self->data, message, fd, (u32)flags, &to), ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Accept(SvcObj* self, i32 fd, IpcBuf addr, i32* ret, u32* bsd_errno, u32* addrlen) {
+    Bsd* b = self->data;
+    BsdFd d;
+    SnxSocket* s = fd_get(b, fd, &d);
+    if (!s) return reply_len(-SNX_EBADF, 0, ret, bsd_errno, addrlen);
+    SnxSocket* n;
+    SnxSockAddr peer;
+    int r = snx_socket_accept(s, &n, &peer, snx_socket_nonblocking(s)); /* FreeBSD inherits O_NONBLOCK */
+    snx_socket_unref(s);
+    if (r) return reply_len(r, 0, ret, bsd_errno, addrlen);
+    r = fd_add(b, n, d.flags & (BSD_O_NONBLOCK | BSD_O_NONBLOCK_NX), 0);
+    return reply_len(r, r < 0 ? 0 : addr_out(&peer, addr.addr, addr.size), ret, bsd_errno, addrlen);
+}
+/* Bind, Connect */
+static int bind_connect(Bsd* b, i32 fd, IpcBuf addr, int connect, i32* ret, u32* bsd_errno) {
+    SnxSockAddr sa;
+    int r = addr_in(addr.addr, addr.size, &sa);
+    if (r) return reply(r, ret, bsd_errno);
+    WITH_SOCKET(fd);
+    (void)d;
+    if (!connect)
+        r = snx_socket_bind(s, &sa);
+    else if (!network_reachable(&sa))
+        r = -SNX_ENETUNREACH;
+    else {
+        r = snx_socket_connect(s, &sa);
+        if (r == -SNX_EISCONN) r = 0; /* Eden: some games connect twice */
+    }
+    snx_socket_unref(s);
+    return reply(r, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Bind(SvcObj* self, i32 fd, IpcBuf addr, i32* ret, u32* bsd_errno) {
+    return bind_connect(self->data, fd, addr, 0, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Connect(SvcObj* self, i32 fd, IpcBuf addr, i32* ret, u32* bsd_errno) {
+    return bind_connect(self->data, fd, addr, 1, ret, bsd_errno);
+}
+/* GetPeerName, GetSockName */
+static int bsd_name(Bsd* b, i32 fd, IpcBuf addr, int peer, i32* ret, u32* bsd_errno, u32* addrlen) {
+    SnxSocket* s = fd_get(b, fd, NULL);
+    if (!s) return reply_len(-SNX_EBADF, 0, ret, bsd_errno, addrlen);
     SnxSockAddr sa;
     int r = peer ? snx_socket_peer(s, &sa) : snx_socket_name(s, &sa);
     snx_socket_unref(s);
-    return reply_len(c, r, r ? 0 : addr_out(&sa, a, n));
+    return reply_len(r, r ? 0 : addr_out(&sa, addr.addr, addr.size), ret, bsd_errno, addrlen);
 }
-static int bsd_getsockopt(Bsd* b, IpcCtx* c) {
-    u32 glevel = in32(c, 4), gname = in32(c, 8);
-    u64 a, n;
-    buf_out(c, 0, &a, &n);
-    SnxSocket* s = fd_get(b, (i32)in32(c, 0), NULL);
-    if (!s) return reply_len(c, -SNX_EBADF, 0);
+static int nn_socket_sf_IClient_GetPeerName(SvcObj* self, i32 fd, IpcBuf addr, i32* ret, u32* bsd_errno, u32* addrlen) {
+    return bsd_name(self->data, fd, addr, 1, ret, bsd_errno, addrlen);
+}
+static int nn_socket_sf_IClient_GetSockName(SvcObj* self, i32 fd, IpcBuf addr, i32* ret, u32* bsd_errno, u32* addrlen) {
+    return bsd_name(self->data, fd, addr, 0, ret, bsd_errno, addrlen);
+}
+static int nn_socket_sf_IClient_GetSockOpt(SvcObj* self, i32 fd, i32 level_in, i32 option_name, IpcBuf option_value,
+                                           i32* ret, u32* bsd_errno, u32* option_len) {
+    u32 glevel = (u32)level_in, gname = (u32)option_name;
+    SnxSocket* s = fd_get(self->data, fd, NULL);
+    if (!s) return reply_len(-SNX_EBADF, 0, ret, bsd_errno, option_len);
     int level, name, k = sockopt_in(glevel, gname, &level, &name), r = 0;
     u8 v[32];
     size_t len = sizeof v;
@@ -413,14 +499,15 @@ static int bsd_getsockopt(Bsd* b, IpcCtx* c) {
         r = snx_socket_getsockopt(s, level, name, v, &len);
     snx_socket_unref(s);
     if (k < 0) WARN_LIMIT(8, "bsd: GetSockOpt of unknown option level %#x name %#x\n", glevel, gname);
-    if (!r && a) memcpy(GP(a), v, n < len ? n : len);
-    return reply_len(c, r, (u32)len);
+    if (!r && option_value.addr) memcpy(GP(option_value.addr), v, option_value.size < len ? option_value.size : len);
+    return reply_len(r, (u32)len, ret, bsd_errno, option_len);
 }
-static int bsd_setsockopt(Bsd* b, IpcCtx* c) {
-    u32 glevel = in32(c, 4), gname = in32(c, 8);
-    u64 a, n;
-    buf_in(c, 0, &a, &n);
-    WITH_SOCKET(in32(c, 0));
+static int nn_socket_sf_IClient_SetSockOpt(SvcObj* self, i32 fd, i32 level_in, i32 option_name, IpcBuf option_value,
+                                           i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    u32 glevel = (u32)level_in, gname = (u32)option_name;
+    u64 a = option_value.addr, n = option_value.size;
+    WITH_SOCKET(fd);
     (void)d;
     int level, name, k = sockopt_in(glevel, gname, &level, &name), r = 0;
     if (k > 0) {
@@ -437,10 +524,18 @@ static int bsd_setsockopt(Bsd* b, IpcCtx* c) {
     } else if (k < 0)
         WARN_LIMIT(8, "bsd: SetSockOpt of unknown option level %#x name %#x, ignored\n", glevel, gname);
     snx_socket_unref(s);
-    return reply(c, r);
+    return reply(r, ret, bsd_errno);
 }
-static int bsd_fcntl(Bsd* b, IpcCtx* c) {
-    i32 fd = (i32)in32(c, 0), cmd = (i32)in32(c, 4), arg = (i32)in32(c, 8);
+static int nn_socket_sf_IClient_Listen(SvcObj* self, i32 fd, i32 backlog, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    WITH_SOCKET(fd);
+    (void)d;
+    int r = snx_socket_listen(s, backlog);
+    snx_socket_unref(s);
+    return reply(r, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Fcntl(SvcObj* self, i32 fd, i32 cmd, i32 arg, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
     WITH_SOCKET(fd);
     int64_t r;
     switch (cmd) {
@@ -461,20 +556,20 @@ static int bsd_fcntl(Bsd* b, IpcCtx* c) {
         default: r = -SNX_EINVAL; break;
     }
     snx_socket_unref(s);
-    return reply(c, r);
+    return reply(r, ret, bsd_errno);
 }
-static int bsd_ioctl(Bsd* b, IpcCtx* c) {
-    u32 req = in32(c, 4);
-    u64 ia, is, oa, os;
-    buf_in(c, 0, &ia, &is);
-    buf_out(c, 0, &oa, &os);
-    WITH_SOCKET(in32(c, 0));
+static int nn_socket_sf_IClient_Ioctl(SvcObj* self, i32 fd, u32 request, i32 bufcount, IpcBuf in0, IpcBuf in1,
+                                      IpcBuf in2, IpcBuf in3, IpcBuf out0, IpcBuf out1, IpcBuf out2, IpcBuf out3,
+                                      i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    u64 ia = in0.addr, is = in0.size, oa = out0.addr, os = out0.size;
+    WITH_SOCKET(fd);
     (void)d;
     int64_t r = 0;
-    if (req == BSD_FIONBIO) {
+    if (request == BSD_FIONBIO) {
         u64 src = ia ? ia : oa, size = ia ? is : os;
         r = src && size >= 4 ? snx_socket_set_nonblocking(s, gr32(src) != 0) : -SNX_EFAULT;
-    } else if (req == BSD_FIONREAD) {
+    } else if (request == BSD_FIONREAD) {
         int bytes = 0;
         r = snx_socket_readable_bytes(s, &bytes);
         if (!r && oa && os >= 4)
@@ -482,14 +577,33 @@ static int bsd_ioctl(Bsd* b, IpcCtx* c) {
         else if (!r && ia && is >= 4)
             gw32(ia, (u32)bytes); /* an inout buffer */
     } else {
-        WARN_LIMIT(4, "bsd: Ioctl %#x is not implemented\n", req);
+        WARN_LIMIT(4, "bsd: Ioctl %#x is not implemented\n", request);
         r = -SNX_EINVAL;
     }
     snx_socket_unref(s);
-    return reply(c, r);
+    return reply(r, ret, bsd_errno);
 }
-static int bsd_close(Bsd* b, IpcCtx* c) {
-    i32 fd = (i32)in32(c, 0);
+static int nn_socket_sf_IClient_Shutdown(SvcObj* self, i32 fd, i32 how, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    WITH_SOCKET(fd);
+    (void)d;
+    int r = snx_socket_shutdown(s, how);
+    snx_socket_unref(s);
+    return reply(r, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_ShutdownAllSockets(SvcObj* self, i32 how, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    for (int i = 0; i < BSD_MAX_FD; i++) {
+        BsdFd d;
+        SnxSocket* s = fd_get(b, i, &d);
+        if (!s) continue;
+        if (!d.exempt) snx_socket_shutdown(s, how);
+        snx_socket_unref(s);
+    }
+    return reply(0, ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_Close(SvcObj* self, i32 fd, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
     SnxSocket* s = NULL;
     if (fd >= 0 && fd < BSD_MAX_FD) {
         pm_lock(&b->lk);
@@ -497,129 +611,27 @@ static int bsd_close(Bsd* b, IpcCtx* c) {
         memset(&b->fd[fd], 0, sizeof b->fd[fd]);
         pm_unlock(&b->lk);
     }
-    if (!s) return reply(c, -SNX_EBADF);
+    if (!s) return reply(-SNX_EBADF, ret, bsd_errno);
     snx_socket_unref(s);
     LOGV("bsd: Close(%d)\n", fd);
-    return reply(c, 0);
+    return reply(0, ret, bsd_errno);
 }
-
-static int bsd_disp(SvcObj* o, IpcCtx* c) {
-    Bsd* b = o->data;
-    i32 fd = (i32)in32(c, 0);
-    switch (c->cmd) {
-        case 0: /* RegisterClient */
-        case 33: /* RegisterClientShared */ out32(c, 0); return 0;
-        case 1: return 0; /* StartMonitoring */
-        case 2: return bsd_socket(b, c, 0);
-        case 3: return bsd_socket(b, c, 1);   /* SocketExempt */
-        case 4: return reply(c, -SNX_ENOENT); /* Open: no devices */
-        case 5: return bsd_select(b, c);
-        case 6: return bsd_poll(b, c);
-        case 8:
-        case 25: return reply(c, do_recv(b, c, fd, c->cmd == 8 ? in32(c, 4) : 0, 0, 0, NULL)); /* Recv, Read */
-        case 9: {                                                                              /* RecvFrom */
-            u64 aa, an;
-            u32 alen = 0;
-            buf_out(c, 1, &aa, &an);
-            int64_t r = do_recv(b, c, fd, in32(c, 4), aa, an, &alen);
-            return reply_len(c, r, alen);
-        }
-        case 10:
-        case 24: return reply(c, do_send(b, c, fd, c->cmd == 10 ? in32(c, 4) : 0, NULL)); /* Send, Write */
-        case 11: {                                                                        /* SendTo */
-            u64 aa, an;
-            SnxSockAddr to;
-            buf_in(c, 1, &aa, &an);
-            if (!aa || !an) return reply(c, do_send(b, c, fd, in32(c, 4), NULL));
-            int r = addr_in(aa, an, &to);
-            return reply(c, r ? r : do_send(b, c, fd, in32(c, 4), &to));
-        }
-        case 12: { /* Accept */
-            u64 aa, an;
-            buf_out(c, 0, &aa, &an);
-            BsdFd d;
-            SnxSocket* s = fd_get(b, fd, &d);
-            if (!s) return reply_len(c, -SNX_EBADF, 0);
-            SnxSocket* n;
-            SnxSockAddr peer;
-            int r = snx_socket_accept(s, &n, &peer, snx_socket_nonblocking(s)); /* FreeBSD inherits O_NONBLOCK */
-            snx_socket_unref(s);
-            if (r) return reply_len(c, r, 0);
-            r = fd_add(b, n, d.flags & (BSD_O_NONBLOCK | BSD_O_NONBLOCK_NX), 0);
-            return reply_len(c, r, r < 0 ? 0 : addr_out(&peer, aa, an));
-        }
-        case 13:   /* Bind */
-        case 14: { /* Connect */
-            u64 aa, an;
-            SnxSockAddr sa;
-            buf_in(c, 0, &aa, &an);
-            int r = addr_in(aa, an, &sa);
-            if (r) return reply(c, r);
-            WITH_SOCKET(fd);
-            (void)d;
-            if (c->cmd == 13)
-                r = snx_socket_bind(s, &sa);
-            else if (!network_reachable(&sa))
-                r = -SNX_ENETUNREACH;
-            else {
-                r = snx_socket_connect(s, &sa);
-                if (r == -SNX_EISCONN) r = 0; /* Eden: some games connect twice */
-            }
-            snx_socket_unref(s);
-            return reply(c, r);
-        }
-        case 15:
-        case 16: return bsd_name(b, c, c->cmd == 15); /* GetPeerName, GetSockName */
-        case 17: return bsd_getsockopt(b, c);
-        case 18: { /* Listen */
-            WITH_SOCKET(fd);
-            (void)d;
-            int r = snx_socket_listen(s, (int)in32(c, 4));
-            snx_socket_unref(s);
-            return reply(c, r);
-        }
-        case 19: return bsd_ioctl(b, c);
-        case 20: return bsd_fcntl(b, c);
-        case 21: return bsd_setsockopt(b, c);
-        case 22: { /* Shutdown */
-            WITH_SOCKET(fd);
-            (void)d;
-            int r = snx_socket_shutdown(s, (int)in32(c, 4));
-            snx_socket_unref(s);
-            return reply(c, r);
-        }
-        case 23: { /* ShutdownAllSockets */
-            int how = (int)in32(c, 0);
-            for (int i = 0; i < BSD_MAX_FD; i++) {
-                BsdFd d;
-                SnxSocket* s = fd_get(b, i, &d);
-                if (!s) continue;
-                if (!d.exempt) snx_socket_shutdown(s, how);
-                snx_socket_unref(s);
-            }
-            return reply(c, 0);
-        }
-        case 26: return bsd_close(b, c);
-        case 27: { /* DuplicateSocket: bsd:s only (Eden) */
-            if (!b->system) return reply(c, -SNX_EINVAL);
-            WITH_SOCKET(fd);
-            return reply(c, fd_add(b, s, d.flags, d.exempt));
-        }
-        case 31: { /* EventFd(u64 initval, u32 flags) */
-            u32 flags = in32(c, 8);
-            SnxSocket* s;
-            int r = snx_socket_eventfd(&s, in64(c, 0), flags & BSD_EFD_SEMAPHORE);
-            if (r) return reply(c, r);
-            if (flags & BSD_EFD_NONBLOCK) snx_socket_set_nonblocking(s, 1);
-            return reply(c, fd_add(b, s, (flags & BSD_EFD_NONBLOCK) ? BSD_O_NONBLOCK_NX : 0, 0));
-        }
-        case 32: return reply(c, 0); /* RegisterResourceStatisticsName */
-    }
-    if (ipc_warn_once(o->name, c->cmd)) WARN("  [not implemented] %s cmd %u -> EOPNOTSUPP\n", o->name, c->cmd);
-    return reply(c, -SNX_EOPNOTSUPP);
+/* bsd:s only (Eden) */
+static int nn_socket_sf_IClient_DuplicateSocket(SvcObj* self, i32 fd, u64 reserved, i32* ret, u32* bsd_errno) {
+    Bsd* b = self->data;
+    if (!b->system) return reply(-SNX_EINVAL, ret, bsd_errno);
+    WITH_SOCKET(fd);
+    return reply(fd_add(b, s, d.flags, d.exempt), ret, bsd_errno);
+}
+static int nn_socket_sf_IClient_EventFd(SvcObj* self, u64 initval, u32 flags, i32* ret, u32* bsd_errno) {
+    SnxSocket* s;
+    int r = snx_socket_eventfd(&s, initval, flags & BSD_EFD_SEMAPHORE);
+    if (r) return reply(r, ret, bsd_errno);
+    if (flags & BSD_EFD_NONBLOCK) snx_socket_set_nonblocking(s, 1);
+    return reply(fd_add(self->data, s, (flags & BSD_EFD_NONBLOCK) ? BSD_O_NONBLOCK_NX : 0, 0), ret, bsd_errno);
 }
 static SvcObj* bsd_new(const char* name, int system) {
-    SvcObj* o = svcobj_new(name, bsd_disp, sizeof(Bsd));
+    SvcObj* o = svcobj_new(name, nn_socket_sf_IClient_dispatch, sizeof(Bsd));
     Bsd* b = o->data;
     pm_init(&b->lk);
     b->system = system;
@@ -628,7 +640,4 @@ static SvcObj* bsd_new(const char* name, int system) {
 }
 SvcObj* new_bsd_u(void) { return bsd_new("bsd:u", 0); }
 SvcObj* new_bsd_s(void) { return bsd_new("bsd:s", 1); }
-
-/* bsdcfg: the interface configuration, which the system's own services use. Nothing a game changes */
-static int bsdcfg_disp(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
-SvcObj* new_bsdcfg(void) { return svcobj_new("bsdcfg", bsdcfg_disp, 0); }
+SvcObj* new_bsdcfg(void) { return nn_bsdsocket_cfg_ServerInterface_new(0); }

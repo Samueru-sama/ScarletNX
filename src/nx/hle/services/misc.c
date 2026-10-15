@@ -2,23 +2,25 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* the smaller services, most of which answer success: apm, lm, pctl, friend, ns, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin */
+/* the smaller services, most of which answer success: apm, lm, pctl, friend, ns, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin.
+   Their interfaces are in misc.swipc */
 #include "hle/services/services_int.h"
+#include "hle/services/misc.swipc.inc"
 /* ================================================================ apm and misc */
-static int apm_session(SvcObj* o, IpcCtx* c) {
-    (void)o;
-    if (c->cmd == 1) out32(c, 0x00020003);
+static int nn_apm_ISession_GetPerformanceConfiguration(SvcObj* self, nn_apm_PerformanceMode mode,
+                                                       nn_apm_PerformanceConfiguration* config) {
+    *config = 0x00020003;
     return 0;
 }
-static int apm_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: out_obj(c, svcobj_new("apm:ISession", apm_session, 0)); return 0;
-        case 1: out32(c, (u32)g_hle_docked); return 0;
-        case 6: out8(c, 0); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_apm_IManager_OpenSession(SvcObj* self, SvcObj** session) {
+    *session = nn_apm_ISession_new(0);
+    return 0;
 }
-SvcObj* new_apm(void) { return svcobj_new("apm", apm_disp, 0); }
+static int nn_apm_IManager_GetPerformanceMode(SvcObj* self, nn_apm_PerformanceMode* mode) {
+    *mode = g_hle_docked;
+    return 0;
+}
+SvcObj* new_apm(void) { return nn_apm_IManager_new(0); }
 /* an unsigned LEB128 number of lm's packet fields; 0 past the end */
 static u64 uleb128(const u8* p, u64 s, u64* i) {
     u64 v = 0;
@@ -29,473 +31,480 @@ static u64 uleb128(const u8* p, u64 s, u64* i) {
     }
     return v;
 }
-static int lm_logger(SvcObj* o, IpcCtx* c) {
-    (void)o;
-    if (c->cmd == 0) {
-        u64 a, s;
-        buf_in(c, 0, &a, &s);
-        if (a && s > 0x18) { /* lm packet: 0x18 hdr, then fields {uleb128 key; uleb128 size; data} */
-            u8* p = GP(a);
-            u64 i = 0x18;
-            char msg[1024];
-            u64 n = 0;
-            while (i < s) {
-                u64 t = uleb128(p, s, &i), l = uleb128(p, s, &i);
-                if (l > s - i) break;
-                if (t == 2 && n + l < 1000) { /* the text */
-                    memcpy(msg + n, p + i, l);
-                    n += l;
-                }
-                i += l;
+static int nn_lm_ILogger_Log(SvcObj* self, IpcBuf message) {
+    u64 s = message.size;
+    if (message.addr && s > 0x18) { /* lm packet: 0x18 hdr, then fields {uleb128 key; uleb128 size; data} */
+        u8* p = GP(message.addr);
+        u64 i = 0x18;
+        char msg[1024];
+        u64 n = 0;
+        while (i < s) {
+            u64 t = uleb128(p, s, &i), l = uleb128(p, s, &i);
+            if (l > s - i) break;
+            if (t == 2 && n + l < 1000) { /* the text */
+                memcpy(msg + n, p + i, l);
+                n += l;
             }
-            if (n) {
-                msg[n] = 0;
-                LOG("[game lm] %s%s", msg, (msg[n - 1] == '\n') ? "" : "\n");
-            }
+            i += l;
+        }
+        if (n) {
+            msg[n] = 0;
+            LOG("[game lm] %s%s", msg, (msg[n - 1] == '\n') ? "" : "\n");
         }
     }
     return 0;
 }
-static int lm_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("ILogger", lm_logger, 0));
-        return 0;
-    }
-    return quiet_ok(o, c);
-}
-SvcObj* new_lm(void) { return svcobj_new("lm", lm_disp, 0); }
-
-static int pctl_obj(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 1001:
-        case 1002:
-        case 1004: return 0;
-        case 1031: out8(c, 0); return 0;
-        case 1032: out32(c, 0); return 0;
-        case 1403: out8(c, 0); return 0;
-        case 1039: out32(c, 0); return 0;
-        case 1065: out8(c, 1); return 0; /* IsStereoVisionPermitted */
-        case 1453: out8(c, 0); return 0; /* IsPlayTimerEnabled */
-        case 1432:
-        case 1433:
-        case 1434:
-        case 1457:
-        case 1473: out_copy_h(c, ev_handle(kevent_new("pctl ev"))); return 0; /* 1473 GetUnlinkedEvent */
-    }
-    return stub_ok(o, c);
-}
-static int pctl_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0 || c->cmd == 1) {
-        out_obj(c, svcobj_new("IParentalControlService", pctl_obj, 0));
-        return 0;
-    }
-    return quiet_ok(o, c);
-}
-SvcObj* new_pctl(void) { return svcobj_new("pctl", pctl_disp, 0); }
-
-static int friend_svc(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_copy_h(c, ev_handle(kevent_new("friend")));
-        return 0;
-    }
-    if (c->cmd >= 10100 && c->cmd <= 10102) {
-        out32(c, 0);
-        return 0;
-    }
-    return stub_ok(o, c);
-}
-static int friend_notif(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_copy_h(c, ev_handle(kevent_new("friend notif")));
-        return 0;
-    }
-    if (c->cmd == 2) return RC(121, 15);
-    return stub_ok(o, c);
-}
-static int friend_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("IFriendService", friend_svc, 0));
-        return 0;
-    }
-    if (c->cmd == 1) {
-        out_obj(c, svcobj_new("INotificationService", friend_notif, 0));
-        return 0;
-    }
-    if (c->cmd == 2) {
-        out_obj(c, quiet("IDaemonSuspendSessionService"));
-        return 0;
-    }
-    return quiet_ok(o, c);
-}
-SvcObj* new_friend(void) { return svcobj_new("friend", friend_disp, 0); }
-static int ns_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 7996:
-        case 7989:
-        case 7995:
-        case 7988:
-        case 7994:
-        case 7997:
-        case 7998:
-        case 7999:
-        case 7991: out_obj(c, quiet("ns:sub")); return 0;
-    }
-    return stub_ok(o, c);
-}
-SvcObj* new_ns(void) { return svcobj_new("ns", ns_disp, 0); }
-
-static int ssl_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, quiet("ISslContext"));
-        return 0;
-    }
-    return quiet_ok(o, c);
-}
-SvcObj* new_ssl(void) { return svcobj_new("ssl", ssl_disp, 0); }
-static int prepo_disp(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
-SvcObj* new_prepo(void) { return svcobj_new("prepo", prepo_disp, 0); }
-static int psm_session(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_copy_h(c, ev_handle(kevent_new("psm")));
-        return 0;
-    }
-    return stub_ok(o, c);
-}
-static int psm_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: out32(c, 100); return 0;
-        case 1: out32(c, 1); return 0;
-        case 7: out_obj(c, svcobj_new("IPsmSession", psm_session, 0)); return 0;
-        case 4:
-        case 5: out8(c, 0); return 0;
-    }
-    return stub_ok(o, c);
-}
-SvcObj* new_psm(void) { return svcobj_new("psm", psm_disp, 0); }
-static int fatal_disp(SvcObj* o, IpcCtx* c) {
-    (void)o;
-    fatal("The game called fatal:u (code %x)", in32(c, 0));
+static int nn_lm_ILogService_OpenLogger(SvcObj* self, u64 pid, SvcObj** logger) {
+    *logger = nn_lm_ILogger_new(0);
     return 0;
 }
-SvcObj* new_fatal(void) { return svcobj_new("fatal:u", fatal_disp, 0); }
+SvcObj* new_lm(void) { return nn_lm_ILogService_new(0); }
+
+static int nn_pctl_detail_ipc_IParentalControlService_IsStereoVisionPermitted(SvcObj* self, u8* permitted) {
+    *permitted = 1;
+    return 0;
+}
+static int nn_pctl_detail_ipc_IParentalControlService_GetSynchronizationEvent(SvcObj* self, u32* event) {
+    return new_event(event, "pctl ev", 0);
+}
+static int nn_pctl_detail_ipc_IParentalControlService_GetPlayTimerEventToRequestSuspension(SvcObj* self, u32* event) {
+    return new_event(event, "pctl ev", 0);
+}
+static int nn_pctl_detail_ipc_IParentalControlService_GetUnlinkedEvent(SvcObj* self, u32* event) {
+    return new_event(event, "pctl ev", 0);
+}
+static int nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateService(SvcObj* self, u64 pid, SvcObj** service) {
+    *service = nn_pctl_detail_ipc_IParentalControlService_new(0);
+    return 0;
+}
+static int nn_pctl_detail_ipc_IParentalControlServiceFactory_CreateServiceWithoutInitialize(SvcObj* self, u64 pid,
+                                                                                            SvcObj** service) {
+    *service = nn_pctl_detail_ipc_IParentalControlService_new(0);
+    return 0;
+}
+SvcObj* new_pctl(void) { return nn_pctl_detail_ipc_IParentalControlServiceFactory_new(0); }
+
+static int nn_friends_detail_ipc_IFriendService_GetCompletionEvent(SvcObj* self, u32* event) {
+    return new_event(event, "friend", 0);
+}
+static int nn_friends_detail_ipc_INotificationService_GetEvent(SvcObj* self, u32* event) {
+    return new_event(event, "friend notif", 0);
+}
+static int nn_friends_detail_ipc_INotificationService_Pop(SvcObj* self,
+                                                          nn_friends_detail_ipc_SizedNotificationInfo* info) {
+    return RC(121, 15); /* no notification */
+}
+static int nn_friends_detail_ipc_IServiceCreator_CreateFriendService(SvcObj* self, SvcObj** service) {
+    *service = nn_friends_detail_ipc_IFriendService_new(0);
+    return 0;
+}
+static int nn_friends_detail_ipc_IServiceCreator_CreateNotificationService(SvcObj* self, const nn_account_Uid* uid,
+                                                                           SvcObj** service) {
+    *service = nn_friends_detail_ipc_INotificationService_new(0);
+    return 0;
+}
+static int nn_friends_detail_ipc_IServiceCreator_CreateDaemonSuspendSessionService(SvcObj* self, SvcObj** service) {
+    *service = nn_friends_detail_ipc_IDaemonSuspendSessionService_new(0);
+    return 0;
+}
+SvcObj* new_friend(void) { return nn_friends_detail_ipc_IServiceCreator_new(0); }
+
+static int nn_ns_detail_IServiceGetterInterface_GetDynamicRightsInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IDynamicRightsInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetReadOnlyApplicationControlDataInterface(SvcObj* self,
+                                                                                           SvcObj** iface) {
+    *iface = nn_ns_detail_IReadOnlyApplicationControlDataInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetReadOnlyApplicationRecordInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IReadOnlyApplicationRecordInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetECommerceInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IECommerceInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetApplicationVersionInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IApplicationVersionInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetFactoryResetInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IFactoryResetInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetAccountProxyInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IAccountProxyInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetApplicationManagerInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IApplicationManagerInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetDownloadTaskInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IDownloadTaskInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetContentManagementInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IContentManagementInterface_new(0);
+    return 0;
+}
+static int nn_ns_detail_IServiceGetterInterface_GetDocumentInterface(SvcObj* self, SvcObj** iface) {
+    *iface = nn_ns_detail_IDocumentInterface_new(0);
+    return 0;
+}
+SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(0); }
+
+static int nn_ssl_sf_ISslService_CreateContext(SvcObj* self, nn_ssl_sf_SslVersion ssl_version, u64 pid,
+                                               SvcObj** context) {
+    *context = nn_ssl_sf_ISslContext_new(0);
+    return 0;
+}
+SvcObj* new_ssl(void) { return nn_ssl_sf_ISslService_new(0); }
+SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(0); }
+static int nn_psm_IPsmSession_BindStateChangeEvent(SvcObj* self, u32* event) { return new_event(event, "psm", 0); }
+static int nn_psm_IPsmServer_GetBatteryChargePercentage(SvcObj* self, u32* percentage) {
+    *percentage = 100;
+    return 0;
+}
+static int nn_psm_IPsmServer_GetChargerType(SvcObj* self, nn_psm_ChargerType* charger_type) {
+    *charger_type = 1;
+    return 0;
+}
+static int nn_psm_IPsmServer_OpenSession(SvcObj* self, SvcObj** session) {
+    *session = nn_psm_IPsmSession_new(0);
+    return 0;
+}
+SvcObj* new_psm(void) { return nn_psm_IPsmServer_new(0); }
+static int nn_fatalsrv_IService_ThrowFatal(SvcObj* self, u32 result, u64 pid) {
+    fatal("The game called fatal:u (code %x)", result);
+    return 0;
+}
+static int nn_fatalsrv_IService_ThrowFatalWithPolicy(SvcObj* self, u32 result, u32 policy, u64 pid) {
+    fatal("The game called fatal:u (code %x)", result);
+    return 0;
+}
+static int nn_fatalsrv_IService_ThrowFatalWithCpuContext(SvcObj* self, u32 result, u32 policy, u64 pid,
+                                                         IpcBuf context) {
+    fatal("The game called fatal:u (code %x)", result);
+    return 0;
+}
+SvcObj* new_fatal(void) { return nn_fatalsrv_IService_new(0); }
 #define MM_REQ_MAX 32
 static struct {
     u64 random_ctr; /* random_fill's counter */
     struct {
         u32 id, module, rate;
-    } mm[MM_REQ_MAX]; /* mm:u's requests (mm_disp) */
+    } mm[MM_REQ_MAX]; /* mm:u's requests */
     u32 mm_next;
     KShmem* irs_shm; /* GetIrsensorSharedMemoryHandle's, made by the first call */
 } misc = {.random_ctr = 0x9E3779B97F4A7C15ull, .mm_next = 1};
 /* random bytes for csrng and spl: splitmix64 over a shared counter, so parallel callers never share a state */
-static void random_fill(u8* d, u64 n) {
-    for (u64 i = 0; i < n; i += 8) {
+static int random_fill(IpcBuf b) {
+    if (!b.addr) return 0;
+    u8* d = GP(b.addr);
+    for (u64 i = 0; i < b.size; i += 8) {
         u64 z = __atomic_add_fetch(&misc.random_ctr, 0x9E3779B97F4A7C15ull, __ATOMIC_RELAXED);
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
         z ^= z >> 31;
-        memcpy(d + i, &z, n - i < 8 ? n - i : 8);
+        memcpy(d + i, &z, b.size - i < 8 ? b.size - i : 8);
     }
+    return 0;
 }
-static int csrng_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) { /* GenerateRandomBytes */
-        u64 a, s;
-        buf_out(c, 0, &a, &s);
-        if (a) random_fill(GP(a), s);
-        return 0;
-    }
-    return stub_ok(o, c);
-}
-SvcObj* new_csrng(void) { return svcobj_new("csrng", csrng_disp, 0); }
-/* mm:u (multimedia clock requests): 4 Initialize -> id, 5 Finalize(id), 6 SetAndWait(id,min,max), 7 Get(id) -> rate,
-   and the old forms 0-3 that name the module instead of an id. Get has to return what SetAndWait asked for: NvMM
-   reads the decoder clock back. Each Initialize is its own request with a new id, as the SDK keeps them */
+static int nn_spl_detail_IRandomInterface_GenerateRandomBytes(SvcObj* self, IpcBuf data) { return random_fill(data); }
+SvcObj* new_csrng(void) { return nn_spl_detail_IRandomInterface_new(0); }
+/* mm:u (multimedia clock requests): Get has to return what SetAndWait asked for, since NvMM reads the decoder clock
+   back. Each Initialize is its own request with a new id, as the SDK keeps them. The old forms name the module
+   instead of the id */
 static int mm_find(u32 key, int by_module) { /* g_klock held */
     for (int i = 0; i < MM_REQ_MAX; i++)
         if (misc.mm[i].id && (by_module ? misc.mm[i].module == key : misc.mm[i].id == key)) return i;
     return -1;
 }
-static int mm_disp(SvcObj* o, IpcCtx* c) {
-    u32 key = in32(c, 0);
-    int old = c->cmd < 4;
-    switch (c->cmd) {
-        case 0:
-        case 4: { /* Initialize(module, priority, event clear mode) */
-            pm_lock(&g_klock);
-            u32 id = misc.mm_next++;
-            int i = 0;
-            while (i < MM_REQ_MAX && misc.mm[i].id) i++;
-            if (i < MM_REQ_MAX) {
-                misc.mm[i].id = id;
-                misc.mm[i].module = key;
-                misc.mm[i].rate = 0;
-            }
-            pm_unlock(&g_klock);
-            if (i == MM_REQ_MAX) WARN("mm:u: more than %d clock requests\n", MM_REQ_MAX);
-            if (!old) out32(c, id);
-            return 0;
-        }
-        case 1:
-        case 5: { /* Finalize */
-            pm_lock(&g_klock);
-            int i = mm_find(key, old);
-            if (i >= 0) misc.mm[i].id = 0;
-            pm_unlock(&g_klock);
-            return 0;
-        }
-        case 2:
-        case 6: { /* SetAndWait(.., min, max) */
-            pm_lock(&g_klock);
-            int i = mm_find(key, old);
-            if (i >= 0) misc.mm[i].rate = in32(c, 4);
-            pm_unlock(&g_klock);
-            return 0;
-        }
-        case 3:
-        case 7: { /* Get */
-            pm_lock(&g_klock);
-            int i = mm_find(key, old);
-            u32 r = i >= 0 ? misc.mm[i].rate : 0;
-            pm_unlock(&g_klock);
-            out32(c, r);
-            return 0;
-        }
+static u32 mm_initialize(u32 module) {
+    pm_lock(&g_klock);
+    u32 id = misc.mm_next++;
+    int i = 0;
+    while (i < MM_REQ_MAX && misc.mm[i].id) i++;
+    if (i < MM_REQ_MAX) {
+        misc.mm[i].id = id;
+        misc.mm[i].module = module;
+        misc.mm[i].rate = 0;
     }
-    return stub_ok(o, c);
+    pm_unlock(&g_klock);
+    if (i == MM_REQ_MAX) WARN("mm:u: more than %d clock requests\n", MM_REQ_MAX);
+    return id;
 }
-SvcObj* new_mm(void) { return svcobj_new("mm:u", mm_disp, 0); }
-static int nfp_user(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 1: out32(c, 0); return 0;
-        case 17:
-        case 18: out_copy_h(c, ev_handle(kevent_new("nfp"))); return 0;
-        case 19: out32(c, 1); return 0;
-    }
-    return stub_ok(o, c);
+static int mm_finalize(u32 key, int by_module) {
+    pm_lock(&g_klock);
+    int i = mm_find(key, by_module);
+    if (i >= 0) misc.mm[i].id = 0;
+    pm_unlock(&g_klock);
+    return 0;
 }
-static int nfp_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("IUser", nfp_user, 0));
-        return 0;
-    }
-    return quiet_ok(o, c);
+static int mm_set(u32 key, int by_module, u32 min) {
+    pm_lock(&g_klock);
+    int i = mm_find(key, by_module);
+    if (i >= 0) misc.mm[i].rate = min;
+    pm_unlock(&g_klock);
+    return 0;
 }
-SvcObj* new_nfp(void) { return svcobj_new("nfp:user", nfp_disp, 0); }
-static int caps_disp(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
-SvcObj* new_caps(void) { return svcobj_new("caps", caps_disp, 0); }
+static int mm_get(u32 key, int by_module, u32* current) {
+    pm_lock(&g_klock);
+    int i = mm_find(key, by_module);
+    *current = i >= 0 ? misc.mm[i].rate : 0;
+    pm_unlock(&g_klock);
+    return 0;
+}
+static int nn_mmnv_IRequest_InitializeOld(SvcObj* self, nn_mmnv_Module module, nn_mmnv_Priority priority,
+                                          u32 event_clear_mode) {
+    mm_initialize(module);
+    return 0;
+}
+static int nn_mmnv_IRequest_FinalizeOld(SvcObj* self, nn_mmnv_Module module) { return mm_finalize(module, 1); }
+static int nn_mmnv_IRequest_SetAndWaitOld(SvcObj* self, nn_mmnv_Module module, nn_mmnv_Setting min,
+                                          nn_mmnv_Setting max) {
+    return mm_set(module, 1, min);
+}
+static int nn_mmnv_IRequest_GetOld(SvcObj* self, nn_mmnv_Module module, nn_mmnv_Setting* current) {
+    return mm_get(module, 1, current);
+}
+static int nn_mmnv_IRequest_Initialize(SvcObj* self, nn_mmnv_Module module, nn_mmnv_Priority priority,
+                                       u32 event_clear_mode, u32* request_id) {
+    *request_id = mm_initialize(module);
+    return 0;
+}
+static int nn_mmnv_IRequest_Finalize(SvcObj* self, u32 request_id) { return mm_finalize(request_id, 0); }
+static int nn_mmnv_IRequest_SetAndWait(SvcObj* self, u32 request_id, nn_mmnv_Setting min, nn_mmnv_Setting max) {
+    return mm_set(request_id, 0, min);
+}
+static int nn_mmnv_IRequest_Get(SvcObj* self, u32 request_id, nn_mmnv_Setting* current) {
+    return mm_get(request_id, 0, current);
+}
+SvcObj* new_mm(void) { return nn_mmnv_IRequest_new(0); }
+static int nn_nfp_detail_IUser_AttachActivateEvent(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* event) {
+    return new_event(event, "nfp", 0);
+}
+static int nn_nfp_detail_IUser_AttachDeactivateEvent(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
+                                                     u32* event) {
+    return new_event(event, "nfp", 0);
+}
+static int nn_nfp_detail_IUser_GetState(SvcObj* self, u32* state) {
+    *state = 1; /* initialized */
+    return 0;
+}
+static int nn_nfp_detail_IUserManager_CreateUserInterface(SvcObj* self, SvcObj** user) {
+    *user = nn_nfp_detail_IUser_new(0);
+    return 0;
+}
+SvcObj* new_nfp(void) { return nn_nfp_detail_IUserManager_new(0); }
+SvcObj* new_caps(void) { return nn_capsrv_sf_IAlbumApplicationService_new(0); }
 /* BCAT. behave like an offline console: sync completes immediately (Done/OK) and the delivery cache
    is empty. games do wait on the progress object, so it has to exist */
-static int bcat_progress(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: {
-            KEvent* e = kevent_new("bcat progress");
-            e->signaled = 1;
-            out_copy_h(c, ev_handle(e));
-            return 0;
-        } /* GetEvent */
-        case 1: {
-            u64 a, sz;
-            buf_out(c, 0, &a, &sz);
-            if (a && sz) {
-                memset(GP(a), 0, sz);
-                if (sz >= 8) {
-                    u32 st = 9, rs = 0;
-                    memcpy(GP(a), &st, 4);
-                    memcpy(GP(a) + 4, &rs, 4);
-                }
-            }
-            return 0;
-        } /* GetImpl: Done/OK */
-    }
-    return stub_ok(o, c);
+static int nn_bcat_detail_ipc_IDeliveryCacheProgressService_GetEvent(SvcObj* self, u32* event) {
+    return new_event(event, "bcat progress", 1);
 }
-static int bcat_dir(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: return 0; /* Open */
-        case 1:
-        case 2: out32(c, 0); return 0;
-    } /* Read / GetCount: no files */
-    return stub_ok(o, c);
-}
-static int bcat_file(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: return RC(122, 2); /* Open: not found */
-        case 1: out64(c, 0); return 0;
-        case 2: out64(c, 0); return 0;
-        case 3: {
-            u8 d[0x10];
-            memset(d, 0, sizeof d);
-            outbytes(c, d, 0x10);
-            return 0;
+static int nn_bcat_detail_ipc_IDeliveryCacheProgressService_GetImpl(SvcObj* self, IpcBuf impl) { /* Done/OK */
+    if (impl.addr && impl.size) {
+        memset(GP(impl.addr), 0, impl.size);
+        if (impl.size >= 8) {
+            u32 st = 9, rs = 0;
+            memcpy(GP(impl.addr), &st, 4);
+            memcpy(GP(impl.addr) + 4, &rs, 4);
         }
     }
-    return stub_ok(o, c);
+    return 0;
 }
-static int bcat_storage(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: out_obj(c, svcobj_new("IDeliveryCacheFileService", bcat_file, 0)); return 0;
-        case 1: out_obj(c, svcobj_new("IDeliveryCacheDirectoryService", bcat_dir, 0)); return 0;
-        case 10: out32(c, 0); return 0;
-    } /* EnumerateDeliveryCacheDirectory: none */
-    return stub_ok(o, c);
+static int nn_bcat_detail_ipc_IDeliveryCacheFileService_Open(SvcObj* self, const nn_bcat_DirectoryName* directory_name,
+                                                             const nn_bcat_FileName* file_name) {
+    return RC(122, 2); /* not found */
 }
-static int bcat_service(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 10100:
-        case 10101:
-        case 20100:
-        case 20101:
-        case 20300:
-        case 20301: out_obj(c, svcobj_new("IDeliveryCacheProgressService", bcat_progress, 0)); return 0;
+static int nn_bcat_detail_ipc_IDeliveryCacheStorageService_CreateFileService(SvcObj* self, SvcObj** file) {
+    *file = nn_bcat_detail_ipc_IDeliveryCacheFileService_new(0);
+    return 0;
+}
+static int nn_bcat_detail_ipc_IDeliveryCacheStorageService_CreateDirectoryService(SvcObj* self, SvcObj** directory) {
+    *directory = nn_bcat_detail_ipc_IDeliveryCacheDirectoryService_new(0);
+    return 0;
+}
+static int sync_progress(SvcObj** progress) {
+    *progress = nn_bcat_detail_ipc_IDeliveryCacheProgressService_new(0);
+    return 0;
+}
+static int nn_bcat_detail_ipc_IBcatService_RequestSyncDeliveryCache(SvcObj* self, SvcObj** progress) {
+    return sync_progress(progress);
+}
+static int nn_bcat_detail_ipc_IBcatService_RequestSyncDeliveryCacheWithDirectoryName(
+    SvcObj* self, const nn_bcat_DirectoryName* directory_name, SvcObj** progress) {
+    return sync_progress(progress);
+}
+static int nn_bcat_detail_ipc_IBcatService_RequestSyncDeliveryCacheWithApplicationId(SvcObj* self,
+                                                                                     nn_ApplicationId application_id,
+                                                                                     u32 unknown, SvcObj** progress) {
+    return sync_progress(progress);
+}
+static int nn_bcat_detail_ipc_IBcatService_RequestSyncDeliveryCacheWithApplicationIdAndDirectoryName(
+    SvcObj* self, nn_ApplicationId application_id, u32 unknown, const nn_bcat_DirectoryName* directory_name,
+    SvcObj** progress) {
+    return sync_progress(progress);
+}
+static int nn_bcat_detail_ipc_IBcatService_GetDeliveryCacheStorageUpdateNotifier(SvcObj* self,
+                                                                                 nn_ApplicationId application_id,
+                                                                                 SvcObj** notifier) {
+    *notifier = nn_bcat_detail_ipc_INotifierService_new(0);
+    return 0;
+}
+static int nn_bcat_detail_ipc_IBcatService_RequestSuspendDeliveryTask(SvcObj* self, nn_ApplicationId application_id,
+                                                                      SvcObj** suspension) {
+    *suspension = nn_bcat_detail_ipc_IDeliveryTaskSuspensionService_new(0);
+    return 0;
+}
+static int nn_bcat_detail_ipc_INotifierService_GetEvent(SvcObj* self, u32* event) {
+    return new_event(event, "bcat storage update", 0);
+}
+static int nn_bcat_detail_ipc_IServiceCreator_CreateBcatService(SvcObj* self, u64 pid, SvcObj** service) {
+    *service = nn_bcat_detail_ipc_IBcatService_new(0);
+    return 0;
+}
+static int nn_bcat_detail_ipc_IServiceCreator_CreateDeliveryCacheStorageService(SvcObj* self, u64 pid,
+                                                                                SvcObj** service) {
+    *service = nn_bcat_detail_ipc_IDeliveryCacheStorageService_new(0);
+    return 0;
+}
+static int nn_bcat_detail_ipc_IServiceCreator_CreateDeliveryCacheStorageServiceWithApplicationId(
+    SvcObj* self, nn_ApplicationId application_id, SvcObj** service) {
+    *service = nn_bcat_detail_ipc_IDeliveryCacheStorageService_new(0);
+    return 0;
+}
+SvcObj* new_bcat(void) { return nn_bcat_detail_ipc_IServiceCreator_new(0); }
+static int nn_ec_IPurchaseEventManager_GetPurchasedEventReadableHandle(SvcObj* self, u32* event) {
+    return new_event(event, "aoc purchase", 0);
+}
+static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfo(SvcObj* self,
+                                                               nn_ec_srv_detail_PurchasedProductInfo* info) {
+    return RC(164, 400); /* nothing purchased */
+}
+static int nn_ec_IPurchaseEventManager_PopPurchasedProductInfoWithUid(SvcObj* self, const nn_account_Uid* uid,
+                                                                      nn_ec_srv_detail_PurchasedProductInfo* info) {
+    return RC(164, 400);
+}
+/* the first add-on content id of the game's */
+static u64 aoc_base_id(void) { return (g_title_id & ~0xFFFull) + 0x1000; }
+static int nn_aocsrv_detail_IAddOnContentManager_GetAddOnContentBaseIdByApplicationId(
+    SvcObj* self, nn_ncm_ApplicationId application_id, u64* base_id) {
+    *base_id = aoc_base_id();
+    return 0;
+}
+static int nn_aocsrv_detail_IAddOnContentManager_GetAddOnContentBaseId(SvcObj* self, u64 pid, u64* base_id) {
+    *base_id = aoc_base_id();
+    return 0;
+}
+static int nn_aocsrv_detail_IAddOnContentManager_GetAddOnContentListChangedEvent(SvcObj* self, u32* event) {
+    return new_event(event, "aoc", 0);
+}
+static int nn_aocsrv_detail_IAddOnContentManager_GetAddOnContentListChangedEventWithProcessId(SvcObj* self, u64 pid,
+                                                                                              u32* event) {
+    return new_event(event, "aoc", 0);
+}
+static int nn_aocsrv_detail_IAddOnContentManager_CreateEcPurchasedEventManager(SvcObj* self, SvcObj** manager) {
+    *manager = nn_ec_IPurchaseEventManager_new(0);
+    return 0;
+}
+static int nn_aocsrv_detail_IAddOnContentManager_CreatePermanentEcPurchasedEventManager(SvcObj* self, u64 pid,
+                                                                                        SvcObj** manager) {
+    *manager = nn_ec_IPurchaseEventManager_new(0);
+    return 0;
+}
+/* offline: nifm's NotConnected, as acc's network requests answer */
+static int nn_ec_IContentsServiceManager_RequestContentsAuthorizationToken(SvcObj* self, const u8* nonce, u64 pid,
+                                                                           IpcBuf data, u32* event, SvcObj** async) {
+    return RC(110, 300);
+}
+static int nn_aocsrv_detail_IAddOnContentManager_CreateContentsServiceManager(SvcObj* self, SvcObj** manager) {
+    *manager = nn_ec_IContentsServiceManager_new(0);
+    return 0;
+}
+SvcObj* new_aoc(void) { return nn_aocsrv_detail_IAddOnContentManager_new(0); }
+/* the one shared memory, kept for the whole run */
+static int nn_irsensor_IIrSensorServer_GetIrsensorSharedMemoryHandle(SvcObj* self, u64 aruid, u32* shared_memory) {
+    KShmem* s = __atomic_load_n(&misc.irs_shm, __ATOMIC_ACQUIRE);
+    if (!s) {
+        KShmem* n = kshmem_new(0x8000, "irs");
+        kobj_ref(&n->o);
+        if (__atomic_compare_exchange_n(&misc.irs_shm, &s, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            s = n;
+        else
+            kobj_unref(&n->o); /* another thread made it first */
     }
-    return stub_ok(o, c);
+    *shared_memory = h_new(&s->o);
+    return 0;
 }
-static int bcat_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: out_obj(c, svcobj_new("IBcatService", bcat_service, 0)); return 0;
-        case 1:
-        case 2: out_obj(c, svcobj_new("IDeliveryCacheStorageService", bcat_storage, 0)); return 0;
-    }
-    return stub_ok(o, c);
+SvcObj* new_irs(void) { return nn_irsensor_IIrSensorServer_new(0); }
+static int nn_mii_detail_IStaticService_GetDatabaseService(SvcObj* self, i32 key_code, SvcObj** database) {
+    *database = nn_mii_detail_IDatabaseService_new(0);
+    return 0;
 }
-SvcObj* new_bcat(void) { return svcobj_new("bcat", bcat_disp, 0); }
-static int aoc_purchase(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 2) {
-        out_copy_h(c, ev_handle(kevent_new("aoc purchase")));
-        return 0;
-    }
-    if (c->cmd == 3 || c->cmd == 4) return RC(164, 400);
-    return stub_ok(o, c);
+SvcObj* new_mii(void) { return nn_mii_detail_IStaticService_new(0); }
+/* ldn: local wireless. Initialize and GetState follow the state in u[0] (an atomic: game threads call both),
+   AttachStateChangeEvent gives an event */
+static int nn_ldn_detail_IUserLocalCommunicationService_GetState(SvcObj* self, u32* state) {
+    *state = __atomic_load_n(&self->u[0], __ATOMIC_RELAXED) ? 1 : 0; /* Initialized, or None */
+    return 0;
 }
-static int aoc_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0:
-        case 1:
-        case 2:
-        case 3: out32(c, 0); return 0;                                 /* Count/List: no dlc */
-        case 4:                                                        /* GetAddOnContentBaseIdByApplicationId */
-        case 5: out64(c, (g_title_id & ~0xFFFull) + 0x1000); return 0; /* GetAddOnContentBaseId */
-        case 6:                                                        /* PrepareAddOnContentByApplicationId */
-        case 7:
-        case 9:
-        case 11:
-        case 12:
-        case 13:
-        case 50: return 0;
-        case 8:
-        case 10: out_copy_h(c, ev_handle(kevent_new("aoc"))); return 0; /* GetAddOnContentListChangedEvent */
-        case 100:
-        case 101: out_obj(c, svcobj_new("IPurchaseEventManager", aoc_purchase, 0)); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_ldn_detail_IUserLocalCommunicationService_AttachStateChangeEvent(SvcObj* self, u32* event) {
+    return new_event(event, "ldn state", 0);
 }
-SvcObj* new_aoc(void) { return svcobj_new("aoc:u", aoc_disp, 0); }
-static int irs_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 303: return 0; /* DeactivateIrsensor */
-        case 304: {         /* GetIrsensorSharedMemoryHandle: the one shared memory, kept for the whole run */
-            KShmem* s = __atomic_load_n(&misc.irs_shm, __ATOMIC_ACQUIRE);
-            if (!s) {
-                KShmem* n = kshmem_new(0x8000, "irs");
-                kobj_ref(&n->o);
-                if (__atomic_compare_exchange_n(&misc.irs_shm, &s, n, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-                    s = n;
-                else
-                    kobj_unref(&n->o); /* another thread made it first */
-            }
-            out_copy_h(c, h_new(&s->o));
-            return 0;
-        }
-        case 311: out32(c, 0); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_ldn_detail_IUserLocalCommunicationService_Initialize(SvcObj* self, u64 pid) {
+    __atomic_store_n(&self->u[0], 1, __ATOMIC_RELAXED);
+    return 0;
 }
-SvcObj* new_irs(void) { return svcobj_new("irs", irs_disp, 0); }
-static int mii_db(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0 || c->cmd == 2 || c->cmd == 3) {
-        out32(c, 0);
-        return 0;
-    }
-    return stub_ok(o, c);
+static int nn_ldn_detail_IUserLocalCommunicationService_InitializeWithVersion(SvcObj* self, i32 version, u64 pid) {
+    __atomic_store_n(&self->u[0], 1, __ATOMIC_RELAXED);
+    return 0;
 }
-static int mii_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("IDatabaseService", mii_db, 0));
-        return 0;
-    }
-    return quiet_ok(o, c);
+static int nn_ldn_detail_IUserLocalCommunicationService_Finalize(SvcObj* self) {
+    __atomic_store_n(&self->u[0], 0, __ATOMIC_RELAXED);
+    return 0;
 }
-SvcObj* new_mii(void) { return svcobj_new("mii:u", mii_disp, 0); }
-/* ldn: local wireless. Initialize and GetState follow the state, AttachStateChangeEvent gives an event. The rest
-   (opening an access point or station, scanning, connecting) is not implemented and logs */
-static int ldn_user(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: out32(c, o->u[0] ? 1 : 0); return 0;                           /* GetState: Initialized, or None */
-        case 100: out_copy_h(c, ev_handle(kevent_new("ldn state"))); return 0; /* AttachStateChangeEvent */
-        case 400:                                                              /* Initialize */
-        case 402: o->u[0] = 1; return 0;
-        case 401: o->u[0] = 0; return 0; /* Finalize */
-    }
-    return stub_ok(o, c);
+static int nn_ldn_detail_IUserServiceCreator_CreateUserLocalCommunicationService(SvcObj* self, SvcObj** service) {
+    *service = nn_ldn_detail_IUserLocalCommunicationService_new(0);
+    return 0;
 }
-static int ldn_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("IUserLocalCommunicationService", ldn_user, 0));
-        return 0;
-    }
-    return stub_ok(o, c);
+SvcObj* new_ldn(void) { return nn_ldn_detail_IUserServiceCreator_new(0); }
+static int nn_err_context_IWriterForApplication_CreateContextRegistrar(SvcObj* self, SvcObj** registrar) {
+    *registrar = nn_err_context_IContextRegistrar_new(0);
+    return 0;
 }
-SvcObj* new_ldn(void) { return svcobj_new("ldn:u", ldn_disp, 0); }
-static int ectx_disp(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
-SvcObj* new_ectx(void) { return svcobj_new("ectx:aw", ectx_disp, 0); }
-static int spl_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out64(c, 0);
-        return 0;
-    }
-    if (c->cmd == 7) { /* GenerateRandomBytes */
-        u64 a, s;
-        buf_out(c, 0, &a, &s);
-        if (a) random_fill(GP(a), s);
-        return 0;
-    }
-    return stub_ok(o, c);
-}
-SvcObj* new_spl(void) { return svcobj_new("spl:", spl_disp, 0); }
+SvcObj* new_ectx(void) { return nn_err_context_IWriterForApplication_new(0); }
+static int nn_spl_detail_IGeneralInterface_GenerateRandomBytes(SvcObj* self, IpcBuf data) { return random_fill(data); }
+SvcObj* new_spl(void) { return nn_spl_detail_IGeneralInterface_new(0); }
 
-/* btm:u GetCore returns an interface object, which the SDK requires during initialization. */
-static int btmu_core(SvcObj* o, IpcCtx* c) {
-    const char* event = NULL;
-    switch (c->cmd) {
-        case 0: event = "btm BLE scan"; break;
-        case 17: event = "btm BLE connection"; break;
-        case 21: event = "btm BLE pairing"; break;
-        case 26: event = "btm BLE service discovery"; break;
-        case 33: event = "btm BLE MTU"; break;
-    }
-    if (event) { /* BLE operations are not emulated; expose an unsignaled event with the required success flag. */
-        out8(c, 1);
-        out_copy_h(c, ev_handle(kevent_new(event)));
-        return 0;
-    }
-    return stub_ok(o, c);
+/* btm:u GetCore returns an interface object, which the SDK requires during initialization. BLE operations are not
+   emulated: their events stay unsignaled, with the success flag the SDK requires */
+static int ble_event(u8* success, u32* event, const char* name) {
+    *success = 1;
+    return new_event(event, name, 0);
 }
-static int btmu_disp(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("IBtmUserCore", btmu_core, 0));
-        return 0;
-    }
-    return stub_ok(o, c);
+static int nn_btm_IBtmUserCore_AcquireBleScanEvent(SvcObj* self, u8* success, u32* event) {
+    return ble_event(success, event, "btm BLE scan");
 }
-SvcObj* new_btmu(void) { return svcobj_new("btm:u", btmu_disp, 0); }
-/* audin:u (IAudioInManager): no microphones. 0 ListAudioIns, 2 ListAudioInsAuto, 4 ListAudioInsAutoFiltered answer
-   a count of 0, so the game opens none */
-static int audin_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0:
-        case 2:
-        case 4: out32(c, 0); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_btm_IBtmUserCore_AcquireBleConnectionEvent(SvcObj* self, u8* success, u32* event) {
+    return ble_event(success, event, "btm BLE connection");
 }
-SvcObj* new_audin(void) { return svcobj_new("audin:u", audin_disp, 0); }
+static int nn_btm_IBtmUserCore_AcquireBlePairingEvent(SvcObj* self, u8* success, u32* event) {
+    return ble_event(success, event, "btm BLE pairing");
+}
+static int nn_btm_IBtmUserCore_AcquireBleServiceDiscoveryEvent(SvcObj* self, u8* success, u32* event) {
+    return ble_event(success, event, "btm BLE service discovery");
+}
+static int nn_btm_IBtmUserCore_AcquireBleMtuConfigEvent(SvcObj* self, u8* success, u32* event) {
+    return ble_event(success, event, "btm BLE MTU");
+}
+static int nn_btm_IBtmUser_GetCore(SvcObj* self, SvcObj** core) {
+    *core = nn_btm_IBtmUserCore_new(0);
+    return 0;
+}
+SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(0); }
+SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(0); }

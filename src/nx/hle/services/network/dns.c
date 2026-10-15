@@ -8,6 +8,7 @@
    addrinfo are libnx's resolver.c layout, which Eden verified against the console: big-endian fields, except the
    address and port, which the console passes through htonl once more. */
 #include "hle/services/network/network.h"
+#include "hle/services/network/dns.swipc.inc"
 #ifndef _WIN32
 #include <strings.h>
 #endif
@@ -39,13 +40,11 @@ static int gai_netdb(int e) {
 static int gai_errno(int e) { return e == SNX_EAI_SERVICE ? SNX_EINVAL : 0; }
 
 /* the buffer's text, NUL-terminated within cap */
-static void buf_string(IpcCtx* c, int i, char* out, size_t cap) {
-    u64 a, s;
+static void buf_string(IpcBuf b, char* out, size_t cap) {
     out[0] = 0;
-    buf_in(c, i, &a, &s);
-    if (!a || !s) return;
-    size_t n = s < cap - 1 ? (size_t)s : cap - 1;
-    memcpy(out, GP(a), n);
+    if (!b.addr || !b.size) return;
+    size_t n = b.size < cap - 1 ? (size_t)b.size : cap - 1;
+    memcpy(out, GP(b.addr), n);
     out[n] = 0;
 }
 
@@ -89,16 +88,14 @@ static int lookup(const char* host, const char* service, int socktype, int proto
     return r;
 }
 
-/* GetHostByNameRequest(WithOptions): the hostent in output buffer 0. Returns the size, *gai the error */
-static u32 host_by_name(IpcCtx* c, int* gai) {
+/* GetHostByNameRequest(WithOptions): the hostent in its buffer. Returns the size, *gai the error */
+static u32 host_by_name(IpcBuf name, IpcBuf hostent, int* gai) {
     char host[256];
-    buf_string(c, 0, host, sizeof host);
+    buf_string(name, host, sizeof host);
     SnxAddrInfo* list;
     *gai = lookup(host, NULL, SNX_SOCK_STREAM, 0, 0, &list);
     if (*gai) return 0;
-    u64 a, s;
-    buf_out(c, 0, &a, &s);
-    Out o = {a ? GP(a) : NULL, 0, a ? s : 0};
+    Out o = {hostent.addr ? GP(hostent.addr) : NULL, 0, hostent.addr ? hostent.size : 0};
     put(&o, host, strlen(host) + 1); /* h_name: the name asked for */
     put_be32(&o, 0);                 /* no aliases */
     put_be16(&o, 2);                 /* h_addrtype AF_INET */
@@ -111,16 +108,14 @@ static u32 host_by_name(IpcCtx* c, int* gai) {
     LOG("sfdnsres: %s resolved (%u addresses)\n", host, count);
     return (u32)(o.n <= o.cap ? o.n : o.cap);
 }
-/* GetAddrInfoRequest(WithOptions): buffers host, service, serialized hints; the list in output buffer 0 */
-static u32 addr_info(IpcCtx* c, int* gai) {
+/* GetAddrInfoRequest(WithOptions): the host, the service and the serialized hints; the list in the response */
+static u32 addr_info(IpcBuf host_buf, IpcBuf service_buf, IpcBuf hints, IpcBuf response, int* gai) {
     char host[256], service[64];
-    buf_string(c, 0, host, sizeof host);
-    buf_string(c, 1, service, sizeof service);
+    buf_string(host_buf, host, sizeof host);
+    buf_string(service_buf, service, sizeof service);
     int flags = 0, socktype = 0, protocol = 0;
-    u64 ha, hs;
-    buf_in(c, 2, &ha, &hs);
-    if (ha && hs >= 24) {
-        const u8* h = GP(ha);
+    if (hints.addr && hints.size >= 24) {
+        const u8* h = GP(hints.addr);
         u32 f[6];
         for (int i = 0; i < 6; i++)
             f[i] = (u32)h[i * 4] << 24 | (u32)h[i * 4 + 1] << 16 | (u32)h[i * 4 + 2] << 8 | h[i * 4 + 3];
@@ -133,9 +128,7 @@ static u32 addr_info(IpcCtx* c, int* gai) {
     SnxAddrInfo* list;
     *gai = lookup(host, service, socktype, protocol, flags, &list);
     if (*gai) return 0;
-    u64 a, s;
-    buf_out(c, 0, &a, &s);
-    Out o = {a ? GP(a) : NULL, 0, a ? s : 0};
+    Out o = {response.addr ? GP(response.addr) : NULL, 0, response.addr ? response.size : 0};
     for (SnxAddrInfo* e = list; e; e = e->next) {
         put_be32(&o, ADDRINFO_MAGIC);
         put_be32(&o, 0); /* ai_flags */
@@ -159,18 +152,15 @@ static u32 addr_info(IpcCtx* c, int* gai) {
     LOG("sfdnsres: %s resolved\n", host);
     return (u32)(o.n <= o.cap ? o.n : o.cap);
 }
-/* GetHostByAddrRequest: {in_addr} in buffer 0, the hostent with the name out */
-static u32 host_by_addr(IpcCtx* c, int* netdb) {
-    u64 ia, is, a, s;
-    buf_in(c, 0, &ia, &is);
-    buf_out(c, 0, &a, &s);
+/* GetHostByAddrRequest: {in_addr} in, the hostent with the name out */
+static u32 host_by_addr(IpcBuf addr, IpcBuf hostent, int* netdb) {
     *netdb = NETDB_HOST_NOT_FOUND;
-    if (!ia || is < 4) return 0;
+    if (!addr.addr || addr.size < 4) return 0;
     SnxSockAddr sa = {SNX_AF_INET, 0, 0, {0}, 0};
-    memcpy(sa.addr, GP(ia), 4);
+    memcpy(sa.addr, GP(addr.addr), 4);
     char name[256];
     if (!network_reachable(&sa) || snx_net_getnameinfo(&sa, name, sizeof name, NULL, 0, SNX_NI_NAMEREQD)) return 0;
-    Out o = {a ? GP(a) : NULL, 0, a ? s : 0};
+    Out o = {hostent.addr ? GP(hostent.addr) : NULL, 0, hostent.addr ? hostent.size : 0};
     put(&o, name, strlen(name) + 1);
     put_be32(&o, 0);
     put_be16(&o, 2);
@@ -180,13 +170,12 @@ static u32 host_by_addr(IpcCtx* c, int* netdb) {
     *netdb = NETDB_SUCCESS;
     return (u32)(o.n <= o.cap ? o.n : o.cap);
 }
-static void write_text(IpcCtx* c, const char* t) {
-    u64 a, s;
-    buf_out(c, 0, &a, &s);
-    if (!a || !s) return;
-    size_t n = strlen(t) + 1 < s ? strlen(t) + 1 : (size_t)s;
-    memcpy(GP(a), t, n);
-    ((char*)GP(a))[n - 1] = 0;
+static int write_text(IpcBuf b, const char* t) {
+    if (!b.addr || !b.size) return 0;
+    size_t n = strlen(t) + 1 < b.size ? strlen(t) + 1 : (size_t)b.size;
+    memcpy(GP(b.addr), t, n);
+    ((char*)GP(b.addr))[n - 1] = 0;
+    return 0;
 }
 static const char* netdb_text(int e) {
     switch (e) {
@@ -199,83 +188,100 @@ static const char* netdb_text(int e) {
     return "Unknown resolver error";
 }
 
-static int sfdnsres_disp(SvcObj* o, IpcCtx* c) {
-    int gai = 0, netdb;
-    u32 size;
-    switch (c->cmd) {
-        case 2: /* GetHostByNameRequest -> {netdb error, errno, size} */
-            size = host_by_name(c, &gai);
-            out32(c, (u32)gai_netdb(gai));
-            out32(c, (u32)gai_errno(gai));
-            out32(c, size);
-            return 0;
-        case 10: /* GetHostByNameRequestWithOptions -> {size, netdb error, errno} */
-            size = host_by_name(c, &gai);
-            out32(c, size);
-            out32(c, (u32)gai_netdb(gai));
-            out32(c, (u32)gai_errno(gai));
-            return 0;
-        case 3: /* GetHostByAddrRequest -> {netdb error, errno, size} */
-            size = host_by_addr(c, &netdb);
-            out32(c, (u32)netdb);
-            out32(c, 0);
-            out32(c, size);
-            return 0;
-        case 11: /* GetHostByAddrRequestWithOptions -> {size, netdb error, errno} */
-            size = host_by_addr(c, &netdb);
-            out32(c, size);
-            out32(c, (u32)netdb);
-            out32(c, 0);
-            return 0;
-        case 4: write_text(c, netdb_text((int)in32(c, 0))); return 0;           /* GetHostStringErrorRequest */
-        case 5: write_text(c, snx_net_gai_strerror((int)in32(c, 0))); return 0; /* GetGaiStringErrorRequest */
-        case 6: /* GetAddrInfoRequest -> {errno, gai error, size} */
-            size = addr_info(c, &gai);
-            out32(c, (u32)gai_errno(gai));
-            out32(c, (u32)gai);
-            out32(c, size);
-            return 0;
-        case 12: /* GetAddrInfoRequestWithOptions -> {size, gai error, netdb error, errno} */
-            size = addr_info(c, &gai);
-            out32(c, size);
-            out32(c, (u32)gai);
-            out32(c, (u32)gai_netdb(gai));
-            out32(c, (u32)gai_errno(gai));
-            return 0;
-        case 8: out32(c, 1); return 0;  /* RequestCancelHandleRequest: requests finish before a cancel could come */
-        case 9:                         /* CancelRequest */
-        case 14: out32(c, 0); return 0; /* ResolverSetOptionRequest -> errno */
-    }
-    return stub_ok(o, c);
+/* a request and its WithOptions twin answer the same values in another order (GetAddrInfoRequestWithOptions adds the
+   netdb error) */
+static int host_by_name_reply(IpcBuf name, IpcBuf hostent, u32* size, u32* netdb_error, u32* bsd_errno) {
+    int gai = 0;
+    *size = host_by_name(name, hostent, &gai);
+    *netdb_error = (u32)gai_netdb(gai);
+    *bsd_errno = (u32)gai_errno(gai);
+    return 0;
 }
-SvcObj* new_sfdnsres(void) { return svcobj_new("sfdnsres", sfdnsres_disp, 0); }
+static int host_by_addr_reply(IpcBuf addr, IpcBuf hostent, u32* size, u32* netdb_error) {
+    int netdb;
+    *size = host_by_addr(addr, hostent, &netdb);
+    *netdb_error = (u32)netdb;
+    return 0;
+}
+static int addr_info_reply(IpcBuf host, IpcBuf service, IpcBuf hints, IpcBuf response, u32* size, i32* gai_error,
+                           u32* bsd_errno) {
+    int gai = 0;
+    *size = addr_info(host, service, hints, response, &gai);
+    *gai_error = gai;
+    *bsd_errno = (u32)gai_errno(gai);
+    return 0;
+}
+static int nn_socket_resolver_IResolver_GetHostByNameRequest(SvcObj* self, u8 use_nsd_resolve, u32 cancel_handle,
+                                                             u64 pid, IpcBuf name, IpcBuf hostent, u32* netdb_error,
+                                                             u32* bsd_errno, u32* size) {
+    return host_by_name_reply(name, hostent, size, netdb_error, bsd_errno);
+}
+static int nn_socket_resolver_IResolver_GetHostByNameRequestWithOptions(SvcObj* self, u32 use_nsd_resolve,
+                                                                        u32 cancel_handle, u64 pid, IpcBuf name,
+                                                                        IpcBuf hostent, IpcBuf options, u32* size,
+                                                                        u32* netdb_error, u32* bsd_errno) {
+    return host_by_name_reply(name, hostent, size, netdb_error, bsd_errno);
+}
+static int nn_socket_resolver_IResolver_GetHostByAddrRequest(SvcObj* self, u32 addr_len, u32 type, u32 cancel_handle,
+                                                             u64 pid, IpcBuf addr, IpcBuf hostent, u32* netdb_error,
+                                                             u32* bsd_errno, u32* size) {
+    return host_by_addr_reply(addr, hostent, size, netdb_error);
+}
+static int nn_socket_resolver_IResolver_GetHostByAddrRequestWithOptions(SvcObj* self, u32 addr_len, u32 type,
+                                                                        u32 unknown, u32 cancel_handle, u64 pid,
+                                                                        IpcBuf addr, IpcBuf hostent, IpcBuf options,
+                                                                        u32* size, u32* netdb_error, u32* bsd_errno) {
+    return host_by_addr_reply(addr, hostent, size, netdb_error);
+}
+static int nn_socket_resolver_IResolver_GetHostStringErrorRequest(SvcObj* self, i32 error, IpcBuf text) {
+    return write_text(text, netdb_text(error));
+}
+static int nn_socket_resolver_IResolver_GetGaiStringErrorRequest(SvcObj* self, i32 error, IpcBuf text) {
+    return write_text(text, snx_net_gai_strerror(error));
+}
+static int nn_socket_resolver_IResolver_GetAddrInfoRequest(SvcObj* self, u8 use_nsd_resolve, u32 cancel_handle, u64 pid,
+                                                           IpcBuf host, IpcBuf service, IpcBuf hints, IpcBuf response,
+                                                           u32* bsd_errno, i32* gai_error, u32* size) {
+    return addr_info_reply(host, service, hints, response, size, gai_error, bsd_errno);
+}
+static int nn_socket_resolver_IResolver_GetAddrInfoRequestWithOptions(SvcObj* self, u32 use_nsd_resolve,
+                                                                      u32 cancel_handle, u64 pid, IpcBuf host,
+                                                                      IpcBuf service, IpcBuf hints, IpcBuf options,
+                                                                      IpcBuf response, u32* size, i32* gai_error,
+                                                                      u32* netdb_error, u32* bsd_errno) {
+    addr_info_reply(host, service, hints, response, size, gai_error, bsd_errno);
+    *netdb_error = (u32)gai_netdb(*gai_error);
+    return 0;
+}
+/* requests finish before a cancel could come */
+static int nn_socket_resolver_IResolver_GetCancelHandleRequest(SvcObj* self, u64 pid, u32* cancel_handle) {
+    *cancel_handle = 1;
+    return 0;
+}
+SvcObj* new_sfdnsres(void) { return nn_socket_resolver_IResolver_new(0); }
 
-/* nsd: Resolve(Ex) returns the FQDN as it is, which serves every server but Nintendo's (Eden). The environment is
-   the retail one, lp1 */
-static int nsd_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 20:   /* Resolve */
-        case 21: { /* ResolveEx */
-            char fqdn[0x100];
-            buf_string(c, 0, fqdn, sizeof fqdn);
-            u64 a, s;
-            buf_out(c, 0, &a, &s);
-            if (a) {
-                memset(GP(a), 0, s < sizeof fqdn ? s : sizeof fqdn);
-                memcpy(GP(a), fqdn, strlen(fqdn) + 1 <= s ? strlen(fqdn) + 1 : s);
-            }
-            if (c->cmd == 21) out32(c, 0); /* the result of the resolution */
-            return 0;
-        }
-        case 11: { /* GetEnvironmentIdentifier */
-            u64 a, s;
-            buf_out(c, 0, &a, &s);
-            if (a && s >= 8) memcpy(GP(a), "lp1\0\0\0\0\0", 8);
-            return 0;
-        }
-        case 15: return 0;               /* SetChangeEnvironmentIdentifierDisabled */
-        case 100: out32(c, 1); return 0; /* GetApplicationServerEnvironmentType: Lp (nn::oe's Dd is 0) */
+static int resolve(IpcBuf fqdn_in, IpcBuf fqdn_out) {
+    char fqdn[0x100];
+    buf_string(fqdn_in, fqdn, sizeof fqdn);
+    if (fqdn_out.addr) {
+        u64 s = fqdn_out.size;
+        memset(GP(fqdn_out.addr), 0, s < sizeof fqdn ? s : sizeof fqdn);
+        memcpy(GP(fqdn_out.addr), fqdn, strlen(fqdn) + 1 <= s ? strlen(fqdn) + 1 : s);
     }
-    return stub_ok(o, c);
+    return 0;
 }
-SvcObj* new_nsd(void) { return svcobj_new("nsd", nsd_disp, 0); }
+static int nn_nsd_detail_IManager_Resolve(SvcObj* self, IpcBuf fqdn_in, IpcBuf fqdn_out) {
+    return resolve(fqdn_in, fqdn_out);
+}
+static int nn_nsd_detail_IManager_ResolveEx(SvcObj* self, IpcBuf fqdn_in, IpcBuf fqdn_out, u32* inner_result) {
+    return resolve(fqdn_in, fqdn_out);
+}
+static int nn_nsd_detail_IManager_GetEnvironmentIdentifier(SvcObj* self, IpcBuf identifier) {
+    if (identifier.addr && identifier.size >= 8) memcpy(GP(identifier.addr), "lp1\0\0\0\0\0", 8);
+    return 0;
+}
+static int nn_nsd_detail_IManager_GetApplicationServerEnvironmentType(SvcObj* self, u8* type) {
+    *type = 1; /* Lp (nn::oe's Dd is 0) */
+    return 0;
+}
+SvcObj* new_nsd(void) { return nn_nsd_detail_IManager_new(0); }

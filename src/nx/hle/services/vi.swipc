@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# vi:u, vi:s and vi:m: the display, and the binder driver of its buffer queue (vi.c)
+
+type nn::vi::DisplayName = bytes<0x40>;
+# name[0x40], u8 has_limited_layers, padding, u64 max_layers, i64 width, i64 height
+type nn::vi::DisplayInfo = bytes<0x60, 8>;
+type nn::vi::DisplayModeInfo = struct {
+    u32 width;
+    u32 height;
+    f32 refresh_rate;
+    u32 unknown;
+};
+# its layout is not known (8 bytes): nothing here reads it
+type nn::vi::ProxyName = bytes<8>;
+
+interface nn::visrv::sf::IApplicationRootService is vi:u {
+    # the SDK's names since 13: before, 0 was GetDisplayService and 1 wasn't there
+    [0] GetDisplayServiceWithWorkaround(u32 policy) -> object<nn::visrv::sf::IApplicationDisplayService> service;
+    [1] GetDisplayService(u32 policy) -> object<nn::visrv::sf::IApplicationDisplayService> service;
+}
+interface nn::visrv::sf::ISystemRootService is vi:s {
+    [1] GetDisplayService(u32 policy) -> object<nn::visrv::sf::IApplicationDisplayService> service;
+    [3] GetDisplayServiceWithProxyNameExchange(nn::vi::ProxyName proxy_name, u32 policy)
+        -> object<nn::visrv::sf::IApplicationDisplayService> service;
+}
+interface nn::visrv::sf::IManagerRootService is vi:m {
+    [2] GetDisplayService(u32 policy) -> object<nn::visrv::sf::IApplicationDisplayService> service;
+    [3] GetDisplayServiceWithProxyNameExchange(nn::vi::ProxyName proxy_name, u32 policy)
+        -> object<nn::visrv::sf::IApplicationDisplayService> service;
+}
+
+interface nn::visrv::sf::IApplicationDisplayService {
+    [100] GetRelayService() -> object<nns::hosbinder::IHOSBinderDriver> service;
+    [101] GetSystemDisplayService() -> object<nn::visrv::sf::ISystemDisplayService> service;
+    [102] GetManagerDisplayService() -> object<nn::visrv::sf::IManagerDisplayService> service;
+    [103] GetIndirectDisplayTransactionService() -> object<nns::hosbinder::IHOSBinderDriver> service;
+    [1000] ListDisplays(array<nn::vi::DisplayInfo, 6> displays) -> i64 count;
+    [1010] OpenDisplay(nn::vi::DisplayName name) -> u64 display_id;
+    [1011] OpenDefaultDisplay() -> u64 display_id;
+    @stub [1020] CloseDisplay(u64 display_id);
+    @stub [1101] SetDisplayEnabled(b8 enabled, u64 display_id);
+    [1102] GetDisplayResolution(u64 display_id) -> (i64 width, i64 height);
+    [2020] OpenLayer(nn::vi::DisplayName display_name, u64 layer_id, aruid aruid, buffer<u8, 6> native_window)
+        -> i64 native_window_size;
+    @stub [2021] CloseLayer(u64 layer_id);
+    [2030] CreateStrayLayer(u32 layer_flags, u64 display_id, buffer<u8, 6> native_window)
+        -> (u64 layer_id, i64 native_window_size);
+    @stub [2031] DestroyStrayLayer(u64 layer_id);
+    @stub [2101] SetLayerScalingMode(u32 scaling_mode, u64 layer_id);
+    [2102] ConvertScalingMode(u32 mode) -> u64 converted;
+    @stub [2450] GetIndirectLayerImageMap(i64 width, i64 height, u64 consumer_handle, aruid aruid,
+                                          buffer<u8, 0x46> image) -> (i64 size, i64 stride);
+    @stub [2451] GetIndirectLayerImageCropMap(f32 x, f32 y, f32 width, f32 height, i64 image_width, i64 image_height,
+                                              u64 consumer_handle, aruid aruid, buffer<u8, 0x46> image)
+        -> (i64 size, i64 stride);
+    [2460] GetIndirectLayerImageRequiredMemoryInfo(i64 width, i64 height) -> (i64 size, i64 alignment);
+    [5202] GetDisplayVsyncEvent(u64 display_id) -> handle<copy, event> event;
+    [5203] GetDisplayVsyncEventForDebug(u64 display_id) -> handle<copy, event> event;
+}
+
+interface nn::visrv::sf::ISystemDisplayService {
+    [1200] GetZOrderCountMin(u64 display_id) -> i64 count;
+    [1202] GetZOrderCountMax(u64 display_id) -> i64 count;
+    [1203] GetDisplayLogicalResolution(u64 display_id) -> (i32 width, i32 height);
+    [3200] GetDisplayMode(u64 display_id) -> nn::vi::DisplayModeInfo mode;
+}
+
+interface nn::visrv::sf::IManagerDisplayService {
+    [2010] CreateManagedLayer(u32 layer_flags, u64 display_id, nn::applet::AppletResourceUserId aruid) -> u64 layer_id;
+    [2300] AcquireLayerTexturePresentingEvent(u64 layer_id) -> handle<copy, event> event;
+    [2302] GetDisplayHotplugEvent(u64 display_id) -> handle<copy, event> event;
+    [2303] GetDisplayModeChangedEvent(u64 display_id) -> handle<copy, event> event;
+}
+
+interface nns::hosbinder::IHOSBinderDriver {
+    [0] TransactParcel(i32 binder_id, u32 code, buffer<u8, 5> parcel, buffer<u8, 6> reply, u32 flags);
+    @stub [1] AdjustRefcount(i32 binder_id, i32 add_value, i32 type);
+    [2] GetNativeHandle(i32 binder_id, u32 type_id) -> handle<copy, event> event;
+    [3] TransactParcelAuto(i32 binder_id, u32 code, buffer<u8, 0x21> parcel, buffer<u8, 0x22> reply, u32 flags);
+}

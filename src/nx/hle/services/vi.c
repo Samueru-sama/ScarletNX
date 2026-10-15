@@ -11,6 +11,8 @@
 #include "hle/services/nvdrv.h"
 #include "hle/services/services.h"
 #include "hle/kernel/ipc.h"
+#include "hle/services/services_int.h"
+#include "hle/services/vi.swipc.inc"
 #include "hle/kernel/kernel.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
@@ -73,7 +75,7 @@ static void pr_skip_token(PR* p) {
     pr_u32(p);
     i32 n = (i32)pr_u32(p);
     if (n <= 0) return;
-    u64 skip = ((u64)(n + 1) * 2 + 3) & ~3ull;
+    u64 skip = (((u64)n + 1) * 2 + 3) & ~3ull; /* the UTF-16 string and its terminator, padded to 4 */
     p->pos = skip > p->size - p->pos ? p->size : p->pos + (u32)skip;
 }
 typedef struct {
@@ -337,78 +339,85 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
     return 0;
 }
 
-static int hos_binder(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0:
-        case 3: {
-            u32 id = in32(c, 0), code = in32(c, 4);
-            u64 ia, is, oa, os;
-            buf_in(c, 0, &ia, &is);
-            buf_out(c, 0, &oa, &os);
-            if (!ia || is < 16) {
-                WARN("binder: transaction %u without a parcel\n", code);
-                return RC(114, 1);
-            }
-            /* the parcel header {data size, data offset, objects size, objects offset}: the data has to be in the
-               buffer */
-            PR in;
-            u32 hdr[4];
-            memcpy(hdr, GP(ia), 16);
-            in.d = GP(ia) + (hdr[1] < is ? hdr[1] : is);
-            in.size = hdr[1] < is ? (u32)(is - hdr[1] < hdr[0] ? is - hdr[1] : hdr[0]) : 0;
-            in.pos = 0;
-            pr_skip_token(&in);
-            PW* out = calloc(1, sizeof(PW));
-            binder_transact(id, code, &in, out);
-            pw_out(out, oa, os);
-            free(out);
-            return 0;
-        }
-        case 1: return 0;
-        case 2: out_copy_h(c, h_new(&vi.bufavail_ev->o)); return 0;
+/* a transaction: the parcel header {data size, data offset, objects size, objects offset}, and its data has to be in
+   the buffer */
+static int transact(i32 id, u32 code, IpcBuf parcel, IpcBuf reply) {
+    if (!parcel.addr || parcel.size < 16) {
+        WARN("binder: transaction %u without a parcel\n", code);
+        return RC(114, 1);
     }
-    return stub_ok(o, c);
+    PR in;
+    u32 hdr[4];
+    u64 is = parcel.size;
+    memcpy(hdr, GP(parcel.addr), 16);
+    in.d = GP(parcel.addr) + (hdr[1] < is ? hdr[1] : is);
+    in.size = hdr[1] < is ? (u32)(is - hdr[1] < hdr[0] ? is - hdr[1] : hdr[0]) : 0;
+    in.pos = 0;
+    pr_skip_token(&in);
+    PW* out = calloc(1, sizeof(PW));
+    binder_transact((u32)id, code, &in, out);
+    pw_out(out, reply.addr, reply.size);
+    free(out);
+    return 0;
+}
+static int nns_hosbinder_IHOSBinderDriver_TransactParcel(SvcObj* self, i32 binder_id, u32 code, IpcBuf parcel,
+                                                         IpcBuf reply, u32 flags) {
+    return transact(binder_id, code, parcel, reply);
+}
+static int nns_hosbinder_IHOSBinderDriver_TransactParcelAuto(SvcObj* self, i32 binder_id, u32 code, IpcBuf parcel,
+                                                             IpcBuf reply, u32 flags) {
+    return transact(binder_id, code, parcel, reply);
+}
+static int nns_hosbinder_IHOSBinderDriver_GetNativeHandle(SvcObj* self, i32 binder_id, u32 type_id, u32* event) {
+    *event = h_new(&vi.bufavail_ev->o);
+    return 0;
 }
 
-static int sysdisp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 1200: out64(c, 1); return 0;
-        case 1202: out64(c, 255); return 0; /* GetZOrderCountMax */
-        case 1203:                          /* GetDisplayLogicalResolution: two s32 */
-            out32(c, (u32)vi.width);
-            out32(c, (u32)vi.height);
-            return 0;
-        case 3200: {
-            out32(c, (u32)vi.width);
-            out32(c, (u32)vi.height);
-            out32(c, 0x42700000);
-            out32(c, 0);
-            return 0;
-        }
-    }
-    return stub_ok(o, c);
+static int nn_visrv_sf_ISystemDisplayService_GetZOrderCountMin(SvcObj* self, u64 display_id, i64* count) {
+    *count = 1;
+    return 0;
 }
-static int mgrdisp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 2010: {
-            out64(c, __atomic_fetch_add(&vi.managed_layer, 1, __ATOMIC_RELAXED));
-            return 0;
-        }
-        case 2300: /* AcquireLayerTexturePresentingEvent */
-        case 2302: /* GetDisplayHotplugEvent */
-        case 2303: /* GetDisplayModeChangedEvent */ out_copy_h(c, h_new(&kevent_new("vi display")->o)); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_visrv_sf_ISystemDisplayService_GetZOrderCountMax(SvcObj* self, u64 display_id, i64* count) {
+    *count = 255;
+    return 0;
+}
+static int nn_visrv_sf_ISystemDisplayService_GetDisplayLogicalResolution(SvcObj* self, u64 display_id, i32* width,
+                                                                         i32* height) {
+    *width = vi.width;
+    *height = vi.height;
+    return 0;
+}
+static int nn_visrv_sf_ISystemDisplayService_GetDisplayMode(SvcObj* self, u64 display_id, nn_vi_DisplayModeInfo* mode) {
+    mode->width = (u32)vi.width;
+    mode->height = (u32)vi.height;
+    mode->refresh_rate = 60.0f;
+    return 0;
+}
+static int nn_visrv_sf_IManagerDisplayService_CreateManagedLayer(SvcObj* self, u32 layer_flags, u64 display_id,
+                                                                 nn_applet_AppletResourceUserId aruid, u64* layer_id) {
+    *layer_id = __atomic_fetch_add(&vi.managed_layer, 1, __ATOMIC_RELAXED);
+    return 0;
+}
+static int nn_visrv_sf_IManagerDisplayService_AcquireLayerTexturePresentingEvent(SvcObj* self, u64 layer_id,
+                                                                                 u32* event) {
+    return new_event(event, "vi display", 0);
+}
+static int nn_visrv_sf_IManagerDisplayService_GetDisplayHotplugEvent(SvcObj* self, u64 display_id, u32* event) {
+    return new_event(event, "vi display", 0);
+}
+static int nn_visrv_sf_IManagerDisplayService_GetDisplayModeChangedEvent(SvcObj* self, u64 display_id, u32* event) {
+    return new_event(event, "vi display", 0);
 }
 
-static void native_window(IpcCtx* c, u32 binder) {
-    u64 a, s;
-    buf_out(c, 0, &a, &s);
-    if (!a || s < 0x38) {
-        WARN("vi: no room for the native window parcel (%llu bytes)\n", (unsigned long long)s);
-        return;
+/* the native window parcel of a layer, in the game's buffer: HOS Parcel: flat_binder_object {type=2, flags,
+   u64 handle, u64 0, char name[8]="dispdrv", ...} + object table {0}. Its size is the reply, written even when the
+   buffer has no room for it */
+static int native_window(IpcBuf b, u32 binder, i64* size) {
+    *size = 0x3C;
+    if (!b.addr || b.size < 0x38) {
+        WARN("vi: no room for the native window parcel (%llu bytes)\n", (unsigned long long)b.size);
+        return 0;
     }
-    /* HOS Parcel: flat_binder_object {type=2, flags, u64 handle, u64 0, char name[8]="dispdrv", ...} + object table {0} */
     u32 data[10];
     memset(data, 0, sizeof data);
     data[0] = 2;
@@ -417,85 +426,125 @@ static void native_window(IpcCtx* c, u32 binder) {
     data[3] = 0;
     memcpy(&data[6], "dispdrv\0", 8);
     u32 hdr[4] = {0x28, 0x10, 4, 0x38};
-    u8* p = GP(a);
-    memset(p, 0, s < 0x100 ? s : 0x100);
+    u8* p = GP(b.addr);
+    memset(p, 0, b.size < 0x100 ? b.size : 0x100);
     memcpy(p, hdr, 16);
     memcpy(p + 0x10, data, 0x28);
+    return 0;
 }
-static int appdisp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 100:
-        case 103: out_obj(c, svcobj_new("IHOSBinderDriver", hos_binder, 0)); return 0;
-        case 101: out_obj(c, svcobj_new("ISystemDisplayService", sysdisp, 0)); return 0;
-        case 102: out_obj(c, svcobj_new("IManagerDisplayService", mgrdisp, 0)); return 0;
-        case 1000: {
-            u64 a, s;
-            buf_out(c, 0, &a, &s);
-            if (a) {
-                u8 info[0x60];
-                memset(info, 0, sizeof info);
-                strcpy((char*)info, "Default");
-                info[0x40] = 1;
-                u64 lc = 1, w = (u64)vi.width, h = (u64)vi.height;
-                memcpy(info + 0x48, &lc, 8);
-                memcpy(info + 0x50, &w, 8);
-                memcpy(info + 0x58, &h, 8);
-                memcpy(GP(a), info, s < 0x60 ? s : 0x60);
-            }
-            out64(c, 1);
-            return 0;
-        }
-        case 1010:
-        case 1011: out64(c, 1); return 0;
-        case 1020:
-        case 1101: return 0;
-        case 1102:
-            out64(c, (u64)vi.width);
-            out64(c, (u64)vi.height);
-            return 0;
-        case 2020: {
-            native_window(c, 1);
-            out64(c, 0x3C);
-            return 0;
-        }
-        case 2021:
-        case 2031: return 0;
-        case 2030: {
-            out64(c, __atomic_fetch_add(&vi.stray_layer, 1, __ATOMIC_RELAXED));
-            native_window(c, 1);
-            out64(c, 0x3C);
-            return 0;
-        }
-        case 2101: return 0;
-        case 2102: {                                   /* ConvertScalingMode: nn::vi's ScalingMode to the layer's */
-            static const u8 conv[5] = {3, 0, 1, 2, 4}; /* None, Freeze, ScaleToWindow, ScaleAndCrop, PreserveAspect */
-            u32 m = in32(c, 0);
-            if (m >= 5) return RC(114, 1);
-            out64(c, conv[m]);
-            return 0;
-        }
-        case 2450:
-        case 2451:
-            out64(c, 0);
-            out64(c, 0);
-            return 0;
-        case 2460:
-            out64(c, 0x1000);
-            out64(c, 0x1000);
-            return 0;
-        case 5202:
-        case 5203: out_copy_h(c, h_new(&vi.vsync_ev->o)); return 0;
+static int binder_driver(SvcObj** service) {
+    *service = nns_hosbinder_IHOSBinderDriver_new(0);
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetRelayService(SvcObj* self, SvcObj** service) {
+    return binder_driver(service);
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetIndirectDisplayTransactionService(SvcObj* self, SvcObj** service) {
+    return binder_driver(service);
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetSystemDisplayService(SvcObj* self, SvcObj** service) {
+    *service = nn_visrv_sf_ISystemDisplayService_new(0);
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetManagerDisplayService(SvcObj* self, SvcObj** service) {
+    *service = nn_visrv_sf_IManagerDisplayService_new(0);
+    return 0;
+}
+/* the one display, "Default" */
+static int nn_visrv_sf_IApplicationDisplayService_ListDisplays(SvcObj* self, IpcBuf displays, i64* count) {
+    if (displays.addr) {
+        u8 info[0x60];
+        memset(info, 0, sizeof info);
+        strcpy((char*)info, "Default");
+        info[0x40] = 1;
+        u64 lc = 1, w = (u64)vi.width, h = (u64)vi.height;
+        memcpy(info + 0x48, &lc, 8);
+        memcpy(info + 0x50, &w, 8);
+        memcpy(info + 0x58, &h, 8);
+        memcpy(GP(displays.addr), info, displays.size < 0x60 ? displays.size : 0x60);
     }
-    return stub_ok(o, c);
+    *count = 1;
+    return 0;
 }
-static int vi_root(SvcObj* o, IpcCtx* c) {
-    if (c->cmd <= 3) {
-        out_obj(c, svcobj_new("IApplicationDisplayService", appdisp, 0));
-        return 0;
-    }
-    return stub_ok(o, c);
+static int nn_visrv_sf_IApplicationDisplayService_OpenDisplay(SvcObj* self, const nn_vi_DisplayName* name,
+                                                              u64* display_id) {
+    *display_id = 1;
+    return 0;
 }
-static SvcObj* new_vi(void) { return svcobj_new("vi", vi_root, 0); }
+static int nn_visrv_sf_IApplicationDisplayService_OpenDefaultDisplay(SvcObj* self, u64* display_id) {
+    *display_id = 1;
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetDisplayResolution(SvcObj* self, u64 display_id, i64* width,
+                                                                       i64* height) {
+    *width = vi.width;
+    *height = vi.height;
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_OpenLayer(SvcObj* self, const nn_vi_DisplayName* display_name,
+                                                            u64 layer_id, u64 aruid, IpcBuf native_window_buf,
+                                                            i64* native_window_size) {
+    return native_window(native_window_buf, 1, native_window_size);
+}
+static int nn_visrv_sf_IApplicationDisplayService_CreateStrayLayer(SvcObj* self, u32 layer_flags, u64 display_id,
+                                                                   IpcBuf native_window_buf, u64* layer_id,
+                                                                   i64* native_window_size) {
+    *layer_id = __atomic_fetch_add(&vi.stray_layer, 1, __ATOMIC_RELAXED);
+    return native_window(native_window_buf, 1, native_window_size);
+}
+/* nn::vi's ScalingMode to the layer's: None, Freeze, ScaleToWindow, ScaleAndCrop, PreserveAspect */
+static int nn_visrv_sf_IApplicationDisplayService_ConvertScalingMode(SvcObj* self, u32 mode, u64* converted) {
+    static const u8 conv[5] = {3, 0, 1, 2, 4};
+    if (mode >= 5) return RC(114, 1);
+    *converted = conv[mode];
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetIndirectLayerImageRequiredMemoryInfo(SvcObj* self, i64 width,
+                                                                                          i64 height, i64* size,
+                                                                                          i64* alignment) {
+    *size = 0x1000;
+    *alignment = 0x1000;
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetDisplayVsyncEvent(SvcObj* self, u64 display_id, u32* event) {
+    *event = h_new(&vi.vsync_ev->o);
+    return 0;
+}
+static int nn_visrv_sf_IApplicationDisplayService_GetDisplayVsyncEventForDebug(SvcObj* self, u64 display_id,
+                                                                               u32* event) {
+    *event = h_new(&vi.vsync_ev->o);
+    return 0;
+}
+static int display_service(SvcObj** service) {
+    *service = nn_visrv_sf_IApplicationDisplayService_new(0);
+    return 0;
+}
+static int nn_visrv_sf_IApplicationRootService_GetDisplayServiceWithWorkaround(SvcObj* self, u32 policy,
+                                                                               SvcObj** service) {
+    return display_service(service);
+}
+static int nn_visrv_sf_IApplicationRootService_GetDisplayService(SvcObj* self, u32 policy, SvcObj** service) {
+    return display_service(service);
+}
+static int nn_visrv_sf_ISystemRootService_GetDisplayService(SvcObj* self, u32 policy, SvcObj** service) {
+    return display_service(service);
+}
+static int nn_visrv_sf_ISystemRootService_GetDisplayServiceWithProxyNameExchange(SvcObj* self,
+                                                                                 const nn_vi_ProxyName* proxy_name,
+                                                                                 u32 policy, SvcObj** service) {
+    return display_service(service);
+}
+static int nn_visrv_sf_IManagerRootService_GetDisplayService(SvcObj* self, u32 policy, SvcObj** service) {
+    return display_service(service);
+}
+static int nn_visrv_sf_IManagerRootService_GetDisplayServiceWithProxyNameExchange(SvcObj* self,
+                                                                                  const nn_vi_ProxyName* proxy_name,
+                                                                                  u32 policy, SvcObj** service) {
+    return display_service(service);
+}
+static SvcObj* new_vi_u(void) { return nn_visrv_sf_IApplicationRootService_new(0); }
+static SvcObj* new_vi_s(void) { return nn_visrv_sf_ISystemRootService_new(0); }
+static SvcObj* new_vi_m(void) { return nn_visrv_sf_IManagerRootService_new(0); }
 
 void vi_vsync_tick(void) { kevent_signal(vi.vsync_ev); }
 
@@ -503,16 +552,14 @@ void svc_vi_init(void) {
     pm_init(&vi.lock);
     pc_init(&vi.free_cv);
     /* the service keeps these for the whole run: its reference keeps them alive when the game closes its handles */
-    vi.vsync_ev = kevent_new("vsync");
-    kobj_ref(&vi.vsync_ev->o);
-    vi.bufavail_ev = kevent_new("buffer");
-    kobj_ref(&vi.bufavail_ev->o);
+    vi.vsync_ev = owned_event("vsync");
+    vi.bufavail_ev = owned_event("buffer");
     kevent_signal(vi.bufavail_ev);
     if (g_opt_docked) {
         vi.width = 1920;
         vi.height = 1080;
     }
-    svc_register("vi:u", new_vi);
-    svc_register("vi:s", new_vi);
-    svc_register("vi:m", new_vi);
+    nn_visrv_sf_IApplicationRootService_register(new_vi_u);
+    nn_visrv_sf_ISystemRootService_register(new_vi_s);
+    nn_visrv_sf_IManagerRootService_register(new_vi_m);
 }

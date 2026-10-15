@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# on a plain session out objects are move handles too, and the header counts 15 at most
+interface test::I {
+    [0] Many() -> (handle<move, event> a, handle<move, event> b, handle<move, event> c, handle<move, event> d,
+                   handle<move, event> e, handle<move, event> f, handle<move, event> g, handle<move, event> h,
+                   object<test::I> i, object<test::I> j, object<test::I> k, object<test::I> l, object<test::I> m,
+                   object<test::I> n, object<test::I> o, object<test::I> p);
+}

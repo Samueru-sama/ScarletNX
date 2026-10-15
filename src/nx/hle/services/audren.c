@@ -17,8 +17,9 @@ typedef struct ARHost {
     struct ARHost* next;
     SvcObj* obj;
     ARState* st;
-    PMutex lk;   /* the state, between RequestUpdate and the clock's frame */
-    PAudio* out; /* the host output, opened by the first frame with a device sink */
+    PMutex lk;      /* the state, between RequestUpdate and the clock's frame */
+    PAudio* out;    /* the host output, opened by the first frame with a device sink */
+    int out_failed; /* it couldn't be opened: the frames aren't heard, and it isn't tried every 5 ms */
     i16* stereo;
 } ARHost;
 static PMutex ar_lk = PMUTEX_INIT; /* the list, and a host's removal from it */
@@ -41,20 +42,23 @@ static void ar_destroy(SvcObj* o) {
     o->u[4] = 0;
 }
 
-/* OpenAudioRenderer's AudioRendererParameter (0x34 bytes) */
-void audren_open(SvcObj* o, const u8* params) {
+/* OpenAudioRenderer's AudioRendererParameter (0x34 bytes): the sample rate and the samples a frame are its first two
+   u32s */
+int audren_open(SvcObj* o, const u8* params) {
     ARHost* h = calloc(1, sizeof *h);
-    if (!h) return;
+    if (!h) return 0;
     h->obj = o;
     h->st = audren_state_new(params);
     h->stereo = h->st ? calloc((size_t)h->st->frame * 2, sizeof *h->stereo) : NULL;
     if (!h->st || !h->stereo) {
-        WARN("audren: no renderer state for these parameters (rate %u, %u samples a frame)\n",
-             (unsigned)(params[0] | params[1] << 8 | params[2] << 16), (unsigned)(params[4] | params[5] << 8));
+        u32 rate, frame;
+        memcpy(&rate, params, 4);
+        memcpy(&frame, params + 4, 4);
+        WARN("audren: no renderer state for these parameters (rate %u, %u samples a frame)\n", rate, frame);
         audren_state_free(h->st);
         free(h->stereo);
         free(h);
-        return;
+        return 0;
     }
     pm_init(&h->lk);
     o->u[4] = (u64)(size_t)h;
@@ -65,17 +69,15 @@ void audren_open(SvcObj* o, const u8* params) {
     pm_unlock(&ar_lk);
     LOG("audren: opened at %u Hz, %u samples a frame, %u mix buffers, %u voices, %u effects, %u sinks\n", h->st->rate,
         h->st->frame, h->st->buffers, h->st->nvoices, h->st->neffects, h->st->nsinks);
+    return 1;
 }
 
-int audren_update(SvcObj* o, IpcCtx* c) {
-    u64 ia, is, oa, os;
-    buf_in(c, 0, &ia, &is);
-    buf_out(c, 0, &oa, &os);
-    if (!ia || !oa || is < 0x40) return RC(153, 41); /* InvalidUpdateInfo */
+int audren_update(SvcObj* o, IpcBuf in, IpcBuf out) {
+    if (!in.addr || !out.addr || in.size < 0x40) return RC(153, 41); /* InvalidUpdateInfo */
     ARHost* h = (ARHost*)(size_t)o->u[4];
     if (!h) return RC(153, 2);
     pm_lock(&h->lk);
-    int rc = audren_state_update(h->st, GP(ia), is, GP(oa), os);
+    int rc = audren_state_update(h->st, GP(in.addr), in.size, GP(out.addr), out.size);
     pm_unlock(&h->lk);
     if (rc == -41) return RC(153, 41);
     if (rc == -4) return RC(153, 4);
@@ -95,9 +97,12 @@ void audren_tick(void) {
         int device = audren_frame(h->st, h->stereo);
         pm_unlock(&h->lk);
         if (!device) continue;
-        if (!h->out) {
+        if (!h->out && !h->out_failed) {
             h->out = plat_audio_open(h->st->rate, 2);
-            if (h->out) plat_audio_start(h->out, 1);
+            if (h->out)
+                plat_audio_start(h->out, 1);
+            else
+                h->out_failed = 1;
         }
         u32 bytes = h->st->frame * 4;
         if (h->out && plat_audio_queued(h->out) <= h->st->rate / 10 * 4) plat_audio_queue(h->out, h->stereo, bytes);

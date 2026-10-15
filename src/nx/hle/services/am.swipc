@@ -1,0 +1,194 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# appletOE and appletAE: the applet manager, its proxies and storages (am.c)
+
+type nn::am::AppletMessage = u32;
+type nn::am::service::AppletKind = u64;
+type nn::oe::DisplayVersion = bytes<0x10>;
+type nn::oe::ApplicationLicenseType = u8;
+type nn::am::service::LibraryAppletInfo = struct {
+    u32 applet_id;
+    u32 library_applet_mode;
+};
+type nn::pdm::ApplicationPlayStatistics = bytes<0x18, 8>;
+
+interface nn::am::service::IApplicationProxyService is appletOE {
+    [0] OpenApplicationProxy(pid, handle<copy, process> process) -> object<nn::am::service::IApplicationProxy> proxy;
+}
+# 350 opens a system application's proxy, an IApplicationProxy as appletOE's is. The other proxies are the system
+# applets'
+interface nn::am::service::IAllSystemAppletProxiesService is appletAE {
+    [350] OpenSystemApplicationProxy(pid, handle<copy, process> process)
+        -> object<nn::am::service::IApplicationProxy> proxy;
+}
+
+interface nn::am::service::IApplicationProxy {
+    [0] GetCommonStateGetter() -> object<nn::am::service::ICommonStateGetter> getter;
+    [1] GetSelfController() -> object<nn::am::service::ISelfController> controller;
+    [2] GetWindowController() -> object<nn::am::service::IWindowController> controller;
+    [3] GetAudioController() -> object<nn::am::service::IAudioController> controller;
+    [4] GetDisplayController() -> object<nn::am::service::IDisplayController> controller;
+    [10] GetProcessWindingController() -> object<nn::am::service::IProcessWindingController> controller;
+    [11] GetLibraryAppletCreator() -> object<nn::am::service::ILibraryAppletCreator> creator;
+    [20] GetApplicationFunctions() -> object<nn::am::service::IApplicationFunctions> functions;
+    [1000] GetDebugFunctions() -> object<nn::am::service::IDebugFunctions> functions;
+}
+
+interface nn::am::service::ICommonStateGetter {
+    [0] GetEventHandle() -> handle<copy, event> event;
+    [1] ReceiveMessage() -> nn::am::AppletMessage message;
+    @stub [2] GetThisAppletKind() -> nn::am::service::AppletKind kind;
+    [5] GetOperationMode() -> u8 mode;
+    [6] GetPerformanceMode() -> u32 mode;
+    @stub [8] GetBootMode() -> u8 mode;
+    [9] GetCurrentFocusState() -> u8 state;
+    [10] RequestToAcquireSleepLock();
+    @stub [11] ReleaseSleepLock();
+    @stub [12] ReleaseSleepLockTransiently();
+    [13] GetAcquiredSleepLockEvent() -> handle<copy, event> event;
+    @stub [50] IsVrModeEnabled() -> b8 enabled;
+    @stub [51] SetVrModeEnabled(b8 enabled);
+    @stub [52] SetLcdBacklighOffEnabled(b8 enabled);
+    @stub [53] BeginVrModeEx();
+    @stub [54] EndVrModeEx();
+    @stub [55] IsInControllerFirmwareUpdateSection() -> b8 in_section;
+    @stub [59] SetVrPositionForDebug(i32 x, i32 y, i32 width, i32 height);
+    [60] GetDefaultDisplayResolution() -> (i32 width, i32 height);
+    [61] GetDefaultDisplayResolutionChangeEvent() -> handle<copy, event> event;
+    @stub [62] GetHdcpAuthenticationState() -> i32 state;
+    [63] GetHdcpAuthenticationStateChangeEvent() -> handle<copy, event> event;
+    @stub [66] SetCpuBoostMode(u32 mode);
+    @stub [67] CancelCpuBoostMode();
+    @stub [68] GetBuiltInDisplayType() -> i32 type;
+    [91] GetCurrentPerformanceConfiguration() -> u32 configuration;
+}
+
+interface nn::am::service::ISelfController {
+    [0] Exit();
+    @stub [1] LockExit();
+    @stub [2] UnlockExit();
+    @stub [3] EnterFatalSection();
+    @stub [4] LeaveFatalSection();
+    [9] GetLibraryAppletLaunchableEvent() -> handle<copy, event> event;
+    @stub [10] SetScreenShotPermission(u32 permission);
+    @stub [11] SetOperationModeChangedNotification(b8 enabled);
+    @stub [12] SetPerformanceModeChangedNotification(b8 enabled);
+    @stub [13] SetFocusHandlingMode(b8 notify, b8 background, b8 suspend);
+    @stub [14] SetRestartMessageEnabled(b8 enabled);
+    @stub [16] SetOutOfFocusSuspendingEnabled(b8 enabled);
+    [40] CreateManagedDisplayLayer() -> u64 layer_id;
+    @stub [41] IsSystemBufferSharingEnabled();
+    [44] CreateManagedDisplaySeparableLayer() -> (u64 layer_id, u64 recording_layer_id);
+    @stub [62] SetIdleTimeDetectionExtension(u32 extension);
+    @stub [63] GetIdleTimeDetectionExtension() -> u32 extension;
+    @stub [69] IsAutoSleepDisabled() -> b8 disabled;
+    @stub [90] GetAccumulatedSuspendedTickValue() -> u64 tick;
+    [91] GetAccumulatedSuspendedTickChangedEvent() -> handle<copy, event> event;
+    @stub [100] SetAlbumImageTakenNotificationEnabled(b8 enabled);
+    @stub [110] SetApplicationAlbumUserData(buffer<u8, 0x21> data);
+    @stub [120] SaveCurrentScreenshot(i32 option);
+}
+
+interface nn::am::service::IWindowController {
+    [1] GetAppletResourceUserId() -> nn::applet::AppletResourceUserId aruid;
+    @stub [10] AcquireForegroundRights();
+    @stub [11] ReleaseForegroundRights();
+    @stub [12] RejectToChangeIntoBackground();
+}
+
+interface nn::am::service::IAudioController {
+    [1] GetMainAppletExpectedMasterVolume() -> f32 volume;
+    [2] GetLibraryAppletExpectedMasterVolume() -> f32 volume;
+}
+
+interface nn::am::service::IDisplayController {
+}
+@fallback(quiet_ok)
+interface nn::am::service::IProcessWindingController {
+}
+interface nn::am::service::IDebugFunctions {
+}
+
+interface nn::am::service::IApplicationFunctions {
+    [1] PopLaunchParameter(u32 kind) -> object<nn::am::service::IStorage> storage;
+    @stub [20] EnsureSaveData(nn::account::Uid uid) -> u64 required_size;
+    [21] GetDesiredLanguage() -> nn::settings::LanguageCode code;
+    @stub [22] SetTerminateResult(u32 result);
+    [23] GetDisplayVersion() -> nn::oe::DisplayVersion version;
+    @stub [25] ExtendSaveData(u8 type, nn::account::Uid uid, i64 normal_size, i64 journal_size) -> i64 required_size;
+    [26] GetSaveDataSize(u8 type, nn::account::Uid uid) -> (i64 normal_size, i64 journal_size);
+    @stub [27] CreateCacheStorage(u16 index, i64 normal_size, i64 journal_size)
+        -> (u32 target_media, i64 required_size);
+    @stub [28] GetSaveDataSizeMax() -> (i64 normal_size, i64 journal_size);
+    @stub [32] BeginBlockingHomeButton(i64 timeout_ns);
+    @stub [33] EndBlockingHomeButton();
+    @stub [34] SelectApplicationLicense(array<nn::oe::ApplicationLicenseType, 5> types)
+        -> nn::oe::ApplicationLicenseType type;
+    @stub [35] GetDeviceSaveDataSizeMax() -> (i64 normal_size, i64 journal_size);
+    # 14.0.0+, its signature read from its name
+    [37] GetLimitedApplicationLicenseUpgradableEvent() -> handle<copy, event> event;
+    @stub [40] NotifyRunning() -> b8 became_running;
+    [50] GetPseudoDeviceId() -> nn::util::Uuid id;
+    @stub [60] SetMediaPlaybackStateForApplication(b8 playing);
+    @stub [66] InitializeGamePlayRecording(u64 size, handle<copy, transfer_memory> transfer_memory);
+    @stub [67] SetGamePlayRecordingState(u32 state);
+    @stub [68] RequestFlushGamePlayingMovieForDebug();
+    @stub [90] EnableApplicationCrashReport(b8 enabled);
+    @stub [100] InitializeApplicationCopyrightFrameBuffer(i32 width, i32 height, u64 size,
+                                                          handle<copy, transfer_memory> transfer_memory);
+    @stub [101] SetApplicationCopyrightImage(i32 x, i32 y, i32 width, i32 height, i32 window_origin_mode,
+                                             buffer<u8, 0x45> image);
+    @stub [110] QueryApplicationPlayStatistics(array<nn::pdm::ApplicationPlayStatistics, 6> statistics,
+                                               array<nn::ApplicationId, 5> application_ids) -> i32 count;
+    @stub [120] ExecuteProgram(u32 kind, u64 value);
+    @stub [124] EnableApplicationAllThreadDumpOnCrash(b8 enabled);
+    [130] GetGpuErrorDetectedSystemEvent() -> handle<copy, event> event;
+    [140] GetFriendInvitationStorageChannelEvent() -> handle<copy, event> event;
+    [141] TryPopFromFriendInvitationStorageChannel() -> object<nn::am::service::IStorage> storage;
+    [150] GetNotificationStorageChannelEvent() -> handle<copy, event> event;
+    [151] TryPopFromNotificationStorageChannel() -> object<nn::am::service::IStorage> storage;
+    [160] GetHealthWarningDisappearedSystemEvent() -> handle<copy, event> event;
+    @stub [170] SetHdcpAuthenticationActivated(b8 activated);
+    # 20.0.0+, unnamed on Switchbrew; Eden's Unknown210 gives an event
+    [210] GetUnknownEvent210() -> handle<copy, event> event;
+}
+
+interface nn::am::service::ILibraryAppletCreator {
+    [0] CreateLibraryApplet(u32 applet_id, u32 library_applet_mode)
+        -> object<nn::am::service::ILibraryAppletAccessor> accessor;
+    [10] CreateStorage(i64 size) -> object<nn::am::service::IStorage> storage;
+    [11] CreateTransferMemoryStorage(b8 is_writable, i64 size, handle<copy, transfer_memory> transfer_memory)
+        -> object<nn::am::service::IStorage> storage;
+}
+
+# library applets (swkbd, error...) finish immediately: no applet UI here
+interface nn::am::service::ILibraryAppletAccessor {
+    [0] GetAppletStateChangedEvent() -> handle<copy, event> event;
+    [1] IsCompleted() -> b8 completed;
+    @stub [10] Start();
+    @stub [20] RequestExit();
+    @stub [25] Terminate();
+    @stub [30] GetResult();
+    @stub [50] SetOutOfFocusApplicationSuspendingEnabled(b8 enabled);
+    @stub [60] PresetLibraryAppletGpuTimeSliceZero();
+    [100] PushInData(object<nn::am::service::IStorage> storage);
+    [101] PopOutData() -> object<nn::am::service::IStorage> storage;
+    @stub [103] PushInteractiveInData(object<nn::am::service::IStorage> storage);
+    [104] PopInteractiveOutData() -> object<nn::am::service::IStorage> storage;
+    [105] GetPopOutDataEvent() -> handle<copy, event> event;
+    [106] GetPopInteractiveOutDataEvent() -> handle<copy, event> event;
+    [120] GetLibraryAppletInfo() -> nn::am::service::LibraryAppletInfo info;
+    @stub [150] RequestForAppletToGetForeground();
+}
+
+interface nn::am::service::IStorage {
+    [0] Open() -> object<nn::am::service::IStorageAccessor> accessor;
+    [1] OpenTransferStorage() -> object<nn::am::service::ITransferStorageAccessor> accessor;
+}
+interface nn::am::service::IStorageAccessor {
+    [0] GetSize() -> i64 size;
+    [10] Write(i64 offset, buffer<u8, 0x21> data);
+    [11] Read(i64 offset, buffer<u8, 0x22> data);
+}
+interface nn::am::service::ITransferStorageAccessor {
+}

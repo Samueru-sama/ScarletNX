@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# nvdrv, nvdrv:a, nvdrv:s and nvdrv:t: the IPC side of the nvhost devices (nvdrv.c). The ioctls' own layouts are the
+# devices'. Every command but DumpStatus (9) and 13 answers an NvError besides its result
+
+type nns::nvdrv::NvDrvStatus = struct {
+    u32 free_size;
+    u32 allocatable_size;
+    u32 minimum_free_size;
+    u32 minimum_allocatable_size;
+    bytes<0x10> reserved;
+};
+
+interface nns::nvdrv::INvDrvServices is nvdrv, nvdrv:a, nvdrv:s, nvdrv:t {
+    [0] Open(buffer<u8, 5> path) -> (u32 fd, u32 error);
+    [1] Ioctl(u32 fd, u32 request, buffer<u8, 0x21> in, buffer<u8, 0x22> out) -> u32 error;
+    [2] Close(u32 fd) -> u32 error;
+    @stub [3] Initialize(u32 transfer_memory_size, handle<copy, process> process,
+                         handle<copy, transfer_memory> transfer_memory) -> u32 error;
+    [4] QueryEvent(u32 fd, u32 event_id) -> (u32 error, handle<copy, event> event);
+    @stub [5] MapSharedMem(u32 fd, u32 nvmap_handle, handle<copy, transfer_memory> transfer_memory) -> u32 error;
+    @stub [6] GetStatus() -> (nns::nvdrv::NvDrvStatus status, u32 error);
+    @stub [7] SetAruidWithoutCheck(nn::applet::AppletResourceUserId aruid) -> u32 error;
+    @stub [8] SetAruid(aruid aruid) -> u32 error;
+    @stub [9] DumpStatus();
+    @stub [10] InitializeDevtools(u32 size, handle<copy, transfer_memory> transfer_memory) -> u32 error;
+    [11] Ioctl2(u32 fd, u32 request, buffer<u8, 0x21> in, buffer<u8, 0x21> inline_in, buffer<u8, 0x22> out)
+        -> u32 error;
+    [12] Ioctl3(u32 fd, u32 request, buffer<u8, 0x21> in, buffer<u8, 0x22> out, buffer<u8, 0x22> inline_out)
+        -> u32 error;
+    # Switchbrew's name and input
+    @stub [13] SetGraphicsFirmwareMemoryMarginEnabled(u64 enabled);
+}

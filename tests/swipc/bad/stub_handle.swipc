@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# swipc refuses: a @stub that would answer a null handle
+interface test::I {
+    @stub [0] A() -> handle<copy, event> h;
+}

@@ -4,6 +4,7 @@
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 /* am: the applet manager (appletOE, appletAE) and its storages */
 #include "hle/services/services_int.h"
+#include "hle/services/am.swipc.inc"
 /* ================================================================ am */
 static struct {
     KEvent* msg_ev;
@@ -12,7 +13,7 @@ static struct {
     KEvent* launch_ev;
     KEvent* res_ev;
     KEvent* sleep_ev; /* GetAcquiredSleepLockEvent: signaled when a RequestToAcquireSleepLock is granted */
-    u64 layer;        /* the next CreateManagedDisplayLayer id */
+    u64 layer;        /* the next managed display layer id, CreateManagedDisplayLayer's and SeparableLayer's */
     int user_given;   /* PreselectedUser was popped: it is there once */
 } am = {.layer = 1};
 u64 g_user_id[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull};
@@ -45,45 +46,38 @@ typedef struct {
 static void storage_destroy(SvcObj* o) { free(((StorageData*)o->data)->d); }
 /* an accessor holds a reference on its storage (u[0]), dropped when the game closes the accessor */
 static void storage_acc_destroy(SvcObj* o) { svcobj_unref((SvcObj*)(size_t)o->u[0]); }
-static int storage_acc_disp(SvcObj* o, IpcCtx* c) {
-    StorageData* s = ((SvcObj*)(size_t)o->u[0])->data;
-    switch (c->cmd) {
-        case 0: out64(c, s->size); return 0;
-        case 10: {
-            u64 off = in64(c, 0), a, n;
-            buf_in(c, 0, &a, &n);
-            /* off + n can wrap: compare against what is left instead */
-            if (off > s->size || n > s->size - off) return RC(128, 503);
-            memcpy(s->d + off, GP(a), n);
-            return 0;
-        }
-        case 11: {
-            u64 off = in64(c, 0), a, n;
-            buf_out(c, 0, &a, &n);
-            if (off > s->size) return RC(128, 503);
-            if (off + n > s->size) n = s->size - off;
-            memcpy(GP(a), s->d + off, n);
-            return 0;
-        }
-    }
-    return stub_ok(o, c);
+static StorageData* accessor_storage(SvcObj* accessor) { return ((SvcObj*)(size_t)accessor->u[0])->data; }
+static int nn_am_service_IStorageAccessor_GetSize(SvcObj* self, i64* size) {
+    *size = (i64)accessor_storage(self)->size;
+    return 0;
 }
-static int storage_disp(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 0: { /* Open */
-            SvcObj* a = svcobj_new("IStorageAccessor", storage_acc_disp, 0);
-            a->u[0] = (u64)(size_t)o;
-            __atomic_add_fetch(&o->refs, 1, __ATOMIC_SEQ_CST);
-            a->destroy = storage_acc_destroy;
-            out_obj(c, a);
-            return 0;
-        }
-        /* OpenTransferStorage gives an ITransferStorageAccessor, which only a storage made over transfer memory
-           has. These storages are plain memory (CreateTransferMemoryStorage copies the transfer memory into one) */
-        case 1: return RC(128, 503);
-    }
-    return stub_ok(o, c);
+static int nn_am_service_IStorageAccessor_Write(SvcObj* self, i64 offset, IpcBuf data) {
+    StorageData* s = accessor_storage(self);
+    u64 off = (u64)offset, n = data.size;
+    /* off + n can wrap: compare against what is left instead */
+    if (off > s->size || n > s->size - off) return RC(128, 503);
+    memcpy(s->d + off, GP(data.addr), n);
+    return 0;
 }
+static int nn_am_service_IStorageAccessor_Read(SvcObj* self, i64 offset, IpcBuf data) {
+    StorageData* s = accessor_storage(self);
+    u64 off = (u64)offset, n = data.size;
+    if (off > s->size) return RC(128, 503);
+    if (off + n > s->size) n = s->size - off;
+    memcpy(GP(data.addr), s->d + off, n);
+    return 0;
+}
+static int nn_am_service_IStorage_Open(SvcObj* self, SvcObj** accessor) {
+    SvcObj* a = nn_am_service_IStorageAccessor_new(0);
+    a->u[0] = (u64)(size_t)self;
+    svcobj_ref(self);
+    a->destroy = storage_acc_destroy;
+    *accessor = a;
+    return 0;
+}
+/* OpenTransferStorage gives an ITransferStorageAccessor, which only a storage made over transfer memory has. These
+   storages are plain memory (CreateTransferMemoryStorage copies the transfer memory into one) */
+static int nn_am_service_IStorage_OpenTransferStorage(SvcObj* self, SvcObj** accessor) { return RC(128, 503); }
 /* NULL when the guest asks for more than the host can allocate */
 static SvcObj* am_storage_new(u64 size, const void* init) {
     u8* d = calloc(1, size ? size : 1);
@@ -91,7 +85,7 @@ static SvcObj* am_storage_new(u64 size, const void* init) {
         WARN("am: no memory for a %llu byte storage\n", (unsigned long long)size);
         return NULL;
     }
-    SvcObj* o = svcobj_new("IStorage", storage_disp, sizeof(StorageData));
+    SvcObj* o = nn_am_service_IStorage_new(sizeof(StorageData));
     StorageData* s = o->data;
     s->d = d;
     s->size = size;
@@ -99,194 +93,171 @@ static SvcObj* am_storage_new(u64 size, const void* init) {
     o->destroy = storage_destroy;
     return o;
 }
-/* the result of a Create*Storage command */
-static int out_storage(IpcCtx* c, u64 size) {
-    SvcObj* st = am_storage_new(size, NULL);
-    if (!st) return RC(128, 503);
-    out_obj(c, st);
+/* the result of a command that makes a storage */
+static int out_storage(SvcObj** storage, u64 size, const void* init) {
+    *storage = am_storage_new(size, init);
+    return *storage ? 0 : RC(128, 503);
+}
+static int is_storage(const SvcObj* o) { return o && o->dispatch == nn_am_service_IStorage_dispatch; }
+
+static int nn_am_service_ICommonStateGetter_GetEventHandle(SvcObj* self, u32* event) {
+    *event = ev_handle(am.msg_ev);
     return 0;
 }
-
-static int am_csg(SvcObj* o, IpcCtx* c) { /* ICommonStateGetter */
-    switch (c->cmd) {
-        case 0: out_copy_h(c, ev_handle(am.msg_ev)); return 0;
-        case 1: {
-            pm_lock(&g_klock);
-            if (!am.nmsg) {
-                am.msg_ev->signaled = 0;
-                pm_unlock(&g_klock);
-                return RC(128, 3);
-            }
-            u32 m = am.msgq[0];
-            memmove(am.msgq, am.msgq + 1, (--am.nmsg) * 4);
-            if (!am.nmsg) am.msg_ev->signaled = 0;
-            pm_unlock(&g_klock);
-            out32(c, m);
-            return 0;
-        }
-        case 2: out64(c, 0); return 0;                 /* GetThisAppletKind: Application */
-        case 5: out8(c, (u8)g_hle_docked); return 0;   /* GetOperationMode */
-        case 6: out32(c, (u32)g_hle_docked); return 0; /* GetPerformanceMode */
-        case 8: out8(c, 0); return 0;                  /* GetBootMode */
-        case 9: out8(c, 1); return 0;                  /* GetCurrentFocusState: InFocus */
-        case 10: kevent_signal(am.sleep_ev); return 0; /* RequestToAcquireSleepLock: granted at once, no sleep here */
-        case 13: out_copy_h(c, ev_handle(am.sleep_ev)); return 0; /* GetAcquiredSleepLockEvent */
-        case 11:
-        case 12:
-        case 50:
-        case 51:
-        case 52:
-        case 53:
-        case 54:
-        case 55:
-        case 59:
-        case 66:
-        case 67:
-        case 68: return 0;
-        case 60:
-            out32(c, g_hle_docked ? 1920 : 1280);
-            out32(c, g_hle_docked ? 1080 : 720);
-            return 0; /* GetDefaultDisplayResolution */
-        case 61: out_copy_h(c, ev_handle(am.res_ev)); return 0;
-        case 62: out32(c, 0); return 0; /* GetHdcpAuthenticationState: Unauthenticated, no TV link to protect */
-        case 63: out_copy_h(c, ev_handle(am.res_ev)); return 0;
-        case 91: out32(c, 0x00020003); return 0; /* GetCurrentPerformanceConfiguration, the one apm reports */
+static int nn_am_service_ICommonStateGetter_ReceiveMessage(SvcObj* self, nn_am_AppletMessage* message) {
+    pm_lock(&g_klock);
+    if (!am.nmsg) {
+        am.msg_ev->signaled = 0;
+        pm_unlock(&g_klock);
+        return RC(128, 3);
     }
-    return stub_ok(o, c);
+    *message = am.msgq[0];
+    memmove(am.msgq, am.msgq + 1, (--am.nmsg) * 4);
+    if (!am.nmsg) am.msg_ev->signaled = 0;
+    pm_unlock(&g_klock);
+    return 0;
 }
-static int am_self(SvcObj* o, IpcCtx* c) { /* ISelfController */
-    switch (c->cmd) {
-        case 0: g_quit = 1; return 0; /* Exit: the main loop saves what it keeps and ends the process */
-        case 9: out_copy_h(c, ev_handle(am.launch_ev)); return 0; /* GetLibraryAppletLaunchableEvent */
-        case 40: {
-            out64(c, __atomic_fetch_add(&am.layer, 1, __ATOMIC_RELAXED));
-            return 0;
-        } /* CreateManagedDisplayLayer */
-        case 41: out64(c, 0); return 0;
-        case 44:
-            out64(c, 1);
-            out64(c, 2);
-            return 0;
-        case 62: return 0;
-        case 63: out32(c, 0); return 0; /* GetIdleTimeDetectionExtension */
-        case 69: out8(c, 0); return 0;  /* IsAutoSleepDisabled */
-        case 90: out64(c, 0); return 0; /* GetAccumulatedSuspendedTickValue */
-        case 91: out_copy_h(c, ev_handle(kevent_new("suspend"))); return 0;
-        case 100:
-        case 110:
-        case 120: return 0;
-    }
-    return stub_ok(o, c);
+static int nn_am_service_ICommonStateGetter_GetOperationMode(SvcObj* self, u8* mode) {
+    *mode = (u8)g_hle_docked;
+    return 0;
 }
-static int am_window(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 1: out64(c, 0x1234); return 0;
-        case 10:
-        case 11:
-        case 12: return 0;
-    }
-    return stub_ok(o, c);
+static int nn_am_service_ICommonStateGetter_GetPerformanceMode(SvcObj* self, u32* mode) {
+    *mode = (u32)g_hle_docked;
+    return 0;
 }
-static int am_appfn(SvcObj* o, IpcCtx* c) { /* IApplicationFunctions */
-    switch (c->cmd) {
-        case 1: {
-            u32 kind = in32(c, 0);
-            if (kind == 2) { /* PreselectedUser */
-                if (__atomic_exchange_n(&am.user_given, 1, __ATOMIC_SEQ_CST)) return RC(128, 2);
-                u8 buf[0x88];
-                memset(buf, 0, sizeof buf);
-                u32 magic = 0xC79497CA;
-                memcpy(buf, &magic, 4);
-                u32 one = 1;
-                memcpy(buf + 4, &one, 4);
-                memcpy(buf + 8, g_user_id, 16);
-                SvcObj* st = am_storage_new(sizeof buf, buf);
-                if (!st) return RC(128, 503);
-                out_obj(c, st);
-                return 0;
-            }
-            return RC(128, 2);
-        }
-        case 20: out64(c, 0); return 0;                             /* EnsureSaveData */
-        case 21: out64(c, set_language_code(g_hle_lang)); return 0; /* GetDesiredLanguage */
-        case 25: out64(c, 0); return 0;                             /* ExtendSaveData */
-        case 26:
-            out64(c, 0x4000000);
-            out64(c, 0x4000000);
-            return 0; /* GetSaveDataSize */
-        case 110: out32(c, 0); return 0;
-        case 22:
-        case 27:
-        case 28:
-        case 32:
-        case 33:
-        case 34:
-        case 35:
-        case 36:
-        case 37:
-        case 66:
-        case 67:
-        case 68:
-        case 90:
-        case 100:
-        case 101:
-        case 120:
-        case 124: return 0;
-        case 151: return RC(128, 2); /* TryPopFromNotificationStorageChannel: nothing queued */
-        case 23: {
-            char v[16] = "1.0.0";
-            outbytes(c, v, 16);
-            return 0;
-        } /* GetDisplayVersion */
-        case 40: out8(c, 0); return 0; /* NotifyRunning */
-        case 50:
-            out64(c, 0x1111222233334444ull);
-            out64(c, 0x5555666677778888ull);
-            return 0;
-        case 60:
-        case 61: return 0;
-        case 130:
-        case 140:
-        case 150:
-        case 160:
-        case 210: out_copy_h(c, ev_handle(kevent_new("appfn ev"))); return 0; /* events (210 is new in recent SDKs) */
-        case 141: return RC(128, 2);
-        case 170: out8(c, 0); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_am_service_ICommonStateGetter_GetCurrentFocusState(SvcObj* self, u8* state) {
+    *state = 1; /* InFocus */
+    return 0;
+}
+/* granted at once, there is no sleep here */
+static int nn_am_service_ICommonStateGetter_RequestToAcquireSleepLock(SvcObj* self) {
+    kevent_signal(am.sleep_ev);
+    return 0;
+}
+static int nn_am_service_ICommonStateGetter_GetAcquiredSleepLockEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(am.sleep_ev);
+    return 0;
+}
+static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
+    *width = g_hle_docked ? 1920 : 1280;
+    *height = g_hle_docked ? 1080 : 720;
+    return 0;
+}
+static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolutionChangeEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(am.res_ev);
+    return 0;
+}
+static int nn_am_service_ICommonStateGetter_GetHdcpAuthenticationStateChangeEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(am.res_ev);
+    return 0;
+}
+static int nn_am_service_ICommonStateGetter_GetCurrentPerformanceConfiguration(SvcObj* self, u32* configuration) {
+    *configuration = 0x00020003; /* the one apm reports */
+    return 0;
+}
+/* the main loop saves what it keeps and ends the process */
+static int nn_am_service_ISelfController_Exit(SvcObj* self) {
+    g_quit = 1;
+    return 0;
+}
+static int nn_am_service_ISelfController_GetLibraryAppletLaunchableEvent(SvcObj* self, u32* event) {
+    *event = ev_handle(am.launch_ev);
+    return 0;
+}
+static int nn_am_service_ISelfController_CreateManagedDisplayLayer(SvcObj* self, u64* layer_id) {
+    *layer_id = __atomic_fetch_add(&am.layer, 1, __ATOMIC_RELAXED);
+    return 0;
+}
+static int nn_am_service_ISelfController_CreateManagedDisplaySeparableLayer(SvcObj* self, u64* layer_id,
+                                                                            u64* recording_layer_id) {
+    *layer_id = __atomic_fetch_add(&am.layer, 2, __ATOMIC_RELAXED); /* two layers, never one handed out before */
+    *recording_layer_id = *layer_id + 1;
+    return 0;
+}
+static int nn_am_service_ISelfController_GetAccumulatedSuspendedTickChangedEvent(SvcObj* self, u32* event) {
+    return new_event(event, "suspend", 0);
+}
+static int nn_am_service_IWindowController_GetAppletResourceUserId(SvcObj* self,
+                                                                   nn_applet_AppletResourceUserId* aruid) {
+    *aruid = 0x1234;
+    return 0;
+}
+static int nn_am_service_IApplicationFunctions_PopLaunchParameter(SvcObj* self, u32 kind, SvcObj** storage) {
+    u8 buf[0x88];
+    u32 magic = 0xC79497CA, one = 1;
+    /* only the PreselectedUser (2), there once */
+    if (kind != 2 || __atomic_exchange_n(&am.user_given, 1, __ATOMIC_SEQ_CST)) return RC(128, 2);
+    memset(buf, 0, sizeof buf);
+    memcpy(buf, &magic, 4);
+    memcpy(buf + 4, &one, 4);
+    memcpy(buf + 8, g_user_id, 16);
+    return out_storage(storage, sizeof buf, buf);
+}
+static int nn_am_service_IApplicationFunctions_GetDesiredLanguage(SvcObj* self, nn_settings_LanguageCode* code) {
+    set_language_code(g_hle_lang, code->v);
+    return 0;
+}
+static int nn_am_service_IApplicationFunctions_GetDisplayVersion(SvcObj* self, nn_oe_DisplayVersion* version) {
+    strcpy((char*)version->v, "1.0.0");
+    return 0;
+}
+static int nn_am_service_IApplicationFunctions_GetSaveDataSize(SvcObj* self, u8 type, const nn_account_Uid* uid,
+                                                               i64* normal_size, i64* journal_size) {
+    *normal_size = 0x4000000;
+    *journal_size = 0x4000000;
+    return 0;
+}
+static int nn_am_service_IApplicationFunctions_GetLimitedApplicationLicenseUpgradableEvent(SvcObj* self, u32* event) {
+    return new_event(event, "appfn ev", 0);
+}
+static int nn_am_service_IApplicationFunctions_GetPseudoDeviceId(SvcObj* self, nn_util_Uuid* id) {
+    static const u64 pseudo[2] = {0x1111222233334444ull, 0x5555666677778888ull};
+    memcpy(id->v, pseudo, 16);
+    return 0;
+}
+static int nn_am_service_IApplicationFunctions_GetGpuErrorDetectedSystemEvent(SvcObj* self, u32* event) {
+    return new_event(event, "appfn ev", 0);
+}
+static int nn_am_service_IApplicationFunctions_GetFriendInvitationStorageChannelEvent(SvcObj* self, u32* event) {
+    return new_event(event, "appfn ev", 0);
+}
+static int nn_am_service_IApplicationFunctions_TryPopFromFriendInvitationStorageChannel(SvcObj* self,
+                                                                                        SvcObj** storage) {
+    return RC(128, 2); /* nothing queued */
+}
+static int nn_am_service_IApplicationFunctions_GetNotificationStorageChannelEvent(SvcObj* self, u32* event) {
+    return new_event(event, "appfn ev", 0);
+}
+static int nn_am_service_IApplicationFunctions_TryPopFromNotificationStorageChannel(SvcObj* self, SvcObj** storage) {
+    return RC(128, 2); /* nothing queued */
+}
+static int nn_am_service_IApplicationFunctions_GetHealthWarningDisappearedSystemEvent(SvcObj* self, u32* event) {
+    return new_event(event, "appfn ev", 0);
+}
+static int nn_am_service_IApplicationFunctions_GetUnknownEvent210(SvcObj* self, u32* event) {
+    return new_event(event, "appfn ev", 0);
 }
 /* library applets (swkbd, error...) finish immediately: no applet UI here */
 typedef struct {
-    u32 id;
+    u32 id, mode;
     int popped_out, popped_interactive;
-    SvcObj* in[8]; /* the storages PushInData passed, in order */
+    SvcObj* in[8]; /* the storages PushInData passed, in order, under lib_lock: game threads push and pop at once */
     int nin;
 } LibApplet;
+static PMutex lib_lock = PMUTEX_INIT;
 static void lib_applet_destroy(SvcObj* o) {
     LibApplet* la = o->data;
     for (int i = 0; i < la->nin; i++) svcobj_unref(la->in[i]);
-}
-/* the object a request passes in (InObject), with a reference the caller drops. Only domains pass objects, by
-   their id in the domain: the same lookup as ipc.c's domain_get */
-static SvcObj* in_obj(IpcCtx* c, int i) {
-    if (i >= c->nin_objs || !c->sess || !c->sess->domain) return NULL;
-    Domain* d = c->sess->domain;
-    u32 id = c->in_objs[i];
-    pm_lock(&d->lk);
-    SvcObj* o = (id && id <= (u32)d->n) ? d->obj[id - 1] : NULL;
-    if (o) __atomic_add_fetch(&o->refs, 1, __ATOMIC_SEQ_CST);
-    pm_unlock(&d->lk);
-    return o;
 }
 /* the controller applet (ShowControllerSupport) answers ControllerSupportResultInfo {i8 player_count; pad[3];
    u32 selected_id} and a u32 result, which the SDK turns into success (0) or cancelled (2). The last storage
    pushed is the ControllerSupportArg, whose byte 0 is min_player_count: one controller (npad No1) satisfies at
    most one player, as a console with one controller connected would */
-static SvcObj* controller_result(LibApplet* la) {
-    i8 min_players = 0;
+static i8 controller_min_players(LibApplet* la) { /* lib_lock held */
     SvcObj* arg = la->nin ? la->in[la->nin - 1] : NULL;
-    if (arg && arg->dispatch == storage_disp && ((StorageData*)arg->data)->size)
-        min_players = (i8)((StorageData*)arg->data)->d[0];
+    return is_storage(arg) && ((StorageData*)arg->data)->size ? (i8)((StorageData*)arg->data)->d[0] : 0;
+}
+static SvcObj* controller_result(i8 min_players) {
     u8 r[0xC];
     memset(r, 0, sizeof r);
     u32 result = min_players <= 1 ? 0 : 2;
@@ -328,16 +299,22 @@ static u32 swkbd_text(u8* out, const char* text, u32 max_chars) {
     }
     return count;
 }
-static SvcObj* swkbd_result(LibApplet* la) {
-    u8 r[0x7D8] = {0};
-    u32 max_chars = (sizeof r - 4) / 2 - 1, min_chars = 0;
-    StorageData* cfg = la->nin > 1 && la->in[1]->dispatch == storage_disp ? la->in[1]->data : NULL;
+#define SWKBD_MAX_CHARS ((0x7D8 - 4) / 2 - 1)
+/* the text length limits of the config the game pushed second (lib_lock held) */
+static void swkbd_limits(LibApplet* la, u32* max_chars, u32* min_chars) {
+    StorageData* cfg = la->nin > 1 && is_storage(la->in[1]) ? la->in[1]->data : NULL;
+    *max_chars = SWKBD_MAX_CHARS;
+    *min_chars = 0;
     if (cfg && cfg->size >= 0x3B4) {
         u32 limit;
         memcpy(&limit, cfg->d + 0x3AC, 4);
-        if (limit && limit < max_chars) max_chars = limit;
-        memcpy(&min_chars, cfg->d + 0x3B0, 4);
+        if (limit && limit < *max_chars) *max_chars = limit;
+        memcpy(min_chars, cfg->d + 0x3B0, 4);
     }
+}
+/* asks the host for the text, which can take as long as the player types: no lock held */
+static SvcObj* swkbd_result(u32 max_chars, u32 min_chars) {
+    u8 r[0x7D8] = {0};
     if (min_chars > max_chars) {
         WARN("applet: swkbd minimum text length %u exceeds maximum %u\n", min_chars, max_chars);
         min_chars = max_chars;
@@ -365,138 +342,163 @@ static SvcObj* swkbd_result(LibApplet* la) {
     }
     return am_storage_new(sizeof r, r);
 }
-static int am_lib_accessor(SvcObj* o, IpcCtx* c) {
-    LibApplet* la = o->data;
-    switch (c->cmd) {
-        case 0: {
-            KEvent* e = kevent_new("applet state");
-            e->signaled = 1;
-            out_copy_h(c, h_new(&e->o));
-            return 0;
-        }
-        case 1: out8(c, 1); return 0;
-        case 10:
-        case 20:
-        case 25:
-        case 30:
-        case 103:
-        case 50:
-        case 60:
-        case 150: return 0;
-        case 100: { /* PushInData: the controller applet's answer depends on what was pushed */
-            SvcObj* st = in_obj(c, 0);
-            if (st && la->nin < 8)
-                la->in[la->nin++] = st;
-            else
-                svcobj_unref(st);
-            return 0;
-        }
-        case 101:
-        case 104: {
-            /* Standard swkbd has no interactive output unless it requests application text validation. */
-            if (la->id == 0x11 && c->cmd == 104) return RC(128, 2);
-            /* PopOutData and PopInteractiveOutData are separate channels, each with one storage */
-            int* popped = c->cmd == 101 ? &la->popped_out : &la->popped_interactive;
-            if (__atomic_exchange_n(popped, 1, __ATOMIC_SEQ_CST)) return RC(128, 2);
-            /* applet output. web applets (Web, Shop, OfflineWeb, LoginShare, WifiWebAuth) return a 0x1010 byte
-         WebCommonReturnValue (exit reason 0, last url, url size); callers check the size. PlayerSelect returns
-         UiReturnArg {u64 result; Uid uid}: the one user, selected */
-            u32 id = la->id;
-            SvcObj* st;
-            u64 n = 0x10;
-            if (id == 0x0C && c->cmd == 101) {
-                st = controller_result(la);
-                n = 0xC;
-            } else if (id == 0x11 && c->cmd == 101) {
-                st = swkbd_result(la);
-                n = 0x7D8;
-            } else if (id == 0x10) {
-                u8 r[0x18];
-                memset(r, 0, sizeof r);
-                memcpy(r + 8, g_user_id, 16);
-                n = sizeof r;
-                st = am_storage_new(n, r);
-            } else {
-                if (id == 0x13 || id == 0x14 || id == 0x17 || id == 0x18 || id == 0x19) n = 0x1010;
-                st = am_storage_new(n, NULL);
-            }
-            if (!st) return RC(128, 503);
-            if (id != 0x11)
-                LOG_LIMIT(4,
-                          "applet: library applet %02x closed right away (no applet UI here), %llu bytes of output\n",
-                          id, (unsigned long long)n);
-            out_obj(c, st);
-            return 0;
-        }
-        case 105:
-        case 106: {
-            KEvent* e = kevent_new("applet data");
-            e->signaled = !(la->id == 0x11 && c->cmd == 106);
-            out_copy_h(c, h_new(&e->o));
-            return 0;
-        }
-        case 120: out64(c, 0); return 0;
-    }
-    return stub_ok(o, c);
+static int nn_am_service_ILibraryAppletAccessor_GetAppletStateChangedEvent(SvcObj* self, u32* event) {
+    return new_event(event, "applet state", 1);
 }
-static int am_lac(SvcObj* o, IpcCtx* c) { /* ILibraryAppletCreator */
-    switch (c->cmd) {
-        case 0: { /* CreateLibraryApplet(u32 applet id, u32 mode) */
-            SvcObj* a = svcobj_new("ILibraryAppletAccessor", am_lib_accessor, sizeof(LibApplet));
-            ((LibApplet*)a->data)->id = in32(c, 0);
-            a->destroy = lib_applet_destroy;
-            out_obj(c, a);
-            return 0;
-        }
-        case 10:
-            return out_storage(c, in64(c, 0)); /* CreateStorage(i64 size) */
-        /* CreateTransferMemoryStorage(bool writable, i64 size, copy handle): a storage holding what the transfer
-           memory holds. A copy is enough: the library applets here finish at once and only read what was pushed */
-        case 11: {
-            u64 size = in64(c, 8);
-            KTmem* m = c->ncopy ? (KTmem*)h_get_ref(c->copy_h[0], KO_TMEM) : NULL;
-            if (!m) return out_storage(c, size);
-            SvcObj* st = am_storage_new(size, NULL);
-            if (st) memcpy(((StorageData*)st->data)->d, GP(m->addr), size < m->size ? size : m->size);
-            kobj_unref(&m->o);
-            if (!st) return RC(128, 503);
-            out_obj(c, st);
-            return 0;
-        }
-    }
-    return stub_ok(o, c);
+static int nn_am_service_ILibraryAppletAccessor_IsCompleted(SvcObj* self, u8* completed) {
+    *completed = 1;
+    return 0;
 }
-static int am_audio(SvcObj* o, IpcCtx* c) {
-    switch (c->cmd) {
-        case 1:                   /* GetMainAppletExpectedMasterVolume */
-        case 2:                   /* GetLibraryAppletExpectedMasterVolume */
-            out32(c, 0x3F800000); /* 1.0f */
-            return 0;
+/* the controller applet's answer depends on what was pushed */
+static int nn_am_service_ILibraryAppletAccessor_PushInData(SvcObj* self, SvcObj* storage) {
+    LibApplet* la = self->data;
+    pm_lock(&lib_lock);
+    if (storage && la->nin < 8) {
+        svcobj_ref(storage);
+        la->in[la->nin++] = storage;
     }
-    return stub_ok(o, c);
+    pm_unlock(&lib_lock);
+    return 0;
 }
-static int am_display(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
-static int am_debug(SvcObj* o, IpcCtx* c) { return stub_ok(o, c); }
-static int am_proxy(SvcObj* o, IpcCtx* c) { /* IApplicationProxy */
-    switch (c->cmd) {
-        case 0: out_obj(c, svcobj_new("ICommonStateGetter", am_csg, 0)); return 0;
-        case 1: out_obj(c, svcobj_new("ISelfController", am_self, 0)); return 0;
-        case 2: out_obj(c, svcobj_new("IWindowController", am_window, 0)); return 0;
-        case 3: out_obj(c, svcobj_new("IAudioController", am_audio, 0)); return 0;
-        case 4: out_obj(c, svcobj_new("IDisplayController", am_display, 0)); return 0;
-        case 10: out_obj(c, quiet("IProcessWindingController")); return 0;
-        case 11: out_obj(c, svcobj_new("ILibraryAppletCreator", am_lac, 0)); return 0;
-        case 20: out_obj(c, svcobj_new("IApplicationFunctions", am_appfn, 0)); return 0;
-        case 1000: out_obj(c, svcobj_new("IDebugFunctions", am_debug, 0)); return 0;
+/* PopOutData and PopInteractiveOutData are separate channels, each with one storage. Web applets (Web, Shop,
+   OfflineWeb, LoginShare, WifiWebAuth) return a 0x1010 byte WebCommonReturnValue (exit reason 0, last url, url size),
+   whose size callers check. PlayerSelect returns UiReturnArg {u64 result; Uid uid}: the one user, selected */
+static int pop_data(LibApplet* la, int interactive, SvcObj** storage) {
+    u32 id = la->id;
+    u64 n = 0x10;
+    /* Standard swkbd has no interactive output unless it requests application text validation. */
+    if (id == 0x11 && interactive) return RC(128, 2);
+    if (__atomic_exchange_n(interactive ? &la->popped_interactive : &la->popped_out, 1, __ATOMIC_SEQ_CST))
+        return RC(128, 2);
+    SvcObj* st;
+    if (id == 0x0C && !interactive) {
+        pm_lock(&lib_lock);
+        i8 min_players = controller_min_players(la);
+        pm_unlock(&lib_lock);
+        st = controller_result(min_players);
+        n = 0xC;
+    } else if (id == 0x11 && !interactive) {
+        u32 max_chars, min_chars;
+        pm_lock(&lib_lock);
+        swkbd_limits(la, &max_chars, &min_chars);
+        pm_unlock(&lib_lock);
+        st = swkbd_result(max_chars, min_chars);
+        n = 0x7D8;
+    } else if (id == 0x10) {
+        u8 r[0x18];
+        memset(r, 0, sizeof r);
+        memcpy(r + 8, g_user_id, 16);
+        n = sizeof r;
+        st = am_storage_new(n, r);
+    } else {
+        if (id == 0x13 || id == 0x14 || id == 0x17 || id == 0x18 || id == 0x19) n = 0x1010;
+        st = am_storage_new(n, NULL);
     }
-    return stub_ok(o, c);
+    if (!st) return RC(128, 503);
+    if (id != 0x11)
+        LOG_LIMIT(4, "applet: library applet %02x closed right away (no applet UI here), %llu bytes of output\n", id,
+                  (unsigned long long)n);
+    *storage = st;
+    return 0;
 }
-static int am_oe(SvcObj* o, IpcCtx* c) {
-    if (c->cmd == 0) {
-        out_obj(c, svcobj_new("IApplicationProxy", am_proxy, 0));
-        return 0;
-    }
-    return stub_ok(o, c);
+static int nn_am_service_ILibraryAppletAccessor_PopOutData(SvcObj* self, SvcObj** storage) {
+    return pop_data(self->data, 0, storage);
 }
-SvcObj* new_appletoe(void) { return svcobj_new("appletOE", am_oe, 0); }
-SvcObj* new_appletae(void) { return svcobj_new("appletAE", am_oe, 0); }
+static int nn_am_service_ILibraryAppletAccessor_PopInteractiveOutData(SvcObj* self, SvcObj** storage) {
+    return pop_data(self->data, 1, storage);
+}
+static int nn_am_service_ILibraryAppletAccessor_GetPopOutDataEvent(SvcObj* self, u32* event) {
+    return new_event(event, "applet data", 1);
+}
+/* swkbd gives no interactive output: that one never signals */
+static int nn_am_service_ILibraryAppletAccessor_GetPopInteractiveOutDataEvent(SvcObj* self, u32* event) {
+    return new_event(event, "applet data", ((LibApplet*)self->data)->id != 0x11);
+}
+static int nn_am_service_ILibraryAppletAccessor_GetLibraryAppletInfo(SvcObj* self,
+                                                                     nn_am_service_LibraryAppletInfo* info) {
+    LibApplet* la = self->data;
+    info->applet_id = la->id;
+    info->library_applet_mode = la->mode;
+    return 0;
+}
+static int nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(SvcObj* self, u32 applet_id, u32 library_applet_mode,
+                                                                   SvcObj** accessor) {
+    SvcObj* a = nn_am_service_ILibraryAppletAccessor_new(sizeof(LibApplet));
+    ((LibApplet*)a->data)->id = applet_id;
+    ((LibApplet*)a->data)->mode = library_applet_mode;
+    a->destroy = lib_applet_destroy;
+    *accessor = a;
+    return 0;
+}
+static int nn_am_service_ILibraryAppletCreator_CreateStorage(SvcObj* self, i64 size, SvcObj** storage) {
+    return out_storage(storage, (u64)size, NULL);
+}
+/* a storage holding what the transfer memory holds. A copy is enough: the library applets here finish at once and
+   only read what was pushed */
+static int nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(SvcObj* self, u8 is_writable, i64 size,
+                                                                           u32 transfer_memory, SvcObj** storage) {
+    KTmem* m = (KTmem*)h_get_ref(transfer_memory, KO_TMEM);
+    if (!m) return out_storage(storage, (u64)size, NULL);
+    SvcObj* st = am_storage_new((u64)size, NULL);
+    if (st) memcpy(((StorageData*)st->data)->d, GP(m->addr), (u64)size < m->size ? (u64)size : m->size);
+    kobj_unref(&m->o);
+    if (!st) return RC(128, 503);
+    *storage = st;
+    return 0;
+}
+static int nn_am_service_IAudioController_GetMainAppletExpectedMasterVolume(SvcObj* self, float* volume) {
+    *volume = 1.0f;
+    return 0;
+}
+static int nn_am_service_IAudioController_GetLibraryAppletExpectedMasterVolume(SvcObj* self, float* volume) {
+    *volume = 1.0f;
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetCommonStateGetter(SvcObj* self, SvcObj** getter) {
+    *getter = nn_am_service_ICommonStateGetter_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetSelfController(SvcObj* self, SvcObj** controller) {
+    *controller = nn_am_service_ISelfController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetWindowController(SvcObj* self, SvcObj** controller) {
+    *controller = nn_am_service_IWindowController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetAudioController(SvcObj* self, SvcObj** controller) {
+    *controller = nn_am_service_IAudioController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetDisplayController(SvcObj* self, SvcObj** controller) {
+    *controller = nn_am_service_IDisplayController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetProcessWindingController(SvcObj* self, SvcObj** controller) {
+    *controller = nn_am_service_IProcessWindingController_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetLibraryAppletCreator(SvcObj* self, SvcObj** creator) {
+    *creator = nn_am_service_ILibraryAppletCreator_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetApplicationFunctions(SvcObj* self, SvcObj** functions) {
+    *functions = nn_am_service_IApplicationFunctions_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxy_GetDebugFunctions(SvcObj* self, SvcObj** functions) {
+    *functions = nn_am_service_IDebugFunctions_new(0);
+    return 0;
+}
+static int nn_am_service_IApplicationProxyService_OpenApplicationProxy(SvcObj* self, u64 pid, u32 process,
+                                                                       SvcObj** proxy) {
+    *proxy = nn_am_service_IApplicationProxy_new(0);
+    return 0;
+}
+static int nn_am_service_IAllSystemAppletProxiesService_OpenSystemApplicationProxy(SvcObj* self, u64 pid, u32 process,
+                                                                                   SvcObj** proxy) {
+    *proxy = nn_am_service_IApplicationProxy_new(0);
+    return 0;
+}
+SvcObj* new_appletoe(void) { return nn_am_service_IApplicationProxyService_new(0); }
+SvcObj* new_appletae(void) { return nn_am_service_IAllSystemAppletProxiesService_new(0); }

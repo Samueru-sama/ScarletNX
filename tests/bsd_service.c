@@ -48,30 +48,27 @@ int ipc_warn_once(const char* name, u32 cmd) {
     (void)name, (void)cmd;
     return 0;
 }
+/* sf's InvalidCmifRequest, for a request that doesn't send what its command declares */
+int ipc_bad_request(SvcObj* o, IpcCtx* c) {
+    (void)o, (void)c;
+    return RC(11, 420);
+}
+/* sf's InvalidNumInObjects, for a domain request with another number of objects */
+int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
+    (void)o, (void)c;
+    return RC(10, 235);
+}
 int stub_ok(SvcObj* o, IpcCtx* c) {
     (void)o, (void)c;
     return 0;
 }
-int buf_in(IpcCtx* c, int i, u64* a, u64* s) {
-    *a = *s = 0;
-    if (i >= c->na) return 0;
-    *a = c->a[i].addr;
-    *s = c->a[i].size;
-    return 1;
-}
-int buf_out(IpcCtx* c, int i, u64* a, u64* s) {
-    *a = *s = 0;
-    if (i >= c->nb) return 0;
-    *a = c->b[i].addr;
-    *s = c->b[i].size;
-    return 1;
-}
+void svc_register(const char* name, SvcCtor ctor) { (void)name, (void)ctor; }
 
 /* guest memory: buffers at fixed addresses */
 enum { IN0 = 0x1000, IN1 = 0x2000, OUT0 = 0x3000, OUT1 = 0x4000, BUFSIZE = 0x1000 };
 static SvcObj* bsd;
 static IpcCtx ctx;
-static u32 raw[8];
+static u32 raw[16]; /* more than any bsd command takes: sf refuses a request shorter than its arguments */
 static void request(u32 cmd, u32 a0, u32 a1, u32 a2) {
     memset(&ctx, 0, sizeof ctx);
     memset(raw, 0, sizeof raw);
@@ -82,13 +79,16 @@ static void request(u32 cmd, u32 a0, u32 a1, u32 a2) {
     ctx.raw_size = sizeof raw;
     ctx.cmd = cmd;
 }
+/* bsd's buffers are all AutoSelect, sent in both their lists: mapped here, with an empty pointer descriptor beside */
 static void in(u64 addr, u64 size) {
     ctx.a[ctx.na].addr = addr;
     ctx.a[ctx.na++].size = size;
+    ctx.nx++;
 }
 static void out(u64 addr, u64 size) {
     ctx.b[ctx.nb].addr = addr;
     ctx.b[ctx.nb++].size = size;
+    ctx.nc++;
 }
 /* sends the request; *err gets the errno, the call's result is returned */
 static i32 call(u32* err) {
@@ -121,7 +121,9 @@ int main(void) {
     bsd = new_bsd_u();
     u32 e;
 
-    request(0, 0, 0, 0); /* RegisterClient */
+    request(0, 0, 0, 0); /* RegisterClient(config, pid, transfer memory size, transfer memory) */
+    ctx.has_pid = 1;
+    ctx.ncopy = 1;
     call(NULL);
     request(2, 2, 1, 0); /* Socket(AF_INET, SOCK_STREAM) */
     i32 l = call(&e);
@@ -182,8 +184,10 @@ int main(void) {
     in(IN0, 8);
     out(OUT0, 8);
     CHECK(call(&e) == 1 && (GP(OUT0)[6] & 0x01));
-    request(19, (u32)c, BSD_FIONREAD, 1); /* Ioctl FIONREAD */
+    request(19, (u32)c, BSD_FIONREAD, 1); /* Ioctl FIONREAD: four ins, four outs, the first out used */
+    for (int k = 0; k < 4; k++) in(0, 0);
     out(OUT1, 4);
+    for (int k = 0; k < 3; k++) out(0, 0);
     CHECK(call(&e) == 0 && gr32(OUT1) == 6);
     request(8, (u32)c, 0x2, 0); /* Recv MSG_PEEK (FreeBSD's) */
     out(OUT0, 3);
@@ -202,9 +206,7 @@ int main(void) {
     sets[1][c / 8] |= (u8)(1 << (c % 8));
     memcpy(GP(IN0), sets[0], 16);
     memcpy(GP(IN1), sets[1], 16);
-    memset(raw, 0, sizeof raw);
-    request(5, (u32)(s > c ? s : c) + 1, 0, 0);
-    raw[6] = 0; /* timeout {0, 0}, not null */
+    request(5, (u32)(s > c ? s : c) + 1, 0, 0); /* raw[2..] stay zero: the timeout at 8 is {0, 0}, not null */
     in(IN0, 16);
     in(IN1, 16);
     in(0, 0);
@@ -228,6 +230,30 @@ int main(void) {
     request(8, (u32)s, 0, 0); /* a blocking Recv gives up after it */
     out(OUT0, BUFSIZE);
     CHECK(call(&e) == -1 && e == SNX_EAGAIN);
+
+    /* the AutoSelect buffers through the pointer buffer, which the SDK picks for small ones: Send's message in X,
+       Recv's in C, GetSockName's address in C, each beside an empty mapped descriptor */
+    memcpy(GP(IN1), "pointer", 7);
+    request(10, (u32)c, 0, 0);
+    in(0, 0);
+    ctx.x[0] = (IpcBuf){IN1, 7, 0};
+    CHECK(call(&e) == 7);
+    memset(GP(OUT0), 0, 16);
+    request(8, (u32)s, 0, 0); /* blocking, with its 250 ms timeout */
+    out(0, 0);
+    ctx.c[0] = (IpcBuf){OUT0, BUFSIZE, 0};
+    CHECK(call(&e) == 7 && !memcmp(GP(OUT0), "pointer", 7));
+    memset(GP(OUT1), 0, 16);
+    request(16, (u32)l, 0, 0);
+    out(0, 0);
+    ctx.c[0] = (IpcBuf){OUT1, 16, 0};
+    CHECK(call(&e) == 0 && word(2) == 16 && GP(OUT1)[1] == 2 && !memcmp(GP(OUT1) + 2, &port, 2));
+
+    /* a command bsd doesn't have (RecvMMsg): success, with the BSD result -1 and EOPNOTSUPP in the raw data */
+    request(29, (u32)s, 0, 0);
+    CHECK(call(&e) == -1 && e == SNX_EOPNOTSUPP);
+    request(100, 0, 0, 0);
+    CHECK(bsd->dispatch(bsd, &ctx) == 0 && ctx.out_size == 8 && word(0) == 0xFFFFFFFFu && word(1) == SNX_EOPNOTSUPP);
 
     /* UDP and RecvFrom's address */
     request(2, 2, 2, 17);
@@ -267,20 +293,19 @@ int main(void) {
     CHECK(call(&e) == 4 && word(2) == 16);
 
     /* Every error response has exactly the command's ABI size, including the address length. */
-    const u32 bad_fd_commands[] = {8, 9, 10, 11, 12, 15, 16, 17, 24, 25};
+    /* each with the buffers it declares: ins, outs */
+    const u32 bad_fd_commands[][3] = {{8, 0, 1},  {9, 0, 2},  {10, 1, 0}, {11, 2, 0}, {12, 0, 1},
+                                      {15, 0, 1}, {16, 0, 1}, {17, 0, 1}, {24, 1, 0}, {25, 0, 1}};
     for (unsigned i = 0; i < sizeof bad_fd_commands / sizeof *bad_fd_commands; i++) {
-        request(bad_fd_commands[i], BSD_MAX_FD, 0, 0);
-        in(IN1, 4);
-        out(OUT0, 64);
-        out(IN0, 16);
+        request(bad_fd_commands[i][0], BSD_MAX_FD, 0, 0);
+        for (u32 k = 0; k < bad_fd_commands[i][1]; k++) in(k ? IN0 : IN1, k ? 16 : 4);
+        for (u32 k = 0; k < bad_fd_commands[i][2]; k++) out(k ? IN0 : OUT0, k ? 16 : 64);
         CHECK(call(&e) == -1 && e == SNX_EBADF);
         if (ctx.out_size == 12) CHECK(word(2) == 0);
     }
 
     /* EventFd, Close, bad descriptors, offline */
-    raw[0] = 0;
-    request(31, 2, 0, 0x4); /* EventFd(2, EFD_NONBLOCK) */
-    raw[2] = 0x4;
+    request(31, 0x4, 0, 2); /* EventFd(2, EFD_NONBLOCK): the u32 flags at 0, the u64 initval at 8 */
     i32 ev = call(&e);
     CHECK(ev > 0);
     request(25, (u32)ev, 0, 0);

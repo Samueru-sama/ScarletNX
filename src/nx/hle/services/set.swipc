@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# set and set:sys: system settings (set.c)
+
+type nn::kpr::KeyCodeMap = bytes<0x1000>;
+type nn::settings::system::DeviceNickName = bytes<0x80>;
+type nn::settings::system::FirmwareVersion = bytes<0x100>;
+type nn::settings::SettingsName = bytes<0x48>;
+type nn::settings::SettingsItemKey = bytes<0x48>;
+
+interface nn::settings::ISettingsServer is set {
+    [0] GetLanguageCode() -> nn::settings::LanguageCode code;
+    [1] GetAvailableLanguageCodes(array<nn::settings::LanguageCode, 0xa> codes) -> i32 count;
+    [2] MakeLanguageCode(u32 language) -> nn::settings::LanguageCode code;
+    [3] GetAvailableLanguageCodeCount() -> i32 count;
+    [4] GetRegionCode() -> i32 region;
+    [5] GetAvailableLanguageCodes2(array<nn::settings::LanguageCode, 6> codes) -> i32 count;
+    [6] GetAvailableLanguageCodeCount2() -> i32 count;
+    [7] GetKeyCodeMap(buffer<nn::kpr::KeyCodeMap, 0x16> map);
+    @stub [8] GetQuestFlag() -> b8 quest;
+    [9] GetKeyCodeMap2(buffer<nn::kpr::KeyCodeMap, 0x16> map);
+    [11] GetDeviceNickName(buffer<nn::settings::system::DeviceNickName, 0x16> name);
+}
+
+interface nn::settings::ISystemSettingsServer is set:sys {
+    [3] GetFirmwareVersion(buffer<nn::settings::system::FirmwareVersion, 0x1a> version);
+    [4] GetFirmwareVersion2(buffer<nn::settings::system::FirmwareVersion, 0x1a> version);
+    @stub [23] GetColorSetId() -> i32 id;
+    # no setting is there: the size is 0, and the value an empty one
+    @stub [37] GetSettingsItemValueSize(buffer<nn::settings::SettingsName, 0x19> name,
+                                        buffer<nn::settings::SettingsItemKey, 0x19> key) -> u64 size;
+    [38] GetSettingsItemValue(buffer<nn::settings::SettingsName, 0x19> name,
+                              buffer<nn::settings::SettingsItemKey, 0x19> key, buffer<u8, 6> value) -> u64 size;
+    @stub [62] GetDebugModeFlag() -> b8 debug;
+    @stub [90] GetMiiAuthorId() -> nn::util::Uuid id;
+    @stub [91] SetShutdownRtcValue(i64 value);
+}

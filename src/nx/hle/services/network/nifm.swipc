@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# nifm: whether the console is connected (nifm.c)
+
+type nn::nifm::ClientId = u32;
+type nn::nifm::IpV4Address = bytes<4>;
+type nn::nifm::IpAddressSetting = bytes<0xd>;
+type nn::nifm::DnsSetting = bytes<9>;
+type nn::nifm::detail::sf::NetworkProfileData = bytes<0x17c>;
+type nn::nifm::Requirement = bytes<0x24, 4>;
+
+@fallback(quiet_ok)
+interface nn::nifm::detail::IStaticService is nifm:u, nifm:a, nifm:s {
+    [4] CreateGeneralServiceOld() -> object<nn::nifm::detail::IGeneralService> service;
+    [5] CreateGeneralService(pid) -> object<nn::nifm::detail::IGeneralService> service;
+}
+
+interface nn::nifm::detail::IGeneralService {
+    [1] GetClientId(buffer<nn::nifm::ClientId, 0x1a> client_id);
+    [2] CreateScanRequest() -> object<nn::nifm::detail::IScanRequest> request;
+    [4] CreateRequest(i32 requirement_preset) -> object<nn::nifm::detail::IRequest> request;
+    [5] GetCurrentNetworkProfile(buffer<nn::nifm::detail::sf::NetworkProfileData, 0x1a> profile);
+    [12] GetCurrentIpAddress() -> nn::nifm::IpV4Address address;
+    [15] GetCurrentIpConfigInfo() -> (nn::nifm::IpAddressSetting ip_setting, nn::nifm::DnsSetting dns_setting);
+    @stub [16] SetWirelessCommunicationEnabled(b8 enabled);
+    [17] IsWirelessCommunicationEnabled() -> b8 enabled;
+    [18] GetInternetConnectionStatus() -> (u8 interface_type, u8 wifi_strength, u8 status);
+    @stub [19] SetEthernetCommunicationEnabled(b8 enabled);
+    [20] IsEthernetCommunicationEnabled() -> b8 enabled;
+    [21] IsAnyInternetRequestAccepted(buffer<nn::nifm::ClientId, 0x19> client_id) -> b8 accepted;
+    [22] IsAnyForegroundRequestAccepted() -> b8 accepted;
+    @stub [33] ConfirmSystemAvailability();
+    @stub [34] SetBackgroundRequestEnabled(b8 enabled);
+}
+
+# a scan that is over at once and found nothing
+interface nn::nifm::detail::IScanRequest {
+    @stub [0] Submit();
+    @stub [1] IsProcessing() -> b8 processing;
+    @stub [2] GetResult();
+    [3] GetSystemEventReadableHandle() -> handle<copy, event> event;
+}
+
+interface nn::nifm::detail::IRequest {
+    [0] GetRequestState() -> i32 state;
+    [1] GetResult();
+    [2] GetSystemEventReadableHandles() -> (handle<copy, event> state_event, handle<copy, event> other_event);
+    [3] Cancel();
+    [4] Submit();
+    @stub [5] SetRequirement(nn::nifm::Requirement requirement);
+    @stub [6] SetRequirementPreset(i32 preset);
+    @stub [11] SetConnectionConfirmationOption(i8 option);
+    @stub [21] GetAppletInfo(u32 theme_color, buffer<u8, 6> data) -> (u32 applet_id, u32 library_applet_mode, u32 size);
+}

@@ -20,7 +20,7 @@ Runtime relink deploys to `games/` by default. Recompiler/`src/common/cpu/aarch6
 Avoid builds during timing runs. Formatting: clang-format 23 + `uv`/pinned Ruff; omit `--check` to write.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
-CI: formatting, Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics.
+CI: Linux/Windows builds, ABI syntax, native tool/FS regressions, optional Python diagnostics. Formatting is checked locally (`scripts/format.sh --check`).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
 Test guest semantics + malformed IPC with synthetic cases.
 

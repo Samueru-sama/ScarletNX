@@ -114,11 +114,24 @@ def main():
             check=True,
             cwd=scratch,
         )
+        # The service suite includes fs.c, whose IPC dispatchers tools/swipc generates from the .swipc files,
+        # as the CMake build does (cmake/swipc.cmake). A handler takes every argument of its command, used or not
+        gen = scratch / 'swipc-out'
+        if args.only != 'tree':
+            swipc = scratch / ('swipc.exe' if os.name == 'nt' else 'swipc')
+            subprocess.run(
+                [args.cc, '-std=c90', str(repo / 'tools/swipc/swipc.c'), '-o', str(swipc)], check=True, cwd=scratch
+            )
+            swipc_files = ['hle/services/types.swipc', 'hle/filesystem/fs.swipc']
+            for f in swipc_files:
+                (gen / f).parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run([str(swipc), '--root', str(repo / 'src/nx'), '--out', str(gen), *swipc_files], check=True)
         for suite in (args.only,) if args.only else ('tree', 'service'):
             name = f'filesystem_{suite}'
             exe = scratch / (name + '.exe' if os.name == 'nt' else name)
+            suite_flags = ['-I', str(gen), '-Wno-unused-parameter'] if suite == 'service' else []
             subprocess.run(
-                [args.cc, *flags, str(repo / f'tests/{name}.c'), str(tree_obj), '-o', str(exe)],
+                [args.cc, *flags, *suite_flags, str(repo / f'tests/{name}.c'), str(tree_obj), '-o', str(exe)],
                 check=True,
                 cwd=scratch,
             )

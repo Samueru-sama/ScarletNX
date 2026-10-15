@@ -18,6 +18,8 @@
 
 /* services.c */
 u32 ev_handle(KEvent* e);
+/* a handle to a new event for a reply, signaled or not, that only the game holds. Returns 0, for a handler */
+int new_event(u32* event, const char* name, int signaled);
 KEvent* owned_event(const char* name); /* a new event the service keeps a reference on, for events it keeps */
 /* the docked and language options as they were at startup: the .ini says they apply on restart, and ini_poll
    reloads the globals while the game runs */
@@ -25,8 +27,6 @@ extern int g_hle_docked, g_hle_lang;
 
 /* sm.c */
 SvcObj* new_sm(void);
-int quiet_ok(SvcObj* o, IpcCtx* c);
-SvcObj* quiet(const char* name);
 
 /* am.c */
 extern u64 g_user_id[2];
@@ -35,7 +35,7 @@ SvcObj* new_appletoe(void);
 SvcObj* new_appletae(void);
 
 /* set.c */
-u64 set_language_code(int lang); /* the LanguageCode of a language index, en-US for one out of range */
+void set_language_code(int lang, u8 code[8]); /* the LanguageCode of a language index, en-US for one out of range */
 SvcObj* new_set(void);
 SvcObj* new_setsys(void);
 
@@ -82,8 +82,9 @@ SvcObj* new_btmu(void);
 SvcObj* new_audin(void);
 
 /* audren.c */
-int audren_update(SvcObj* o, IpcCtx* c);
-void audren_open(SvcObj* o, const u8* params); /* OpenAudioRenderer's parameters into the renderer's state */
-void audren_tick(void);                        /* the audio clock's frame of every started renderer */
+int audren_update(SvcObj* o, IpcBuf in, IpcBuf out); /* RequestUpdate's input and output buffers */
+/* OpenAudioRenderer's parameters into the renderer's state, 0 if it can't be */
+int audren_open(SvcObj* o, const u8* params);
+void audren_tick(void); /* the audio clock's frame of every started renderer */
 
 #endif

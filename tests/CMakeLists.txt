@@ -118,12 +118,107 @@ target_link_libraries(snx-test-network-icmp PRIVATE scarletnx-net)
 add_test(NAME network_icmp COMMAND snx-test-network-icmp)
 set_tests_properties(network_icmp PROPERTIES TIMEOUT 30)
 
-# This IPC fixture stubs the kernel and needs no NX graphics/media dependencies.
+# swipc (tools/swipc): the dispatchers generated from tests/swipc/test.swipc and other.swipc, driven with hand-made
+# requests; the same output compiled as C90 against a stand-in for ipc.h (LP64 hosts, where its u64 is unsigned long);
+# and definitions the generator has to refuse, each with its line and message
+include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
+add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
+snx_test_target(snx-test-swipc-dispatch 23)
+snx_swipc(snx-test-swipc-dispatch ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)
+add_test(NAME swipc_dispatch COMMAND snx-test-swipc-dispatch)
+if(NOT WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    add_library(snx-test-swipc-c90 OBJECT swipc/c90/c90.c)
+    set_target_properties(snx-test-swipc-c90 PROPERTIES C_STANDARD 90 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx-test-swipc-c90 PRIVATE -pedantic-errors -Wall -Wextra -Werror)
+    target_include_directories(snx-test-swipc-c90 BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/swipc/c90")
+    snx_swipc(snx-test-swipc-c90 ROOT "${PROJECT_SOURCE_DIR}" FILES tests/swipc/test.swipc tests/swipc/other.swipc)
+endif()
+foreach(bad IN ITEMS
+        array_of_arrays 5 "give the element a name"
+        big_command_id 4 "number too large"
+        buffer_two_modes 5 "exactly one of MapAlias"
+        duplicate_argument 4 "two arguments named a"
+        duplicate_command 6 "command 0 is defined twice"
+        duplicate_field 5 "two fields named x"
+        duplicate_service 5 "service test:a is served twice"
+        exchange_buffer 5 "exchange \\(W\\) buffers"
+        fixed_size_array 4 "it is not FixedSize"
+        keyword_argument 4 "a C keyword"
+        long_service_name 3 "at most 8 characters"
+        move_handle_in 5 "a client can't send a move handle"
+        output_too_big 5 "the reply takes 260 bytes"
+        padding_name 4 "padN_ names"
+        pid_field 4 "not struct fields"
+        pid_output 4 "pid is an input"
+        reply_with_handles 5 "the reply takes 272 bytes"
+        request_too_big 5 "the request takes 280 bytes"
+        reserved_command 5 "the name of a generated function"
+        scoped_argument 4 "a scoped name"
+        struct_in_place 5 "give it a name with type"
+        stub_handle 5 "a @stub answers zeros"
+        stub_object 5 "a @stub answers zeros"
+        too_many_moves 5 "more than 15 move handles"
+        two_pids 5 "one pid or aruid at most"
+        type_before_definition 5 "unknown type test::Later"
+        unknown_interface 5 "object<test::INope>: no such interface"
+        unnamed_argument 5 "has a name"
+        zero_alignment 4 "bad alignment 0")
+    if(NOT DEFINED bad_name)
+        set(bad_name "${bad}")
+    elseif(NOT DEFINED bad_line)
+        set(bad_line "${bad}")
+    else()
+        add_test(NAME swipc_refuses_${bad_name} COMMAND snx-swipc --root "${CMAKE_CURRENT_SOURCE_DIR}/swipc/bad"
+                 --out "${CMAKE_CURRENT_BINARY_DIR}" ${bad_name}.swipc)
+        set_tests_properties(swipc_refuses_${bad_name} PROPERTIES
+                             PASS_REGULAR_EXPRESSION "${bad_name}.swipc:${bad_line}: error: .*${bad}")
+        unset(bad_name)
+        unset(bad_line)
+    endif()
+endforeach()
+
+# This IPC fixture stubs the kernel and needs no NX graphics/media dependencies. The tests that include a service's
+# file turn off -Wextra's unused-parameter warning: a handler takes every argument of its command, used or not
 add_executable(snx-test-bsd-service bsd_service.c)
 snx_test_target(snx-test-bsd-service 23)
+target_compile_options(snx-test-bsd-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-bsd-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+          hle/services/network/bsd.swipc)
 target_link_libraries(snx-test-bsd-service PRIVATE scarletnx-net)
 add_test(NAME bsd_service COMMAND snx-test-bsd-service)
 set_tests_properties(bsd_service PROPERTIES TIMEOUT 60)
+
+# sfdnsres and nifm (dns.c, nifm.c) offline, with bsd.c beside them for whether the console is online
+add_executable(snx-test-network-service network_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/network/bsd.c")
+snx_test_target(snx-test-network-service 23)
+target_compile_options(snx-test-network-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-network-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+          hle/services/network/bsd.swipc hle/services/network/dns.swipc hle/services/network/nifm.swipc)
+target_link_libraries(snx-test-network-service PRIVATE scarletnx-net)
+add_test(NAME network_service COMMAND snx-test-network-service)
+set_tests_properties(network_service PROPERTIES TIMEOUT 60)
+
+# mm:u and hid's IHidServer (misc.c, hid.c), with the kernel objects stubbed
+add_executable(snx-test-misc-service misc_service.c)
+snx_test_target(snx-test-misc-service 23)
+target_compile_options(snx-test-misc-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-misc-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+          hle/services/hid.swipc hle/services/misc.swipc)
+add_test(NAME misc_service COMMAND snx-test-misc-service)
+
+# nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
+add_executable(snx-test-nvdrv-service nvdrv_service.c)
+snx_test_target(snx-test-nvdrv-service 23)
+target_compile_options(snx-test-nvdrv-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-nvdrv-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+          hle/services/nvdrv.swipc)
+add_test(NAME nvdrv_service COMMAND snx-test-nvdrv-service)
+
+# ipc.c's parsing and replies (hle/kernel/ipc.c, included by the test) with raw HIPC messages laid out as libnx
+# writes them, a test service, and the kernel's handles and objects stubbed
+add_executable(snx-test-ipc-message ipc_message.c)
+snx_test_target(snx-test-ipc-message 23)
+add_test(NAME ipc_message COMMAND snx-test-ipc-message)
 
 if(SNX_BUILD_NX)
 add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
@@ -186,6 +281,9 @@ if(NOT WIN32)
         "${PROJECT_SOURCE_DIR}/src/common/utilities/sha256.c"
         "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     snx_test_target(snx-test-ldr-service 11)
+    target_compile_options(snx-test-ldr-service PRIVATE -Wno-unused-parameter)
+    snx_swipc(snx-test-ldr-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+              hle/services/ldr.swipc)
     target_include_directories(snx-test-ldr-service PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_definitions(snx-test-ldr-service PRIVATE SNX_RO_INTERP_TEST)
     target_link_libraries(snx-test-ldr-service PRIVATE m)
@@ -286,10 +384,24 @@ add_test(NAME nvn_control COMMAND snx-test-nvn-control)
 
 add_executable(snx-test-audio-out audio_out.c)
 snx_test_target(snx-test-audio-out 11)
+# a service's handlers take every argument of their command, used or not
+target_compile_options(snx-test-audio-out PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-audio-out ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc hle/services/audio.swipc)
 # Isolate audout in this fixture without FFmpeg, also when testing a tools-only build.
 # Production NX targets always link FFmpeg and never define SNX_NO_H264.
 target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
 add_test(NAME audio_out COMMAND snx-test-audio-out)
+# the same fixture with FFmpeg's Opus decoder, for the hwopus decoders that open. FFmpeg::avcodec is defined after this
+# folder (cmake/dependencies.cmake), in every build but a tools-only one
+if(NOT SNX_TOOLS_ONLY)
+    add_executable(snx-test-audio-opus audio_out.c)
+    snx_test_target(snx-test-audio-opus 11)
+    target_compile_options(snx-test-audio-opus PRIVATE -Wno-unused-parameter)
+    snx_swipc(snx-test-audio-opus ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+              hle/services/audio.swipc)
+    target_link_libraries(snx-test-audio-opus PRIVATE FFmpeg::avcodec)
+    add_test(NAME audio_opus COMMAND snx-test-audio-opus)
+endif()
 
 if(UNIX)
     add_executable(snx-test-audren audren_render.c)
@@ -357,6 +469,9 @@ foreach(suite tree service)
     add_test(NAME filesystem_${suite}
         COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-${suite}>)
 endforeach()
+target_compile_options(snx-test-fs-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-fs-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+          hle/filesystem/fs.swipc)
 add_test(NAME filesystem_raw
     COMMAND snx-test-fs-fixture $<TARGET_FILE:snx-test-fs-service> raw)
 
@@ -366,20 +481,6 @@ if(UNIX)
     snx_test_target(snx-test-memory 11)
     add_test(NAME memory_accounting COMMAND snx-test-memory)
     set_tests_properties(memory_accounting PROPERTIES TIMEOUT 60)
-endif()
-
-if(SNX_TEST_SANITIZERS AND WIN32)
-    execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
-        OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-    set(snx_sanitized_tests a64_fp_witnesses a64_fp_arithmetic_witnesses startup_options driver_workflow extraction_native loader_native runtime_nro native_codegen filesystem_tree filesystem_service filesystem_raw astc_decode audio_out render_enable clear_flags instance_array draw_texture etc2_decode crc32_helper depth_texel write_pages nvn_command_gap nvn_control)
-    if(TEST native_recompiler)
-        list(APPEND snx_sanitized_tests native_recompiler)
-    endif()
-    if(TEST crc32_helper_x86)
-        list(APPEND snx_sanitized_tests crc32_helper_clmul crc32_helper_x86)
-    endif()
-    set_tests_properties(${snx_sanitized_tests}
-        PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
 endif()
 
 endif() # SNX_BUILD_NX
@@ -396,3 +497,13 @@ if(NOT WIN32)
         -DGUI=${SNX_BUILD_GUI} -DDIST=${PROJECT_SOURCE_DIR}/dist -P "${CMAKE_CURRENT_SOURCE_DIR}/dist_install.cmake")
 endif()
 include(architecture.cmake)
+
+# Every test of this folder, added above: a sanitized program needs the sanitizer runtime's DLLs on PATH, and the
+# others don't mind them
+if(SNX_TEST_SANITIZERS AND WIN32)
+    execute_process(COMMAND "${CMAKE_C_COMPILER}" -print-resource-dir
+        OUTPUT_VARIABLE snx_clang_resource OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+    get_property(snx_sanitized_tests DIRECTORY PROPERTY TESTS)
+    set_tests_properties(${snx_sanitized_tests}
+        PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${snx_clang_resource}/lib/windows")
+endif()

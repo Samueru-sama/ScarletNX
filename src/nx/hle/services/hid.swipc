@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# hid and hid:sys (hid.c). Games read the input from the shared memory; these commands set it up
+
+type nn::hid::NpadStyleSet = u32;
+type nn::hid::NpadIdType = u32;
+type nn::hid::NpadJoyHoldType = i64;
+type nn::hid::NpadHandheldActivationMode = i64;
+type nn::hid::NpadCommunicationMode = i64;
+type nn::hid::NpadJoyDeviceType = i64;
+type nn::hid::BasicXpadId = u32;
+type nn::hid::JoyXpadId = u32;
+type nn::hid::SixAxisSensorHandle = u32;
+type nn::hid::ConsoleSixAxisSensorHandle = u32;
+type nn::hid::VibrationDeviceHandle = u32;
+type nn::hid::VibrationGcErmCommand = u64;
+type nn::hid::VibrationValue = struct {
+    f32 amp_low;
+    f32 freq_low;
+    f32 amp_high;
+    f32 freq_high;
+};
+type nn::hid::VibrationDeviceInfo = struct {
+    u32 type;
+    u32 position;
+};
+type nn::hid::SixAxisSensorFusionParameters = struct {
+    f32 revise_power;
+    f32 revise_range;
+};
+type nn::hid::AccelerometerParameters = struct {
+    f32 x;
+    f32 y;
+};
+type nn::hid::TouchScreenConfigurationForNx = bytes<0x10>;
+
+interface nn::hid::IHidServer is hid {
+    [0] CreateAppletResource(aruid aruid) -> object<nn::hid::IAppletResource> resource;
+    @stub [1] ActivateDebugPad(aruid aruid);
+    @stub [11] ActivateTouchScreen(aruid aruid);
+    @stub [21] ActivateMouse(aruid aruid);
+    @stub [31] ActivateKeyboard(aruid aruid);
+    @stub [32] SendKeyboardLockKeyEvent(u32 events, aruid aruid);
+    [40] AcquireXpadIdEventHandle(u64 unknown) -> handle<copy, event> event;
+    @stub [51] ActivateXpad(nn::hid::BasicXpadId id, aruid aruid);
+    @stub [55] GetXpadIds(array<nn::hid::BasicXpadId, 0xa> ids) -> i64 count;
+    @stub [56] ActivateJoyXpad(nn::hid::JoyXpadId id);
+    [58] GetJoyXpadLifoHandle(nn::hid::JoyXpadId id) -> handle<copy, shared_memory> lifo;
+    @stub [59] GetJoyXpadIds(array<nn::hid::JoyXpadId, 0xa> ids) -> i64 count;
+    @stub [60] ActivateSixAxisSensor(nn::hid::BasicXpadId id);
+    @stub [61] DeactivateSixAxisSensor(nn::hid::BasicXpadId id);
+    [62] GetSixAxisSensorLifoHandle(nn::hid::BasicXpadId id) -> handle<copy, shared_memory> lifo;
+    @stub [63] ActivateJoySixAxisSensor(nn::hid::JoyXpadId id);
+    @stub [64] DeactivateJoySixAxisSensor(nn::hid::JoyXpadId id);
+    [65] GetJoySixAxisSensorLifoHandle(nn::hid::JoyXpadId id) -> handle<copy, shared_memory> lifo;
+    @stub [66] StartSixAxisSensor(nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    @stub [67] StopSixAxisSensor(nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    [68] IsSixAxisSensorFusionEnabled(nn::hid::SixAxisSensorHandle handle, aruid aruid) -> b8 enabled;
+    @stub [69] EnableSixAxisSensorFusion(b8 enabled, nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    @stub [70] SetSixAxisSensorFusionParameters(nn::hid::SixAxisSensorHandle handle,
+                                                nn::hid::SixAxisSensorFusionParameters parameters, aruid aruid);
+    @stub [71] GetSixAxisSensorFusionParameters(nn::hid::SixAxisSensorHandle handle, aruid aruid)
+        -> nn::hid::SixAxisSensorFusionParameters parameters;
+    @stub [72] ResetSixAxisSensorFusionParameters(nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    @stub [73] SetAccelerometerParameters(nn::hid::SixAxisSensorHandle handle,
+                                          nn::hid::AccelerometerParameters parameters, aruid aruid);
+    @stub [74] GetAccelerometerParameters(nn::hid::SixAxisSensorHandle handle, aruid aruid)
+        -> nn::hid::AccelerometerParameters parameters;
+    @stub [75] ResetAccelerometerParameters(nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    @stub [76] SetAccelerometerPlayMode(nn::hid::SixAxisSensorHandle handle, u32 mode, aruid aruid);
+    @stub [77] GetAccelerometerPlayMode(nn::hid::SixAxisSensorHandle handle, aruid aruid) -> u32 mode;
+    @stub [78] ResetAccelerometerPlayMode(nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    @stub [79] SetGyroscopeZeroDriftMode(nn::hid::SixAxisSensorHandle handle, u32 mode, aruid aruid);
+    @stub [80] GetGyroscopeZeroDriftMode(nn::hid::SixAxisSensorHandle handle, aruid aruid) -> u32 mode;
+    @stub [81] ResetGyroscopeZeroDriftMode(nn::hid::SixAxisSensorHandle handle, aruid aruid);
+    [82] IsSixAxisSensorAtRest(nn::hid::SixAxisSensorHandle handle, aruid aruid) -> b8 at_rest;
+    @stub [83] IsFirmwareUpdateAvailableForSixAxisSensor(nn::hid::SixAxisSensorHandle handle, aruid aruid)
+        -> b8 available;
+    @stub [91] ActivateGesture(i32 basic_gesture_id, aruid aruid);
+    [100] SetSupportedNpadStyleSet(nn::hid::NpadStyleSet style_set, aruid aruid);
+    [101] GetSupportedNpadStyleSet(aruid aruid) -> nn::hid::NpadStyleSet style_set;
+    @stub [102] SetSupportedNpadIdType(aruid aruid, array<nn::hid::NpadIdType, 9> ids);
+    @stub [103] ActivateNpad(aruid aruid);
+    @stub [104] DeactivateNpad(aruid aruid);
+    [106] AcquireNpadStyleSetUpdateEventHandle(nn::hid::NpadIdType id, aruid aruid, u64 event_ptr)
+        -> handle<copy, event> event;
+    @stub [107] DisconnectNpad(nn::hid::NpadIdType id, aruid aruid);
+    [108] GetPlayerLedPattern(nn::hid::NpadIdType id) -> u64 pattern;
+    @stub [109] ActivateNpadWithRevision(i32 revision, aruid aruid);
+    [120] SetNpadJoyHoldType(aruid aruid, nn::hid::NpadJoyHoldType hold_type);
+    [121] GetNpadJoyHoldType(aruid aruid) -> nn::hid::NpadJoyHoldType hold_type;
+    @stub [122] SetNpadJoyAssignmentModeSingleByDefault(nn::hid::NpadIdType id, aruid aruid);
+    @stub [123] SetNpadJoyAssignmentModeSingle(nn::hid::NpadIdType id, aruid aruid, nn::hid::NpadJoyDeviceType type);
+    @stub [124] SetNpadJoyAssignmentModeDual(nn::hid::NpadIdType id, aruid aruid);
+    @stub [125] MergeSingleJoyAsDualJoy(nn::hid::NpadIdType id1, nn::hid::NpadIdType id2, aruid aruid);
+    @stub [126] StartLrAssignmentMode(aruid aruid);
+    @stub [127] StopLrAssignmentMode(aruid aruid);
+    [128] SetNpadHandheldActivationMode(aruid aruid, nn::hid::NpadHandheldActivationMode mode);
+    [129] GetNpadHandheldActivationMode(aruid aruid) -> nn::hid::NpadHandheldActivationMode mode;
+    @stub [130] SwapNpadAssignment(nn::hid::NpadIdType id1, nn::hid::NpadIdType id2, aruid aruid);
+    @stub [131] IsUnintendedHomeButtonInputProtectionEnabled(nn::hid::NpadIdType id, aruid aruid) -> b8 enabled;
+    @stub [132] EnableUnintendedHomeButtonInputProtection(b8 enabled, nn::hid::NpadIdType id, aruid aruid);
+    @stub [133] SetNpadJoyAssignmentModeSingleWithDestination(nn::hid::NpadIdType id, aruid aruid,
+                                                              nn::hid::NpadJoyDeviceType type)
+        -> (b8 is_reassigned, nn::hid::NpadIdType new_id);
+    @stub [134] SetNpadAnalogStickUseCenterClamp(b8 use_center_clamp, aruid aruid);
+    @stub [135] SetNpadCaptureButtonAssignment(nn::hid::NpadStyleSet style, aruid aruid, u64 buttons);
+    @stub [136] ClearNpadCaptureButtonAssignment(aruid aruid);
+    [200] GetVibrationDeviceInfo(nn::hid::VibrationDeviceHandle handle) -> nn::hid::VibrationDeviceInfo info;
+    @stub [201] SendVibrationValue(nn::hid::VibrationDeviceHandle handle, nn::hid::VibrationValue value, aruid aruid);
+    [202] GetActualVibrationValue(nn::hid::VibrationDeviceHandle handle, aruid aruid) -> nn::hid::VibrationValue value;
+    [203] CreateActiveVibrationDeviceList() -> object<nn::hid::IActiveVibrationDeviceList> list;
+    @stub [204] PermitVibration(b8 permitted);
+    [205] IsVibrationPermitted() -> b8 permitted;
+    @stub [206] SendVibrationValues(nn::applet::AppletResourceUserId aruid,
+                                    array<nn::hid::VibrationDeviceHandle, 9> handles,
+                                    array<nn::hid::VibrationValue, 9> values);
+    @stub [207] SendVibrationGcErmCommand(nn::hid::VibrationDeviceHandle handle, aruid aruid,
+                                          nn::hid::VibrationGcErmCommand command);
+    @stub [208] GetActualVibrationGcErmCommand(nn::hid::VibrationDeviceHandle handle, aruid aruid)
+        -> nn::hid::VibrationGcErmCommand command;
+    @stub [209] BeginPermitVibrationSession(nn::applet::AppletResourceUserId aruid);
+    @stub [210] EndPermitVibrationSession();
+    [211] IsVibrationDeviceMounted(nn::hid::VibrationDeviceHandle handle, aruid aruid) -> b8 mounted;
+    @stub [212] SendVibrationValueInBool(b8 value, nn::hid::VibrationDeviceHandle handle, aruid aruid);
+    @stub [300] ActivateConsoleSixAxisSensor(aruid aruid);
+    @stub [301] StartConsoleSixAxisSensor(nn::hid::ConsoleSixAxisSensorHandle handle, aruid aruid);
+    @stub [302] StopConsoleSixAxisSensor(nn::hid::ConsoleSixAxisSensorHandle handle, aruid aruid);
+    @stub [303] ActivateSevenSixAxisSensor(aruid aruid);
+    @stub [304] StartSevenSixAxisSensor(aruid aruid);
+    @stub [305] StopSevenSixAxisSensor(aruid aruid);
+    @stub [306] InitializeSevenSixAxisSensor(aruid aruid, u64 tmem1_size, u64 tmem2_size,
+                                             handle<copy, transfer_memory> tmem1, handle<copy, transfer_memory> tmem2);
+    @stub [307] FinalizeSevenSixAxisSensor(aruid aruid);
+    @stub [308] SetSevenSixAxisSensorFusionStrength(f32 strength, aruid aruid);
+    @stub [309] GetSevenSixAxisSensorFusionStrength(aruid aruid) -> f32 strength;
+    @stub [310] ResetSevenSixAxisSensorTimestamp(aruid aruid);
+    @stub [400] IsUsbFullKeyControllerEnabled() -> b8 enabled;
+    [1000] SetNpadCommunicationMode(aruid aruid, nn::hid::NpadCommunicationMode mode);
+    [1001] GetNpadCommunicationMode() -> nn::hid::NpadCommunicationMode mode;
+    @stub [1002] SetTouchScreenConfiguration(nn::hid::TouchScreenConfigurationForNx config, aruid aruid);
+    @stub [1003] IsFirmwareUpdateNeededForNotification(i32 unknown, aruid aruid) -> b8 needed;
+    @stub [1004] SetTouchScreenResolution(i32 width, i32 height, aruid aruid);
+}
+
+interface nn::hid::IAppletResource {
+    [0] GetSharedMemoryHandle() -> handle<copy, shared_memory> shared_memory;
+}
+# the vibration devices are activated, and never vibrate
+@fallback(quiet_ok)
+interface nn::hid::IActiveVibrationDeviceList {
+    @stub [0] ActivateVibrationDevice(nn::hid::VibrationDeviceHandle handle);
+}
+interface nn::hid::IHidSystemServer is hid:sys {
+}

@@ -32,7 +32,7 @@ The runtime options behind it, for a run by hand from `games/`:
 | `--shot_every=N` | Also a numbered screenshot every N frames (`PATH_0000.ppm`, ...), needs `--shot` |
 | `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it). `Nf:hex` presses at present N instead, which a loaded machine (or RenderDoc's layer) doesn't shift for a game that advances one step per frame, as Catherine does |
 | `--press=hex --press_at=ms` | One press, held `--press_len` ms too |
-| `-v` | Log every IPC call (`<service> cmd N (in ...) -> rc`): huge, grep it |
+| `-v` | Log every IPC call (`IPC <interface> cmd N`, `nn::audio::detail::IAudioOut` for an audout): huge, grep it |
 | `--fps_limit=0` | Unlimited frame rate |
 | `--game=PATH` | Run the game PATH names (`games/Catherine` runs `games/Catherine_code.so`) instead of the one the runtime is named after. Caches, captures and logs still go next to the game |
 

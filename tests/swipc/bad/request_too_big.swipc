@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# 0xe0 bytes in: with the headers a domain request takes 280 bytes
+interface test::I {
+    [0] F(bytes<0xe0> big);
+}

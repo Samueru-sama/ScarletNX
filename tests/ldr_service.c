@@ -82,6 +82,27 @@ void ipc_out_overflow(IpcCtx* c) {
     (void)c;
     CHECK(0);
 }
+/* sf's InvalidCmifRequest, for a request that doesn't send what its command declares */
+int ipc_bad_request(SvcObj* o, IpcCtx* c) {
+    (void)o;
+    (void)c;
+    return RC(11, 420);
+}
+/* sf's InvalidNumInObjects, for a domain request with another number of objects */
+int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
+    (void)o;
+    (void)c;
+    return RC(10, 235);
+}
+int ipc_unknown(SvcObj* o, IpcCtx* c) {
+    (void)o;
+    (void)c;
+    return RC(10, 221);
+}
+void svc_register(const char* name, SvcCtor ctor) {
+    (void)name;
+    (void)ctor;
+}
 static IpcCtx ctx;
 static u64 raw[5];
 static void request(u32 cmd, u64 a, u64 b, u64 c, u64 d) {
@@ -96,7 +117,7 @@ static void request(u32 cmd, u64 a, u64 b, u64 c, u64 d) {
     ctx.raw_size = sizeof raw;
     ctx.has_pid = 1;
     ctx.pid = K_PROCESS_ID;
-    ctx.ncopy = 1;
+    ctx.ncopy = cmd == 4 || cmd == 10; /* the commands that take the process handle */
     ctx.copy_h[0] = 0xFFFF8001u;
 }
 static int call(SvcObj* o) { return o->dispatch(o, &ctx); }
@@ -240,6 +261,22 @@ static void concurrency(void) {
     }
     svcobj_unref(o);
 }
+/* a request shorter than its command's arguments (0x28 bytes for MapManualLoadModuleMemory: the pid, then four u64s)
+   is refused by sf before ldr sees it: nothing is mapped */
+static void short_request(void) {
+    fixture();
+    SvcObj* o = new_ldr();
+    initialize(o);
+    request(0, SRC, 0x3000, BSS, 0x1000);
+    ctx.raw_size = 0x20;
+    CHECK(call(o) == RC(11, 420) && !ctx.out_size);
+    block_is(SRC, MS_NORMAL, PERM_RW, 0);
+    request(0, SRC, 0x3000, BSS, 0x1000);
+    ctx.raw_size = 8;
+    CHECK(call(o) == RC(11, 420));
+    block_is(SRC, MS_NORMAL, PERM_RW, 0);
+    svcobj_unref(o);
+}
 static void limits(void) {
     CHECK(!mem_heap_set(0x200000, 0x200000));
     fixture();
@@ -285,11 +322,19 @@ int main(void) {
     SvcObj* o = new_ldr();
     request(0, SRC, 0x3000, BSS, 0x1000);
     CHECK(call(o) == RO(1031));
-    request(4, 0, 0, 0, 0);
+    request(4, 0, 0, 0, 0); /* no process id: sf refuses it before ldr sees it (InvalidCmifRequest) */
     ctx.has_pid = 0;
-    CHECK(call(o) == RO(1031));
+    CHECK(call(o) == RC(11, 420));
     request(4, 0, 0, 0, 0);
     ctx.copy_h[0] = 123;
+    CHECK(call(o) == RO(1031));
+    request(4, 0, 0, 0, 0); /* no process handle at all, or two: refused by sf as well */
+    ctx.ncopy = 0;
+    CHECK(call(o) == RC(11, 420));
+    request(4, 0, 0, 0, 0);
+    ctx.ncopy = 2;
+    CHECK(call(o) == RC(11, 420));
+    request(2, NRR, 0x1000, 0, 0); /* RegisterModuleInfo before RegisterProcessHandle */
     CHECK(call(o) == RO(1031));
     initialize(o);
     request(4, 0, 0, 0, 0);
@@ -301,9 +346,6 @@ int main(void) {
     request(0, SRC, 0x3000, BSS, 0x1000);
     ctx.pid = 1;
     CHECK(call(o) == RO(1031));
-    request(0, SRC, 0x3000, BSS, 0x1000);
-    ctx.raw_size = 32;
-    CHECK(call(o) == RO(1026));
     request(0, SRC + 1, 0x3000, BSS, 0x1000);
     CHECK(call(o) == RO(1025));
     request(0, SRC, 0, BSS, 0x1000);
@@ -334,7 +376,7 @@ int main(void) {
     gw64(NRR + 0x330, 1);
     CHECK(call(o) == RO(6));
     gw64(NRR + 0x330, g_title_id);
-    CHECK(!call(o));
+    CHECK(!call(o)); /* RegisterModuleInfo has no process handle: the session's RegisterProcessHandle gave it */
     /* Hash list is a snapshot. */
     memset(GP(NRR + 0x350), 0, 32);
     request(0, SRC, 0x3000, BSS, 0x1000);
@@ -385,7 +427,7 @@ int main(void) {
     block_is(SRC, MS_NORMAL, PERM_RW, 0);
     CHECK(gr64(SRC + 0x2008) == 0xabcdef && gr64(BSS) == 0x9876);
     request(999, 0, 0, 0, 0);
-    CHECK(call(o) == RO(1022));
+    CHECK(call(o) == RC(10, 221)); /* sf's UnknownCommandId */
     fixture();
     request(2, NRR, 0x1000, 0, 0);
     CHECK(!call(o));
@@ -396,6 +438,12 @@ int main(void) {
     o = new_ro1();
     initialize(o);
     fixture();
+    request(10, NRR, 0x1000, 0, 0); /* RegisterProcessModuleInfo checks its process handle (sf, that there is one) */
+    ctx.ncopy = 0;
+    CHECK(call(o) == RC(11, 420));
+    ctx.ncopy = 1;
+    ctx.copy_h[0] = 123;
+    CHECK(call(o) == RO(1031));
     request(10, NRR, 0x1000, 0, 0);
     CHECK(call(o) == RO(10));
     GP(NRR + 0x33c)[0] = 1;
@@ -416,6 +464,7 @@ int main(void) {
     block_is(BSS, MS_NORMAL, PERM_RW, 0); /* zero-sized BSS needs no backing */
     svcobj_unref(o);
     block_is(base, MS_FREE, PERM_NONE, 0);
+    short_request();
     concurrency();
     limits();
     CHECK(!mem_heap_set(0, 0x10000));

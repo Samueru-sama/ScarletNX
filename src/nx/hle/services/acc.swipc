@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# acc: user accounts (acc.c)
+
+type nn::account::ProfileDigest = bytes<0x10>;
+type nn::account::profile::UserData = bytes<0x80>;
+type nn::account::profile::ProfileBase = struct {
+    nn::account::Uid uid;
+    u64 last_edit_timestamp;
+    bytes<0x20> nickname;
+};
+
+interface nn::account::IAccountServiceForApplication is acc:u0, acc:u1, acc:su {
+    [0] GetUserCount() -> i32 count;
+    [1] GetUserExistence(nn::account::Uid uid) -> b8 exists;
+    [2] ListAllUsers(array<nn::account::Uid, 0xa> users);
+    [3] ListOpenUsers(array<nn::account::Uid, 0xa> users);
+    [4] GetLastOpenedUser() -> nn::account::Uid uid;
+    [5] GetProfile(nn::account::Uid uid) -> object<nn::account::profile::IProfile> profile;
+    @stub [6] GetProfileDigest(nn::account::Uid uid) -> nn::account::ProfileDigest digest;
+    @stub [50] IsUserRegistrationRequestPermitted(pid) -> b8 permitted;
+    [51] TrySelectUserWithoutInteraction(b8 is_network_service_account_required) -> nn::account::Uid uid;
+    @stub [100] InitializeApplicationInfoV0(pid);
+    [101] GetBaasAccountManagerForApplication(nn::account::Uid uid)
+        -> object<nn::account::baas::IManagerForApplication> manager;
+    @stub [110] StoreSaveDataThumbnail(nn::account::Uid uid, buffer<u8, 5> image);
+    @stub [111] ClearSaveDataThumbnail(nn::account::Uid uid);
+    [130] LoadOpenContext(nn::account::Uid uid) -> object<nn::account::baas::IManagerForApplication> manager;
+    [131] ListOpenContextStoredUsers(array<nn::account::Uid, 0xa> users);
+    @stub [140] InitializeApplicationInfo(pid);
+    [141] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
+    @stub [150] IsUserAccountSwitchLocked() -> b8 locked;
+}
+
+interface nn::account::profile::IProfile {
+    [0] Get(buffer<nn::account::profile::UserData, 0x1a> user_data) -> nn::account::profile::ProfileBase base;
+    [1] GetBase() -> nn::account::profile::ProfileBase base;
+    @stub [10] GetImageSize() -> u32 size;
+    @stub [11] LoadImage(buffer<u8, 6> image) -> u32 size;
+}
+
+# the user's network service account: there, but its id token never arrives
+interface nn::account::baas::IManagerForApplication {
+    @stub [0] CheckAvailability();
+    [1] GetAccountId() -> nn::account::NetworkServiceAccountId id;
+    [2] EnsureIdTokenCacheAsync() -> object<nn::account::detail::IAsyncContext> context;
+    @stub [3] LoadIdTokenCache(buffer<u8, 6> token) -> u32 size;
+    @stub [160] StoreOpenContext();
+}
+
+# an operation that needs the network: done at once, and failed the way nifm fails here, since there is no network
+interface nn::account::detail::IAsyncContext {
+    [0] GetSystemEvent() -> handle<copy, event> event;
+    @stub [1] Cancel();
+    [2] HasDone() -> b8 done;
+    [3] GetResult();
+}

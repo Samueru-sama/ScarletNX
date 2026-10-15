@@ -67,11 +67,7 @@ if(WIN32 OR CMAKE_CROSSCOMPILING)
 endif()
 if(CMAKE_CROSSCOMPILING)
     # configure builds a few helper programs for the machine doing the build, which needs its own C compiler
-    find_program(SNX_HOST_CC NAMES clang cc)
-    if(NOT SNX_HOST_CC)
-        message(FATAL_ERROR "Cross-building FFmpeg needs a C compiler for this machine too (clang or cc). Install one "
-                            "or set SNX_HOST_CC to its path.")
-    endif()
+    include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
     list(APPEND snx_ffmpeg_args --enable-cross-compile --host-cc=${SNX_HOST_CC})
 endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

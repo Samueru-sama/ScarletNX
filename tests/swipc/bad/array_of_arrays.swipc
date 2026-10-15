@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# swipc refuses: an array of arrays written in place
+interface test::I {
+    [0] A(u8[4][2] x);
+}

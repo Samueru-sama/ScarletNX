@@ -6,7 +6,7 @@
 - 1: UnmapManualLoadModuleMemory (UnloadNro), taking **that returned address**, not the source heap address.
 - 2 / 3: RegisterModuleInfo / UnregisterModuleInfo (LoadNrr / UnloadNrr).
 - 4: RegisterProcessHandle (Initialize), required before loading.
-- 10: RegisterModuleInfoWithUserProcessHandle, with `ro:1`'s JIT-plugin NRR kind.
+- 10: RegisterProcessModuleInfo, with `ro:1`'s JIT-plugin NRR kind.
 
 ## Reference and ABI details
 

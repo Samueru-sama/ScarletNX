@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# An interface that uses tests/swipc/test.swipc's types: its header includes that one
+
+interface test::IOther {
+    [0] Swap(test::Pair p) -> test::Id id;
+}

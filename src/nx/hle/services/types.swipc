@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The types more than one service's interfaces use (docs/IPC.md describes the language). The names are the SDK's.
+
+type nn::applet::AppletResourceUserId = u64;
+type nn::account::Uid = bytes<0x10, 8>;
+type nn::util::Uuid = bytes<0x10>;
+type nn::ApplicationId = u64;
+# eight characters, zero-padded ("en-US"): bytes, not a u64, as the SDK aligns it to 1
+type nn::settings::LanguageCode = bytes<8>;
+type nn::ncm::ApplicationId = u64;
+type nn::ncm::DataId = u64;
+type nn::account::NetworkServiceAccountId = u64;
+type nn::audio::AudioDeviceName = bytes<0x100>;

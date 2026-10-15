@@ -5,6 +5,7 @@
    applies relocations and calls constructors. NRO code runs through the existing interpreter fallback;
    fixed-address AOT functions cannot safely be rebased by changing their dispatch entries. */
 #include "hle/services/services_int.h"
+#include "hle/services/ldr.swipc.inc"
 #include "utilities/sha256.h"
 
 #define RO_ERROR(d) RC(22, d)
@@ -48,15 +49,14 @@ static int ro_readable(u64 a, u64 size) {
     }
     return 1;
 }
-static int ro_process_handle(IpcCtx* c) {
-    if (c->ncopy != 1) return 0;
-    KObj* p = h_get_ref(c->copy_h[0], KO_PROCESS);
+static int ro_process_handle(u32 h) {
+    KObj* p = h_get_ref(h, KO_PROCESS);
     if (!p) return 0;
     kobj_unref(p); /* one process; ro never owns the client's copy handle */
     return 1;
 }
-static int ro_register_nrr(RoState* s, IpcCtx* c) {
-    u64 a = in64(c, 8), size = in64(c, 16);
+/* kind: the NRR kind RegisterProcessModuleInfo asks for (the session's), 0 for RegisterModuleInfo */
+static int ro_register_nrr(RoState* s, u64 a, u64 size, int kind) {
     int r = ro_range(a, size, 1);
     if (r) return r;
     RoNrr* slot = NULL;
@@ -71,7 +71,7 @@ static int ro_register_nrr(RoState* s, IpcCtx* c) {
     if (memcmp(header, "NRR0", 4) || ro_u32(header + 0x338) != size || ro_u64(header + 0x330) != g_title_id ||
         off < sizeof header || off > size || count > (size - off) / 32)
         return RO_ERROR(6);
-    if (header[0x33c] != (c->cmd == 10 ? s->kind : 0)) return RO_ERROR(10);
+    if (header[0x33c] != kind) return RO_ERROR(10);
     /* Like Eden, no RSA trust-chain verification. Snapshot the hashes, not pointers to mutable guest storage. */
     u8* hashes = malloc(count ? (size_t)count * 32 : 1);
     if (!hashes) return RO_ERROR(1023);
@@ -113,8 +113,8 @@ static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, 
         if (s->nro[i].map.base && !memcmp(s->nro[i].id, h + 0x40, 32)) return RO_ERROR(3);
     return 0;
 }
-static int ro_load_nro(RoState* s, IpcCtx* c) {
-    MemCodeMap m = {0, in64(c, 8), in64(c, 16), in64(c, 24), in64(c, 32)};
+static int ro_load_nro(RoState* s, u64 source, u64 size, u64 bss, u64 bss_size, u64* address) {
+    MemCodeMap m = {0, source, size, bss, bss_size};
     int r = ro_range(m.source, m.size, 1);
     if (!r) r = ro_range(m.bss, m.bss_size, 0);
     if (r) return r;
@@ -147,7 +147,7 @@ static int ro_load_nro(RoState* s, IpcCtx* c) {
     }
     slot->map = m;
     memcpy(slot->id, GP(m.base + 0x40), 32);
-    out64(c, m.base);
+    *address = m.base;
     LOG("ldr:ro: mapped NRO at %llx (%llu bytes, interpreter)\n", (unsigned long long)m.base,
         (unsigned long long)(m.size + m.bss_size));
     return 0;
@@ -163,43 +163,48 @@ static int ro_unload_nro(RoState* s, u64 base) {
     }
     return RO_ERROR(1028);
 }
-static int ro_dispatch_locked(RoState* s, IpcCtx* c) {
-    /* ClientProcessId consumes an eight-byte raw placeholder in addition to the HIPC PID descriptor.
-       Eden's cmif_serialization advances ArgEnd even though it obtains the PID from the descriptor. */
-    u32 need;
-    switch (c->cmd) {
-        case 0: need = 40; break;
-        case 1:
-        case 3: need = 16; break;
-        case 2:
-        case 10: need = 24; break;
-        case 4: need = 8; break;
-        default: return RO_ERROR(1022);
-    }
-    if (c->raw_size < need) return RO_ERROR(1026);
-    if (!c->has_pid || c->pid != K_PROCESS_ID) return RO_ERROR(1031);
-    if (c->cmd == 4) {
-        if (!ro_process_handle(c)) return RO_ERROR(1031);
-        if (s->initialized || ro_owner) return RO_ERROR(1030);
-        s->initialized = 1;
-        ro_owner = s;
-        return 0;
-    }
-    if (!s->initialized) return RO_ERROR(1031);
-    switch (c->cmd) {
-        case 0: return ro_load_nro(s, c);
-        case 1: return ro_unload_nro(s, in64(c, 8));
-        case 2: return ro_register_nrr(s, c);
-        case 3: return ro_unregister_nrr(s, in64(c, 8));
-        case 10:
-            if (!ro_process_handle(c)) return RO_ERROR(1031);
-            return ro_register_nrr(s, c);
-    }
-    return RO_ERROR(1022);
+/* every command but RegisterProcessHandle needs the session initialized, and all of them the client's process id */
+static int ro_session(SvcObj* self, u64 pid) {
+    RoState* s = self->data;
+    if (pid != K_PROCESS_ID || !s->initialized) return RO_ERROR(1031);
+    return 0;
+}
+static int nn_ro_detail_IRoInterface_MapManualLoadModuleMemory(SvcObj* self, u64 pid, u64 nro_address, u64 nro_size,
+                                                               u64 bss_address, u64 bss_size, u64* address) {
+    int r = ro_session(self, pid);
+    return r ? r : ro_load_nro(self->data, nro_address, nro_size, bss_address, bss_size, address);
+}
+static int nn_ro_detail_IRoInterface_UnmapManualLoadModuleMemory(SvcObj* self, u64 pid, u64 nro_address) {
+    int r = ro_session(self, pid);
+    return r ? r : ro_unload_nro(self->data, nro_address);
+}
+static int nn_ro_detail_IRoInterface_RegisterModuleInfo(SvcObj* self, u64 pid, u64 nrr_address, u64 nrr_size) {
+    int r = ro_session(self, pid);
+    return r ? r : ro_register_nrr(self->data, nrr_address, nrr_size, 0);
+}
+static int nn_ro_detail_IRoInterface_UnregisterModuleInfo(SvcObj* self, u64 pid, u64 nrr_address) {
+    int r = ro_session(self, pid);
+    return r ? r : ro_unregister_nrr(self->data, nrr_address);
+}
+static int nn_ro_detail_IRoInterface_RegisterProcessHandle(SvcObj* self, u64 pid, u32 process) {
+    RoState* s = self->data;
+    if (pid != K_PROCESS_ID || !ro_process_handle(process)) return RO_ERROR(1031);
+    if (s->initialized || ro_owner) return RO_ERROR(1030);
+    s->initialized = 1;
+    ro_owner = s;
+    return 0;
+}
+static int nn_ro_detail_IRoInterface_RegisterProcessModuleInfo(SvcObj* self, u64 pid, u64 nrr_address, u64 nrr_size,
+                                                               u32 process) {
+    RoState* s = self->data;
+    int r = ro_session(self, pid);
+    if (r) return r;
+    if (!ro_process_handle(process)) return RO_ERROR(1031);
+    return ro_register_nrr(s, nrr_address, nrr_size, s->kind);
 }
 static int ro_dispatch(SvcObj* o, IpcCtx* c) {
     pm_lock(&ro_lock);
-    int r = ro_dispatch_locked(o->data, c);
+    int r = nn_ro_detail_IRoInterface_dispatch(o, c);
     pm_unlock(&ro_lock);
     return r;
 }

@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The interface tests/swipc_dispatch.c drives through the generated dispatcher: one command per layout rule
+
+type test::Small = bytes<3>;
+type test::Uid = bytes<0x10, 8>;
+type test::Pair = struct {
+    u8 a;
+    u32 b;
+    u64 c;
+};
+type test::Id = u64;
+# padding inside and after: x 0, a 8, b 24, size 32
+type test::Tail = struct {
+    u8 x;
+    test::Uid a;
+    u8 b;
+};
+
+interface test::IThing is test:t, test:u {
+    [0] Layout(u32 a, u64 b, u8 c, u16 d, test::Small e, u32 f) -> (u8 x, u64 y, u16 z);
+    [1] Pid(u32 a, pid, u64 b) -> u64 pid_out;
+    [2] Aruid(aruid aruid, u32 v) -> test::Id id;
+    [3] Buffers(buffer<u8, 5> a0, buffer<u8, 0x21> auto0, buffer<u8, 9> x1, buffer<u8, 6> b0, buffer<u8, 0x22> auto1,
+                buffer<u8, 0xa> c1, buffer<test::Uid, 0x19> x2, array<u32, 0x46> b2);
+    [4] Objects(object<test::IThing> thing) -> (handle<move, event> m, object<test::IThing> out, handle<copy, event> h);
+    [5] Fail() -> (object<test::IThing> o, handle<copy, event> h, u32 v);
+    @stub [6] Stub() -> (u32 a, u64 b);
+    [7] InHandles(handle<copy, process> a, handle<copy, event> b, handle<copy, event> c);
+    [8] Struct(test::Pair p, u8 q, test::Uid u, bytes<6> raw) -> (test::Pair r, u8[4] quad);
+    @version(1.0.0+) @undocumented [9] Empty();
+    [10] Small() -> b8 flag;
+    # the most raw data a reply takes when it may go to a domain: 0x100 less the headers
+    [11] Big() -> bytes<0xd0> big;
+    [12] ObjectFail(object<test::IThing> thing) -> u32 v;
+    [13] RawFail(u32 a) -> u32 v;
+    # declaration order, as the SDK lays out a few commands
+    @unsorted [14] Unsorted(test::Uid u, u32 a, u8 b) -> (test::Tail t, u8 c);
+    [15] FixedOut(buffer<test::Uid, 0x1a> uid);
+}
+
+@fallback(ipc_unknown) interface test::IStrict {
+}
+
+@fallback(quiet_ok) interface test::IQuiet {
+}
+
+@fallback(test_fallback) interface test::ICustom {
+}

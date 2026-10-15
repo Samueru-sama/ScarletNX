@@ -24,7 +24,8 @@
 #define R_BADADDR     0xCC01
 #define R_OUTOFMEM    0xD001
 #define R_BADENUM     0xF001
-#define R_BADCOMBO    0xE801 /* InvalidCombination */
+#define R_BADCOMBO    0xE801  /* InvalidCombination */
+#define R_MSGTOOLARGE 0x20801 /* MessageTooLarge */
 #define R_NOTFOUND    0xF201
 #define R_OUTOFRANGE  0xEE01
 #define R_BADMEMSTATE 0xD401

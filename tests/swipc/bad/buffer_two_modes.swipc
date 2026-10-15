@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# swipc refuses: a buffer both mapped and through the pointer buffer
+interface test::I {
+    [0] A(buffer<u8, 0xd> b);
+}

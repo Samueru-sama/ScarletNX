@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# sm: the service manager (sm.c)
+
+type nn::sm::ServiceName = bytes<8>;
+
+interface nn::sm::detail::IUserInterface is sm: {
+    @stub [0] RegisterClient(pid);
+    [1] GetServiceHandle(nn::sm::ServiceName name) -> handle<move, session> session;
+    [2] RegisterService(nn::sm::ServiceName name, b8 is_light, i32 max_sessions) -> handle<move, port> port;
+    [3] UnregisterService(nn::sm::ServiceName name);
+    @stub [4] DetachClient(pid);
+}
