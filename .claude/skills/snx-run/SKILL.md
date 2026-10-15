@@ -30,7 +30,7 @@ The runtime options behind it, for a run by hand from `games/`:
 | `--frames=N` | Exit after N presented frames |
 | `--shot=PATH` | Screenshot to `PATH.ppm` at exit |
 | `--shot_every=N` | Also a numbered screenshot every N frames (`PATH_0000.ppm`, ...), needs `--shot` |
-| `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it) |
+| `--script=ms:hex,...` | Press buttons at those times, each held 300 ms (`--press_len=ms` changes it). `Nf:hex` presses at present N instead, which a loaded machine (or RenderDoc's layer) doesn't shift for a game that advances one step per frame, as Catherine does |
 | `--press=hex --press_at=ms` | One press, held `--press_len` ms too |
 | `-v` | Log every IPC call (`<service> cmd N (in ...) -> rc`): huge, grep it |
 | `--fps_limit=0` | Unlimited frame rate |
@@ -64,7 +64,7 @@ in a different order, so check the screenshots before trusting a script.
 - `diag=1` in the game's `.ini` saves the QMD and program of each new compute shader (the first 32) to
   `games/captures/compute/`. F5 writes every game thread's state to the log at any time.
 - RenderDoc (installed by the user): `SNX_RENDERDOC=$SCRATCH/cap SNX_RENDERDOC_FRAMES=500,800` captures those
-  presents (one guest frame each) to `$SCRATCH/cap_capture*.rdc`, and the log says `renderdoc: captured present N`.
+  presents (one guest frame each; `45s` is the first frame after 45 s on the `--script` clock, steadier on a loaded machine) to `$SCRATCH/cap_capture*.rdc`, and the log says `renderdoc: captured present N`.
   Run it with `SDL_VIDEO_DRIVER=x11`: RenderDoc has no Wayland surface, and on Wayland `vkCreateInstance` fails with
   VK_ERROR_EXTENSION_NOT_PRESENT. The capture layer slows the game (Catherine: about 20 fps), so pick presents the run
   reaches, and expect a few hundred MB per capture. Captures hold the game's textures and buffers: they stay local.

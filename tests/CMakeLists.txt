@@ -338,6 +338,11 @@ if(UNIX)
     add_test(NAME kernel_cores COMMAND snx-test-kernel-cores)
 endif()
 
+add_executable(snx-test-unattended-script unattended_script.c)
+snx_test_target(snx-test-unattended-script 11)
+target_link_libraries(snx-test-unattended-script PRIVATE m)
+add_test(NAME unattended_script COMMAND snx-test-unattended-script)
+
 add_executable(snx-test-fs-fixture filesystem_fixture.c)
 snx_test_target(snx-test-fs-fixture 90)
 target_link_libraries(snx-test-fs-fixture PRIVATE snx_test_common)
