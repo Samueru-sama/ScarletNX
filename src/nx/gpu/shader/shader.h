@@ -54,6 +54,11 @@ typedef struct {
     /* FS key: depth-compare samples of a color texture (TEX.DC on a color format compares its first component, which
        Vulkan's compare samplers don't do): the slots, and their compare functions 3 bits each in slot order */
     u32 tex_dc_color_mask, tex_dc_color_funcs;
+    u32 out_mask; /* generic outputs 0..31 written (all of them after an attribute store at a register's offset) */
+    /* FS key: generic inputs the stage before rasterization doesn't write. They read as 0, 0, 0, 1 (yuzu's choice,
+       GPL-2.0-or-later, shader_recompiler emit_spirv_context_get_set.cpp): an input no output feeds is undefined in
+       Vulkan */
+    u32 in_unfed_mask;
 } ShaderInfo;
 #define SH_DC_COLOR_MAX  10 /* slots tex_dc_color_funcs holds */
 /* the shader flushes FP32 denormals everywhere: every FADD, FMUL and FFMA it has asks for it, as the console's

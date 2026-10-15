@@ -1376,6 +1376,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     u8 pred_used[7] = {0};
     u8 inputs_used[32] = {0};
     u8 outputs_used[32] = {0};
+    int indexed_store = 0;
     int position_used = 0, layer_output_used = 0, layer_input_used = 0, point_size_used = 0;
     /* the stages between the vertex and fragment ones: their input arrays' length (32 for tessellation, the input
        primitive's vertices for geometry), the control program's output vertices, and what they read and write */
@@ -1576,6 +1577,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
         if (op->id == O_ALD || op->id == O_AST) {
             u32 addr = B(insn[i], 20, 10), width = B(insn[i], 47, 2) + 1, vertex = B(insn[i], 39, 8);
             int input = op->id == O_ALD;
+            if (!input && a != 255) indexed_store = 1; /* its location is only known at run time */
             if (between && vertex < 255) used[vertex] = 1;
             if (stage == ST_TCS && op->id == O_AST) invocation_used = 1; /* the invocation's output vertex */
             for (u32 k = 0; k < width; k++) {
@@ -2563,6 +2565,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     }
     for (u32 i = 0; i < 32; i++) {
         if (!inputs_used[i]) continue;
+        if (stage == ST_FS && (si->in_unfed_mask >> i & 1)) continue; /* read as 0, 0, 0, 1 (ShaderInfo) */
         u32 interpolation = 0;
         if (stage == ST_FS) {
             u32 mode_byte = ((const u8*)sph)[0x18 + i];
@@ -4540,8 +4543,11 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
                 value = spv_emit_bitcast(&c->emit, c->f32_type, bits);
             } else if (addr >= 0x80) {
                 u32 input = (addr - 0x80) >> 4;
-                value = spv_emit_load(&c->emit, vec4, inputs[input]);
-                value = spv_emit_vec4_extract(&c->emit, c->f32_type, value, component);
+                if (inputs[input]) {
+                    value = spv_emit_load(&c->emit, vec4, inputs[input]);
+                    value = spv_emit_vec4_extract(&c->emit, c->f32_type, value, component);
+                } else /* no output feeds it (in_unfed_mask) */
+                    value = spv_emit_constant_f32(&c->emit, c->f32_type, component == 3 ? 1.0f : 0.0f);
                 interpolation = ipa_interpolation(sph, input);
             }
             if (addr >= 0x70 && addr < 0x80) {
@@ -5353,6 +5359,7 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
     next.tex_sint_mask = si->tex_sint_mask;
     next.tex_dc_color_mask = si->tex_dc_color_mask;
     next.tex_dc_color_funcs = si->tex_dc_color_funcs;
+    next.in_unfed_mask = si->in_unfed_mask;
     next.ntex = texture_count;
     next.nimg = image_info.nimg;
     memcpy(next.img, image_info.img, (size_t)image_info.nimg * sizeof image_info.img[0]);
@@ -5368,8 +5375,11 @@ u32* shader_to_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, s
             next.cbuf_mask |= 1u << i;
             next.cbuf_max[i] = cbuf_max[i];
         }
-    for (u32 i = 0; i < 32; i++)
+    for (u32 i = 0; i < 32; i++) {
         if (inputs_used[i]) next.in_mask |= 1u << i;
+        if (outputs_used[i]) next.out_mask |= 1u << i;
+    }
+    if (indexed_store) next.out_mask = ~0u;
     memcpy(next.sph, sph, sizeof sph);
     *si = next;
     return result;

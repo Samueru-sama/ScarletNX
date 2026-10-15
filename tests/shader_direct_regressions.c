@@ -613,6 +613,30 @@ static void dc_color_compare(void) {
     }
 }
 
+/* A fragment input the stage before rasterization doesn't write (ShaderInfo.in_unfed_mask) isn't declared, so
+   Vulkan's interface matches, and IPA reads it as 0, 0, 0, 1 */
+static void unfed_fragment_input(void) {
+    u64 code[64] = {0};
+    ((u32*)code)[18] = 15;        /* one RGBA output */
+    ((u8*)code)[0x18 + 4] = 0xff; /* generic input 4, all components, perspective */
+    code[10] = SCHED;
+    code[11] = 0xE000000000070000ull | (0xC0ull << 28) | 0xFF00; /* IPA R0, a[0xc0]: input 4's x */
+    code[12] = EXIT;
+    int locations[2] = {0, 0};
+    for (int unfed = 0; unfed < 2; unfed++) {
+        ShaderInfo info = {0};
+        size_t words = 0;
+        info.in_unfed_mask = unfed ? 1u << 4 : 0;
+        u32* spv = shader_to_spirv((const u8*)code, sizeof code, ST_FS, &info, &words, 1, 1, 1);
+        check(spv && !info.unsupported && (info.in_mask >> 4 & 1), "IPA of a generic input translates");
+        if (!spv) continue;
+        locations[unfed] = count_opcode(spv, words, 71, 30); /* OpDecorate ... Location */
+        check(!unfed || info.in_unfed_mask == 1u << 4, "the translated info keeps the unfed-input key");
+        free(spv);
+    }
+    check(locations[1] == locations[0] - 1, "an unfed input isn't declared, and the others still are");
+}
+
 int main(int argc, char** argv) {
     if (argc != 1 && argc != 28) return 2;
     if (argc == 28) {
@@ -624,6 +648,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 3; i++) stage_paths[i] = argv[i + 25];
     }
     dc_color_compare();
+    unfed_fragment_input();
     brx_length();
     invalid_ldc_bank();
     unsupported_names_word();

@@ -541,7 +541,8 @@ static void tex_resolve(GpuChannel* ch, u32 handle, TexRes* x) {
 
 /* the fragment shader keyed on which of its textures and outputs are integer. The textures it resolves for that are
    kept in res (SH_MAXTEX entries), for stage_set */
-static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
+/* last_out: the generic outputs the stage before rasterization writes */
+static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res, u32 last_out) {
     u32* r = ch->r3d;
     u32 ctl = r[0x487], count = ctl & 15;
     if (count > 8) count = 8;
@@ -555,8 +556,10 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
             if (f.sint) rs |= 1u << i;
         }
     }
-    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0);
+    VkSh* s0 = vk_shader_get(addr, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0);
+    u32 unfed;
     if (!s0) return s0;
+    unfed = s0->si.in_mask & ~last_out;
     u32 tm = 0, ts = 0, dm = 0, df = 0, nd = 0;
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
     for (int i = 0; i < nt; i++) {
@@ -594,8 +597,8 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
         Surf* image = vk_tex_from_tic(tic);
         if (image && !!image->f.is_int != !!s0->si.img[i].bindless) rm |= 1u << (8 + i);
     }
-    if (!tm && !rm && !dm) return s0;
-    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0, dm, df);
+    if (!tm && !rm && !dm && !unfed) return s0;
+    return vk_shader_get(addr, 0, ST_FS, tm, ts, rm, rs, 0, dm, df, unfed);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -1187,13 +1190,13 @@ retry:
        stage before rasterization */
     clip = r[0x544] & 0xFF;
     VkSh* vs = vk_shader_get(code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
-                             tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0);
-    tcs = tcs_on ? vk_shader_get(code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0) : NULL;
+                             tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0);
+    tcs = tcs_on ? vk_shader_get(code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0) : NULL;
     tes = tes_on ? vk_shader_get(code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0, gs_on ? SNX_SH_NOT_LAST : clip,
-                                 0, 0)
+                                 0, 0, 0)
                  : NULL;
     gs = gs_on ? vk_shader_get(code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]), 0, clip,
-                               0, 0)
+                               0, 0, 0)
                : NULL;
     if ((tcs && tcs->failed) || (tes && tes->failed) || (gs && gs->failed)) {
         g_vk_skipped++;
@@ -1201,7 +1204,8 @@ retry:
     }
     TexRes fres[SH_MAXTEX];
     for (int i = 0; i < SH_MAXTEX; i++) fres[i].have = 0;
-    VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres) : NULL;
+    VkSh* last = gs ? gs : tes ? tes : vs;
+    VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres, last ? last->si.out_mask : ~0u) : NULL;
     if (!vs || vs->failed || (fs && fs->failed)) {
         g_vk_skipped++;
         return;

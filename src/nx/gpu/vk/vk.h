@@ -330,7 +330,7 @@ u64 vk_shader_hash(const u8* code, u32 max_bytes, u32* out_len, VkCbReader read)
 int vk_cb_reads_hold(const VkCbReads* reads, VkCbReader read);
 typedef struct VkSh {
     u64 hash;
-    u32 mask[7]; /* the key: vk_shader_get's masks */
+    u32 mask[8]; /* the key: vk_shader_get's masks */
     int stage;
     VkCbReads cbr;
     ShaderInfo si;
@@ -356,9 +356,9 @@ void vk_pipeline_init(void);
    vertex stage, textures and render target outputs for the fragment stage. rt_int keys the primitives of the
    tessellation evaluation and geometry stages (ShaderInfo.rt_int_mask). clip: the clip distances the 3D engine
    enables, and SNX_SH_NOT_LAST (the stages before rasterization). dc_color, dc_funcs: depth-compare samples of color
-   textures (ShaderInfo's fragment key) */
+   textures, unfed: inputs the stage before rasterization doesn't write (ShaderInfo's fragment keys) */
 VkSh* vk_shader_get(u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int, u32 rt_sint, u32 clip,
-                    u32 dc_color, u32 dc_funcs);
+                    u32 dc_color, u32 dc_funcs, u32 unfed);
 /* the bound constant buffers per stage, which the translator also reads to resolve indirect branches */
 extern u64 g_vk_cb[5][18];
 extern u32 g_vk_cbsize[5][18];
