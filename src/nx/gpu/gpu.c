@@ -18,11 +18,13 @@ static PMutex g_gpulock; /* everything below runs on the GPU thread, which takes
 
 /* ============================================================ GPU memory */
 int g_gpu_releases;
-int gmem_read(u64 gva, void* dst, u64 size) {
-    u8* d = dst;
+void gmem_need(u64 gva, u64 size) {
     if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) g_renderer->release_need(gva, size);
     if (g_cs_any) g_renderer->cs_mem_need(gva, size);
     if (g_gfx_any || g_gfx_img_any) g_renderer->gfx_mem_need(gva, size);
+}
+void gmem_read_untracked(u64 gva, void* dst, u64 size) {
+    u8* d = dst;
     while (size) {
         u64 cpu = gmmu_translate(gva);
         u64 n = 0x1000 - (gva & 0xFFF);
@@ -35,6 +37,10 @@ int gmem_read(u64 gva, void* dst, u64 size) {
         gva += n;
         size -= n;
     }
+}
+int gmem_read(u64 gva, void* dst, u64 size) {
+    gmem_need(gva, size);
+    gmem_read_untracked(gva, dst, size);
     return 0;
 }
 void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len);
@@ -104,9 +110,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 }
 u8* gmem_ptr(u64 gva, u64 size) {
     /* host pointer, only if the whole range is contiguous */
-    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) g_renderer->release_need(gva, size);
-    if (g_cs_any) g_renderer->cs_mem_need(gva, size);
-    if (g_gfx_any || g_gfx_img_any) g_renderer->gfx_mem_need(gva, size);
+    gmem_need(gva, size);
     return gmem_ptr_untracked(gva, size);
 }
 u8* gmem_ptr_untracked(u64 gva, u64 size) {
@@ -329,35 +333,39 @@ static void call_method(GpuChannel* ch, u32 sub, u32 m, u32 v, int last) {
     }
 }
 
-static void run_pushbuffer(GpuChannel* ch, const u32* w, u32 n) {
-    /* method batches can spill over into the next GPFIFO entry (hw does this, so does yuzu's DmaPusher).
-     keep the batch state across entries or the leftover data gets parsed as headers */
+typedef void PbMethod(void* ctx, u32 sub, u32 m, u32 v, int last);
+/* calls fn for each method of the pushbuffer words w[0, n) of channel chan (for the log), log: say what looks wrong.
+   Method batches can spill over into the next GPFIFO entry (hw does this, so does yuzu's DmaPusher): b keeps the
+   batch state across entries or the leftover data gets parsed as headers */
+static inline void pb_walk(PbBatch* b, const u32* w, u32 n, u32 chan, int log, PbMethod* fn, void* ctx) {
     u32 i = 0;
     for (;;) {
-        if (ch->pb_k < ch->pb_cnt) {
-            u32 mode = ch->pb_mode, sub = ch->pb_sub, m = ch->pb_m;
-            while (ch->pb_k < ch->pb_cnt && i < n) {
-                u32 k = ch->pb_k++;
+        if (b->k < b->cnt) {
+            u32 mode = b->mode, sub = b->sub, m = b->m;
+            while (b->k < b->cnt && i < n) {
+                u32 k = b->k++;
                 u32 mm = mode == 1 ? m + k : mode == 5 ? (k == 0 ? m : m + 1) : m;
-                call_method(ch, sub, mm, w[i++], ch->pb_k == ch->pb_cnt);
+                fn(ctx, sub, mm, w[i++], b->k == b->cnt);
             }
-            if (ch->pb_k < ch->pb_cnt) {
-                LOG_LIMIT(
-                    6,
-                    "gpu: method batch continues in the next GPFIFO entry (sub %u method %x mode %u, %u of %u words done)\n",
-                    ch->pb_sub, ch->pb_m, ch->pb_mode, ch->pb_k, ch->pb_cnt);
+            if (b->k < b->cnt) {
+                if (log)
+                    LOG_LIMIT(
+                        6,
+                        "gpu: method batch continues in the next GPFIFO entry (sub %u method %x mode %u, %u of %u "
+                        "words done)\n",
+                        b->sub, b->m, b->mode, b->k, b->cnt);
                 return;
             } /* rest comes in the next entry */
         }
         if (i >= n) return;
         u32 h = w[i++];
         u32 mode = h >> 29, sub = (h >> 13) & 7, m = h & 0xFFF, cnt = (h >> 16) & 0x1FFF;
-        if (h && (mode == 0 || mode == 2 || mode >= 6)) { /* shouldn't happen in a sane stream, log it */
+        if (log && h && (mode == 0 || mode == 2 || mode >= 6)) { /* shouldn't happen in a sane stream, log it */
             static int said;
             if (said < 6) {
                 said++;
                 LOG("gpu: odd command header %08x (mode %u) at word %u of %u in channel %u; words around:", h, mode,
-                    i - 1, n, ch->id);
+                    i - 1, n, chan);
                 for (u32 j = i > 5 ? i - 5 : 0; j < i + 6 && j < n; j++) LOG(" %s%08x", j == i - 1 ? "*" : "", w[j]);
                 LOG("\n");
             }
@@ -366,17 +374,77 @@ static void run_pushbuffer(GpuChannel* ch, const u32* w, u32 n) {
             case 1:
             case 3:
             case 5:
-                ch->pb_mode = mode;
-                ch->pb_sub = sub;
-                ch->pb_m = m;
-                ch->pb_cnt = cnt;
-                ch->pb_k = 0;
+                b->mode = mode;
+                b->sub = sub;
+                b->m = m;
+                b->cnt = cnt;
+                b->k = 0;
                 break;
             /* modes 0/2 (old Fermi), 6, 7 carry no data words (same as DmaPusher). don't treat them as batches,
          a stray one would eat the following methods incl. syncpoint incrs */
-            case 4: call_method(ch, sub, m, cnt, 1); break;
+            case 4: fn(ctx, sub, m, cnt, 1); break;
             default: break;
         }
+    }
+}
+static void run_method(void* ctx, u32 sub, u32 m, u32 v, int last) { call_method((GpuChannel*)ctx, sub, m, v, last); }
+static void run_pushbuffer(GpuChannel* ch, const u32* w, u32 n) { pb_walk(&ch->pb, w, n, ch->id, 1, run_method, ch); }
+
+/* Each channel's stream as submissions are queued, in nvdrv's submit order (the GPU queue's), followed only as far as
+   the copy engine: its launches with a linear source have the source read now (dma_snap_launch, which says why). A
+   stream that waits first, on a semaphore acquire or a syncpoint, gets none for the rest of that submission: the CPU
+   may write the source after the submit and then release the wait */
+typedef struct {
+    PbBatch pb;
+    u32 id, sub_class[8];
+    int waits;
+    u32 rdma[0x200];
+} SubmitScan;
+static SubmitScan* g_scan[128]; /* by channel (syncpoint id), made at its first submission */
+static void scan_method(void* ctx, u32 sub, u32 m, u32 v, int last) {
+    SubmitScan* s = ctx;
+    u32 cls;
+    (void)last;
+    if (m < 0x40) { /* puller methods, as puller_method and call_method read them */
+        if (m == 0)
+            s->sub_class[sub] = v & 0xFFFF;
+        else if ((m == 0x07 && ((v & 0x1F) == 1 || (v & 0x1F) == 4 || (v & 0x1F) == 8)) || (m == 0x1D && !(v & 1)))
+            s->waits = 1; /* a semaphore acquire (equal, at least, AcqAnd) or a syncpoint wait */
+        return;
+    }
+    cls = s->sub_class[sub];
+    if (cls != 0xB0B5 && (sub != 4 || cls == 0xB197 || cls == 0xB1C0 || cls == 0xA140 || cls == 0x902D)) return;
+    s->rdma[m & 0x1FF] = v; /* dma_method's registers */
+    if ((m & 0x1FF) == 0xC0) dma_snap_launch(s->id, s->rdma, v, !s->waits);
+}
+static void scan_submission(const u64* e, u32 n, u32 channel) {
+    SubmitScan* s = g_scan[channel & 127];
+    u32 k;
+    if (!s) {
+        s = calloc(1, sizeof *s);
+        if (!s) fatal("gpu: out of memory for a channel\n");
+        s->id = channel;
+        s->sub_class[0] = 0xB197; /* chan_get's */
+        s->sub_class[1] = 0xB1C0;
+        s->sub_class[2] = 0xA140;
+        s->sub_class[3] = 0x902D;
+        s->sub_class[4] = 0xB0B5;
+        g_scan[channel & 127] = s;
+    }
+    s->waits = 0;
+    for (k = 0; k < n; k++) {
+        u64 va = e[k] & 0xFFFFFFFFFCull;
+        u32 words = (u32)((e[k] >> 42) & 0x1FFFFF);
+        u32 *w, *tmp = NULL;
+        if (!words) continue;
+        w = (u32*)gmem_ptr_untracked(va, (u64)words * 4);
+        if (!w) {
+            tmp = w = malloc((u64)words * 4);
+            if (!w) fatal("gpu: out of memory reading a pushbuffer\n");
+            gmem_read_untracked(va, w, (u64)words * 4);
+        }
+        pb_walk(&s->pb, w, words, channel, 0, scan_method, s);
+        free(tmp);
     }
 }
 
@@ -409,6 +477,11 @@ void gpu_channel_close(u32 channel) {
             free(c);
             break;
         }
+    /* the channel's id comes back only after this (gpu_channel_retire frees the syncpoint next), so no submission
+       of a new channel was scanned yet */
+    free(g_scan[channel & 127]);
+    g_scan[channel & 127] = NULL;
+    dma_snap_reset(channel);
     pm_unlock(&g_gpulock);
 }
 
@@ -514,6 +587,7 @@ volatile u64 g_gpu_submits;
 void gpu_submit(u64* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect) {
     g_gpu_submits++;
     if (g_renderer->async_submit(e, n, channel, incs)) return;
+    scan_submission(e, n, channel); /* under nvdrv's submit_lk, so in the order the jobs are queued */
     GpuJob j = {malloc((u64)n * 8 + 8), n, channel, incs, wait_id, wait_val, expect, NULL, NULL};
     if (!j.e) fatal("Out of memory queueing a GPU submission");
     memcpy(j.e, e, (u64)n * 8);

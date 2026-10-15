@@ -6,6 +6,10 @@
 #ifndef SNX_GPU_H
 #define SNX_GPU_H
 #include "cpu/aarch64/cpu.h"
+/* a method batch's place in the stream: one can continue into the next GPFIFO entry */
+typedef struct {
+    u32 mode, sub, m, cnt, k;
+} PbBatch;
 typedef struct GpuChannel {
     u32 id;
     u32 sub_class[8];
@@ -22,7 +26,7 @@ typedef struct GpuChannel {
     int i2m_linear;
     u32 i2m_bd, i2m_dw, i2m_dh, i2m_x, i2m_y, i2m_z;
     /* macros (MME) */
-    u32 pb_mode, pb_sub, pb_m, pb_cnt, pb_k; /* a method batch can continue into the next GPFIFO entry */
+    PbBatch pb;
     u32 mme_code[0x2000];
     u32 mme_start[0x100];
     u32 mme_upload_ptr, mme_start_ptr;
@@ -53,6 +57,10 @@ int gmem_write(u64 gva, const void* src, u64 size);
 u8* gmem_ptr(u64 gva, u64 size);
 /* Only for comparing a pending GPU result's original guest bytes: does not land pending GPU writes. */
 u8* gmem_ptr_untracked(u64 gva, u64 size);
+/* lands the pending GPU results over [gva, gva + size) in guest memory, as gmem_read and gmem_ptr do first */
+void gmem_need(u64 gva, u64 size);
+/* [gva, gva + size) as guest memory holds it now, pending GPU results left out; unmapped pages read as 0 */
+void gmem_read_untracked(u64 gva, void* dst, u64 size);
 u32 gmem_r32(u64 gva);
 void gmem_w32(u64 gva, u32 v);
 u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log2, u32 bd_log2);
@@ -65,6 +73,10 @@ void compute_method(GpuChannel* ch, u32 m, u32 v, int last);
 void kepler_i2m_method(GpuChannel* ch, u32 m, u32 v);
 void fermi2d_method(GpuChannel* ch, u32 m, u32 v);
 void dma_method(GpuChannel* ch, u32 m, u32 v);
+/* the linear source of a LAUNCH_DMA (v) with registers r, read now for the channel's copy to use when it runs: called
+   in the channel's submit order, for every launch the stream will run (gpu_submit) */
+void dma_snap_launch(u32 channel, const u32* r, u32 v, int read); /* read 0: the copy reads guest memory itself */
+void dma_snap_reset(u32 channel);                                 /* the channel closed: what it queued goes */
 void gpu_mem_written(u64 gva, u64 size);
 void gpu_mem_written_shader(u64 gva, u64 size); /* shader writeback tracks both GPU VA and guest backing */
 void gpu_signal_point(void);                    /* the GPU is about to do something the game can observe */
