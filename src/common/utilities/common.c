@@ -611,6 +611,33 @@ SnxU64 snx_free_space(const char* path) {
     return statvfs(path, &st) ? 0 : (SnxU64)st.f_bavail * st.f_frsize;
 #endif
 }
+/* The per-user folder of an installed build, which has no checkout: $XDG_DATA_HOME/scarletnx or
+   ~/.local/share/scarletnx, ~/Library/Application Support/scarletnx on macOS, %APPDATA%\scarletnx on Windows. These are
+   the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI. NULL when the environment names no home */
+char* snx_user_data_dir(void) {
+    const char* base;
+#ifdef _WIN32
+    base = getenv("APPDATA");
+    return base && base[0] ? snx_path_join(base, "scarletnx") : NULL;
+#else
+    char *parent, *path;
+    base = getenv("XDG_DATA_HOME");
+#ifndef __APPLE__
+    /* the XDG spec ignores a relative XDG_DATA_HOME */
+    if (base && base[0] == '/') return snx_path_join(base, "scarletnx");
+#endif
+    base = getenv("HOME");
+    if (!base || !base[0]) return NULL;
+#ifdef __APPLE__
+    parent = snx_path_join(base, "Library/Application Support");
+#else
+    parent = snx_path_join(base, ".local/share");
+#endif
+    path = parent ? snx_path_join(parent, "scarletnx") : NULL;
+    free(parent);
+    return path;
+#endif
+}
 char* snx_temp_dir(const char* parent) {
     char* path;
 #ifdef _WIN32

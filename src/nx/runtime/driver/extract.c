@@ -44,7 +44,8 @@ static void extract_help(void) {
          "  --out DIR           Output directory (default: REPO/work/NAME)\n"
          "  --keys FILE         prod.keys (default: REPO, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
-         "  --help              Show this help\n"
+         "  --help              Show this help");
+    puts("REPO is the checkout, or for an installed build the user's data folder (scarletnx --help).\n"
          "Decrypted content needs no keys. Refuses output containing exefs.");
 }
 
@@ -548,8 +549,8 @@ static int program_nca(const ExtractState* state, const char* folder, int update
         if (needs_keys < 0)
             failed = snx_error("Cannot read an extracted NCA header");
         else if (needs_keys && !state->has_keys)
-            failed =
-                snx_error("Encrypted content needs prod.keys. Provide --keys or place it in the checkout/~/.switch");
+            failed = snx_error("Encrypted content needs prod.keys. Provide --keys, or put it at %s or in ~/.switch",
+                               state->keys);
         if (failed) {
             free(path);
             break;
@@ -624,6 +625,8 @@ static char* locate_hactool(const SnxPaths* paths) {
     int result;
 #if defined(_WIN32)
     tool_name = "hactool.exe";
+#elif defined(__ANDROID__)
+    tool_name = "libhactool.so"; /* the app's libraries folder takes no other name (cmake/hactool.cmake) */
 #else
     tool_name = "hactool";
 #endif

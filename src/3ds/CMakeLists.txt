@@ -12,7 +12,7 @@ target_include_directories(snx_ctr_cpu PUBLIC "${PROJECT_SOURCE_DIR}/src/common"
 target_link_libraries(snx_ctr_cpu PUBLIC snx_ctr_memory)
 add_library(snx_ctr_loader STATIC loader/loader.c loader/cia.c loader/ncch.c loader/romfs.c loader/blz.c)
 target_include_directories(snx_ctr_loader PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx_ctr_loader PUBLIC scarletnx-common)
+target_link_libraries(snx_ctr_loader PUBLIC scarletnx-common OpenSSL::Crypto)
 target_compile_definitions(snx_ctr_loader PRIVATE _FILE_OFFSET_BITS=64 _CRT_SECURE_NO_WARNINGS)
 foreach(target snx_ctr_memory snx_ctr_loader snx_ctr_cpu)
     set_target_properties(${target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)

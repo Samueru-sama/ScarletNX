@@ -13,6 +13,10 @@
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
 #include "runtime/platform/unattended.h"
+#include "runtime/platform/overlay.h"
+#include "runtime/platform/touch.h"
+#include "runtime/platform/ui.h"
+#include "runtime/platform/vpad.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +26,7 @@
 #include <SDL3/SDL.h>
 #include <time.h>
 #include "window_icon.h"
+#include "runtime/platform/controls_png.h"
 #include "build_info.h"
 
 static SDL_Window* g_win;
@@ -35,6 +40,9 @@ static void set_fullscreen(int on);
 static int g_shot_req;
 static SDL_Gamepad* g_pads[4];
 static int g_audio_ready;
+static int g_hidden;         /* the app is in the background (Android) */
+static SDL_Haptic* g_buzzer; /* the phone's vibrator, for the on-screen controls' taps (Android) */
+static u32 g_generation;     /* the window's surface came back this many times */
 
 struct PAudio {
     SDL_AudioStream* stream;
@@ -123,20 +131,113 @@ void plat_audio_volume(PAudio* a, float volume) {
         WARN_LIMIT(4, "audio: SDL could not set output volume: %s\n", SDL_GetError());
 }
 
+/* the game's touch screen: 0 nothing, 1 the fingers, 2 the fingers and the mouse's left button (ini key touch) */
+static int g_touch_mode = 1;
+static u64 g_touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_touch */
+
+static void touch_mode(int mode) {
+    g_touch_mode = mode;
+    if (!g_touch_mode) g_touch.down = 0;
+    if (g_touch_mode != 2) touch_up(&g_touch, g_touch_ids, SNX_TOUCH_MOUSE);
+}
+int backend_touch_mode(void) { return g_touch_mode; }
+void backend_touch_set(int mode) {
+    char v[16];
+    touch_mode(mode);
+    snprintf(v, sizeof v, "%d", mode);
+    ini_set("touch", v);
+}
 void backend_ini(const char* k, const char* v) {
+    int controls;
     if (!strcmp(k, "fullscreen"))
         g_fullscreen_ini = atoi(v);
-    else
-        unattended_ini(k, v);
+    else if (!strcmp(k, "touch"))
+        touch_mode(atoi(v));
+    else {
+        ui_lock();
+        controls = vpad_ini(k, v);
+        ui_unlock();
+        if (!controls) unattended_ini(k, v);
+    }
 }
 
 static void wsize_set(int w, int h) {
     if (w > 0 && h > 0) g_wsize = (u64)(u32)w | (u64)(u32)h << 32;
 }
+/* the window's part clear of the system's bars, in pixels, x | y << 16 | w << 32 | h << 48, or 0 for all of it: set
+   on the main thread with the size, read by the renderer on its own */
+static u64 g_wsafe;
+static void wsafe_set(void) {
+    SDL_Rect r;
+    float d = g_win ? SDL_GetWindowPixelDensity(g_win) : 0;
+    u64 v = 0;
+    if (!g_fullscreen && d > 0 && SDL_GetWindowSafeArea(g_win, &r))
+        v = (u64)(u16)(r.x * d) | (u64)(u16)(r.y * d) << 16 | (u64)(u16)(r.w * d) << 32 | (u64)(u16)(r.h * d) << 48;
+    __atomic_store_n(&g_wsafe, v, __ATOMIC_RELEASE);
+}
+void backend_window_safe(int* x, int* y, int* w, int* h) {
+    u64 v = __atomic_load_n(&g_wsafe, __ATOMIC_ACQUIRE);
+    *x = (int)(u16)v;
+    *y = (int)(u16)(v >> 16);
+    *w = (int)(u16)(v >> 32);
+    *h = (int)(u16)(v >> 48);
+    if (!*w || !*h) {
+        *x = *y = 0;
+        backend_window_size(w, h);
+    }
+}
+/* as SDL queues each event, from its own thread: on Android the main loop is held while the app is in the
+   background, and presenting must stop before that */
+static bool SDLCALL lifecycle(void* unused, SDL_Event* e) {
+    (void)unused;
+    if (e->type == SDL_EVENT_WILL_ENTER_BACKGROUND) __atomic_store_n(&g_hidden, 1, __ATOMIC_RELEASE);
+    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+        __atomic_add_fetch(&g_generation, 1, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_hidden, 0, __ATOMIC_RELEASE);
+    }
+    return true;
+}
+int backend_window_shown(void) { return !g_opt_headless && !__atomic_load_n(&g_hidden, __ATOMIC_ACQUIRE); }
+u32 backend_window_generation(void) { return __atomic_load_n(&g_generation, __ATOMIC_ACQUIRE); }
 void backend_window_size(int* w, int* h) {
     u64 s = g_opt_headless ? 0 : g_wsize;
     *w = (int)(u32)s;
     *h = (int)(u32)(s >> 32);
+}
+
+/* the on-screen controls' sprites, decoded from the PNG compiled in, to the atlas the renderer uploads */
+static void controls_atlas(void) {
+    SDL_Surface* png = SDL_LoadPNG_IO(SDL_IOFromConstMem(snx_controls_png, snx_controls_png_size), true);
+    SDL_Surface* rgba = png ? SDL_ConvertSurface(png, SDL_PIXELFORMAT_RGBA32) : NULL;
+    u32* px = rgba ? malloc((size_t)rgba->w * (size_t)rgba->h * 4) : NULL;
+    if (px) {
+        for (int y = 0; y < rgba->h; y++)
+            memcpy(px + (size_t)y * (size_t)rgba->w, (const u8*)rgba->pixels + (size_t)y * (size_t)rgba->pitch,
+                   (size_t)rgba->w * 4);
+        ui_atlas_set(px, rgba->w, rgba->h);
+    } else
+        WARN("input: the on-screen controls' image could not be read: %s\n", SDL_GetError());
+    free(px);
+    SDL_DestroySurface(rgba);
+    SDL_DestroySurface(png);
+}
+/* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
+static void buzzer_open(void) {
+#ifdef __ANDROID__
+    int n = 0;
+    SDL_HapticID* ids;
+    if (!SDL_InitSubSystem(SDL_INIT_HAPTIC)) return;
+    ids = SDL_GetHaptics(&n);
+    for (int i = 0; ids && i < n && !g_buzzer; i++) {
+        const char* name = SDL_GetHapticNameForID(ids[i]);
+        if (name && !strcmp(name, "VIBRATOR_SERVICE")) g_buzzer = SDL_OpenHaptic(ids[i]);
+    }
+    SDL_free(ids);
+    if (g_buzzer && !SDL_InitHapticRumble(g_buzzer)) {
+        SDL_CloseHaptic(g_buzzer);
+        g_buzzer = NULL;
+    }
+#endif
 }
 
 void video_init(const char* title) {
@@ -147,6 +248,12 @@ void video_init(const char* title) {
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
         return;
     }
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1"); /* back opens the game's menu (overlay.c), not leaves */
+#endif
+    /* a finger and the mouse each reach the touch screen once: SDL would also send each as the other */
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
     g_audio_ready = SDL_InitSubSystem(SDL_INIT_AUDIO);
@@ -154,6 +261,7 @@ void video_init(const char* title) {
     LOG("video: SDL %d.%d.%d on %s\n", SDL_VERSIONNUM_MAJOR(SDL_GetVersion()), SDL_VERSIONNUM_MINOR(SDL_GetVersion()),
         SDL_VERSIONNUM_MICRO(SDL_GetVersion()), SDL_GetCurrentVideoDriver());
     unattended_start();
+    SDL_AddEventWatch(lifecycle, NULL);
     int w, h;
     char header[512];
     backend_window_size(&w, &h);
@@ -161,8 +269,12 @@ void video_init(const char* title) {
     g_win = SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!g_win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_win);
+    controls_atlas();
+    vpad_set_store(ini_set);
+    buzzer_open();
     SDL_GetWindowSizeInPixels(g_win, &w, &h);
     wsize_set(w, h);
+    wsafe_set();
     if (!g_renderer->start())
         fatal("Vulkan could not start (see the log). ScarletNX needs a GPU and driver with Vulkan 1.3.");
     LOG("renderer: Vulkan\n");
@@ -194,13 +306,13 @@ void video_present_rgba(const u32* px, int w, int h, int stride) {
     (void)stride;
 }
 
-static const char* HELP = "Controller: like a Switch controller, buttons by position.\n\n"
+static const char* HELP = "Controller: like a Switch controller, buttons by position. Home: the game's menu.\n\n"
                           "Keyboard (keys by position, as on a US layout):\n"
                           "  Arrows = D-Pad     W A S D = left stick    I J K L = right stick\n"
                           "  X / Space = A    Z = B    C = X    V = Y\n"
                           "  Q = L   E = R   1 = ZL   3 = ZR   Enter = +   Backspace = -\n\n"
-                          "F1 = this help   F3 = screenshot   F4 = FPS limit on / unlimited   F5 = thread dump\n"
-                          "F11 / Alt+Enter = fullscreen   Esc = quit";
+                          "F1 = this help   F2 = the game's menu   F3 = screenshot   F4 = FPS limit on / unlimited\n"
+                          "F5 = thread dump   F11 / Alt+Enter = fullscreen   Esc = quit";
 
 /* keys -> HidNpadButton bits; 40..47 are the stick keys, turned into axes in video_poll. By scancode, the key's
    position: the keycode depends on the layout and on the modifiers, so Shift pressed while 1 was held made its release
@@ -327,16 +439,170 @@ static void dz(i32* x, i32* y) {
 /* SDL's Y axes point down, the Switch's up */
 static i32 up(i32 v) { return v == -32768 ? 32767 : -v; }
 
+/* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open; Back, Home and F2 open
+   and close it, and end the on-screen controls' edit mode. Under ui_lock: the renderer draws them on its thread */
+static void menu_open(int open) {
+    if (overlay_shown() != open) overlay_toggle();
+    vpad_release();
+    keys_held = 0;
+}
+static void overlay_do(int action) {
+    if (action == OVERLAY_EXIT) g_quit = 1;
+    if (action == OVERLAY_CLOSE) menu_open(0);
+    if (action == OVERLAY_EDIT) {
+        menu_open(0);
+        vpad_edit(1);
+    }
+}
+static int menu_event(const SDL_Event* e) {
+    int w, h;
+    float d;
+    if ((e->type == SDL_EVENT_KEY_DOWN && !e->key.repeat && (e->key.key == SDLK_AC_BACK || e->key.key == SDLK_F2)) ||
+        (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
+        if (vpad_editing())
+            vpad_edit(0);
+        else
+            menu_open(!overlay_shown());
+        return 1;
+    }
+    if (vpad_editing() && e->type == SDL_EVENT_KEY_DOWN && e->key.key == SDLK_ESCAPE) {
+        vpad_edit(0);
+        return 1;
+    }
+    if (!overlay_shown()) return 0;
+    if (e->type == SDL_EVENT_KEY_DOWN) {
+        switch (e->key.key) {
+            case SDLK_UP: overlay_move(-1); break;
+            case SDLK_DOWN: overlay_move(1); break;
+            case SDLK_LEFT: overlay_side(-1); break;
+            case SDLK_RIGHT: overlay_side(1); break;
+            case SDLK_RETURN:
+            case SDLK_SPACE:
+                if (!e->key.repeat) overlay_do(overlay_select());
+                break;
+            case SDLK_ESCAPE:
+            case SDLK_BACKSPACE:
+                if (!e->key.repeat) overlay_do(overlay_back());
+                break;
+            default: break;
+        }
+    } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) { /* by position, as the game's pad: A right, B bottom */
+        switch (e->gbutton.button) {
+            case SDL_GAMEPAD_BUTTON_DPAD_UP: overlay_move(-1); break;
+            case SDL_GAMEPAD_BUTTON_DPAD_DOWN: overlay_move(1); break;
+            case SDL_GAMEPAD_BUTTON_DPAD_LEFT: overlay_side(-1); break;
+            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: overlay_side(1); break;
+            case SDL_GAMEPAD_BUTTON_EAST: overlay_do(overlay_select()); break;
+            case SDL_GAMEPAD_BUTTON_SOUTH: overlay_do(overlay_back()); break;
+            default: break;
+        }
+    } else if (e->type == SDL_EVENT_FINGER_UP) {
+        backend_window_size(&w, &h);
+        overlay_do(overlay_tap(e->tfinger.x * (float)w, e->tfinger.y * (float)h, w, h));
+    } else if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.which != SDL_TOUCH_MOUSEID &&
+               e->button.button == SDL_BUTTON_LEFT) {
+        backend_window_size(&w, &h);
+        d = SDL_GetWindowPixelDensity(g_win);
+        overlay_do(overlay_tap(e->button.x * d, e->button.y * d, w, h));
+    } else if (e->type != SDL_EVENT_FINGER_DOWN && e->type != SDL_EVENT_FINGER_MOTION &&
+               e->type != SDL_EVENT_MOUSE_BUTTON_DOWN && e->type != SDL_EVENT_MOUSE_MOTION)
+        return 0; /* the window's events, and keys let go: the game still has them */
+    return 1;
+}
+static int overlay_event(const SDL_Event* e) {
+    int taken;
+    ui_lock();
+    taken = menu_event(e);
+    ui_unlock();
+    return taken;
+}
+
+/* the picture the renderer shows, in the window's pixels: where a finger lands on the game's touch screen */
+static void touch_window(int picture[4]) {
+    int x, y, w, h;
+    backend_window_safe(&x, &y, &w, &h);
+    touch_picture(x, y, w, h, picture);
+}
+/* a finger on an on-screen control is the controls', the others the game's touch screen's */
+static void touch_finger(const SDL_Event* e) {
+    int w, h, picture[4], safe[4], taken = 0;
+    float px, py;
+    backend_window_size(&w, &h);
+    px = e->tfinger.x * (float)w;
+    py = e->tfinger.y * (float)h;
+    backend_window_safe(&safe[0], &safe[1], &safe[2], &safe[3]);
+    ui_lock();
+    if (e->type == SDL_EVENT_FINGER_DOWN)
+        taken = vpad_down(e->tfinger.fingerID, px, py, safe);
+    else if (e->type == SDL_EVENT_FINGER_MOTION)
+        vpad_move(e->tfinger.fingerID, px, py, safe);
+    else
+        vpad_up(e->tfinger.fingerID);
+    ui_unlock();
+    if (taken || !g_touch_mode) return;
+    touch_window(picture);
+    if (e->type == SDL_EVENT_FINGER_DOWN)
+        touch_down(&g_touch, g_touch_ids, e->tfinger.fingerID, picture, px, py);
+    else if (e->type == SDL_EVENT_FINGER_MOTION)
+        touch_move(&g_touch, g_touch_ids, e->tfinger.fingerID, picture, px, py);
+    else
+        touch_up(&g_touch, g_touch_ids, e->tfinger.fingerID);
+}
+/* the mouse's left button as one more finger: on the on-screen controls when they are on, and on the touch screen
+   when the touch option asks for it; positions come in window points */
+static void touch_mouse(const SDL_Event* e) {
+    int picture[4], safe[4], taken = 0;
+    float d = SDL_GetWindowPixelDensity(g_win);
+    backend_window_safe(&safe[0], &safe[1], &safe[2], &safe[3]);
+    if (e->type == SDL_EVENT_MOUSE_MOTION) {
+        if (e->motion.which == SDL_TOUCH_MOUSEID) return;
+        ui_lock();
+        vpad_move(SNX_TOUCH_MOUSE, e->motion.x * d, e->motion.y * d, safe);
+        ui_unlock();
+        touch_window(picture);
+        if (g_touch_mode == 2 && (e->motion.state & SDL_BUTTON_LMASK))
+            touch_move(&g_touch, g_touch_ids, SNX_TOUCH_MOUSE, picture, e->motion.x * d, e->motion.y * d);
+    } else if (e->button.which != SDL_TOUCH_MOUSEID && e->button.button == SDL_BUTTON_LEFT) {
+        ui_lock();
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+            taken = vpad_down(SNX_TOUCH_MOUSE, e->button.x * d, e->button.y * d, safe);
+        else
+            taken = vpad_up(SNX_TOUCH_MOUSE);
+        ui_unlock();
+        if (taken || g_touch_mode != 2) return;
+        touch_window(picture);
+        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+            touch_down(&g_touch, g_touch_ids, SNX_TOUCH_MOUSE, picture, e->button.x * d, e->button.y * d);
+        else
+            touch_up(&g_touch, g_touch_ids, SNX_TOUCH_MOUSE);
+    }
+}
 void video_poll(void) {
     SDL_Event e;
     while (!g_opt_headless && SDL_PollEvent(&e)) {
+        if (overlay_event(&e)) continue;
         switch (e.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 if (e.window.windowID == SDL_GetWindowID(g_win)) wsize_set(e.window.data1, e.window.data2);
+                wsafe_set();
                 break;
-            case SDL_EVENT_WINDOW_ENTER_FULLSCREEN: g_fullscreen = 1; break;
-            case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN: g_fullscreen = 0; break;
+            case SDL_EVENT_WINDOW_SAFE_AREA_CHANGED: wsafe_set(); break;
+            case SDL_EVENT_FINGER_DOWN:
+            case SDL_EVENT_FINGER_MOTION:
+            case SDL_EVENT_FINGER_UP:
+            case SDL_EVENT_FINGER_CANCELED: touch_finger(&e); break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+            case SDL_EVENT_MOUSE_MOTION: touch_mouse(&e); break;
+            case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+                g_fullscreen = 1;
+                wsafe_set();
+                break;
+            case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+                g_fullscreen = 0;
+                wsafe_set();
+                break;
             case SDL_EVENT_KEY_DOWN:
                 if (e.key.key == SDLK_ESCAPE) {
                     g_quit = 1;
@@ -351,7 +617,12 @@ void video_poll(void) {
                 keys_held |= keymap(e.key.scancode);
                 break;
             case SDL_EVENT_KEY_UP: keys_held &= ~keymap(e.key.scancode); break;
-            case SDL_EVENT_WINDOW_FOCUS_LOST: keys_held = 0; break;
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+                keys_held = 0;
+                ui_lock();
+                vpad_release();
+                ui_unlock();
+                break;
             case SDL_EVENT_GAMEPAD_ADDED: pad_open(e.gdevice.which); break;
             case SDL_EVENT_GAMEPAD_REMOVED: pad_close(e.gdevice.which); break;
         }
@@ -392,8 +663,33 @@ void video_poll(void) {
             dz(&rx, &ry);
         }
     }
+    { /* the on-screen controls, as one more pad: their sticks over the others' while held */
+        u64 vb;
+        i32 vs[4];
+        unsigned acts;
+        ui_lock();
+        vpad_state(&vb, vs);
+        acts = vpad_actions();
+        if (acts & SNX_VPAD_DO_MENU) menu_open(1);
+        ui_unlock();
+        b |= vb;
+        if (vs[0] || vs[1]) {
+            lx = vs[0];
+            ly = vs[1];
+        }
+        if (vs[2] || vs[3]) {
+            rx = vs[2];
+            ry = vs[3];
+        }
+        if (acts & SNX_VPAD_DO_SHOT) g_shot_req = 1;
+        if ((acts & SNX_VPAD_DO_BUZZ) && g_buzzer) SDL_PlayHapticRumble(g_buzzer, 0.5f, 15);
+    }
     input_stick_clamp(&lx, &ly);
     input_stick_clamp(&rx, &ry);
+    if (overlay_shown() || vpad_editing()) { /* the game's menu, or the controls' edit mode, has the controls */
+        b = (u64)(lx = ly = rx = ry = 0);
+        g_touch.down = 0;
+    }
     g_pad.buttons = b;
     g_pad.lx = lx;
     g_pad.ly = ly;
@@ -403,6 +699,8 @@ void video_poll(void) {
 
 void frontend_frame(void) {
     char p[1200];
+    /* the controls and the menu stay on the window while the game shows nothing new */
+    if (g_renderer->refresh && (overlay_shown() || vpad_shown())) g_renderer->refresh();
     if (g_shot_req) {
         g_shot_req = 0;
         time_t now = time(NULL);

@@ -4,17 +4,24 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-typedef struct { unsigned reads, writes; uint32_t address; unsigned char data[8]; bool fail; } Device;
+typedef struct {
+    unsigned reads, writes;
+    uint32_t address;
+    unsigned char data[8];
+    bool fail;
+} Device;
 static bool read_mmio(void* context, uint32_t pa, void* output, size_t size) {
     Device* d = context;
-    d->reads++; d->address = pa;
+    d->reads++;
+    d->address = pa;
     if (d->fail) return false;
     memcpy(output, d->data, size);
     return true;
 }
 static bool write_mmio(void* context, uint32_t pa, const void* input, size_t size) {
     Device* d = context;
-    d->writes++; d->address = pa;
+    d->writes++;
+    d->address = pa;
     if (d->fail) return false;
     memcpy(d->data, input, size);
     return true;
@@ -97,9 +104,12 @@ int main(void) {
         assert(snx_ctr_unmap(s, 0x1000, 0x2000) == SNX_CTR_MEM_OK);
         assert(snx_ctr_read(s, 0x1000, output, 1) == SNX_CTR_MEM_UNMAPPED);
         assert(snx_ctr_query(alias, 0x8000, NULL, NULL) == SNX_CTR_MEM_OK);
-        snx_ctr_space_free(alias); snx_ctr_space_free(s); snx_ctr_memory_free(m);
+        snx_ctr_space_free(alias);
+        snx_ctr_space_free(s);
+        snx_ctr_memory_free(m);
     }
-    snx_ctr_space_free(NULL); snx_ctr_memory_free(NULL);
+    snx_ctr_space_free(NULL);
+    snx_ctr_memory_free(NULL);
     puts("3DS page mappings, aliases, permissions, bounds, transactions and MMIO passed");
     return 0;
 }

@@ -62,7 +62,9 @@ class ArchitectureTests(unittest.TestCase):
                 'digraph {\n"a" [label = "scarletnx-common"];\n'
                 '"b" [label = "scarletnx-3ds"];\n"c" [label = "adapter"];\n'
                 '"d" [label = "scarletnx-nx"];\n'
-                '"b" -> "a";\n"b" -> "c";\n"c" -> "d";\n}\n', encoding='ascii')
+                '"b" -> "a";\n"b" -> "c";\n"c" -> "d";\n}\n',
+                encoding='ascii',
+            )
             errors = architecture.check_graph(graph)
             self.assertEqual(errors, ['scarletnx-3ds transitively links forbidden target scarletnx-nx'])
 
@@ -73,9 +75,12 @@ class ArchitectureTests(unittest.TestCase):
                 'digraph {\n"a" [label = "scarletnx-common"];\n'
                 '"b" [label = "snx_ctr_cpu"];\n"c" [label = "adapter"];\n'
                 '"d" [label = "snx_arm_llvm"];\n'
-                '"b" -> "c";\n"c" -> "d";\n}\n', encoding='ascii')
-            self.assertEqual(architecture.check_graph(graph),
-                             ['snx_ctr_cpu transitively links forbidden target snx_arm_llvm'])
+                '"b" -> "c";\n"c" -> "d";\n}\n',
+                encoding='ascii',
+            )
+            self.assertEqual(
+                architecture.check_graph(graph), ['snx_ctr_cpu transitively links forbidden target snx_arm_llvm']
+            )
 
     def test_transitive_graphics_link_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
@@ -101,8 +106,16 @@ class ArchitectureTests(unittest.TestCase):
             reply.mkdir(parents=True)
             documents = {
                 'index-test.json': {'reply': {'codemodel-v2': {'jsonFile': 'model.json'}}},
-                'model.json': {'configurations': [{'targets': [{'name': 'gui-test', 'jsonFile': 'gui.json'},
-                                                                {'name': 'runner', 'jsonFile': 'runner.json'}]}]},
+                'model.json': {
+                    'configurations': [
+                        {
+                            'targets': [
+                                {'name': 'gui-test', 'jsonFile': 'gui.json'},
+                                {'name': 'runner', 'jsonFile': 'runner.json'},
+                            ]
+                        }
+                    ]
+                },
                 'gui.json': {'compileGroups': [{'includes': [{'path': str(repo / 'src/gui')}]}]},
                 # only src/runner is on the path, so src/runner/process/process.h hides nothing
                 'runner.json': {'compileGroups': [{'includes': [{'path': 'src/runner'}]}]},

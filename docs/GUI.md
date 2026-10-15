@@ -20,6 +20,10 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   pink. Activation is tracked separately from hover/focus, so the activated item
   stays pink while another item is hovered in yellow. Mouse controls also work
   on load sub-options, browser entries and Back.
+- A finger taps an item anywhere on its row, as a click does on its label; a swipe across
+  turns the pages of `games/`; a tap on a finished run returns to the menu, and one on a
+  running run's ESC line aborts it. Android's back button is ESC. On a screen packed with
+  pixels (a phone) the text takes the display's own scale, as far as the menu still fits.
 - Moving outside a submenu (including over another main item) leaves it open
   and anchored to its activated parent. ESC goes back; explicitly activating a
   different main item replaces/closes the submenu.
@@ -228,6 +232,14 @@ typing_ms = 5
 ; async: every line types from when it comes; sync: one at a time, the done ones three times faster
 typing = async
 blink_ms = 500
+; a line too long for its row (big letters) slides left a column every scroll_ms and back; 0 cuts it
+scroll_ms = 120
+[splash]
+; the boot's: the program's icon on page for ms milliseconds (0: none). chance: the boots in 100 that
+; show this theme's, the default theme's the others
+page = #DAD6BE
+ms = 1000
+chance = 25
 ```
 
 Comments take a line of their own, starting with `;` or `#`.

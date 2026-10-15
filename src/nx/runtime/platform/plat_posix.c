@@ -32,6 +32,15 @@
 #include <sched.h>
 #include <errno.h>
 extern char** environ;
+#ifdef __ANDROID__
+/* zenity and kdialog are a desktop's: Android has no dialog to ask for text yet */
+int plat_text_input(char* out, size_t cap, const char* initial) {
+    (void)out;
+    (void)cap;
+    (void)initial;
+    return -1;
+}
+#else
 /* Run a host text dialog without a shell: the initial text is game data, not a command. */
 static int text_dialog_run(char* out, size_t cap, char* const argv[]) {
     int fd[2];
@@ -89,6 +98,7 @@ int plat_text_input(char* out, size_t cap, const char* initial) {
     if (result == -2) result = text_dialog_run(out, cap, kde ? zenity : kdialog);
     return result == -2 ? -1 : result;
 }
+#endif
 /* FreeBSD has no MAP_NORESERVE: it never reserves swap for a mapping up front, so there is nothing to opt out of */
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0
@@ -96,6 +106,7 @@ int plat_text_input(char* out, size_t cap, const char* initial) {
 void pm_init(PMutex* m) { pthread_mutex_init(&m->l, NULL); }
 void pm_lock(PMutex* m) { pthread_mutex_lock(&m->l); }
 void pm_unlock(PMutex* m) { pthread_mutex_unlock(&m->l); }
+int pm_trylock(PMutex* m) { return !pthread_mutex_trylock(&m->l); }
 void pc_init(PCond* c) {
     pthread_condattr_t a;
     pthread_condattr_init(&a);
@@ -267,7 +278,32 @@ void plat_vm_decommit(u8* p, u64 size) {
     madvise(p, size, MADV_DONTNEED);
     mprotect(p, size, PROT_NONE);
 }
+#ifdef __ANDROID__
+#include <SDL3/SDL_system.h>
+/* Android's shared storage (/sdcard, where the app keeps games/) maps nothing executable: a module there runs from a
+   copy in the app's cache */
+void* plat_dl_open(const char* path) {
+    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    const char *cache = SDL_GetAndroidCachePath(), *name = strrchr(path, '/');
+    char copy[1200];
+    FILE *in, *out;
+    char buffer[1 << 16];
+    size_t n;
+    int ok;
+    if (h || !cache) return h;
+    snprintf(copy, sizeof copy, "%s/%s", cache, name ? name + 1 : path);
+    in = fopen(path, "rb");
+    out = in ? fopen(copy, "wb") : NULL;
+    ok = in && out;
+    while (ok && (n = fread(buffer, 1, sizeof buffer, in)) > 0) ok = fwrite(buffer, 1, n, out) == n;
+    ok = ok && !ferror(in);
+    if (in) fclose(in);
+    if (out && fclose(out)) ok = 0;
+    return ok ? dlopen(copy, RTLD_NOW | RTLD_LOCAL) : NULL;
+}
+#else
 void* plat_dl_open(const char* path) { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+#endif
 void* plat_dl_sym(void* h, const char* n) { return dlsym(h, n); }
 const char* plat_dl_error(void) {
     const char* e = dlerror();

@@ -189,6 +189,43 @@ static const IniOpt INI_PERF[] = {
     {"jit_threads", "0",
      "Threads compiling for cpu_fallback=jit: 0 = every CPU the game may use but two (at most 8). They yield to the game.\n;   Applies when the game starts"},
     {NULL, NULL, NULL}};
+#ifdef __ANDROID__
+#define INI_CONTROLS_ON "1"
+#else
+#define INI_CONTROLS_ON "0"
+#endif
+/* the on-screen controls' (runtime/platform/vpad.c); a control's place has no default here: the file keeps it once it
+   was moved, and its help goes with the first one */
+static const IniOpt INI_INPUT[] = {
+    {"touch", "1", "The game's touch screen: 1 = fingers, 2 = fingers and the mouse's left button, 0 = off"},
+    {"controls", INI_CONTROLS_ON,
+     "The on-screen controls: 1 = shown, 0 = hidden. The game's menu (Back, Home or F2) sets them"},
+    {"controls_scale", "50", "Their size: 0 to 100, for 50% to 150%"},
+    {"controls_opacity", "100", "Their opacity, in percent"},
+    {"controls_snap", "0", "1 = a control dragged in edit mode lands on a grid"},
+    {"controls_rel_center", "1", "1 = a stick's middle is where its finger lands"},
+    {"controls_dpad_slide", "1", "1 = a finger sliding on the D-pad changes its direction"},
+    {"controls_haptics", "1", "1 = a short buzz on each press and release (Android)"},
+    {"controls_l", NULL,
+     "A control's place once moved: its middle across the screen from 0 to 1 (x, then y),\n"
+     ";   its size in percent, 1 = shown"},
+    {"controls_r", NULL, NULL},
+    {"controls_zl", NULL, NULL},
+    {"controls_zr", NULL, NULL},
+    {"controls_minus", NULL, NULL},
+    {"controls_plus", NULL, NULL},
+    {"controls_capture", NULL, NULL},
+    {"controls_home", NULL, NULL},
+    {"controls_l3", NULL, NULL},
+    {"controls_r3", NULL, NULL},
+    {"controls_dpad", NULL, NULL},
+    {"controls_stick_l", NULL, NULL},
+    {"controls_stick_r", NULL, NULL},
+    {"controls_a", NULL, NULL},
+    {"controls_b", NULL, NULL},
+    {"controls_x", NULL, NULL},
+    {"controls_y", NULL, NULL},
+    {NULL, NULL, NULL}};
 static const IniOpt INI_NETWORK[] = {
     {"network", "0",
      "1 = host networking; known Nintendo service domains are blocked by the resolver, not by an IP firewall.\n;   0 = report offline and restrict outbound destinations to loopback. This is not a network sandbox"},
@@ -198,8 +235,13 @@ static const IniOpt INI_DBG[] = {
     {"diag", "0", "1 = save the data of each new compute shader to captures/compute, for debugging"},
     {"profile", "0", "1 = write profile.txt every 10 seconds (CPU profiler, Windows only)"},
     {NULL, NULL, NULL}};
-static const IniSec INI_SECS[] = {{"Display", INI_DISPLAY}, {"Graphics", INI_GRAPHICS}, {"Performance", INI_PERF},
-                                  {"Network", INI_NETWORK}, {"Debug", INI_DBG},         {NULL, NULL}};
+static const IniSec INI_SECS[] = {{"Display", INI_DISPLAY},
+                                  {"Graphics", INI_GRAPHICS},
+                                  {"Performance", INI_PERF},
+                                  {"Input", INI_INPUT},
+                                  {"Network", INI_NETWORK},
+                                  {"Debug", INI_DBG},
+                                  {NULL, NULL}};
 static void ini_load(const char* path) {
     FILE* f = fopen(path, "r");
     if (!f) return;
@@ -229,7 +271,7 @@ static void ini_load(const char* path) {
     /* a known key missing from the file (deleted while the game runs) goes back to its default */
     for (int s = 0; INI_SECS[s].title; s++)
         for (const IniOpt* o = INI_SECS[s].o; o->key; o++)
-            if (!ini_get(o->key, NULL) && !ini_overridden(o->key)) ini_apply(o->key, o->def);
+            if (o->def && !ini_get(o->key, NULL) && !ini_overridden(o->key)) ini_apply(o->key, o->def);
 }
 static char g_ini_path[1400];
 /* the file as last read or written: a change of either means someone edited it */
@@ -266,8 +308,11 @@ static void ini_write(void) {
     fprintf(f, "; =====================================================================\n");
     for (int s = 0; INI_SECS[s].title; s++) {
         fprintf(f, "\n[%s]\n", INI_SECS[s].title);
-        for (const IniOpt* o = INI_SECS[s].o; o->key; o++)
-            fprintf(f, "; %s\n%s=%s\n", o->help, o->key, ini_get(o->key, o->def));
+        for (const IniOpt* o = INI_SECS[s].o; o->key; o++) {
+            const char* v = ini_get(o->key, o->def);
+            if (o->help) fprintf(f, "; %s\n", o->help);
+            if (v) fprintf(f, "%s=%s\n", o->key, v);
+        }
     }
     int other = 0;
     for (int i = 0; i < g_ini_n; i++)
@@ -287,7 +332,7 @@ static void ini_write(void) {
     file_changed(g_ini_path, 1);
 }
 /* in-game toggles (F4) get persisted. Kept until written, so a reload of a file edited meanwhile doesn't lose them */
-#define INI_MAXS 8
+#define INI_MAXS 32 /* the on-screen controls' reset sets one key per control */
 static char g_set_k[INI_MAXS][64], g_set_v[INI_MAXS][64];
 static int g_set_n;
 void ini_set(const char* k, const char* v) {

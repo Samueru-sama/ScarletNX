@@ -8,21 +8,24 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
 
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.25, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
-  NASM on x86-64, Git, pkg-config and `patch`.
+  NASM on x86-64, Perl, Git, pkg-config and `patch`.
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
 - **Windows:** Win10/11 x64 + Git. Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
-  NASM and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries. Install LLVM development files
+  NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has no LLVM libraries. Install LLVM development files
   compatible with MinGW and set `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without them.
 - **Display:** a Vulkan 1.3 driver. Headless runs use Vulkan offscreen and skip SDL video initialization.
   SDL3 remains a required build dependency.
 - **FFmpeg:** required by every NX runtime build. CMake builds the pinned source release.
   Avoid spaces in checkout/cache paths.
+- **OpenSSL:** required by every build with the NX or 3DS loaders (hashes, ciphers, the ssl service's TLS). CMake
+  builds the pinned source release with OpenSSL's Configure, which needs **Perl**.
 
 ## Linux / FreeBSD
 
 Install dependencies before configuring. The default preset uses **Ninja** and **Clang/Clang++**.
-FFmpeg also uses **GNU make** and, on x86-64, **NASM**. These tools are not downloaded by CMake.
+FFmpeg also uses **GNU make** and, on x86-64, **NASM**, and OpenSSL uses **Perl** and GNU make. These tools are not
+downloaded by CMake.
 CPM patches hactool with `patch`, which `build-essential`, `base-devel` and FreeBSD's base system include;
 Fedora lists it below.
 
@@ -63,7 +66,7 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build nasm make git pkgconf-pkg-config patch llvm-devel \
+sudo dnf install clang cmake ninja-build nasm make perl git pkgconf-pkg-config patch llvm-devel \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
@@ -88,7 +91,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm pkgconf sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm perl pkgconf sdl3
 ```
 
 ### FreeBSD
@@ -96,7 +99,7 @@ sudo pacman -Syu --needed base-devel git cmake ninja clang llvm nasm pkgconf sdl
 FreeBSD provides Clang in the base system. Install the remaining tools and the SDL3 package:
 
 ```sh
-sudo pkg install git cmake ninja gmake nasm pkgconf sdl3 llvm
+sudo pkg install git cmake ninja gmake nasm perl5 pkgconf sdl3 llvm
 ```
 
 ### Configure and build
@@ -242,14 +245,15 @@ development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/pa
 the configure stops without them on every platform, including Windows and cross-builds. There is no recompiler
 build without LLVM. Modules are built for the machine that builds them, with its instruction set
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
-instructions (`--chunk`), with a progress line per compiled unit.
+instructions (20000 on Android; `--chunk`), with a progress line per compiled unit.
 `--backend=gcc` (libgccjit) is optional, built when libgccjit is found (`libgccjit` on Arch, `libgccjit-14-dev` on
 Debian, `libgccjit-devel` on Fedora; `-DSNX_GCCJIT_ROOT=` points at another GCC's prefix). It is meant for DEC Alpha EV67 hosts, which LLVM has no backend for; everywhere else use LLVM.
 
 Extraction builds missing hactool separately. Recompilation deploys the running full runtime;
 the tools-only build creates one in `build/native-recomp`, or accepts `--runtime FILE`.
 `--repo DIR` and `--build-dir DIR` before the command override compiled-in checkout/tool paths; without that
-checkout (an installed copy), the current folder stands in for it.
+checkout (an installed copy), the user's data folder stands in for it (`~/.local/share/scarletnx`,
+`%APPDATA%\scarletnx` on Windows).
 Python ≥3.12 is optional for `tools/*.py` diagnostics.
 
 ## Install / AppImage

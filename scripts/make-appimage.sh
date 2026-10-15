@@ -25,8 +25,12 @@ export UPINFO="gh-releases-zsync|${REPOSITORY%/*}|${REPOSITORY#*/}|nightly|*$ARC
 # The runtime exits at once without a game module, so tracing it for dlopened libraries finds nothing: name them
 export STRACE_MODE=0 DEPLOY_SDL=1 DEPLOY_VULKAN=1
 
-# hactool too: --extract looks for it next to the runtime, and without it tries to build it from a checkout
-quick-sharun /usr/bin/scarletnx /usr/bin/hactool
+# The runtime stays the AppImage's program (the desktop entry's Exec), so a copy named after a game runs that game.
+# Started bare it opens the launcher beside it, which runs the drivers it names (scarletnx-mariko and the other
+# models, links to the runtime; scarletnx-3ds; scarletnx-gnuabi). hactool too: --extract looks for it next to the
+# runtime, and without it tries to build it from a checkout
+quick-sharun /usr/bin/scarletnx /usr/bin/scarletnx-gui /usr/bin/scarletnx-erista /usr/bin/scarletnx-mariko \
+    /usr/bin/scarletnx-aula /usr/bin/scarletnx-3ds /usr/bin/scarletnx-gnuabi /usr/bin/hactool
 
 # The licenses travel with the AppImage: the runtime's and those of the libraries built into it (`cmake --install` put
 # them in /usr/share/licenses/scarletnx), and those of the Arch packages quick-sharun took the bundled libraries
@@ -73,6 +77,15 @@ check() { # expected module, then the AppImage's arguments
         exit 1
     fi
 }
-check "$probe/Probe_code.so"
+# -H: started bare, it would open the launcher instead
+check "$probe/Probe_code.so" -H
 check "$probe/games/Other_code.so" --game="$probe/games/Other"
-echo "AppImage checked: it looks for its game module next to itself, or where --game says"
+# Started bare it opens the launcher, which needs everything it runs beside it (the launcher itself can't be run
+# here: without a display SDL may fall back to an offscreen one and keep it open)
+for program in scarletnx-gui scarletnx-mariko scarletnx-3ds scarletnx-gnuabi hactool; do
+    if [ ! -e "$appdir/bin/$program" ]; then
+        echo "The AppImage has no bin/$program, which the launcher runs" >&2
+        exit 1
+    fi
+done
+echo "AppImage checked: it looks for its game module next to itself or where --game says, and has the launcher"

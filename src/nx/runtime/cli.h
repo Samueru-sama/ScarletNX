@@ -4,14 +4,7 @@
 #define SNX_CLI_H
 #include <string.h>
 
-enum {
-    SNX_EXTRACT = 1,
-    SNX_RECOMP = 2,
-    SNX_HEADLESS = 4,
-    SNX_GDB = 8,
-    SNX_STOP = 16,
-    SNX_FULLSCREEN = 32
-};
+enum { SNX_EXTRACT = 1, SNX_RECOMP = 2, SNX_HEADLESS = 4, SNX_GDB = 8, SNX_STOP = 16, SNX_FULLSCREEN = 32 };
 /* Shared by the driver and standalone game runtime. Windows accepts individual
    short options, but deliberately not POSIX-style clusters. */
 static int snx_cli_flag(const char* arg, unsigned* flags) {

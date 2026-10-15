@@ -26,12 +26,16 @@ int main(int argc, char** argv) {
     SnxArmCodegenOptions codegen = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT};
     if (argc < 3 || argc > 6) return 2;
     if (argc >= 5) {
-        if (!strcmp(argv[4], "arm11")) codegen.profile = SNX_ARM_PROFILE_ARM11;
-        else if (strcmp(argv[4], "a57")) return 2;
+        if (!strcmp(argv[4], "arm11"))
+            codegen.profile = SNX_ARM_PROFILE_ARM11;
+        else if (strcmp(argv[4], "a57"))
+            return 2;
     }
     if (argc == 6) {
-        if (!strcmp(argv[5], "checked")) codegen.memory = SNX_ARM_MEMORY_CHECKED;
-        else if (strcmp(argv[5], "flat")) return 2;
+        if (!strcmp(argv[5], "checked"))
+            codegen.memory = SNX_ARM_MEMORY_CHECKED;
+        else if (strcmp(argv[5], "flat"))
+            return 2;
     }
     input = fopen(argv[1], "r");
     if (!input) return 2;
@@ -57,7 +61,7 @@ int main(int argc, char** argv) {
         }
         snprintf(name, sizeof(name), "block_%u", index++);
         LLVMValueRef fn = argc >= 5 ? snx_arm_llvm_block_ex(mod, name, words, n, pc, &consumed, &codegen)
-                                   : snx_arm_llvm_block(mod, name, words, n, pc, &consumed);
+                                    : snx_arm_llvm_block(mod, name, words, n, pc, &consumed);
         if (!fn || !consumed) return 2;
     }
     fclose(input);

@@ -49,6 +49,8 @@ typedef struct {
     VkExtent2D sc_extent;
     int sc_win_w, sc_win_h; /* the window size it was made for (sc_extent: that as the surface takes it) */
     int sc_srgb;            /* its format is sRGB: what presented frames in sRGB formats are blitted to */
+    VkFormat sc_format;     /* its images' format, which the on-screen controls draw to (gpu/vk/ui.c) */
+    int sc_turned;          /* upright on a display held another way: Android calls each present suboptimal for it */
     u32 sc_count;
     VkImage sc_images[VK_SC_MAX];
     VkSemaphore sc_done[VK_SC_MAX]; /* per swapchain image: rendering into it finished, it can be presented */
@@ -65,11 +67,13 @@ int vk_init(void);
 /* (re)creates the swapchain at the window's size, in an sRGB format when srgb is set and the surface has one. 0 while
    the window has no area (minimized) */
 int vk_swapchain_create(int srgb);
+int vk_surface_recreate(void);
 /* logs a failed call with where it happened; evaluates to 1 on success */
 #define VK_OK(call) vk_ok_((call), #call, __FILE__, __LINE__)
 int vk_ok_(VkResult r, const char* what, const char* file, int line);
 void vk_lock(void);
 void vk_unlock(void);
+int vk_trylock(void); /* vk_lock unless another thread holds it: 1 when taken */
 
 /* cmd.c */
 void vk_cmd_init(void);
@@ -413,6 +417,10 @@ extern u64 g_vk_dispatches, g_vk_cs_batches, g_vk_cs_skipped, g_vk_cs_wait_ns; /
 
 /* render.c */
 void vk_render_end(void); /* ends the dynamic rendering pass, if one is open */
+/* the on-screen controls and the game's menu over a swapchain image in TRANSFER_DST_OPTIMAL, which it stays in;
+   safe is the picture's part clear of the system's bars (gpu/vk/ui.c) */
+void vk_ui_draw(VkCommandBuffer cb, VkImage sc, const int safe[4]);
+void vk_ui_swapchain_gone(void); /* its images' views go before the swapchain does */
 void vk_render_clear(GpuChannel* ch, u32 v);
 VkViewport vk_render_viewport(const u32* r);
 VkFrontFace vk_render_front_face(const u32* r);

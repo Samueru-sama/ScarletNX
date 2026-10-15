@@ -227,8 +227,10 @@ static void data(ArmIR* a) {
     if (flags && logic) nz(a, r, carry, NULL);
     if (op >= 8 && op <= 11) return;
     if (d == 15) {
-        if (a->profile == SNX_ARM_PROFILE_ARM11) setreg(a, 15, band(a, r, c32(a, ~3u)));
-        else branch_exchange(a, r);
+        if (a->profile == SNX_ARM_PROFILE_ARM11)
+            setreg(a, 15, band(a, r, c32(a, ~3u)));
+        else
+            branch_exchange(a, r);
     } else
         setreg(a, d, r);
 }
@@ -248,8 +250,8 @@ static void bus_access(ArmIR* a, unsigned operation, LLVMValueRef addr, unsigned
     LLVMTypeRef types[] = {a->ptr, a->i32, a->i32, a->i32, a->ptr};
     LLVMTypeRef ft = LLVMFunctionType(a->i32, types, 5, 0);
     LLVMValueRef fn = get(a, offsetof(SnxArmCheckedCPU, access), a->ptr);
-    LLVMValueRef args[] = {get(a, offsetof(SnxArmCheckedCPU, context), a->ptr), c32(a, operation),
-                           addr, c32(a, bytes), buffer};
+    LLVMValueRef args[] = {get(a, offsetof(SnxArmCheckedCPU, context), a->ptr), c32(a, operation), addr, c32(a, bytes),
+                           buffer};
     LLVMValueRef result = LLVMBuildCall2(a->b, ft, fn, args, 5, "bus.status");
     require(a, cmp(a, LLVMIntEQ, result, c32(a, 0)),
             operation == SNX_ARM_ACCESS_FETCH ? SNX_ARM_PREFETCH_ABORT : SNX_ARM_DATA_ABORT, addr);
@@ -274,11 +276,14 @@ static void instruction_fetch(ArmIR* a, uint32_t encoded, unsigned bytes) {
     require(a, cmp(a, LLVMIntEQ, value, LLVMConstInt(type, encoded, 0)), SNX_ARM_CODE_CHANGED, c32(a, a->pc));
 }
 static void transfer_begin(ArmIR* a, LLVMValueRef addr, unsigned bytes, unsigned alignment, int write, int multi) {
-    if (a->memory == SNX_ARM_MEMORY_FLAT) { bounds(a, addr, bytes, alignment); return; }
+    if (a->memory == SNX_ARM_MEMORY_FLAT) {
+        bounds(a, addr, bytes, alignment);
+        return;
+    }
     if (alignment > 1)
         require(a, cmp(a, LLVMIntEQ, band(a, addr, c32(a, alignment - 1)), c32(a, 0)), SNX_ARM_ALIGNMENT, addr);
-    require(a, cmp(a, LLVMIntULE, add(a, z64(a, addr), c64(a, bytes)), c64(a, UINT64_C(1) << 32)),
-            SNX_ARM_DATA_ABORT, addr);
+    require(a, cmp(a, LLVMIntULE, add(a, z64(a, addr), c64(a, bytes)), c64(a, UINT64_C(1) << 32)), SNX_ARM_DATA_ABORT,
+            addr);
     a->transfer_base = addr;
     a->transfer_bytes = bytes;
     a->transfer_operation = (write ? SNX_ARM_ACCESS_WRITE : SNX_ARM_ACCESS_READ) | (multi ? SNX_ARM_ACCESS_MULTI : 0);
@@ -291,7 +296,8 @@ static void transfer_commit(ArmIR* a) {
 }
 static LLVMValueRef memptr(ArmIR* a, LLVMValueRef addr) {
     LLVMValueRef offset = z64(a, a->memory == SNX_ARM_MEMORY_CHECKED ? sub(a, addr, a->transfer_base) : addr);
-    return LLVMBuildGEP2(a->b, a->i8, a->memory == SNX_ARM_MEMORY_CHECKED ? a->transfer_buffer : a->mem, &offset, 1, "");
+    return LLVMBuildGEP2(a->b, a->i8, a->memory == SNX_ARM_MEMORY_CHECKED ? a->transfer_buffer : a->mem, &offset, 1,
+                         "");
 }
 /* Normal memory permits unaligned single-register transfers. Do not give LLVM
    its default ABI alignment, and do not split aligned words into byte stores. */
@@ -643,7 +649,7 @@ LLVMValueRef snx_arm_llvm_block(LLVMModuleRef module, const char* name, const ui
     return snx_arm_llvm_block_ex(module, name, words, count, pc, consumed, NULL);
 }
 LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
-                                  uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options) {
+                                   uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options) {
     ArmIR a = {0};
     LLVMTypeRef ft;
     size_t i;
@@ -651,7 +657,10 @@ LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const
     if (!options_valid(options) || !module || !name || !*name || !words || !count || count > 65536 || (pc & 3) ||
         LLVMGetNamedFunction(module, name) || LLVMGetNamedGlobal(module, name))
         return NULL;
-    if (options) { a.profile = options->profile; a.memory = options->memory; }
+    if (options) {
+        a.profile = options->profile;
+        a.memory = options->memory;
+    }
     a.ctx = LLVMGetModuleContext(module);
     a.mod = module;
     a.b = LLVMCreateBuilderInContext(a.ctx);

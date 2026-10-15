@@ -4,12 +4,14 @@
 #define SNX_CTR_LOADER_INTERNAL_H
 #include "ctr_loader.h"
 #include "common.h"
-#include "sha256.h"
+#include <openssl/evp.h>
 #include <stdio.h>
 #define CTR_METADATA_LIMIT (16u * 1024u * 1024u)
-#define CTR_CODE_LIMIT (64u * 1024u * 1024u)
-#define CTR_OUTPUT_LIMIT UINT64_C(1073741824)
-typedef struct { uint64_t offset, size; } CtrSpan;
+#define CTR_CODE_LIMIT     (64u * 1024u * 1024u)
+#define CTR_OUTPUT_LIMIT   UINT64_C(1073741824)
+typedef struct {
+    uint64_t offset, size;
+} CtrSpan;
 typedef struct {
     FILE* input;
     uint64_t size, output_bytes;
@@ -40,6 +42,7 @@ static inline bool ctr_fits(uint64_t total, uint64_t at, uint64_t size) { return
 bool ctr_fail(CtrReader* r, SnxCtrExtractResult result, const char* format, ...);
 bool ctr_read(CtrReader* r, CtrSpan span, uint64_t at, void* output, size_t size);
 bool ctr_hash(CtrReader* r, CtrSpan span, unsigned char hash[32]);
+bool ctr_sha256(CtrReader* r, const void* data, size_t size, unsigned char hash[32]);
 bool ctr_hash_matches(CtrReader* r, CtrSpan span, const unsigned char expected[32]);
 bool ctr_copy(CtrReader* r, CtrSpan span, const char* path, const unsigned char* expected);
 bool ctr_write(CtrReader* r, const char* path, const void* data, size_t size);

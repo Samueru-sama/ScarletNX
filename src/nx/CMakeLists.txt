@@ -29,12 +29,12 @@ endfunction()
 
 snx_component(core runtime/main.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c runtime/startup.c runtime/gdbstub.c
               runtime/present.c runtime/guest_jit.c)
-target_link_libraries(snx_core PRIVATE snx_driver)
+target_link_libraries(snx_core PRIVATE snx_driver snx_lz4)
 snx_component(kernel hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c hle/kernel/ipc.c)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/sm.c hle/services/am.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
-              hle/services/network/nifm.c hle/filesystem/fs.c hle/filesystem/fs_tree.c hle/services/hid.c hle/services/vi.c hle/services/nvdrv.c)
+              hle/services/network/nifm.c hle/services/network/ssl.c hle/filesystem/fs.c hle/filesystem/fs_tree.c hle/services/hid.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c)
 # the IPC interfaces of the services (docs/IPC.md): their dispatchers are generated, the handlers are in the services'
 # files. A type is defined before the files that use it
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
@@ -43,15 +43,19 @@ snx_swipc(snx_hle ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
           hle/services/audio.swipc hle/services/ldr.swipc hle/services/pl.swipc hle/services/time.swipc
           hle/services/misc.swipc hle/services/am.swipc hle/services/hid.swipc
           hle/services/vi.swipc hle/services/nvdrv.swipc hle/services/network/bsd.swipc
-          hle/services/network/dns.swipc hle/services/network/nifm.swipc hle/filesystem/fs.swipc)
+          hle/services/network/dns.swipc hle/services/network/nifm.swipc hle/services/network/ssl.swipc
+          hle/filesystem/fs.swipc)
 snx_component(video gpu/video/host1x.c gpu/video/nvdec.c gpu/video/vic.c)
 target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too
-target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec)
+target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL)
 snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/maxwell3d.c gpu/maxwell/write_pages.c gpu/renderer.c
               gpu/nvn_trace.c)
 
-set(platform runtime/platform/plat.c runtime/platform/unattended.c runtime/platform/backend/sdl3.c)
+include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
+set(platform runtime/platform/plat.c runtime/platform/unattended.c runtime/platform/backend/sdl3.c
+             runtime/platform/overlay.c runtime/platform/touch.c runtime/platform/ui.c runtime/platform/vpad.c
+             "${CMAKE_BINARY_DIR}/generated/controls_png.c")
 if(WIN32)
     list(APPEND platform runtime/platform/plat_win32.c runtime/platform/profiler_win32.c)
 else()
@@ -63,13 +67,25 @@ snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/spirv_emit.c)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
                  gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/release.c gpu/vk/compute.c
-                 gpu/vk/renderdoc.c gpu/vk/astc.c gpu/texture/etc2.c gpu/texture/depth.c gpu/vk/vma.cpp
+                 gpu/vk/renderdoc.c gpu/vk/astc.c gpu/vk/ui.c gpu/texture/etc2.c gpu/texture/depth.c gpu/vk/vma.cpp
                  "${volk_SOURCE_DIR}/volk.c")
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation)
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS -w)
 
-add_executable(scarletnx runtime/entry.c)
+if(ANDROID)
+    # the app (dist/android): its game activity loads libscarletnx.so and calls its main; the menu runs the driver as
+    # libscarletnx-run.so, an executable named for the app's libraries folder, which takes only lib*.so
+    add_library(scarletnx SHARED runtime/entry.c)
+    # FFmpeg's assembly reaches its tables PC-relative, as its own shared libraries allow with this
+    target_link_options(scarletnx PRIVATE -Wl,-Bsymbolic)
+    add_executable(scarletnx-run runtime/platform/android_run.c)
+    set_target_properties(scarletnx-run PROPERTIES OUTPUT_NAME libscarletnx-run.so RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    target_link_libraries(scarletnx-run PRIVATE ${CMAKE_DL_LIBS})
+    install(TARGETS scarletnx scarletnx-run LIBRARY DESTINATION lib/${ANDROID_ABI} RUNTIME DESTINATION lib/${ANDROID_ABI})
+else()
+    add_executable(scarletnx runtime/entry.c)
+endif()
 list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
 set_target_properties(scarletnx-nx PROPERTIES LINKER_LANGUAGE CXX)
@@ -77,7 +93,8 @@ target_link_libraries(scarletnx-nx PUBLIC snx_nx_flags ${components} snx_driver)
 target_link_libraries(scarletnx PRIVATE scarletnx-nx)
 # VMA is C++: link with the C++ driver. It goes in the build folder itself, where
 # the native driver and CI look for it
-set_target_properties(scarletnx PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set_target_properties(scarletnx PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 if(WIN32)
     # Prefer static toolchain/SDL libraries. LLVM may still use a DLL import library,
     # resolved by cmake/llvm.cmake and bundled by CI. user32 provides message boxes;
@@ -156,7 +173,12 @@ if(SNX_DEPLOY)
 endif()
 
 # All model names share the same Horizon/Maxwell implementation.
-foreach(model erista mariko aula)
+if(ANDROID)
+    set(snx_models "")
+else()
+    set(snx_models erista mariko aula)
+endif()
+foreach(model ${snx_models})
     if(WIN32)
         add_custom_command(TARGET scarletnx POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:scarletnx>"

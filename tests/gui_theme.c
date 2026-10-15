@@ -29,7 +29,7 @@ int main(void) {
     char* second;
     char* dir;
     char longer[200];
-    const GuiTheme * b;
+    const GuiTheme* b;
     GuiTheme theme;
     size_t i;
     const GuiTheme *def = gui_theme_builtin("default"), *yorha = gui_theme_builtin("yorha");
@@ -41,6 +41,7 @@ int main(void) {
     assert(def->run == GUI_RUN_CONSOLE && !def->fade_in_ms && !def->fade_out_ms && def->line_in == GUI_LINE_NONE);
     assert(loading->run == GUI_RUN_STEPS && loading->ring == GUI_RING_RIGHT && loading->texture && !loading->bar);
     assert(loading->line_in == GUI_LINE_TYPING && loading->typing_ms == 5 && loading->fade_out_ms == 500);
+    assert(yorha->scroll_ms == 120 && !def->scroll_ms); /* a long line slides in YoRHa, is cut in the default */
     assert(loading->detailed && !loading->collapse && !def->detailed && !def->collapse);
     for (b = def; b; b = b == def ? loading : NULL) {
         const GuiPrompt* p = &b->prompt;
@@ -61,6 +62,7 @@ int main(void) {
                   "loading = \"  BOOT  \"\r\nmenu =\r\n[footer]\r\nstyle = plain\r\nrule = true\r\n"
                   "[body]\r\nmarker = \"* \"\r\nfocus = color\r\n[nowhere]\r\nink = #FFFFFF\r\nstray line\r\n");
     assert(!strcmp(theme.name, "Mine") && !strcmp(theme.id, "mine"));
+    assert(theme.scroll_ms == yorha->scroll_ms);
     assert(rgb_is(theme.page, 0x0A, 0x0B, 0x0C));
     assert(same(theme.ink, yorha->ink) && same(theme.soft, yorha->soft) && same(theme.focus, yorha->focus));
     assert(theme.head == GUI_STYLE_NONE && theme.head_rule == yorha->head_rule);
@@ -181,6 +183,14 @@ int main(void) {
         assert(same(f.run_colors.warning, b->run_colors.warning));
         for (s = 0; s < GUI_SCREEN_COUNT; ++s) assert(!strcmp(f.title[s], b->title[s]));
     }
+    /* a theme.ini's own scroll_ms over its base's */
+    parse(&theme, "[theme]\nbase = default\n[transitions]\nscroll_ms = 40\n");
+    assert(theme.scroll_ms == 40);
+    /* the splash: its own page, none at all (ms 0), a chance over 100 kept at 100; YoRHa's beige in a quarter */
+    parse(&theme, "[theme]\nbase = yorha\n[splash]\npage = #102030\nms = 0\nchance = 300\n");
+    assert(rgb_is(theme.splash_page, 0x10, 0x20, 0x30) && !theme.splash_ms && theme.splash_chance == 100);
+    assert(rgb_is(yorha->splash_page, 0xDA, 0xD6, 0xBE) && yorha->splash_chance == 25 && yorha->splash_ms);
+    assert(rgb_is(def->splash_page, 0, 0, 0) && def->splash_chance == 100 && def->splash_ms);
     puts("GUI themes: built-ins, theme.ini over its base, themes/ folders passed");
     return 0;
 }

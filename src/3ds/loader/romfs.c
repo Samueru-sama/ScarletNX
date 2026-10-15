@@ -25,17 +25,23 @@ static bool utf8_name(const unsigned char* p, size_t bytes, char name[1024]) {
             if (lo < 0xdc00 || lo > 0xdfff) return false;
             cp = 0x10000 + ((cp - 0xd800) << 10) + lo - 0xdc00;
             i += 2;
-        } else if (cp >= 0xdc00 && cp <= 0xdfff) return false;
+        } else if (cp >= 0xdc00 && cp <= 0xdfff)
+            return false;
         if (!cp) return false;
-        if (cp < 0x80) name[used++] = (char)cp;
+        if (cp < 0x80)
+            name[used++] = (char)cp;
         else if (cp < 0x800) {
-            name[used++] = (char)(0xc0 | (cp >> 6)); name[used++] = (char)(0x80 | (cp & 63));
+            name[used++] = (char)(0xc0 | (cp >> 6));
+            name[used++] = (char)(0x80 | (cp & 63));
         } else if (cp < 0x10000) {
-            name[used++] = (char)(0xe0 | (cp >> 12)); name[used++] = (char)(0x80 | ((cp >> 6) & 63));
+            name[used++] = (char)(0xe0 | (cp >> 12));
+            name[used++] = (char)(0x80 | ((cp >> 6) & 63));
             name[used++] = (char)(0x80 | (cp & 63));
         } else {
-            name[used++] = (char)(0xf0 | (cp >> 18)); name[used++] = (char)(0x80 | ((cp >> 12) & 63));
-            name[used++] = (char)(0x80 | ((cp >> 6) & 63)); name[used++] = (char)(0x80 | (cp & 63));
+            name[used++] = (char)(0xf0 | (cp >> 18));
+            name[used++] = (char)(0x80 | ((cp >> 12) & 63));
+            name[used++] = (char)(0x80 | ((cp >> 6) & 63));
+            name[used++] = (char)(0x80 | (cp & 63));
         }
     }
     name[used] = 0;
@@ -46,7 +52,8 @@ static bool table_scan(RomFs* fs, bool directory) {
     unsigned char* marks = directory ? fs->dir_marks : fs->file_marks;
     size_t size = directory ? fs->dir_size : fs->file_size, base = directory ? 24 : 32, count = 0;
     for (size_t at = 0; at < size;) {
-        if (!ctr_fits(size, at, base)) return ctr_fail(fs->r, SNX_CTR_EXTRACT_FORMAT, "truncated RomFS metadata record");
+        if (!ctr_fits(size, at, base))
+            return ctr_fail(fs->r, SNX_CTR_EXTRACT_FORMAT, "truncated RomFS metadata record");
         size_t length = ctr_le32(bytes + at + base - 4);
         if ((length & 1) || length > 510 || !ctr_fits(size, at + base, (length + 3) & ~(size_t)3))
             return ctr_fail(fs->r, SNX_CTR_EXTRACT_FORMAT, "invalid RomFS metadata name length");
@@ -54,8 +61,10 @@ static bool table_scan(RomFs* fs, bool directory) {
         at += base + ((length + 3) & ~(size_t)3);
         count++;
     }
-    if (directory) fs->dir_count = count;
-    else fs->file_count = count;
+    if (directory)
+        fs->dir_count = count;
+    else
+        fs->file_count = count;
     return true;
 }
 static unsigned char* entry(RomFs* fs, uint32_t offset, bool directory) {
@@ -66,8 +75,10 @@ static unsigned char* entry(RomFs* fs, uint32_t offset, bool directory) {
         return NULL;
     }
     marks[offset / 4] = 2;
-    if (directory) fs->visited_dirs++;
-    else fs->visited_files++;
+    if (directory)
+        fs->visited_dirs++;
+    else
+        fs->visited_files++;
     return (directory ? fs->dirs : fs->files) + offset;
 }
 static bool walk(RomFs* fs, uint32_t offset, uint32_t parent, const char* path, unsigned depth, uint32_t* next) {
@@ -88,7 +99,8 @@ static bool walk(RomFs* fs, uint32_t offset, uint32_t parent, const char* path, 
         if (ctr_le32(f) != offset || !utf8_name(f + 32, ctr_le32(f + 28), name))
             return ctr_fail(fs->r, SNX_CTR_EXTRACT_FORMAT, "invalid RomFS file parent/name");
         uint64_t at = ctr_le64(f + 8), size = ctr_le64(f + 16);
-        if (!ctr_fits(fs->data.size, at, size)) return ctr_fail(fs->r, SNX_CTR_EXTRACT_FORMAT, "RomFS file data exceeds section");
+        if (!ctr_fits(fs->data.size, at, size))
+            return ctr_fail(fs->r, SNX_CTR_EXTRACT_FORMAT, "RomFS file data exceeds section");
         char* destination = snx_path_join(path, name);
         bool ok = ctr_copy(fs->r, (CtrSpan){fs->data.offset + at, size}, destination, NULL);
         free(destination);
@@ -121,17 +133,19 @@ static bool extract(RomFs* fs, CtrSpan rom, const char* stage) {
     uint64_t block = UINT64_C(1) << shift;
     uint64_t start = (0x60 + (uint64_t)master + block - 1) & ~(block - 1);
     uint64_t size = ctr_le64(ivfc + 0x44);
-    if (!size || !ctr_fits(rom.size, start, size)) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "RomFS level 3 exceeds section");
+    if (!size || !ctr_fits(rom.size, start, size))
+        return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "RomFS level 3 exceeds section");
     CtrSpan level3 = {rom.offset + start, size};
     if (!ctr_read(r, level3, 0, header, sizeof header)) return false;
     if (ctr_le32(header) != sizeof header) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid RomFS level 3 header");
     uint32_t data = ctr_le32(header + 0x24);
-    if (data < sizeof header || data > level3.size) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid RomFS data offset");
+    if (data < sizeof header || data > level3.size)
+        return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid RomFS data offset");
     CtrSpan tables[4];
     for (size_t i = 0; i < 4; ++i) {
         tables[i] = (CtrSpan){ctr_le32(header + 4 + i * 8), ctr_le32(header + 8 + i * 8)};
-        if ((tables[i].offset & 3) || (tables[i].size & 3) ||
-            (tables[i].size && tables[i].offset < sizeof header) || !ctr_fits(data, tables[i].offset, tables[i].size))
+        if ((tables[i].offset & 3) || (tables[i].size & 3) || (tables[i].size && tables[i].offset < sizeof header) ||
+            !ctr_fits(data, tables[i].offset, tables[i].size))
             return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid RomFS metadata table range");
         for (size_t j = 0; tables[i].size && j < i; ++j)
             if (tables[j].size && tables[i].offset < tables[j].offset + tables[j].size &&
@@ -142,13 +156,16 @@ static bool extract(RomFs* fs, CtrSpan rom, const char* stage) {
     fs->file_size = (size_t)tables[3].size;
     if (fs->dir_size < 24 || fs->dir_size > CTR_METADATA_LIMIT || fs->file_size > CTR_METADATA_LIMIT)
         return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "RomFS metadata exceeds limit or has no root");
-    fs->dirs = malloc(fs->dir_size); fs->files = malloc(fs->file_size ? fs->file_size : 1);
-    fs->dir_marks = calloc(fs->dir_size / 4, 1); fs->file_marks = calloc(fs->file_size / 4 + 1, 1);
+    fs->dirs = malloc(fs->dir_size);
+    fs->files = malloc(fs->file_size ? fs->file_size : 1);
+    fs->dir_marks = calloc(fs->dir_size / 4, 1);
+    fs->file_marks = calloc(fs->file_size / 4 + 1, 1);
     if (!fs->dirs || !fs->files || !fs->dir_marks || !fs->file_marks)
         return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "out of memory");
     if (!ctr_read(r, level3, tables[1].offset, fs->dirs, fs->dir_size) ||
-        !ctr_read(r, level3, tables[3].offset, fs->files, fs->file_size) ||
-        !table_scan(fs, true) || !table_scan(fs, false)) return false;
+        !ctr_read(r, level3, tables[3].offset, fs->files, fs->file_size) || !table_scan(fs, true) ||
+        !table_scan(fs, false))
+        return false;
     fs->data = (CtrSpan){level3.offset + data, level3.size - data};
     char* path = snx_path_join(stage, "romfs");
     uint32_t next;
@@ -161,6 +178,9 @@ static bool extract(RomFs* fs, CtrSpan rom, const char* stage) {
 bool ctr_romfs_extract(CtrReader* r, CtrSpan rom, const char* stage) {
     RomFs fs = {.r = r};
     bool ok = extract(&fs, rom, stage);
-    free(fs.dirs); free(fs.files); free(fs.dir_marks); free(fs.file_marks);
+    free(fs.dirs);
+    free(fs.files);
+    free(fs.dir_marks);
+    free(fs.file_marks);
     return ok;
 }

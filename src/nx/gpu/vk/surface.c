@@ -199,9 +199,7 @@ static u64 rt_bytes(const Surf* s) {
     return s->layer_size * (s->layers - 1) + rt_layer_bytes(s);
 }
 u64 vk_surf_guest_size(const Surf* s) { return s ? rt_bytes(s) : 0; }
-int vk_surf_can_writeback(const Surf* s) {
-    return s && s->f.raw && !s->f.depth && moves_scaled(s);
-}
+int vk_surf_can_writeback(const Surf* s) { return s && s->f.raw && !s->f.depth && moves_scaled(s); }
 
 void vk_rt_reload(u64 gva) {
     Surf* s = vk_rt_find(gva);

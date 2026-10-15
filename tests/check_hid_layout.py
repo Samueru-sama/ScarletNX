@@ -86,6 +86,19 @@ def main():
     offsets('HidNpadCommonState', sampling_number=0, buttons=8, analog_stick_l=16, analog_stick_r=24, attributes=32)
     offsets('HidSixAxisSensorState', acceleration=16, direction=16 + 3 * 12, attributes=16 + 6 * 12)
     offsets('HidTouchScreenState', count=8, touches=16)
+    # TouchState: u64 delta_time, u32 attribute, u32 finger, a Point<u32>, two u32 diameters, s32 rotation_angle.
+    offsets(
+        'HidTouchState',
+        attribute=8,
+        finger=12,
+        position_x=16,
+        position_y=20,
+        diameter_x=24,
+        diameter_y=28,
+        rotation_angle=32,
+    )
+    if (36 + 7) & ~7 != sizes['TouchState']:
+        raise SystemExit("TouchState field arithmetic disagrees with Eden's size assertion")
     for name in ('TouchScreen', 'Keyboard', 'Mouse'):
         offsets(f'Hid{name}SharedMemoryFormat', lifo=0)
 

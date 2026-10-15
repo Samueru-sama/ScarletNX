@@ -9,6 +9,10 @@
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE /* memfd_create */
 #endif
+/* Android's C library has memfd_create from Android 11 (API 30): before it, the temporary file */
+#if defined(__linux__) && (!defined(__ANDROID__) || __ANDROID_API__ >= 30)
+#define SNX_MEMFD 1
+#endif
 #include "snx_recompiler.h"
 #include "codegen.h"
 #include "cpu/arm/exec.h"
@@ -36,15 +40,20 @@
 #endif
 #endif
 
-/* the runtime library, compiled when the recompiler is built (rtlib.c, snx-rtlib-gen embed) */
+/* the runtime library as an object for the libgccjit backend, compiled when the recompiler is built (rtlib.c,
+   snx-rtlib-gen embed); the LLVM backend compiles its bitcode instead (snx_ir_rtlib_object) */
 extern const unsigned char snx_rtlib_object[];
 extern const unsigned long snx_rtlib_object_size;
 
 /* instructions per code unit (an LLVM module, a libgccjit context): whole functions until a unit reaches it, as the
-   game workflow splits them */
+   game workflow splits them (SNX_CHUNK_INSTRUCTIONS) */
+#ifdef __ANDROID__
+#define CHUNK_INSTRUCTIONS 20000
+#else
 #define CHUNK_INSTRUCTIONS 90000
+#endif
 /* the dispatch table holds a pointer per instruction slot of the code range: a range this wide is not a program */
-#define MAX_CODE_SPAN      ((uint64_t)1 << 30)
+#define MAX_CODE_SPAN ((uint64_t)1 << 30)
 
 /* ---- the descriptor the generated module exports, read back by load_descriptor ----
    Written by the backends field by field at these offsets, into a byte array of this size, so neither backend has to
@@ -329,7 +338,7 @@ static void* open_image(const char* path) { return dlopen(path, RTLD_NOW | RTLD_
    loaded through the same "/proc/self/fd/N" would be one */
 static int load_image(struct snx_recompiler* r, struct snx_recompiled* m, const unsigned char* data, size_t size) {
     char *dir = NULL, *path = NULL;
-#if defined(__linux__)
+#ifdef SNX_MEMFD
     {
         int fd = memfd_create("scarletnx-recompiled", MFD_CLOEXEC);
         if (fd >= 0) {
@@ -661,13 +670,45 @@ static int llvm_descriptor(SnxIr* ir, const SnxCodegen* codegen, char* error, si
     return 0;
 }
 
+/* The runtime library compiled for this CPU (snx_ir_rtlib_object), once per optimization level and process: it takes
+   seconds, and nothing else a recompiler sets changes it. Kept until the process ends */
+#ifdef _WIN32
+static SRWLOCK rtlib_lock = SRWLOCK_INIT;
+#else
+static pthread_mutex_t rtlib_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+static unsigned char* rtlib_objects[6];
+static size_t rtlib_sizes[6];
+
+static int rtlib_object(char opt, const unsigned char** data, size_t* size, char* error, size_t error_size) {
+    static const char levels[] = "0123sz";
+    const char* level = opt ? strchr(levels, opt) : NULL;
+    size_t i = level ? (size_t)(level - levels) : 2;
+    int rc = 0;
+#ifdef _WIN32
+    AcquireSRWLockExclusive(&rtlib_lock);
+#else
+    pthread_mutex_lock(&rtlib_lock);
+#endif
+    if (!rtlib_objects[i]) rc = snx_ir_rtlib_object(levels[i], &rtlib_objects[i], &rtlib_sizes[i], error, error_size);
+    *data = rtlib_objects[i];
+    *size = rtlib_sizes[i];
+#ifdef _WIN32
+    ReleaseSRWLockExclusive(&rtlib_lock);
+#else
+    pthread_mutex_unlock(&rtlib_lock);
+#endif
+    return rc;
+}
+
 static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, SnxCodegen* codegen) {
     Queue q;
     SnxIr* ir = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
     unsigned char* descriptor_object = NULL;
-    size_t descriptor_size = 0, *units = NULL, count = 0, i, n = 0;
+    const unsigned char* rtlib = NULL;
+    size_t descriptor_size = 0, rtlib_size = 0, *units = NULL, count = 0, i, n = 0;
     const char* exports[1];
     char error[1024];
     int rc = -1;
@@ -710,14 +751,18 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         fail(r, "LLVM backend: %s", error[0] ? error : "cannot save the descriptor's IR");
         goto done;
     }
+    if (rtlib_object(r->opt, &rtlib, &rtlib_size, error, sizeof(error))) {
+        fail(r, "LLVM backend: %s", error);
+        goto done;
+    }
     /* link: runtime library, descriptor, units */
     inputs = (SnxLinkInput*)calloc(count + 2, sizeof(*inputs));
     if (!inputs) {
         fail(r, "out of memory");
         goto done;
     }
-    inputs[n].data = snx_rtlib_object;
-    inputs[n].size = snx_rtlib_object_size;
+    inputs[n].data = rtlib;
+    inputs[n].size = rtlib_size;
     inputs[n++].name = "rtlib";
     inputs[n].data = descriptor_object;
     inputs[n].size = descriptor_size;

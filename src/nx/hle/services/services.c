@@ -13,6 +13,7 @@
 #include "hle/services/network/bsd.swipc.h"
 #include "hle/services/network/dns.swipc.h"
 #include "hle/services/network/nifm.swipc.h"
+#include "hle/services/network/ssl.swipc.h"
 #include "hle/services/set.swipc.h"
 #include "hle/services/sm.swipc.h"
 #include "hle/services/time.swipc.h"

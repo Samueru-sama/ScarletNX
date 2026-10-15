@@ -6,19 +6,17 @@
 #include <string.h>
 
 int main(void) {
-    static const uint32_t forbidden[] = {
-        0xe3013234, 0xe3453678, 0xe0634291, 0xe713f211, 0xe733f211,
-        0xe6ff3f32, 0xe7e73051, 0xf57ff05f, 0xf57ff04f, 0xf57ff06f,
-        0xe1910e9f, 0xe1810e92, 0xe1910c9f, 0xe181fc92, 0xe320f005,
-        0xf4d1f000, 0xf591f000, 0xf2010802, 0xeef00a00, 0xeea00a00
-    };
+    static const uint32_t forbidden[] = {0xe3013234, 0xe3453678, 0xe0634291, 0xe713f211, 0xe733f211,
+                                         0xe6ff3f32, 0xe7e73051, 0xf57ff05f, 0xf57ff04f, 0xf57ff06f,
+                                         0xe1910e9f, 0xe1810e92, 0xe1910c9f, 0xe181fc92, 0xe320f005,
+                                         0xf4d1f000, 0xf591f000, 0xf2010802, 0xeef00a00, 0xeea00a00};
     for (size_t i = 0; i < sizeof forbidden / sizeof *forbidden; ++i) {
         assert(snx_a32_decode(forbidden[i]) != SNX_A32_UNDEFINED);
         assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM11, forbidden[i]) == SNX_A32_UNDEFINED);
     }
-    static const uint32_t valid[] = {0xe1a00000, 0xe6bf0f31, 0xe6af0071, 0xe16f0f11,
-        0xe1910f9f, 0xe1810f92, 0xf57ff01f, 0xe320f004, 0xf5d0f000,
-        0xee1d0f70, 0xee070fba, 0xee070f9a, 0xee070f95, 0xee300a01};
+    static const uint32_t valid[] = {0xe1a00000, 0xe6bf0f31, 0xe6af0071, 0xe16f0f11, 0xe1910f9f,
+                                     0xe1810f92, 0xf57ff01f, 0xe320f004, 0xf5d0f000, 0xee1d0f70,
+                                     0xee070fba, 0xee070f9a, 0xee070f95, 0xee300a01};
     for (size_t i = 0; i < sizeof valid / sizeof *valid; ++i)
         assert(snx_a32_decode_profile(SNX_ARM_PROFILE_ARM11, valid[i]) != SNX_A32_UNDEFINED);
     assert(snx_a32_decode(0xee070fba) == SNX_A32_UNDEFINED);

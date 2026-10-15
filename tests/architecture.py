@@ -9,8 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-BOUNDARIES = {'common': {'common'}, 'nx': {'nx', 'common'}, 'gnuabi': {'gnuabi', 'common'},
-              '3ds': {'3ds', 'common'}}
+BOUNDARIES = {'common': {'common'}, 'nx': {'nx', 'common'}, 'gnuabi': {'gnuabi', 'common'}, '3ds': {'3ds', 'common'}}
 INCLUDE = re.compile(r'^\s*#\s*include\s*(["<])([^">]+)[">]', re.MULTILINE)
 
 
@@ -80,8 +79,10 @@ def check_graph(graph):
 
     errors = []
     for owner, forbidden in (
-        ('scarletnx-common', ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'snx_ctr_board',
-                              'snx_ctr_memory', 'snx_ctr_loader')),
+        (
+            'scarletnx-common',
+            ('scarletnx-nx', 'scarletnx-gnuabi', 'scarletnx-3ds', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader'),
+        ),
         ('scarletnx-nx', ('scarletnx-gnuabi', 'scarletnx-3ds', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader')),
         ('scarletnx-gnuabi', ('scarletnx-nx', 'scarletnx-3ds', 'snx_ctr_board', 'snx_ctr_memory', 'snx_ctr_loader')),
         ('scarletnx-3ds', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module')),
@@ -109,12 +110,53 @@ def check_graph(graph):
 
 # A project header with one of these names, on an include path, hides the system one
 SYSTEM_HEADERS = {
-    'assert.h', 'complex.h', 'ctype.h', 'errno.h', 'fenv.h', 'float.h', 'inttypes.h', 'iso646.h', 'limits.h',
-    'locale.h', 'math.h', 'setjmp.h', 'signal.h', 'stdalign.h', 'stdarg.h', 'stdatomic.h', 'stdbool.h', 'stddef.h',
-    'stdint.h', 'stdio.h', 'stdlib.h', 'stdnoreturn.h', 'string.h', 'tgmath.h', 'threads.h', 'time.h', 'uchar.h',
-    'wchar.h', 'wctype.h', 'dirent.h', 'dlfcn.h', 'fcntl.h', 'poll.h', 'pthread.h', 'sched.h', 'semaphore.h',
-    'termios.h', 'unistd.h', 'conio.h', 'direct.h', 'excpt.h', 'intrin.h', 'io.h', 'malloc.h', 'memory.h',
-    'process.h', 'windows.h',
+    'assert.h',
+    'complex.h',
+    'ctype.h',
+    'errno.h',
+    'fenv.h',
+    'float.h',
+    'inttypes.h',
+    'iso646.h',
+    'limits.h',
+    'locale.h',
+    'math.h',
+    'setjmp.h',
+    'signal.h',
+    'stdalign.h',
+    'stdarg.h',
+    'stdatomic.h',
+    'stdbool.h',
+    'stddef.h',
+    'stdint.h',
+    'stdio.h',
+    'stdlib.h',
+    'stdnoreturn.h',
+    'string.h',
+    'tgmath.h',
+    'threads.h',
+    'time.h',
+    'uchar.h',
+    'wchar.h',
+    'wctype.h',
+    'dirent.h',
+    'dlfcn.h',
+    'fcntl.h',
+    'poll.h',
+    'pthread.h',
+    'sched.h',
+    'semaphore.h',
+    'termios.h',
+    'unistd.h',
+    'conio.h',
+    'direct.h',
+    'excpt.h',
+    'intrin.h',
+    'io.h',
+    'malloc.h',
+    'memory.h',
+    'process.h',
+    'windows.h',
 }
 
 
@@ -142,8 +184,10 @@ def check_include_shadows(repo, build):
                         if header.is_file() and header.name.lower() in SYSTEM_HEADERS and header not in seen:
                             seen.add(header)
                             path = header.relative_to(repo).as_posix()  # the same text on Windows
-                            errors.append(f'{path} is on {entry["name"]}\'s include path, where it hides the system '
-                                          f'<{header.name.lower()}>')
+                            errors.append(
+                                f"{path} is on {entry['name']}'s include path, where it hides the system "
+                                f'<{header.name.lower()}>'
+                            )
     return errors
 
 

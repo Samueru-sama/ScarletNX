@@ -200,8 +200,23 @@ static int fd_add(Bsd* b, SnxSocket* s, int flags, int exempt) {
     WARN_LIMIT(4, "bsd: no free descriptor\n");
     return -SNX_EMFILE;
 }
+/* The session a process registered (RegisterClient), whose table holds the descriptors it hands ssl. Not referenced:
+   bsd_destroy clears it under the lock, so a lookup that holds the lock sees the session whole */
+static PMutex g_client_lk = PMUTEX_INIT;
+static SvcObj* g_client;
+static u64 g_client_pid;
+SnxSocket* bsd_client_socket(u64 pid, i32 fd) {
+    SnxSocket* s = NULL;
+    pm_lock(&g_client_lk);
+    if (g_client && g_client_pid == pid) s = fd_get(g_client->data, fd, NULL);
+    pm_unlock(&g_client_lk);
+    return s;
+}
 static void bsd_destroy(SvcObj* o) {
     Bsd* b = o->data;
+    pm_lock(&g_client_lk);
+    if (g_client == o) g_client = NULL;
+    pm_unlock(&g_client_lk);
     for (int i = 0; i < BSD_MAX_FD; i++) snx_socket_unref(b->fd[i].s);
 }
 
@@ -230,6 +245,24 @@ static int bsd_unknown(SvcObj* self, IpcCtx* c) {
     if (!s) return reply(-SNX_EBADF, ret, bsd_errno)
 
 /* ============================================================ commands */
+/* The SDK registers once per process, on the session its socket calls go through (a later Initialize after Finalize
+   registers a new one, which takes over). The transfer memory is the console's buffer space: the host's stack needs
+   none */
+static int bsd_register(SvcObj* self, u64 pid) {
+    pm_lock(&g_client_lk);
+    g_client = self;
+    g_client_pid = pid;
+    pm_unlock(&g_client_lk);
+    return 0;
+}
+static int nn_socket_sf_IClient_RegisterClient(SvcObj* self, const nn_socket_sf_LibraryConfigData* config, u64 pid,
+                                               u64 transfer_memory_size, u32 transfer_memory, u32* bsd_errno) {
+    return bsd_register(self, pid);
+}
+static int nn_socket_sf_IClient_RegisterClientShared(SvcObj* self, const nn_socket_sf_LibraryConfigData* config,
+                                                     u64 pid, u64 work_buffer_size, u32* bsd_errno) {
+    return bsd_register(self, pid);
+}
 static int bsd_socket(Bsd* b, i32 gdom_in, i32 gtype_in, i32 proto_in, int exempt, i32* ret, u32* bsd_errno) {
     u32 gdom = (u32)gdom_in, gtype = (u32)gtype_in, proto = (u32)proto_in;
     int dom = domain_in(gdom), type = (int)(gtype & ~(u32)(BSD_SOCK_NONBLOCK | BSD_SOCK_CLOEXEC));

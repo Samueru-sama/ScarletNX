@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The network services, on the stack in src/common/network: bsd (bsd.c), sfdnsres and nsd (dns.c), nifm (nifm.c) */
+/* The network services, on the stack in src/common/network: bsd (bsd.c), sfdnsres and nsd (dns.c), nifm (nifm.c),
+   ssl (ssl.c) */
 #ifndef SNX_HLE_NETWORK_H
 #define SNX_HLE_NETWORK_H
 #include "hle/services/services_int.h"
@@ -16,6 +17,9 @@ int network_online(void);
 int network_interface(SnxNetInterface* out); /* 0 and the host's interface when online */
 /* whether a guest may reach addr: with the network option off, loopback only */
 int network_reachable(const SnxSockAddr* addr);
+/* the socket behind descriptor fd in the table of the bsd session process pid registered (RegisterClient), with a
+   reference for the caller, or NULL: what ssl duplicates, as the console's does with bsd:s's DuplicateSocket */
+SnxSocket* bsd_client_socket(u64 pid, i32 fd);
 
 /* dns.c */
 SvcObj* new_sfdnsres(void);
@@ -23,5 +27,8 @@ SvcObj* new_nsd(void);
 
 /* nifm.c */
 SvcObj* new_nifm(void);
+
+/* ssl.c */
+SvcObj* new_ssl(void);
 
 #endif

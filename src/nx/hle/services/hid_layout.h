@@ -61,6 +61,13 @@
 #define HS_HidTouchState                                            0x28
 #define HO_HidTouchScreenState_count                                0x8
 #define HO_HidTouchScreenState_touches                              0x10
+#define HO_HidTouchState_attribute                                  0x8
+#define HO_HidTouchState_finger                                     0xc
+#define HO_HidTouchState_position_x                                 0x10
+#define HO_HidTouchState_position_y                                 0x14
+#define HO_HidTouchState_diameter_x                                 0x18
+#define HO_HidTouchState_diameter_y                                 0x1c
+#define HO_HidTouchState_rotation_angle                             0x20
 #define HO_HidTouchScreenSharedMemoryFormat_lifo                    0x0
 #define HS_HidTouchScreenLifo                                       0x2c38
 #define HO_HidTouchScreenLifo_storage                               0x20

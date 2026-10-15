@@ -38,7 +38,7 @@ typedef struct {
     SnxArmMemoryMode memory;
 } SnxArmCodegenOptions;
 LLVMValueRef snx_arm_llvm_block_ex(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
-                                  uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
+                                   uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
 LLVMValueRef snx_thumb_llvm_block_ex(LLVMModuleRef module, const char* name, const uint16_t* halfwords, size_t count,
-                                    uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
+                                     uint32_t pc, size_t* consumed, const SnxArmCodegenOptions* options);
 #endif

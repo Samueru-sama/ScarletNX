@@ -24,6 +24,14 @@ esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
+# An installed copy keeps work/, games/ and prod.keys in the user's data folder, wherever it was started from: point
+# that folder into this run's
+export XDG_DATA_HOME="$work/data"
+data=$XDG_DATA_HOME/scarletnx
+if [ -n "$exe" ]; then
+    APPDATA=$(cygpath -w "$work/data")
+    export APPDATA
+fi
 
 failed=0
 pass() { echo "ok: $1"; }
@@ -65,22 +73,22 @@ for mode in "" -x -r; do
     fi
 done
 
-# No --outdir: an installed copy has no checkout, so its games go in the current folder
+# No --outdir: an installed copy has no checkout, so its games go in the data folder
 run "$runtime" -r smoke.nro Smoke --jobs 2
-if [ "$status" -eq 0 ] && [ -f "games/Smoke$exe" ] && [ -f games/Smoke.abi ]; then
-    pass "scarletnx -r smoke.nro made games/Smoke$exe"
+if [ "$status" -eq 0 ] && [ -f "$data/games/Smoke$exe" ] && [ -f "$data/games/Smoke.abi" ]; then
+    pass "scarletnx -r smoke.nro made $data/games/Smoke$exe"
 else
-    fail "scarletnx -r smoke.nro exited $status, without games/Smoke$exe and its .abi" "$out"
+    fail "scarletnx -r smoke.nro exited $status, without $data/games/Smoke$exe and its .abi" "$out"
 fi
 
 # The runtime left next to the game must start on its own (on Windows, with the DLLs it needs), find the game's code
 # by its name and take its ABI. The banner comes after that and before the GPU, which CI runners lack
-if [ -f "games/Smoke$exe" ]; then
-    run env -C games "./Smoke$exe" -H
+if [ -f "$data/games/Smoke$exe" ]; then
+    run env -C "$data/games" "./Smoke$exe" -H
     if grep -q '^ScarletNX - Smoke' <<<"$out"; then
-        pass "games/Smoke$exe started the game (exit $status: $(tail -n 1 <<<"$out"))"
+        pass "$data/games/Smoke$exe started the game (exit $status: $(tail -n 1 <<<"$out"))"
     else
-        fail "games/Smoke$exe exited $status before the game's banner" "$out"
+        fail "$data/games/Smoke$exe exited $status before the game's banner" "$out"
     fi
 fi
 

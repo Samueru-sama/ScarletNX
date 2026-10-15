@@ -30,11 +30,10 @@ static const GuiTheme builtins[] = {
                        .warning = {255, 170, 0}},
         .typing_ms = 25,
         .blink_ms = 500,
-        .prompt = {.align = GUI_ALIGN_CENTER,
-                   .open = "[ ",
-                   .close = " ]",
-                   .blink = 1,
-                   .lines = {[GUI_PROMPT_KEYS] = 1}},
+        .splash_ms = 1000,
+        .splash_chance = 100,
+        .prompt =
+            {.align = GUI_ALIGN_CENTER, .open = "[ ", .close = " ]", .blink = 1, .lines = {[GUI_PROMPT_KEYS] = 1}},
     },
     {
         .id = "yorha",
@@ -71,11 +70,12 @@ static const GuiTheme builtins[] = {
         .line_in_ms = 220,
         .typing_ms = 5,
         .blink_ms = 500,
-        .prompt = {.align = GUI_ALIGN_CENTER,
-                   .open = "[ ",
-                   .close = " ]",
-                   .blink = 1,
-                   .lines = {[GUI_PROMPT_KEYS] = 1}},
+        .scroll_ms = 120,
+        .splash_page = {0xDA, 0xD6, 0xBE},
+        .splash_ms = 1000,
+        .splash_chance = 25,
+        .prompt =
+            {.align = GUI_ALIGN_CENTER, .open = "[ ", .close = " ]", .blink = 1, .lines = {[GUI_PROMPT_KEYS] = 1}},
     },
 };
 /* a theme's id fits a slot of the theme list: an array of negative size otherwise */
@@ -83,6 +83,9 @@ typedef char snx_gui_id_slot[sizeof(((GuiThemes*)0)->ids[0]) == sizeof(((GuiThem
 static const char* const screens[GUI_SCREEN_COUNT] = {"menu", "games", "keys", "compiling", "loading"};
 static const char* const rings[] = {"none", "left", "right", "right-near-text"};
 
+const GuiTheme* gui_splash_theme(const GuiTheme* theme, int roll) {
+    return roll < (int)theme->splash_chance ? theme : gui_theme_builtin("default");
+}
 const GuiTheme* gui_theme_builtin(const char* id) {
     size_t i;
     for (i = 0; id && i < sizeof(builtins) / sizeof(*builtins); ++i)
@@ -246,8 +249,17 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
             integer(&t->typing_ms, value);
         else if (!strcmp(key, "blink_ms"))
             integer(&t->blink_ms, value);
+        else if (!strcmp(key, "scroll_ms"))
+            integer(&t->scroll_ms, value);
         else if (!strcmp(key, "typing") && (!strcmp(value, "async") || !strcmp(value, "sync")))
             t->typing_sync = value[0] == 's';
+    } else if (!strcmp(section, "splash")) {
+        if (!strcmp(key, "page"))
+            colour(&t->splash_page, value);
+        else if (!strcmp(key, "ms"))
+            integer(&t->splash_ms, value);
+        else if (!strcmp(key, "chance") && integer(&t->splash_chance, value) && t->splash_chance > 100)
+            t->splash_chance = 100;
     } else if (!strcmp(section, "header") && !strcmp(key, "ring_side")) {
         /* ErET's words; none is ours */
         static const char* const sides[] = {"right", "left", "right-near-text"};
@@ -282,7 +294,7 @@ static const GuiTheme* layout_base(const char* layout) {
     return NULL;
 }
 static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme** bases, int base_only,
-                  int run_colors) {
+                 int run_colors) {
     char section[32];
     char* line;
     char* next;
@@ -292,10 +304,10 @@ static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme*
     copy_of[size] = 0;
     memset(section, 0, sizeof section);
     for (line = copy_of; line; line = next) {
-        char *key;
-        char * value;
-        char * equals;
-        char * s;
+        char* key;
+        char* value;
+        char* equals;
+        char* s;
         next = strchr(line, '\n');
         if (next) *next++ = 0;
         s = trim(line);
@@ -312,7 +324,8 @@ static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme*
         equals = strchr(s, '=');
         if (!equals) continue;
         *equals = 0;
-        key = trim(s); value = unquote(trim(equals + 1));
+        key = trim(s);
+        value = unquote(trim(equals + 1));
         if (base_only) {
             if (!strcmp(section, "theme") && !strcmp(key, "base") && gui_theme_builtin(value))
                 bases[0] = gui_theme_builtin(value);
@@ -387,7 +400,7 @@ void gui_themes_scan(GuiThemes* themes, const char* const* dirs, size_t count) {
             char* folder = snx_path_join(dirs[d], names[i]);
             char* file = folder ? snx_path_join(folder, "theme.ini") : NULL;
             int usable = names[i][0] != '.' && !listed(themes, names[i]) && strlen(names[i]) < sizeof *themes->ids &&
-                          file && snx_is_file(file);
+                         file && snx_is_file(file);
             free(file);
             free(folder);
             if (usable) snprintf(themes->ids[themes->count++], sizeof *themes->ids, "%s", names[i]);

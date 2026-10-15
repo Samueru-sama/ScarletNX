@@ -4,7 +4,7 @@
    No game assets, RSA keys or precompiled NRO host libraries are required. */
 #include "hle/services/services_int.h"
 #include "gpu/gpu.h"
-#include "utilities/sha256.h"
+#include <openssl/evp.h>
 #include <stdarg.h>
 #include <sys/mman.h>
 
@@ -166,21 +166,8 @@ static void fixture(void) {
     gw32(NRR + 0x338, 0x1000);
     gw32(NRR + 0x340, 0x350);
     gw32(NRR + 0x344, 1);
-    snx_sha256(GP(SRC), 0x3000, GP(NRR + 0x350));
+    CHECK(EVP_Digest(GP(SRC), 0x3000, GP(NRR + 0x350), NULL, EVP_sha256(), NULL));
     memcpy(GP(SRC2), GP(SRC), 0x3000);
-}
-static void hash_test(void) {
-    static const char* expected[] = {"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                                     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-                                     "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"};
-    const char* input[] = {"", "abc", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"};
-    for (unsigned i = 0; i < 3; i++) {
-        u8 h[32];
-        char hex[65];
-        snx_sha256(input[i], strlen(input[i]), h);
-        for (int j = 0; j < 32; j++) snprintf(hex + 2 * j, 3, "%02x", h[j]);
-        CHECK(!strcmp(hex, expected[i]));
-    }
 }
 static void initialize(SvcObj* o) {
     request(4, 0, 0, 0, 0);
@@ -300,7 +287,7 @@ static void limits(void) {
         u64 a = HEAP_BASE + 0x100000 + i * 0x4000;
         memcpy(GP(a), GP(SRC), 0x3000);
         GP(a + 0x40)[0] = (u8)i;
-        snx_sha256(GP(a), 0x3000, GP(NRR + 0x350 + i * 32));
+        CHECK(EVP_Digest(GP(a), 0x3000, GP(NRR + 0x350 + i * 32), NULL, EVP_sha256(), NULL));
     }
     request(2, NRR, 0x1000, 0, 0);
     CHECK(!call(o));
@@ -316,7 +303,6 @@ static void limits(void) {
     CHECK(!mem_heap_set(0x10000, 0x200000));
 }
 int main(void) {
-    hash_test();
     mem_init();
     CHECK(!mem_heap_set(0x10000, 0x10000));
     fixture();
@@ -454,7 +440,7 @@ int main(void) {
     block_is(base, MS_FREE, PERM_NONE, 0);
     fixture();
     gw32(SRC + 0x38, 0);
-    snx_sha256(GP(SRC), 0x3000, GP(NRR + 0x350));
+    CHECK(EVP_Digest(GP(SRC), 0x3000, GP(NRR + 0x350), NULL, EVP_sha256(), NULL));
     o = new_ldr();
     initialize(o);
     request(2, NRR, 0x1000, 0, 0);

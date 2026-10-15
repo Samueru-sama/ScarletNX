@@ -4,13 +4,17 @@
 #define SNX_CTR_MEMORY_H
 #include "board/board.h"
 #define SNX_CTR_PAGE_SIZE 4096u
-#define SNX_CTR_READ 1u
-#define SNX_CTR_WRITE 2u
-#define SNX_CTR_EXEC 4u
+#define SNX_CTR_READ      1u
+#define SNX_CTR_WRITE     2u
+#define SNX_CTR_EXEC      4u
 
 typedef enum {
-    SNX_CTR_MEM_OK, SNX_CTR_MEM_INVALID, SNX_CTR_MEM_NOMEM,
-    SNX_CTR_MEM_UNMAPPED, SNX_CTR_MEM_PERMISSION, SNX_CTR_MEM_OVERLAP,
+    SNX_CTR_MEM_OK,
+    SNX_CTR_MEM_INVALID,
+    SNX_CTR_MEM_NOMEM,
+    SNX_CTR_MEM_UNMAPPED,
+    SNX_CTR_MEM_PERMISSION,
+    SNX_CTR_MEM_OVERLAP,
     SNX_CTR_MEM_DEVICE
 } SnxCtrMemResult;
 typedef struct SnxCtrMemory SnxCtrMemory;

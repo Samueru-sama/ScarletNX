@@ -152,7 +152,7 @@ def check():
             problems.append(f'wimsy.ico holds the sizes {[size for size, _ in images]}, not {list(ICO_SIZES)}')
         for size, data in images:
             if size in SIZES and png_path(size).is_file() and data != png_path(size).read_bytes():
-                problems.append(f'wimsy.ico\'s {size} image is not hicolor/{size}x{size}/apps/wimsy.png')
+                problems.append(f"wimsy.ico's {size} image is not hicolor/{size}x{size}/apps/wimsy.png")
     if not problems:
         at_hand = renderer()
         if at_hand and at_hand == drawn_by:

@@ -4,13 +4,12 @@
 
 /* Layout follows Azahar src/core/memory.h; see docs/3DS.md for provenance.
    No Azahar interpreter/JIT or privileged ARM9 firmware is embedded here. */
-#define COMMON_REGIONS \
-    {"IO",      0x10100000u, 0x00400000u, SNX_CTR_MMIO}, \
-    {"MPCore",  0x17e00000u, 0x00002000u, SNX_CTR_MMIO}, \
-    {"VRAM",    0x18000000u, 0x00600000u, SNX_CTR_VRAM}
-#define WORK_REGIONS \
-    {"DSP RAM", 0x1ff00000u, 0x00080000u, SNX_CTR_DSP_RAM}, \
-    {"AXI WRAM",0x1ff80000u, 0x00080000u, SNX_CTR_RAM}
+#define COMMON_REGIONS                                                                                                 \
+    {"IO", 0x10100000u, 0x00400000u, SNX_CTR_MMIO}, {"MPCore", 0x17e00000u, 0x00002000u, SNX_CTR_MMIO}, {              \
+        "VRAM", 0x18000000u, 0x00600000u, SNX_CTR_VRAM                                                                 \
+    }
+#define WORK_REGIONS                                                                                                   \
+    {"DSP RAM", 0x1ff00000u, 0x00080000u, SNX_CTR_DSP_RAM}, { "AXI WRAM", 0x1ff80000u, 0x00080000u, SNX_CTR_RAM }
 static const SnxCtrRegion old_regions[] = {
     COMMON_REGIONS,
     WORK_REGIONS,
@@ -38,8 +37,7 @@ const SnxCtrRegion* snx_ctr_physical_region(const SnxCtrProfile* profile, uint32
     if (!profile || !size) return NULL;
     for (size_t i = 0; i < profile->region_count; ++i) {
         const SnxCtrRegion* region = &profile->regions[i];
-        if (address >= region->base && (uint64_t)address + size <= (uint64_t)region->base + region->size)
-            return region;
+        if (address >= region->base && (uint64_t)address + size <= (uint64_t)region->base + region->size) return region;
     }
     return NULL;
 }

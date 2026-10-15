@@ -14,7 +14,7 @@ target_compile_definitions(snx_driver PRIVATE
     SNX_NX_ABI_INCLUDE="${CMAKE_SOURCE_DIR}/src/nx/loader"
     SNX_COMMON_INCLUDE="${CMAKE_SOURCE_DIR}/src/common")
 target_compile_options(snx_driver PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(snx_driver PUBLIC scarletnx-common snx_nx_module Threads::Threads)
+target_link_libraries(snx_driver PUBLIC scarletnx-common snx_nx_module snx_lz4 OpenSSL::Crypto Threads::Threads)
 if(WIN32)
     target_link_libraries(snx_driver PUBLIC advapi32)
 endif()

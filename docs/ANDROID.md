@@ -1,0 +1,61 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright 2026 the ScarletNX contributors -->
+# Android
+
+The app is the [GUI](GUI.md) and the runtime, each in SDL's activity (`dist/android`): the menu extracts and
+recompiles on the phone, then the game opens.
+
+- **The menu** (`MainActivity`) is `scarletnx-gui` as `libmain.so`, in the YoRHa theme. Taps and the back button
+  drive it (see [GUI](GUI.md)). Its working folder is `/sdcard/ScarletNX`, which the user sees: `games/`, `work/`
+  and the logs go there. `HOME` stays the app's own files (`/data/data/org.scarletnx/files`), for
+  `.switch/prod.keys`.
+- **Loading** (*Select a file*, *Setup device keys*) opens the system's file picker. A file is read by its path,
+  so the app asks for access to the files when it starts (all files from Android 11): the picker's path, or for a
+  document without one (Downloads' own list, Recent) the file its descriptor opens. A cloud's document has none
+  and is refused, its URI in the message. *Select file from games/* lists the games there and the dumps put
+  there, to be prepared.
+- **The driver** runs as a child of the menu, as on a desktop, from `libscarletnx-run.so`: an executable named so
+  that Android installs it with the libraries, the only files of its own an app may execute. It loads the runtime,
+  `libscarletnx.so`, beside it. It cannot open a window there, so it ends at `Ready <game>` and the menu opens it.
+- **A game** runs in `GameActivity`, in a process of its own: the runtime's `main` with `--game=games/<game>`.
+  Its process ends with the game, and the menu comes back on its first screen. The shared storage maps nothing
+  executable, so the runtime loads a copy of `<game>_code.so` from the app's cache. The back button opens the
+  game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
+  settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
+  its window is made anew when it comes back.
+- **Share log**, in the menu, saves the message on the screen, the last run's output (`last-run.log`, which the
+  menu keeps on every system) and the newest game log to `/sdcard/ScarletNX/scarletnx.log`, then opens the
+  share sheet with that file.
+
+The app runs on arm64 phones and on x86_64 Android (the emulator, some tablets and Chromebooks): the recompiler makes
+the code of the device it runs on. It installs from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without
+it (Android 5.0 and 6.0 have no Vulkan at all) the menu still prepares games, and a game says what it lacks. The
+fingers reach a game's touch screen (the menu's *Touch* item turns them off, or adds a mouse). The buttons and
+sticks are on the screen, over the game ([USAGE](USAGE.md#on-screen-controls)), and a gamepad works beside them;
+the menu's *On-screen controls* item hides them.
+
+## Building
+
+LLVM's libraries for each ABI, once (about 10 minutes each on 12 cores):
+
+```sh
+scripts/android-llvm.sh arm64-v8a ~/android-llvm/arm64-v8a
+scripts/android-llvm.sh x86_64 ~/android-llvm/x86_64
+```
+
+Then the APK, from the native build of each ABI given (one APK holds them all; Android installs the device's):
+
+```sh
+scripts/android-apk.sh ~/android-build ~/android-llvm arm64-v8a x86_64
+adb install -r ~/android-build/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk
+```
+
+They need the NDK (`ANDROID_NDK_ROOT`, else the newest under `$ANDROID_HOME/ndk`), the SDK (`ANDROID_HOME`),
+Gradle 9 (`GRADLE`, default `gradle`) and a JDK 17 or newer (`JAVA_HOME`). Extra CMake arguments go after `--`.
+`ANDROID_API` (default 21) is the oldest Android both scripts build for, the app's `minSdk`.
+`android-apk.sh` installs each build into `<out>/stage` (the libraries, SDL's Java classes and the icon), which
+`dist/android/build.gradle` packs with the two activities; Gradle's own output goes there too. The CI does the same
+on every push (`.github/workflows/build.yml`): an APK per ABI, and one holding both.
+
+The Android emulator runs it on an x86_64 image; `-gpu swiftshader_indirect` gives it SwiftShader's Vulkan 1.3. Its
+ARM translation runs the arm64 build too (an APK with arm64 alone, or an arm64 program from `adb shell`), slowly.

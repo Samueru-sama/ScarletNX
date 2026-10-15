@@ -38,6 +38,7 @@ typedef struct {
 void pm_init(PMutex* m); /* or PMUTEX_INIT, for a static lock that must work before any init runs */
 void pm_lock(PMutex* m);
 void pm_unlock(PMutex* m);
+int pm_trylock(PMutex* m); /* 1 when it took the lock, 0 when another thread holds it */
 void pc_init(PCond* c);
 void pc_signal(PCond* c);
 void pc_broadcast(PCond* c);

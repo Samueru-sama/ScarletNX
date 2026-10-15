@@ -51,14 +51,15 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
 - `src/common/cpu/aarch64/a64.c` + `a64_templates.inc`: shared instruction semantics for AOT and interpreter.
 - `src/common/cpu/recompiler/codegen.c`: function/CFG discovery over platform-neutral image views.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
-  table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000.
+  table, chunk labels, progress lines); chunks batch whole functions up to `SNX_CHUNK_INSTRUCTIONS`, 90000 (20000 on Android).
 - `toolchain.c`: the runtime build for deployment.
 - Code generators (`--backend`, `src/common/cpu/recompiler/backend.h`): `llvm` (the default and the recommended
   one; `src/common/cpu/recompiler/llvm/`, LLVM a required dependency) builds LLVM IR with the LLVM-C API: `ir_a64.c`, `ir_simd.c` and `ir_fp.c` emit each
   `a64_templates.inc` case as the IR of the C it holds, `ir_codegen.c` the functions of `codegen.c`, and
   `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
   `link_coff.c`) with `rtlib.c`, the helpers and interpreter compiled when the recompiler is built, into a module
-  with no imports, for the host it runs on. `tests/llvm_differential.c` runs both backends' step functions on random
+  with no imports, for the host it runs on: x86-64 (ELF or COFF) or AArch64 (ELF, with a veneer for a branch past
+  128 MiB). `tests/llvm_differential.c` runs both backends' step functions on random
   states (every pattern, failing if any instruction falls back to the interpreter's `snx_step`), `tests/llvm_module.c`
   a whole program built by both, `tests/llvm_bench.c` times both on assembly kernels. `gcc` (libgccjit,
   optional, built when libgccjit is found: `cmake/gccjit.cmake`, `SNX_GCCJIT_ROOT`) is for DEC Alpha EV67 hosts,

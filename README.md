@@ -76,7 +76,8 @@ adapter now have static AOT witnesses, without changing shared A57 defaults.
 extracts, then stops explicitly before execution.
 See the [staged 3DS port](docs/3DS.md) for limits, build instructions and remaining work.
 
-For more detailed information please see: [Build + run](./docs/BUILD.md).
+For more detailed information please see: [Build + run](./docs/BUILD.md). For the Android app (arm64 and x86_64),
+see [Android](./docs/ANDROID.md).
 
 # Special thanks
 

@@ -24,6 +24,11 @@ void vk_lock(void) {
 void vk_unlock(void) {
     if (!--t_vkdepth) pm_unlock(&g_vklock);
 }
+int vk_trylock(void) {
+    if (!t_vkdepth && !pm_trylock(&g_vklock)) return 0;
+    ++t_vkdepth;
+    return 1;
+}
 
 static const char* vk_result_str(VkResult r) {
     switch (r) {
@@ -345,6 +350,33 @@ static int create_device(void) {
     return 1;
 }
 
+/* the swapchain destroyed. Its images' semaphores: a present may still wait on one after the device is idle (the
+   presentation engine isn't covered by vkDeviceWaitIdle), so they go a swapchain later, when those presents are long
+   done */
+static void swapchain_retire(void) {
+    static VkSemaphore retired[VK_SC_MAX];
+    static u32 nretired;
+    for (u32 i = 0; i < nretired; i++) vkDestroySemaphore(g_vk.dev, retired[i], NULL);
+    nretired = 0;
+    for (u32 i = 0; i < g_vk.sc_count; i++) retired[nretired++] = g_vk.sc_done[i];
+    vk_ui_swapchain_gone();
+    vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    g_vk.sc_count = 0;
+}
+
+/* the window's surface made anew, its swapchain to follow: Android destroys a window's surface while the app is in
+   the background, and the Vulkan surface on it is lost for good */
+int vk_surface_recreate(void) {
+    vkDeviceWaitIdle(g_vk.dev);
+    if (g_vk.swapchain) swapchain_retire();
+    vkDestroySurfaceKHR(g_vk.instance, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    if (backend_vk_surface(g_vk.instance, &g_vk.surface)) return 1;
+    WARN_LIMIT(4, "vulkan: the window's surface could not be made again\n");
+    return 0;
+}
+
 int vk_swapchain_create(int srgb) {
     if (g_opt_headless) return 0; /* no WSI calls, even on a resize/recreate path */
     VkSurfaceCapabilitiesKHR caps;
@@ -407,6 +439,11 @@ int vk_swapchain_create(int srgb) {
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & alpha)) /* the lowest one it has */
         alpha = (VkCompositeAlphaFlagBitsKHR)(caps.supportedCompositeAlpha & -caps.supportedCompositeAlpha);
+    /* frames are drawn upright: a display held other than its own way (a phone held wide) has its compositor turn
+       them, where its current transform would say they come turned already */
+    VkSurfaceTransformFlagBitsKHR transform = caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                                                  ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                                                  : caps.currentTransform;
     VkSwapchainKHR old = g_vk.swapchain;
     if (old) vkDeviceWaitIdle(g_vk.dev);
     VkSwapchainCreateInfoKHR ci = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -418,7 +455,7 @@ int vk_swapchain_create(int srgb) {
                                    .imageArrayLayers = 1,
                                    .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                    .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
-                                   .preTransform = caps.currentTransform,
+                                   .preTransform = transform,
                                    .compositeAlpha = alpha,
                                    .presentMode = mode,
                                    .clipped = VK_TRUE,
@@ -432,21 +469,14 @@ int vk_swapchain_create(int srgb) {
         vkDestroySwapchainKHR(g_vk.dev, sc, NULL);
         return 0;
     }
-    /* the old images' semaphores: a present may still wait on one after the device is idle (the presentation engine
-       isn't covered by vkDeviceWaitIdle), so they go a swapchain later, when those presents are long done */
-    static VkSemaphore retired[VK_SC_MAX];
-    static u32 nretired;
-    for (u32 i = 0; i < nretired; i++) vkDestroySemaphore(g_vk.dev, retired[i], NULL);
-    nretired = 0;
-    if (old) {
-        for (u32 i = 0; i < g_vk.sc_count; i++) retired[nretired++] = g_vk.sc_done[i];
-        vkDestroySwapchainKHR(g_vk.dev, old, NULL);
-    }
+    if (old) swapchain_retire();
     g_vk.swapchain = sc;
     g_vk.sc_extent = ext;
     g_vk.sc_win_w = ww;
     g_vk.sc_win_h = wh;
     g_vk.sc_srgb = fmt.format == VK_FORMAT_B8G8R8A8_SRGB || fmt.format == VK_FORMAT_R8G8B8A8_SRGB;
+    g_vk.sc_format = fmt.format;
+    g_vk.sc_turned = transform != caps.currentTransform;
     g_vk.sc_count = nimg;
     vkGetSwapchainImagesKHR(g_vk.dev, sc, &g_vk.sc_count, g_vk.sc_images);
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};

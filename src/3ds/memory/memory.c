@@ -5,7 +5,10 @@
 #include <string.h>
 
 /* Two-level ARM-sized page metadata, not an emulated hardware MMU table. */
-typedef struct { uint32_t pa; unsigned char permissions, present; } Page;
+typedef struct {
+    uint32_t pa;
+    unsigned char permissions, present;
+} Page;
 struct SnxCtrMemory {
     const SnxCtrProfile* profile;
     unsigned char* backing[8];
@@ -13,7 +16,10 @@ struct SnxCtrMemory {
     SnxCtrMmioRead read;
     SnxCtrMmioWrite write;
 };
-struct SnxCtrAddressSpace { SnxCtrMemory* memory; Page* tables[1024]; };
+struct SnxCtrAddressSpace {
+    SnxCtrMemory* memory;
+    Page* tables[1024];
+};
 
 SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model) {
     const SnxCtrProfile* p = snx_ctr_profile(model);
@@ -24,7 +30,10 @@ SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model) {
     for (size_t i = 0; i < p->region_count; ++i) {
         if (p->regions[i].kind == SNX_CTR_MMIO) continue;
         m->backing[i] = calloc(1, p->regions[i].size);
-        if (!m->backing[i]) { snx_ctr_memory_free(m); return NULL; }
+        if (!m->backing[i]) {
+            snx_ctr_memory_free(m);
+            return NULL;
+        }
     }
     return m;
 }
@@ -35,7 +44,9 @@ void snx_ctr_memory_free(SnxCtrMemory* m) {
 }
 void snx_ctr_memory_mmio(SnxCtrMemory* m, void* context, SnxCtrMmioRead read, SnxCtrMmioWrite write) {
     if (!m) return;
-    m->mmio_context = context; m->read = read; m->write = write;
+    m->mmio_context = context;
+    m->read = read;
+    m->write = write;
 }
 SnxCtrAddressSpace* snx_ctr_space_new(SnxCtrMemory* m) {
     if (!m) return NULL;
@@ -85,15 +96,19 @@ static SnxCtrMemResult change(SnxCtrAddressSpace* s, uint32_t va, uint32_t size,
     }
     for (uint64_t at = va; at < (uint64_t)va + size; at += 4096) {
         Page* p = page(s, (uint32_t)at);
-        if (unmap) *p = (Page){0};
-        else p->permissions = (unsigned char)permissions;
+        if (unmap)
+            *p = (Page){0};
+        else
+            p->permissions = (unsigned char)permissions;
     }
     return SNX_CTR_MEM_OK;
 }
 SnxCtrMemResult snx_ctr_protect(SnxCtrAddressSpace* s, uint32_t va, uint32_t size, unsigned permissions) {
     return change(s, va, size, permissions, false);
 }
-SnxCtrMemResult snx_ctr_unmap(SnxCtrAddressSpace* s, uint32_t va, uint32_t size) { return change(s, va, size, 0, true); }
+SnxCtrMemResult snx_ctr_unmap(SnxCtrAddressSpace* s, uint32_t va, uint32_t size) {
+    return change(s, va, size, 0, true);
+}
 SnxCtrMemResult snx_ctr_query(const SnxCtrAddressSpace* s, uint32_t va, uint32_t* pa, unsigned* permissions) {
     if (!s) return SNX_CTR_MEM_INVALID;
     Page* p = page(s, va);
@@ -113,7 +128,8 @@ static unsigned char* physical(SnxCtrMemory* m, uint32_t pa, bool* mmio) {
     *mmio = true; /* only reachable for an internally corrupted PTE */
     return NULL;
 }
-static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer, size_t size, unsigned access, bool ram_only) {
+static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer, size_t size, unsigned access,
+                                bool ram_only) {
     if (!s || !buffer || !size || size > UINT64_C(0x100000000) - va) return SNX_CTR_MEM_INVALID;
     size_t offset = 0;
     while (offset < size) {
@@ -126,11 +142,12 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
         size_t n = 4096 - (at & 4095);
         if (mmio) {
             if (ram_only || offset || size > n || (size != 1 && size != 2 && size != 4 && size != 8) ||
-                (va & (size - 1)) || access == SNX_CTR_EXEC) return SNX_CTR_MEM_DEVICE;
+                (va & (size - 1)) || access == SNX_CTR_EXEC)
+                return SNX_CTR_MEM_DEVICE;
             SnxCtrMemory* m = s->memory;
             uint32_t pa = p->pa + (at & 4095);
             bool ok = access == SNX_CTR_WRITE ? m->write && m->write(m->mmio_context, pa, buffer, size)
-                                            : m->read && m->read(m->mmio_context, pa, buffer, size);
+                                              : m->read && m->read(m->mmio_context, pa, buffer, size);
             return ok ? SNX_CTR_MEM_OK : SNX_CTR_MEM_DEVICE;
         }
         if (n > size - offset) n = size - offset;
@@ -143,8 +160,10 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
         unsigned char* host = physical(s->memory, p->pa + (at & 4095), &mmio);
         size_t n = 4096 - (at & 4095);
         if (n > size - offset) n = size - offset;
-        if (access == SNX_CTR_WRITE) memcpy(host, (const unsigned char*)buffer + offset, n);
-        else memcpy((unsigned char*)buffer + offset, host, n);
+        if (access == SNX_CTR_WRITE)
+            memcpy(host, (const unsigned char*)buffer + offset, n);
+        else
+            memcpy((unsigned char*)buffer + offset, host, n);
         offset += n;
     }
     return SNX_CTR_MEM_OK;

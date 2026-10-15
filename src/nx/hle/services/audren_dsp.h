@@ -109,10 +109,10 @@ typedef struct {
     float*
         buf;   /* (buffers + SNX_AUDREN_CHANNELS) * frame: the mix buffers, then one per voice channel being rendered */
     i16* temp; /* SNX_AUDREN_TEMP + SNX_AUDREN_HISTORY decoded samples */
-    i32* order; /* the mixes from the farthest from the final mix to it */
-    u64 frames; /* frames rendered */
-    u32 rev;    /* the revision of the last update */
-    u32 warned; /* features met once and not rendered, as SNX_AUDREN_WARN_* bits */
+    i32* order;                        /* the mixes from the farthest from the final mix to it */
+    u64 frames;                        /* frames rendered */
+    u32 rev;                           /* the revision of the last update */
+    u32 warned;                        /* features met once and not rendered, as SNX_AUDREN_WARN_* bits */
     float lut4[3][512], lut8[3][1024]; /* the resampler's tables, made with the state */
 } ARState;
 

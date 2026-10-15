@@ -42,6 +42,7 @@ unsigned char* snx_read_file(const char* path, size_t* size);
 int snx_write_file(const char* path, const void* data, size_t size);
 int snx_write_changed(const char* path, const void* data, size_t size);
 char* snx_temp_dir(const char* parent);
+char* snx_user_data_dir(void);
 SnxU64 snx_free_space(const char* path);
 SnxU64 snx_file_size(const char* path);
 int snx_make_executable(const char* path);

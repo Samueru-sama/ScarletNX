@@ -24,8 +24,7 @@ static void name_of(const char* path, char* out, size_t size) {
 int gui_recent_add(GuiRecent* recent, const char* path, int driver, int prepared) {
     GuiRecentGame game;
     int i;
-    if ((driver != GUI_SWITCH && driver != GUI_LINUX && driver != GUI_3DS) ||
-        !fits(path, sizeof game.path)) return 1;
+    if ((driver != GUI_SWITCH && driver != GUI_LINUX && driver != GUI_3DS) || !fits(path, sizeof game.path)) return 1;
     memset(&game, 0, sizeof game);
     strcpy(game.path, path);
     name_of(path, game.name, sizeof game.name);
@@ -104,8 +103,9 @@ int gui_recent_save(const GuiRecent* recent, const char* file) {
     at = 0;
     for (i = 0; i < recent->count; ++i)
         at += (size_t)sprintf(text + at, "%s\t%s\t%s\t%s\n",
-                              recent->game[i].driver == GUI_SWITCH ? "switch" :
-                              recent->game[i].driver == GUI_3DS ? "3ds" : "linux",
+                              recent->game[i].driver == GUI_SWITCH ? "switch"
+                              : recent->game[i].driver == GUI_3DS  ? "3ds"
+                                                                   : "linux",
                               recent->game[i].prepared ? "games" : "file", recent->game[i].path, recent->game[i].name);
     /* staged beside it, then put in place: a crash mid-write leaves the old list */
     directory = snx_dirname(file);

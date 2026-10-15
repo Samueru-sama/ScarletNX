@@ -160,6 +160,14 @@ static int run_echo(Request* q, uint8_t** data, size_t* size) {
     IcmpCloseHandle(h);
     return ok;
 }
+#elif defined(__ANDROID__) && __ANDROID_API__ < 28
+/* posix_spawn comes with Android 9, and the app runs on older ones: there echoes have the ping socket alone */
+static int run_echo(Request* q, uint8_t** data, size_t* size) {
+    (void)q;
+    (void)data;
+    (void)size;
+    return 0;
+}
 #else
 static int run_echo(Request* q, uint8_t** data, size_t* size) {
     char addr[64], wait[32];

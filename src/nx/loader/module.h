@@ -17,8 +17,13 @@ typedef struct {
     unsigned abi;
 } SnxCodegenOptions;
 
-/* Instructions per code unit (a C file, an LLVM module): whole functions are batched until a unit reaches it */
+/* Instructions per code unit (a C file, an LLVM module): whole functions are batched until a unit reaches it. Fewer
+   on Android, whose allocator gives each allocation size a region per process: a CPU's worth of large units fills it */
+#ifdef __ANDROID__
+#define SNX_CHUNK_INSTRUCTIONS 20000
+#else
 #define SNX_CHUNK_INSTRUCTIONS 90000
+#endif
 
 /* the dispatch entries: every leader of every function by address, the first function's when two share one */
 typedef struct {

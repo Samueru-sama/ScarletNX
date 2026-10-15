@@ -11,7 +11,8 @@ int main(void) {
     GuiGames games = {0};
     char error[256];
     char* dir = snx_temp_dir(NULL);
-    const char* files[] = {"Alpha.CIA", "game with spaces.cia", ".hidden.cia", "wrong.cia.so", "launch.exe", "note.txt"};
+    const char* files[] = {"Alpha.CIA",    "game with spaces.cia", ".hidden.cia",
+                           "wrong.cia.so", "launch.exe",           "note.txt"};
     assert(dir);
     for (size_t i = 0; i < sizeof files / sizeof *files; ++i) {
         char* path = snx_path_join(dir, files[i]);
@@ -21,8 +22,7 @@ int main(void) {
     char* subdir = snx_path_join(dir, "directory.cia");
     assert(!snx_mkdirs(subdir));
     assert(gui_cias_scan(&games, dir, error, sizeof error) && !error[0]);
-    assert(games.count == 2 && !strcmp(games.names[0], "Alpha.CIA") &&
-           !strcmp(games.names[1], "game with spaces.cia"));
+    assert(games.count == 2 && !strcmp(games.names[0], "Alpha.CIA") && !strcmp(games.names[1], "game with spaces.cia"));
     /* Repeated scans replace the old list; neither recursion nor execute bits. */
     assert(gui_cias_scan(&games, subdir, error, sizeof error) && !games.count);
     assert(!snx_remove_tree(dir));

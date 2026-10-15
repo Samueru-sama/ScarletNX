@@ -6,8 +6,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 typedef enum {
-    SNX_CTR_EXTRACT_OK, SNX_CTR_EXTRACT_IO, SNX_CTR_EXTRACT_FORMAT,
-    SNX_CTR_EXTRACT_UNSUPPORTED, SNX_CTR_EXTRACT_LIMIT, SNX_CTR_EXTRACT_EXISTS
+    SNX_CTR_EXTRACT_OK,
+    SNX_CTR_EXTRACT_IO,
+    SNX_CTR_EXTRACT_FORMAT,
+    SNX_CTR_EXTRACT_UNSUPPORTED,
+    SNX_CTR_EXTRACT_LIMIT,
+    SNX_CTR_EXTRACT_EXISTS
 } SnxCtrExtractResult;
 /* Decrypted application CIAs only. RSA/ECDSA trust and encrypted layers are not
    implemented. Hash checks are integrity checks, NOT signature authentication.
@@ -15,8 +19,8 @@ typedef enum {
    destination selects work/3ds/<title-id>-<full-input-sha256>. Existing outputs
    are refused, never treated as a cache hit. Parent directory and input must be
    trusted and not concurrently modified. published is owned by caller on OK. */
-SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination,
-                                  char** published, char* error, size_t error_size);
+SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination, char** published, char* error,
+                                    size_t error_size);
 /* ExeFS backward LZSS/BLZ, exact bounded expansion; output_size is authoritative.
    The input and output buffers must not overlap. */
 bool snx_ctr_blz(const unsigned char* input, size_t input_size, unsigned char* output, size_t output_size);

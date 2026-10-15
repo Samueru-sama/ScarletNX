@@ -22,11 +22,20 @@ static void usage(void) {
          "  -r, --recomp           Recompile ExeFS/NRO or prepare a dump without playing\n"
          "  -H, --headless         Run without a window or swapchain");
     puts("  -f, --fullscreen      Start fullscreen (windowed when omitted)\n"
-         "  --backend=llvm|gcc     Select the recompiler backend for preparation\n"
+         "  --touch=0|1|2          The game's touch screen: off, fingers, or fingers and the mouse\n"
+         "  --controls=0|1         The on-screen controls: hidden or shown (the game's menu sets them)");
+    puts("  --backend=llvm|gcc     Select the recompiler backend for preparation\n"
          "  -x -h / -r -h          Extraction / recompilation options\n"
          "  --game=games/Game      Run a compiled game\n"
          "  --repo / --build-dir   Override this build's checkout / build directory\n"
-         "                         (without its checkout: the current directory)");
+         "                         (without its checkout: the user's data folder,\n"
+#ifdef _WIN32
+         "                         %APPDATA%\\scarletnx)");
+#elif defined(__APPLE__)
+         "                         ~/Library/Application Support/scarletnx)");
+#else
+         "                         ~/.local/share/scarletnx)");
+#endif
 #ifndef _WIN32
     puts("  -S                     Enable the native GDB stub on localhost:1234\n"
          "  -s                     Enable the stub and stop at startup\n"
@@ -72,8 +81,8 @@ static int cached_abi(const char* base) {
     free(stamp);
     return expected && abi == expected;
 }
-static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, const char* backend,
-                     int game_argc, char** game_argv) {
+static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, const char* backend, const char* touch,
+                     const char* controls, int game_argc, char** game_argv) {
     char *name = game_name(input), *dump = snx_absolute(input);
     char *work = snx_path_join(paths->repo, "work"), *games = snx_path_join(paths->repo, "games");
     char *extracted = snx_path_join(work, name), *pending = snx_format("%s.extracting", extracted);
@@ -151,10 +160,18 @@ static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, c
         rc = 0;
         goto done;
     }
+#ifdef __ANDROID__
+    /* an app's child process has no window to play in: the app runs the game this names (docs/ANDROID.md) */
+    printf("Ready %s\n", name);
+    rc = 0;
+    goto done;
+#endif
     n = 0;
     command[n++] = game;
     if (flags & SNX_HEADLESS) command[n++] = "-H";
     if (flags & SNX_FULLSCREEN) command[n++] = "-f";
+    if (touch) command[n++] = touch;
+    if (controls) command[n++] = controls;
     if (flags & SNX_STOP)
         command[n++] = "-s";
     else if (flags & SNX_GDB)
@@ -199,16 +216,13 @@ static int container_path(const char* path) {
 }
 int snx_driver(int argc, char** argv) {
     SnxPaths paths;
-    const char *repo = SNX_SOURCE_DIR, *build = SNX_BUILD_DIR, *input = NULL, *backend = NULL;
-    char *r = NULL, *b = NULL, *exe = NULL, **rest, *checkout;
+    const char *repo = SNX_SOURCE_DIR, *build = SNX_BUILD_DIR, *input = NULL, *backend = NULL, *touch = NULL;
+    const char* controls = NULL;
+    char *r = NULL, *b = NULL, *exe = NULL, **rest, *checkout, *data = NULL;
     unsigned flags = 0;
     int i, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic, backend_args = 0;
+    int repo_given = 0;
     if (argc <= 1) return -1;
-    /* An installed build (the AppImage, the Windows zip) runs without the checkout it was built from: work/ and games/
-       go in the current directory then */
-    checkout = snx_path_join(repo, "CMakeLists.txt");
-    if (!snx_is_file(checkout)) repo = ".";
-    free(checkout);
     rest = (char**)snx_alloc((size_t)(argc + 1) * sizeof(*rest));
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--")) {
@@ -222,10 +236,20 @@ int snx_driver(int argc, char** argv) {
                 result = snx_error("%s requires a directory", argv[i - 1]);
                 goto done;
             }
-            if (is_repo)
+            if (is_repo) {
                 repo = argv[i];
-            else
+                repo_given = 1;
+            } else
                 build = argv[i];
+            continue;
+        }
+        /* the game's, as they are: its settings of the same names */
+        if (!strncmp(argv[i], "--touch=", 8)) {
+            touch = argv[i];
+            continue;
+        }
+        if (!strncmp(argv[i], "--controls=", 11)) {
+            controls = argv[i];
             continue;
         }
         parsed = snx_cli_flag(argv[i], &flags);
@@ -298,6 +322,23 @@ int snx_driver(int argc, char** argv) {
     if (!automatic)
         for (i = separator; i < argc; ++i) rest[n++] = argv[i];
     rest[n] = NULL;
+    /* An installed build (the AppImage, the Windows zip) runs without the checkout it was built from: work/, games/ and
+       prod.keys are in the user's data folder then, unless --repo names a folder (the Android app does). Not the
+       current folder: the GUI, a desktop entry or Explorer start the driver wherever they happen to be, often
+       somewhere read-only (/, the AppImage's mount, Program Files) */
+    if (!repo_given) {
+        checkout = snx_path_join(repo, "CMakeLists.txt");
+        if (!snx_is_file(checkout)) {
+            data = snx_user_data_dir();
+            if (data && snx_mkdirs(data)) {
+                free(checkout);
+                result = snx_error("cannot create the data folder %s", data);
+                goto done;
+            }
+            repo = data ? data : ".";
+        }
+        free(checkout);
+    }
     snx_tool_console();
     r = snx_absolute(repo);
     b = snx_absolute(build);
@@ -310,7 +351,7 @@ int snx_driver(int argc, char** argv) {
     paths.build = b;
     paths.executable = exe;
     if (automatic)
-        result = play_dump(input, &paths, flags, backend, separator < argc ? argc - separator - 1 : 0,
+        result = play_dump(input, &paths, flags, backend, touch, controls, separator < argc ? argc - separator - 1 : 0,
                            argv + (separator < argc ? separator + 1 : argc));
     else
         result = (flags & SNX_RECOMP) ? snx_recompile(n, rest, &paths) : snx_extract(n, rest, &paths);
@@ -319,5 +360,6 @@ done:
     free(r);
     free(b);
     free(exe);
+    free(data);
     return result;
 }

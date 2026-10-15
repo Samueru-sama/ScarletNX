@@ -11,9 +11,12 @@
 static uint64_t align64(uint64_t n) { return (n + 63) & ~UINT64_C(63); }
 static size_t body_offset(uint32_t signature) {
     switch (signature) {
-        case 0x10000: case 0x10003: return 0x240;
-        case 0x10001: case 0x10004: return 0x140;
-        case 0x10002: case 0x10005: return 0x40;
+        case 0x10000:
+        case 0x10003: return 0x240;
+        case 0x10001:
+        case 0x10004: return 0x140;
+        case 0x10002:
+        case 0x10005: return 0x40;
         default: return 0;
     }
 }
@@ -37,7 +40,8 @@ bool ctr_cia_load(CtrReader* r, CtrCia* cia) {
     cia->ticket = (CtrSpan){align64(cia->cert.offset + cia->cert.size), ctr_le32(h + 12)};
     cia->tmd = (CtrSpan){align64(cia->ticket.offset + cia->ticket.size), ctr_le32(h + 16)};
     CtrSpan content = {align64(cia->tmd.offset + cia->tmd.size), ctr_le64(h + 24)};
-    if (!bounded(r, cia->cert) || !bounded(r, cia->ticket) || !bounded(r, cia->tmd) || !bounded(r, content)) return false;
+    if (!bounded(r, cia->cert) || !bounded(r, cia->ticket) || !bounded(r, cia->tmd) || !bounded(r, content))
+        return false;
     cia->meta = (CtrSpan){align64(content.offset + content.size), ctr_le32(h + 20)};
     if (cia->meta.size && (!bounded(r, cia->meta) || cia->meta.size < 0x400))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid CIA metadata size");
@@ -50,7 +54,8 @@ bool ctr_cia_load(CtrReader* r, CtrCia* cia) {
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ticket signature/body size");
     unsigned char ticket_id[8], rights[8];
     if (!ctr_read(r, cia->ticket, ticket_body + 0x9c, ticket_id, sizeof ticket_id) ||
-        !ctr_read(r, cia->ticket, ticket_body + 0x164, rights, sizeof rights)) return false;
+        !ctr_read(r, cia->ticket, ticket_body + 0x164, rights, sizeof rights))
+        return false;
     uint32_t rights_size = ctr_be32(rights + 4);
     if (rights_size < 8 || !ctr_fits(cia->ticket.size, ticket_body + 0x164, rights_size))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ticket content-index size");
@@ -65,14 +70,16 @@ bool ctr_cia_load(CtrReader* r, CtrCia* cia) {
     cia->version = ctr_be16(body + 0x9c);
     cia->chunks = ctr_be16(body + 0x9e);
     uint16_t boot = ctr_be16(body + 0xa0);
-    if (cia->title_id != ctr_be64(ticket_id)) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "ticket/TMD title ID mismatch");
+    if (cia->title_id != ctr_be64(ticket_id))
+        return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "ticket/TMD title ID mismatch");
     if ((cia->title_id >> 32) != 0x00040000)
-        return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "only application CIAs are supported; not updates/DLC/system titles");
+        return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED,
+                        "only application CIAs are supported; not updates/DLC/system titles");
     if (!cia->chunks || !ctr_fits(cia->tmd.size, cia->body + 0x9c4, cia->chunks * 0x30))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid TMD content count");
     const unsigned char* chunks = body + 0x9c4;
     unsigned char hash[32], covered[65536] = {0}, indices[8192] = {0}, present[8192] = {0};
-    snx_sha256(body + 0xc4, 64 * 0x24, hash);
+    if (!ctr_sha256(r, body + 0xc4, 64 * 0x24, hash)) return false;
     if (memcmp(hash, body + 0xa4, 32)) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "TMD content-info SHA-256 mismatch");
     for (size_t i = 0; i < 64; ++i) {
         const unsigned char* info = body + 0xc4 + i * 0x24;
@@ -84,7 +91,7 @@ bool ctr_cia_load(CtrReader* r, CtrCia* cia) {
             if (covered[j]) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "overlapping TMD content-info ranges");
             covered[j] = 1;
         }
-        snx_sha256(chunks + first * 0x30, count * 0x30, hash);
+        if (!ctr_sha256(r, chunks + first * 0x30, count * 0x30, hash)) return false;
         if (memcmp(hash, info + 4, 32)) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "TMD chunk-table SHA-256 mismatch");
     }
     uint32_t* ids = malloc(cia->chunks * sizeof *ids);
@@ -111,13 +118,19 @@ bool ctr_cia_load(CtrReader* r, CtrCia* cia) {
             ok = ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "encrypted CIA content is not supported");
             break;
         }
-        if (index == boot) { cia->boot = (CtrSpan){content.offset + at, size}; have_boot = true; }
+        if (index == boot) {
+            cia->boot = (CtrSpan){content.offset + at, size};
+            have_boot = true;
+        }
         at += size;
     }
     if (ok) {
         qsort(ids, cia->chunks, sizeof *ids, compare_ids);
         for (size_t i = 1; i < cia->chunks; ++i)
-            if (ids[i] == ids[i - 1]) { ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "duplicate TMD content ID"); break; }
+            if (ids[i] == ids[i - 1]) {
+                ok = ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "duplicate TMD content ID");
+                break;
+            }
     }
     free(ids);
     if (!ok) return false;
@@ -138,7 +151,8 @@ bool ctr_cia_contents(CtrReader* r, const CtrCia* cia, const char* stage) {
         char* name = snx_format("contents/%08" PRIx32 ".app", ctr_be32(chunk));
         path = snx_path_join(stage, name);
         ok = ctr_copy(r, span, path, chunk + 16);
-        free(name); free(path);
+        free(name);
+        free(path);
         at += span.size;
     }
     path = snx_path_join(stage, "cia-header.bin");
@@ -154,4 +168,7 @@ bool ctr_cia_contents(CtrReader* r, const CtrCia* cia, const char* stage) {
     }
     return ok;
 }
-void ctr_cia_free(CtrCia* cia) { free(cia->header); free(cia->metadata); }
+void ctr_cia_free(CtrCia* cia) {
+    free(cia->header);
+    free(cia->metadata);
+}

@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "model.h"
 #include "font.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -75,12 +76,20 @@ void gui_menu_key(GuiMenu* menu, GuiKey key) {
             menu->view = GUI_LOAD_NONE;
             if (menu->selected == GUI_FULLSCREEN)
                 menu->fullscreen = !menu->fullscreen;
+            else if (menu->selected == GUI_TOUCH)
+                menu->touch = (menu->touch + 1) % (GUI_TOUCH_OFF + 1);
+            else if (menu->selected == GUI_CONTROLS)
+                menu->controls = !menu->controls;
             else if (menu->selected == GUI_GCCJIT) {
                 if (SNX_GUI_HAS_GCCJIT) menu->gccjit = !menu->gccjit;
             } else if (menu->selected == GUI_GDBSTUB)
                 menu->gdbstub = !menu->gdbstub;
             else if (menu->selected == GUI_THEME)
                 menu->theme_next = 1;
+            else if (menu->selected == GUI_TEXT)
+                menu->text_size = (menu->text_size + 1) % (GUI_TEXT_MAX + 1);
+            else if (menu->selected == GUI_LOG)
+                menu->share_log = 1;
             else if (menu->selected == GUI_EXIT)
                 menu->quit = true;
             else if (menu->selected == GUI_KEYS)
@@ -97,23 +106,50 @@ void gui_menu_key(GuiMenu* menu, GuiKey key) {
 const char* gui_setting_description(const GuiMenu* menu) {
     switch (menu->selected) {
         case GUI_FULLSCREEN:
+#ifdef __ANDROID__
+            return "The menu and the games on the whole screen, the system's bars hidden";
+#else
             return "Enable fullscreen at startup";
+#endif
+        case GUI_TOUCH: return "The game's touch screen: fingers, the mouse too, or off";
+        case GUI_CONTROLS: return "A pad on the screen; the game's menu edits it";
         case GUI_GCCJIT:
-            return SNX_GUI_HAS_GCCJIT
-                ? "libgccjit will be used instead of llvm"
-                : "Program was not compiled with libgccjit";
-        case GUI_GDBSTUB:
-            return "Enables gdbstub on port 1234";
-        case GUI_THEME:
-            return "Built-in themes, then each themes/<name>/theme.ini";
+            return SNX_GUI_HAS_GCCJIT ? "libgccjit will be used instead of llvm"
+                                      : "Program was not compiled with libgccjit";
+        case GUI_GDBSTUB: return "Enables gdbstub on port 1234";
+        case GUI_THEME: return "Built-in themes, then each themes/<name>/theme.ini";
+        case GUI_TEXT: return "Bigger letters scroll the menu; Auto fits the screen";
+        case GUI_LOG:
+#ifdef __ANDROID__
+            return "Saves the last run's output and game log to /sdcard/ScarletNX/scarletnx.log, then shares it";
+#else
+            return "Saves the last run's output and game log to scarletnx.log in the working folder, path copied";
+#endif
         default: return "";
     }
 }
+#define GUI_SLIDE_WAIT 8 /* steps a sliding line rests at each end */
+int gui_slide(int over, uint64_t ms, uint32_t step_ms) {
+    uint64_t t;
+    if (over <= 0 || !step_ms) return 0;
+    t = ms / step_ms % (uint64_t)(2 * (over + GUI_SLIDE_WAIT));
+    if (t < GUI_SLIDE_WAIT) return 0;
+    if (t < (uint64_t)(GUI_SLIDE_WAIT + over)) return (int)(t - GUI_SLIDE_WAIT);
+    if (t < (uint64_t)(2 * GUI_SLIDE_WAIT + over)) return over;
+    return over - (int)(t - 2 * GUI_SLIDE_WAIT - over);
+}
+const char* gui_touch_option(const GuiMenu* menu) {
+    static const char* const options[] = {"--touch=1", "--touch=2", "--touch=0"}; /* by GUI_TOUCH_* */
+    return options[menu->touch];
+}
+const char* gui_controls_option(const GuiMenu* menu) { return menu->controls ? "--controls=1" : "--controls=0"; }
 size_t gui_launch_options(const GuiMenu* menu, bool prepared, const char** argv) {
     size_t n = 0;
     /* These are Switch options, never guest argv for the CPU-only Linux driver. */
     if (menu->selected != GUI_SWITCH) return 0;
     if (menu->fullscreen) argv[n++] = "-f";
+    argv[n++] = gui_touch_option(menu);
+    argv[n++] = gui_controls_option(menu);
     if (menu->gccjit && SNX_GUI_HAS_GCCJIT && !prepared) argv[n++] = "--backend=gcc";
     if (menu->gdbstub) {
         argv[n++] = "-S";
@@ -305,6 +341,51 @@ char* gui_drop_path(const char* text, bool text_drop) {
 invalid:
     free(result);
     return NULL;
+}
+/* text from at, percent-decoded; NULL when a % is not followed by two hex digits */
+static char* decoded(const char* at) {
+    size_t n = 0;
+    char* out = malloc(strlen(at) + 1);
+    if (!out) return NULL;
+    while (*at) {
+        if (*at != '%') {
+            out[n++] = *at++;
+            continue;
+        }
+        if (hex(at[1]) < 0 || hex(at[2]) < 0) {
+            free(out);
+            return NULL;
+        }
+        out[n++] = (char)(hex(at[1]) << 4 | hex(at[2]));
+        at += 3;
+    }
+    out[n] = 0;
+    return out;
+}
+char* gui_document_path(const char* uri) {
+    static const char storage[] = "content://com.android.externalstorage.documents/document/";
+    static const char downloads[] = "content://com.android.providers.downloads.documents/document/";
+    int download = !strncmp(uri, downloads, sizeof downloads - 1);
+    char *id, *colon, *path = NULL;
+    size_t n;
+    if (!download && strncmp(uri, storage, sizeof storage - 1)) /* other systems' pickers: a path or a file:// URI */
+        return !strstr(uri, "://")           ? gui_drop_path(uri, false)
+               : !strncmp(uri, "file://", 7) ? gui_drop_path(uri, true)
+                                             : NULL;
+    id = decoded(uri + (download ? sizeof downloads : sizeof storage) - 1);
+    colon = id ? strchr(id, ':') : NULL;
+    if (colon && download && !strncmp(id, "raw:/", 5)) { /* a download by path; "msf:12" is by number */
+        path = malloc(strlen(colon + 1) + 1);
+        if (path) strcpy(path, colon + 1);
+    } else if (colon && !download) {
+        /* "primary:Download/x.xci" is the device's own storage (its first user's), "1234-5678:x.xci" a card */
+        *colon = 0;
+        n = strlen(id) + strlen(colon + 1) + 32;
+        path = malloc(n);
+        if (path) snprintf(path, n, "/storage/%s/%s", strcmp(id, "primary") ? id : "emulated/0", colon + 1);
+    }
+    free(id);
+    return path;
 }
 
 static const char banner_text[] = "\nScarletNX - ";

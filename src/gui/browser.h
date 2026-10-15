@@ -13,4 +13,6 @@ bool gui_games_scan(GuiGames* games, const char* directory, char* error, size_t 
 /* Immediate CIA files only, case-insensitive extension; no execute bit needed. */
 bool gui_cias_scan(GuiGames* games, const char* directory, char* error, size_t size);
 void gui_games_free(GuiGames* games);
+/* An NRO, XCI or NSP (or a decrypted one) by its name: a dump the driver prepares, not a game ready to run */
+bool gui_is_dump(const char* name);
 #endif

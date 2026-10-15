@@ -14,8 +14,9 @@ permissions:
 
 # Linux jobs run in Arch Linux, which has the same Clang 23 and clang-format 23 as development, and its LLVM 23 for the
 # recompiler's code generator (required, cmake/llvm.cmake). Windows uses MSYS2 CLANG64 so Clang, the MinGW/UCRT runtime
-# and LLVM's development libraries come from one compatible toolchain. FFmpeg, Vulkan and SDL3 are built from the
-# pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg. Downloads are cached in
+# and LLVM's development libraries come from one compatible toolchain. FFmpeg, OpenSSL, Vulkan and SDL3 are built from
+# the pinned CPM sources, with MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's
+# Configure runs on. Downloads are cached in
 # .cache/cpm, one cache per job since each job fetches a different set. The artifacts are what `cmake --install` puts
 # in place: the binaries
 # with the licenses that go with them.
@@ -29,7 +30,7 @@ jobs:
       # llvm: llvm-config and LLVM-C for the recompiler (llvm-libs alone has no headers). libgccjit builds the
       # optional --backend=gcc too, so its tests (gccjit_differential, native_recompiler_gcc) run here
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed cmake ninja make patch nasm python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
+        run: pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang llvm libgccjit pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast
       - uses: actions/checkout@v7
       - uses: actions/cache@v5
         with:
@@ -101,7 +102,7 @@ jobs:
       # llvm for the recompiler; quick-sharun bundles the libLLVM the runtime links, with its own dependencies
       - name: Install the build tools and the debloated Mesa
         run: |
-          pacman -Syu --noconfirm --needed cmake ninja make patch nasm clang llvm sdl3 libx11 mesa vulkan-icd-loader
+          pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl clang llvm sdl3 libx11 mesa vulkan-icd-loader
           get-debloated-pkgs --add-common --prefer-nano
       - name: Build and install into /usr
         run: |
@@ -144,6 +145,7 @@ jobs:
             git
             make
             patch
+            perl
             patchutils
             mingw-w64-clang-x86_64-clang
             mingw-w64-clang-x86_64-llvm
@@ -163,6 +165,7 @@ jobs:
           test -d "$(llvm-config --libdir)"
           llvm-config --libs core native passes target analysis
           make --version
+          perl --version
           nasm --version
           spirv-val --version
           spirv-dis --version
@@ -173,6 +176,8 @@ jobs:
             -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
             -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
             -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
+            -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
+            -DSNX_OPENSSL_MAKE="$(cygpath -m /usr/bin/make.exe)" \
             -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_GCCJIT=OFF
           cmake --build --preset default --parallel 4
           cmake --install build/default --prefix stage
@@ -230,6 +235,95 @@ jobs:
         with:
           name: scarletnx-windows
           path: stage
+          if-no-files-found: error
+
+  # The Android app (docs/ANDROID.md): each ABI on a runner of its own, with the runner's Gradle and JDK. LLVM's
+  # libraries for the ABI take most of an hour, so they are kept until the script that builds them changes. Each job
+  # packs an APK of its ABI; android-apk packs one holding both
+  android:
+    name: Android (${{ matrix.abi }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        abi: [x86_64, arm64-v8a]
+    env:
+      ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: .cache/cpm
+          key: cpm-${{ github.job }}-${{ matrix.abi }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      - uses: actions/cache@v5
+        id: llvm
+        with:
+          path: android-llvm/${{ matrix.abi }}
+          key: android-llvm-${{ matrix.abi }}-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
+      # The NDK named above, which the runner's image may no longer carry, and NASM for FFmpeg's x86-64 assembly
+      - name: Install the NDK and NASM
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${ANDROID_NDK_ROOT##*/}" > /dev/null
+          sudo apt-get update && sudo apt-get install -y nasm
+      - name: Build LLVM's libraries
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: scripts/android-llvm.sh ${{ matrix.abi }} "$PWD/android-llvm/${{ matrix.abi }}"
+      - name: Build the native libraries and the APK
+        run: |
+          JAVA_HOME=$JAVA_HOME_21_X64 scripts/android-apk.sh "$PWD/build/android" "$PWD/android-llvm" ${{ matrix.abi }}
+          cp build/android/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk ScarletNX-${{ matrix.abi }}.apk
+      # Not zipped: the artifact is the APK itself, named after it
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ScarletNX-${{ matrix.abi }}.apk
+          archive: false
+          if-no-files-found: error
+      # What android-apk packs: the libraries, SDL's Java and the icon, without this APK's Gradle output
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-stage-${{ matrix.abi }}
+          path: |
+            build/android/stage
+            !build/android/stage/gradle
+          if-no-files-found: error
+
+  android-apk:
+    name: Android APK
+    needs: android
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: android-stage-*
+          merge-multiple: true
+          path: stage
+      - name: Pack the APK of both ABIs
+        run: |
+          JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android assembleDebug -Pscarletnx.stage="$PWD/stage"
+          cp stage/gradle/outputs/apk/debug/ScarletNX-debug.apk ScarletNX.apk
+      # A library that needs one Android 5.0 lacks fails to load there, and the app with it
+      - name: Check the APK's libraries
+        run: |
+          set -euo pipefail
+          apk=ScarletNX.apk
+          readelf=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf
+          mkdir apk && unzip -q "$apk" 'lib/*' -d apk
+          system=" libc.so libm.so libdl.so liblog.so libandroid.so libz.so libEGL.so libGLESv1_CM.so libGLESv2.so libOpenSLES.so "
+          for abi in x86_64 arm64-v8a; do
+            for lib in libmain.so libscarletnx.so libscarletnx-run.so libhactool.so; do
+              test -f "apk/lib/$abi/$lib" || { echo "$abi has no $lib" >&2; exit 1; }
+              for needed in $("$readelf" -d "apk/lib/$abi/$lib" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+                [[ "$system" == *" $needed "* || -f "apk/lib/$abi/$needed" ]] ||
+                  { echo "$abi/$lib needs $needed, which Android 5.0 does not have" >&2; exit 1; }
+              done
+            done
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ScarletNX.apk
+          archive: false
           if-no-files-found: error
 
   # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the

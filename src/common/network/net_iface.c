@@ -18,6 +18,18 @@
 #include <net/if.h>
 #include <unistd.h>
 #endif
+#if defined(__ANDROID__) && __ANDROID_API__ < 24
+#include <dlfcn.h>
+/* getifaddrs comes with Android 7: looked up where the app may run on an older one, which lists no interface */
+static int getifaddrs(struct ifaddrs** list) {
+    int (*get)(struct ifaddrs**) = (int (*)(struct ifaddrs**))dlsym(RTLD_DEFAULT, "getifaddrs");
+    return get ? get(list) : -1;
+}
+static void freeifaddrs(struct ifaddrs* list) {
+    void (*release)(struct ifaddrs*) = (void (*)(struct ifaddrs*))dlsym(RTLD_DEFAULT, "freeifaddrs");
+    if (release) release(list);
+}
+#endif
 
 /* the local address of the default route, 0 when the host has none */
 static int routed_address(uint8_t out[4]) {

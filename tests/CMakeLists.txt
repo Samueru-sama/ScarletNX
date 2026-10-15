@@ -53,10 +53,7 @@ if(TARGET snx_ctr_board)
     snx_test_target(snx-test-3ds-blz 11)
     target_link_libraries(snx-test-3ds-blz PRIVATE snx_ctr_loader)
     add_test(NAME 3ds_blz COMMAND snx-test-3ds-blz)
-    add_executable(snx-test-sha256-stream sha256_stream.c "${PROJECT_SOURCE_DIR}/src/common/utilities/sha256.c")
-    snx_test_target(snx-test-sha256-stream 11)
-    add_test(NAME sha256_stream COMMAND snx-test-sha256-stream)
-    foreach(target snx-test-3ds-memory snx-test-3ds-blz snx-test-sha256-stream)
+    foreach(target snx-test-3ds-memory snx-test-3ds-blz)
         target_compile_options(${target} PRIVATE -UNDEBUG)
     endforeach()
 
@@ -257,12 +254,23 @@ target_link_libraries(snx-test-network-service PRIVATE scarletnx-net)
 add_test(NAME network_service COMMAND snx-test-network-service)
 set_tests_properties(network_service PROPERTIES TIMEOUT 60)
 
+# ssl (ssl.c) against a TLS server in the test, on the game's bsd sockets (bsd.c, built beside)
+add_executable(snx-test-ssl-service ssl_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/network/bsd.c")
+snx_test_target(snx-test-ssl-service 23)
+target_compile_options(snx-test-ssl-service PRIVATE -Wno-unused-parameter)
+snx_swipc(snx-test-ssl-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
+          hle/services/network/bsd.swipc hle/services/network/ssl.swipc)
+target_link_libraries(snx-test-ssl-service PRIVATE scarletnx-net OpenSSL::SSL)
+add_test(NAME ssl_service COMMAND snx-test-ssl-service)
+set_tests_properties(ssl_service PROPERTIES TIMEOUT 60)
+
 # mm:u and hid's IHidServer (misc.c, hid.c), with the kernel objects stubbed
-add_executable(snx-test-misc-service misc_service.c)
+add_executable(snx-test-misc-service misc_service.c "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_touch.c")
 snx_test_target(snx-test-misc-service 23)
 target_compile_options(snx-test-misc-service PRIVATE -Wno-unused-parameter)
 snx_swipc(snx-test-misc-service ROOT "${PROJECT_SOURCE_DIR}/src/nx" FILES hle/services/types.swipc
           hle/services/hid.swipc hle/services/misc.swipc)
+target_link_libraries(snx-test-misc-service PRIVATE OpenSSL::Crypto)
 add_test(NAME misc_service COMMAND snx-test-misc-service)
 
 # nvdrv's IPC side (nvdrv.c), with the GPU and host1x stand-ins in the test
@@ -283,6 +291,34 @@ if(SNX_BUILD_NX)
 add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
     "-DSNX_SOURCE_DIR=${PROJECT_SOURCE_DIR}" "-DSNX_TEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/llvm-dependency"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/llvm_dependency.cmake")
+
+add_executable(snx-test-overlay overlay.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
+snx_test_target(snx-test-overlay 11)
+target_link_libraries(snx-test-overlay PRIVATE scarletnx-common m)
+add_test(NAME overlay COMMAND snx-test-overlay)
+
+add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
+snx_test_target(snx-test-vpad 11)
+target_link_libraries(snx-test-vpad PRIVATE scarletnx-common m)
+add_test(NAME vpad COMMAND snx-test-vpad)
+
+# the controls' atlas and their shaders are generated and checked in: their sources must still make them
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME controls_atlas_current
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-controls.py" --check)
+    add_test(NAME ui_shaders_current
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-ui-shaders.py" --check)
+    add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
+endif()
+
+add_executable(snx-test-hid-touch hid_touch.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/touch.c"
+    "${PROJECT_SOURCE_DIR}/src/nx/hle/services/hid_touch.c")
+snx_test_target(snx-test-hid-touch 11)
+target_link_libraries(snx-test-hid-touch PRIVATE scarletnx-common)
+add_test(NAME hid_touch COMMAND snx-test-hid-touch)
 
 add_executable(snx-test-startup startup_options.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/startup.c")
 snx_test_target(snx-test-startup 90)
@@ -320,11 +356,12 @@ add_test(NAME extraction_native COMMAND snx-test-extract)
 
 add_executable(snx-test-loader loader_test.c "${PROJECT_SOURCE_DIR}/src/nx/loader/loader.c")
 snx_test_target(snx-test-loader 90)
-target_link_libraries(snx-test-loader PRIVATE snx_test_common)
+target_link_libraries(snx-test-loader PRIVATE snx_test_common snx_lz4 OpenSSL::Crypto)
 add_test(NAME loader_native COMMAND snx-test-loader)
 
 add_executable(snx-test-runtime-nro runtime_nro.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/loader.c")
 snx_test_target(snx-test-runtime-nro 11)
+target_link_libraries(snx-test-runtime-nro PRIVATE snx_lz4)
 add_test(NAME runtime_nro COMMAND snx-test-runtime-nro)
 
 if(NOT WIN32)
@@ -337,7 +374,6 @@ if(NOT WIN32)
         DEPENDS snx-test-ro-interp-gen VERBATIM)
     add_executable(snx-test-ldr-service ldr_service.c ldr_interp.c "${CMAKE_CURRENT_BINARY_DIR}/ldr_interp.inc"
         "${PROJECT_SOURCE_DIR}/src/nx/hle/services/ldr.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c"
-        "${PROJECT_SOURCE_DIR}/src/common/utilities/sha256.c"
         "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     snx_test_target(snx-test-ldr-service 11)
     target_compile_options(snx-test-ldr-service PRIVATE -Wno-unused-parameter)
@@ -345,7 +381,7 @@ if(NOT WIN32)
               hle/services/ldr.swipc)
     target_include_directories(snx-test-ldr-service PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_definitions(snx-test-ldr-service PRIVATE SNX_RO_INTERP_TEST)
-    target_link_libraries(snx-test-ldr-service PRIVATE m)
+    target_link_libraries(snx-test-ldr-service PRIVATE OpenSSL::Crypto m)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
         target_compile_options(snx-test-ldr-service PRIVATE -mcx16)
     endif()

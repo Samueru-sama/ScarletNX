@@ -7,6 +7,7 @@ This is a memory-codegen differential, not an independent ISA oracle. The
 unchanged A57 tests separately compare against Unicorn. No execution engine:
 LLVM objects are emitted ahead of time, host-linked, then loaded with ctypes.
 """
+
 import argparse
 import ctypes as C
 import pathlib
@@ -23,9 +24,20 @@ class Checked(C.Structure):
 
 
 def snapshot(cpu):
-    return (list(cpu.r), cpu.cpsr, cpu.exit, cpu.syndrome, cpu.exclusive_value,
-            cpu.exclusive_address, cpu.exclusive_size, cpu.exclusive_valid,
-            cpu.tpidrurw, cpu.tpidruro, cpu.fpscr, list(cpu.d))
+    return (
+        list(cpu.r),
+        cpu.cpsr,
+        cpu.exit,
+        cpu.syndrome,
+        cpu.exclusive_value,
+        cpu.exclusive_address,
+        cpu.exclusive_size,
+        cpu.exclusive_valid,
+        cpu.tpidrurw,
+        cpu.tpidruro,
+        cpu.fpscr,
+        list(cpu.d),
+    )
 
 
 def compile_blocks(args, root, profile, mode, opt):
@@ -53,9 +65,9 @@ def main():
     total = 0
     with tempfile.TemporaryDirectory(prefix='snx-checked-matrix-') as tmp:
         root = pathlib.Path(tmp)
-        (root / 'words.txt').write_text(''.join(
-            f'{pc:x} ' + ' '.join(f'{w:08x}' for w in words) + '\n'
-            for pc, words in zip(A.PCS, A.PROGRAMS)))
+        (root / 'words.txt').write_text(
+            ''.join(f'{pc:x} ' + ' '.join(f'{w:08x}' for w in words) + '\n' for pc, words in zip(A.PCS, A.PROGRAMS))
+        )
         for profile in ('a57', 'arm11'):
             for opt in ('0', '2'):
                 flat = compile_blocks(args, root, profile, 'flat', opt)

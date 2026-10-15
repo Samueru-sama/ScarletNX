@@ -116,6 +116,7 @@ int plat_text_input(char* out, size_t cap, const char* initial) {
 void pm_init(PMutex* m) { InitializeSRWLock(&m->l); }
 void pm_lock(PMutex* m) { AcquireSRWLockExclusive(&m->l); }
 void pm_unlock(PMutex* m) { ReleaseSRWLockExclusive(&m->l); }
+int pm_trylock(PMutex* m) { return TryAcquireSRWLockExclusive(&m->l) != 0; }
 void pc_init(PCond* c) { InitializeConditionVariable(&c->c); }
 void pc_signal(PCond* c) { WakeConditionVariable(&c->c); }
 void pc_broadcast(PCond* c) { WakeAllConditionVariable(&c->c); }

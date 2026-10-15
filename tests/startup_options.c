@@ -28,11 +28,11 @@ int main(void) {
     {
         char *fullscreen[] = {"game", "--fullscreen"}, *short_fullscreen[] = {"game", "-f"};
         char *fullscreen_off[] = {"game", "--fullscreen=0"}, *fullscreen_on[] = {"game", "--fullscreen=1"};
-        char *fullscreen_boundary[] = {"game", "--", "-f"};
-        if (check(2, fullscreen, 0, 0) || !g_opt_fullscreen || check(2, short_fullscreen, 0, 0) ||
-            !g_opt_fullscreen || check(3, fullscreen_boundary, 0, 0) || g_opt_fullscreen ||
-            check(1, fullscreen, 0, 0) || g_opt_fullscreen || check(2, fullscreen_off, 2, 0) ||
-            check(2, fullscreen_on, 2, 0)) return 1;
+        char* fullscreen_boundary[] = {"game", "--", "-f"};
+        if (check(2, fullscreen, 0, 0) || !g_opt_fullscreen || check(2, short_fullscreen, 0, 0) || !g_opt_fullscreen ||
+            check(3, fullscreen_boundary, 0, 0) || g_opt_fullscreen || check(1, fullscreen, 0, 0) || g_opt_fullscreen ||
+            check(2, fullscreen_off, 2, 0) || check(2, fullscreen_on, 2, 0))
+            return 1;
 #ifndef _WIN32
         {
             char* cluster[] = {"game", "-fHs"};

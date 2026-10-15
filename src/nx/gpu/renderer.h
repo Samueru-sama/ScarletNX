@@ -44,6 +44,9 @@ typedef struct Renderer {
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                            u32 transform);
     u64 (*screenshot)(const char* path); /* the hash of the frame it saved */
+    /* the window again, its last frame (or black) under the on-screen controls and the game's menu, for when the game
+       has shown nothing for a while: the frontend's loop calls it while either shows. NULL when there is no window */
+    void (*refresh)(void);
     /* writes what should outlive the process (the pipeline cache): every 5 s from the frontend loop, and before an exit
        that skips the normal shutdown. Any thread, while the others still run. NULL when the renderer keeps nothing */
     void (*save)(void);

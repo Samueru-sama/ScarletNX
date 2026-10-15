@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources>
+    <!-- the app's: its icon on black while it opens, where the old theme's window was a gradient -->
+    <style name="ScarletNX" parent="@android:style/Theme.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@drawable/launch</item>
+    </style>
+</resources>

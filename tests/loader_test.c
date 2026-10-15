@@ -224,7 +224,10 @@ static void test_hash_lz4(void) {
     static const char* hashes[3] = {"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                                     "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
                                     "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"};
-    static const unsigned char matched[7] = {0x40, 'A', 'B', 'C', 'D', 4, 0};
+    /* "ABCD", a 4-byte match 4 back, then the 8 literals an LZ4 block has to end with: the last match ends at least 5
+       bytes and starts at least 12 bytes before the end of the block, which LZ4_decompress_safe holds a block to */
+    static const unsigned char matched[16] = {0x40, 'A', 'B', 'C', 'D', 4,   0,   0x80,
+                                              'E',  'F', 'G', 'H', 'I', 'J', 'K', 'L'};
     SnxModuleImage m;
     char error[256], *path;
     size_t size, length;
@@ -247,7 +250,7 @@ static void test_hash_lz4(void) {
         free(path);
     }
     memset(image_bytes, 0, sizeof image_bytes);
-    build_nso(8, 8, 0, 8, 0, 0);
+    build_nso(16, 16, 0, 16, 0, 0);
     put32(file_bytes + 12, 1);
     put32(file_bytes + 0x60, sizeof matched);
     put32(file_bytes + 0x20, 0x100 + sizeof matched);
@@ -256,18 +259,17 @@ static void test_hash_lz4(void) {
     size = 0x100 + sizeof matched;
     path = fixture("match.nso", file_bytes, size);
     CHECK(!snx_load_nso(path, NULL, &m, error, sizeof error));
-    CHECK(!memcmp(m.image, "ABCDABCD", 8));
+    CHECK(!memcmp(m.image, "ABCDABCDEFGHIJKL", 16));
     snx_free_module(&m);
-    file_bytes[0x105] = 0;
-    CHECK(!snx_write_file(path, file_bytes, size));
-    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1 && strstr(error, "back reference"));
+    /* a match reaching before the start of the segment (LZ4 decodes an offset of 0 in bounds, and leaves the
+       content to the segment's hash) */
     file_bytes[0x105] = 5;
     CHECK(!snx_write_file(path, file_bytes, size));
-    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1);
+    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1 && strstr(error, "LZ4"));
     file_bytes[0x105] = 4;
     file_bytes[0x100] = 0x4f;
     CHECK(!snx_write_file(path, file_bytes, size));
-    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1 && strstr(error, "match length"));
+    CHECK(snx_load_nso(path, NULL, &m, error, sizeof error) == -1 && strstr(error, "LZ4"));
     free(path);
     puts("PASS SHA-256 known answers, corrupt hashes and LZ4 back-reference bounds");
 }

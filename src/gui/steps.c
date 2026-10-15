@@ -8,7 +8,7 @@ void gui_steps_reset(GuiSteps* steps) { memset(steps, 0, sizeof *steps); }
 
 static GuiStep* current(GuiSteps* steps) { return steps->count ? &steps->step[steps->count - 1] : NULL; }
 static void begin(GuiSteps* steps, const char* label, const char* detail, size_t detail_length, uint64_t now) {
-    GuiStep * step;
+    GuiStep* step;
     GuiStep* last = current(steps);
     if (last && last->state == GUI_STEP_ACTIVE) last->state = GUI_STEP_DONE;
     if (steps->count == GUI_STEPS_MAX)
@@ -24,7 +24,7 @@ static void begin(GuiSteps* steps, const char* label, const char* detail, size_t
     step->serial = ++steps->serial;
 }
 static void note(GuiSteps* steps, const char* s, uint64_t now) {
-    GuiNote * n;
+    GuiNote* n;
     while (*s == ' ' || *s == '\t') ++s;
     if (!*s || !steps->count) return;
     if (steps->notes == GUI_NOTES_MAX)
@@ -61,6 +61,8 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         current(steps)->state = GUI_STEP_DONE;
     } else if (prefix(s, "ScarletNX - "))
         begin(steps, "LAUNCH", s + 12, strlen(s + 12), now);
+    else if (prefix(s, "Ready "))
+        begin(steps, "READY", s + 6, strlen(s + 6), now);
     else if (prefix(s, "vulkan: ") && !steps->gpu && strstr(s, ", Vulkan ")) {
         /* the first device line: "vulkan: <device> [(<driver>)], Vulkan <version>, ..."; a later "(" is not the
            device's */
@@ -86,7 +88,7 @@ void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now
     }
 }
 void gui_steps_finish(GuiSteps* steps, int ok) {
-    GuiStep * last;
+    GuiStep* last;
     if (steps->length) gui_steps_feed(steps, "\n", 1, current(steps) ? current(steps)->shown_ms : 0);
     last = current(steps);
     if (last && last->state == GUI_STEP_ACTIVE)
@@ -101,7 +103,7 @@ int gui_steps_percent(const GuiSteps* steps) {
         const GuiStep* s = &steps->step[i];
         if (!strcmp(s->label, "RECOMPILE"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : 0;
-        else if (!strcmp(s->label, "BUILT") || !strcmp(s->label, "LAUNCH"))
+        else if (!strcmp(s->label, "BUILT") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
             percent = 100;
     }
     return percent;

@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# ssl: TLS over the game's bsd sockets, with OpenSSL (ssl.c). Names and layouts from Switchbrew's SSL services page
+# and libnx's ssl.c
+
+type nn::ssl::sf::SslVersion = u32;
+type nn::ssl::sf::CaCertificateId = i32;
+type nn::ssl::sf::ContextOption = u32;
+type nn::ssl::sf::CertificateFormat = u32;
+type nn::ssl::sf::InternalPki = u32;
+type nn::ssl::sf::VerifyOption = u32;
+type nn::ssl::sf::IoMode = u32;
+type nn::ssl::sf::PollEvent = u32;
+type nn::ssl::sf::SessionCacheMode = u32;
+type nn::ssl::sf::RenegotiationMode = u32;
+type nn::ssl::sf::OptionType = u32;
+type nn::ssl::sf::AlpnProtoState = u32;
+
+interface nn::ssl::sf::ISslService is ssl {
+    # the raw data is {SslVersion, pad, u64 pid placeholder}: the pid slot lands at 8
+    [0] CreateContext(nn::ssl::sf::SslVersion ssl_version, pid) -> object<nn::ssl::sf::ISslContext> context;
+    [1] GetContextCount() -> u32 count;
+    [2] GetCertificates(buffer<u8, 6> certificates, array<nn::ssl::sf::CaCertificateId, 5> ids) -> u32 count;
+    [3] GetCertificateBufSize(array<nn::ssl::sf::CaCertificateId, 5> ids) -> u32 size;
+    @stub [5] SetInterfaceVersion(u32 version);
+    @stub [6] FlushSessionCache(u32 type, buffer<u8, 5> host) -> u32 count;
+}
+
+interface nn::ssl::sf::ISslContext {
+    [0] SetOption(nn::ssl::sf::ContextOption option, i32 value);
+    [1] GetOption(nn::ssl::sf::ContextOption option) -> i32 value;
+    [2] CreateConnection() -> object<nn::ssl::sf::ISslConnection> connection;
+    [3] GetConnectionCount() -> u32 count;
+    [4] ImportServerPki(nn::ssl::sf::CertificateFormat format, buffer<u8, 5> certificates) -> u64 id;
+    [5] ImportClientPki(buffer<u8, 5> pkcs12, buffer<u8, 5> password) -> u64 id;
+    [8] RegisterInternalPki(nn::ssl::sf::InternalPki pki) -> u64 id;
+}
+
+interface nn::ssl::sf::ISslConnection {
+    [0] SetSocketDescriptor(i32 fd) -> i32 out_fd;
+    [1] SetHostName(buffer<u8, 5> name);
+    [2] SetVerifyOption(nn::ssl::sf::VerifyOption option);
+    [3] SetIoMode(nn::ssl::sf::IoMode mode);
+    [4] GetSocketDescriptor() -> i32 fd;
+    [5] GetHostName(buffer<u8, 6> name) -> u32 size;
+    [6] GetVerifyOption() -> nn::ssl::sf::VerifyOption option;
+    [7] GetIoMode() -> nn::ssl::sf::IoMode mode;
+    [8] DoHandshake();
+    [9] DoHandshakeGetServerCert(buffer<u8, 6> certificates) -> (u32 size, u32 count);
+    [10] Read(buffer<u8, 6> data) -> u32 size;
+    [11] Write(buffer<u8, 5> data) -> u32 size;
+    [12] Pending() -> i32 size;
+    [13] Peek(buffer<u8, 6> data) -> u32 size;
+    [14] Poll(nn::ssl::sf::PollEvent events, u32 timeout_ms) -> nn::ssl::sf::PollEvent revents;
+    [15] GetVerifyCertError();
+    [16] GetNeededServerCertBufferSize() -> u32 size;
+    [17] SetSessionCacheMode(nn::ssl::sf::SessionCacheMode mode);
+    [18] GetSessionCacheMode() -> nn::ssl::sf::SessionCacheMode mode;
+    @stub [19] FlushSessionCache();
+    [20] SetRenegotiationMode(nn::ssl::sf::RenegotiationMode mode);
+    [21] GetRenegotiationMode() -> nn::ssl::sf::RenegotiationMode mode;
+    # {u8 value, pad, u32 option}: sorted by alignment, the bool comes first whatever the order
+    [22] SetOption(b8 value, nn::ssl::sf::OptionType option);
+    [23] GetOption(nn::ssl::sf::OptionType option) -> b8 value;
+    # libnx's SslCipherInfo: char cipher[0x40], char protocol_version[8]
+    [25] GetCipherInfo(u32 version, buffer<u8, 6> info);
+    [26] SetNextAlpnProto(buffer<u8, 5> protocols);
+    [27] GetNextAlpnProto(buffer<u8, 6> protocol) -> (nn::ssl::sf::AlpnProtoState state, u32 size);
+}

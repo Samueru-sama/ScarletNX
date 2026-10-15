@@ -9,51 +9,11 @@
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
+#include <lz4.h>
 #include <stdio.h>
 #include <string.h>
 
 u64 g_code_lo, g_code_hi;
-
-/* every read is checked against slen, every write against dlen: a damaged file fails instead of reading past it */
-static int lz4_dec(const u8* src, u32 slen, u8* dst, u32 dlen) {
-    u32 i = 0, o = 0;
-    while (i < slen) {
-        u8 tok = src[i++];
-        u32 l = tok >> 4;
-        if (l == 15) {
-            u8 b;
-            do {
-                if (i >= slen) return -1;
-                b = src[i++];
-                l += b;
-            } while (b == 255);
-        }
-        if (l > dlen - o || l > slen - i) return -1;
-        memcpy(dst + o, src + i, l);
-        i += l;
-        o += l;
-        if (i >= slen) break;
-        if (slen - i < 2) return -1;
-        u32 off = src[i] | (src[i + 1] << 8);
-        i += 2;
-        u32 m = tok & 15;
-        if (m == 15) {
-            u8 b;
-            do {
-                if (i >= slen) return -1;
-                b = src[i++];
-                m += b;
-            } while (b == 255);
-        }
-        m += 4;
-        if (!off || off > o || m > dlen - o) return -1;
-        for (u32 k = 0; k < m; k++) {
-            dst[o] = dst[o - off];
-            o++;
-        }
-    }
-    return (int)o;
-}
 
 static u32 nro_u32(const u8* p) { return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24; }
 
@@ -138,7 +98,10 @@ static int load_one(const SnxModInfo* mi) {
                 return -1;
             }
             if (flags & (1u << i)) {
-                if (lz4_dec(f + seg[i][0], fs[i], dst + seg[i][1], seg[i][2]) != (int)seg[i][2]) {
+                /* LZ4_decompress_safe stays inside both buffers: a damaged file fails instead of reading past it */
+                if (fs[i] > LZ4_MAX_INPUT_SIZE || seg[i][2] > LZ4_MAX_INPUT_SIZE ||
+                    LZ4_decompress_safe((const char*)f + seg[i][0], (char*)dst + seg[i][1], (int)fs[i],
+                                        (int)seg[i][2]) != (int)seg[i][2]) {
                     WARN("LZ4 failed in %s\n", mi->name);
                     plat_file_unmap(&fm);
                     return -1;

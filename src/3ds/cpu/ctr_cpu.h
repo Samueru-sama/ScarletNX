@@ -7,7 +7,9 @@
 
 /* Opt-in checked A32 state, no NX/A64 CPU casts and no LLVM/JIT dependency.
    This adapter does NOT discover/load native blocks or implement an OS. */
-typedef struct { SnxArmCheckedCPU state; } SnxCtrCpu;
+typedef struct {
+    SnxArmCheckedCPU state;
+} SnxCtrCpu;
 /* Fresh USR state. Caller owns process mappings and executable entry validation.
    Space must outlive the CPU; all accesses/mapping changes are serialized. */
 bool snx_ctr_cpu_init(SnxCtrCpu* cpu, SnxCtrAddressSpace* space, uint32_t pc, uint32_t sp, bool thumb);

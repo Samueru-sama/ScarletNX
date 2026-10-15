@@ -36,6 +36,10 @@ homebrew-loader guest argv block.
 `-f` (or `--fullscreen`) can also precede or follow the dump and is forwarded to
 the game. Omitting it starts windowed, regardless of an older INI value;
 `--fullscreen=0|1` is no longer accepted.
+`--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers (the default), or the
+fingers and the mouse's left button. The menu's *Touch* item passes it; the game's `.ini` keeps its own `touch`.
+`--controls=0|1` likewise hides or shows the [on-screen controls](#on-screen-controls) (the menu's *On-screen
+controls* item, on by default on Android); the game's `.ini` keeps `controls`.
 `--backend=gcc` selects libgccjit instead of the default LLVM backend when preparing
 a dump. An explicit `--backend=llvm|gcc` forces recompilation rather than reusing a
 cached executable built by another compiler.
@@ -203,8 +207,10 @@ SDL_VIDEO_DRIVER=x11 games/Game
 
 `--game` selects `Game_code.so`/`Game_data/`; or name the image `games/Game.AppImage` to load adjacent files.
 The AppImage also prepares dumps: `./ScarletNX-x86_64.AppImage Game.nsp`. Without the checkout it was built from
-(the AppImage, the Windows zip), the driver works in the current folder: `work/` and `games/` go there, and each
-game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
+(the AppImage, the Windows zip), the driver works in the user's data folder, wherever it was started from:
+`~/.local/share/scarletnx` (`$XDG_DATA_HOME/scarletnx`) on Linux and `%APPDATA%\scarletnx` on Windows. `work/` and
+`games/` go there, `prod.keys` is looked for there before `~/.switch`, and each game gets a copy of the AppImage (on
+Windows, of `scarletnx.exe` and the DLLs next to it).
 X11 bypasses Wayland. [Licenses](CREDITS.md).
 
 ## Settings / input
@@ -238,6 +244,20 @@ SDL gamepads use Switch positions; pads + keyboard share one guest controller.
 | Q / E / 1 / 3 | L / R / ZL / ZR |
 | Enter / Backspace | Plus / Minus |
 
-F1 help; F3 screenshot; F4 FPS cap; F5 thread dump; F11/Alt+Enter fullscreen; Escape quit.
+F1 help; F2 the game's menu; F3 screenshot; F4 FPS cap; F5 thread dump; F11/Alt+Enter fullscreen; Escape quit.
+
+### On-screen controls
+
+A pad drawn over the game, with rEden's buttons and sizes, laid out as the console's two controllers hold them:
+sticks, D-pad, A B X Y, L R ZL ZR, plus and minus, the stick buttons, Home (the game's menu) and Capture (a
+screenshot). Fingers press them, the mouse's left button too; a finger that lands off them goes to the game's
+touch screen. They are on by default on Android and off elsewhere.
+
+The game's menu (Back on Android, Home on a gamepad, F2) has their page: show them, *Edit layout* (drag a control;
+tap one and size it with the bar on top; *Done* or Back ends it), snap to a grid, scale and opacity, the buttons
+shown, a stick's middle where the finger lands, a D-pad a finger slides on, a buzz on each press (Android), the touch
+screen, and *Reset layout*. The game's `.ini` keeps them: `controls`, `controls_scale`, `controls_opacity`,
+`controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, and a control's place once it
+was moved (`controls_a=0.930 0.470 100 1`: its middle across the screen, its size in percent, shown).
 Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots).
 Scripts/disasm/shaders: [DEVELOPMENT](DEVELOPMENT.md).

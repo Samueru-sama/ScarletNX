@@ -34,23 +34,31 @@ bool ctr_read(CtrReader* r, CtrSpan span, uint64_t at, void* output, size_t size
         return ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot read CIA input");
     return true;
 }
+bool ctr_sha256(CtrReader* r, const void* data, size_t size, unsigned char hash[32]) {
+    return EVP_Digest(data, size, hash, NULL, EVP_sha256(), NULL) ||
+           ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "SHA-256 failed (out of memory)");
+}
 bool ctr_hash(CtrReader* r, CtrSpan span, unsigned char hash[32]) {
     unsigned char bytes[32768];
-    SnxSha256 context;
-    snx_sha256_init(&context);
-    for (uint64_t at = 0; at < span.size;) {
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    bool ok = context && EVP_DigestInit_ex(context, EVP_sha256(), NULL);
+    for (uint64_t at = 0; ok && at < span.size;) {
         size_t n = span.size - at > sizeof bytes ? sizeof bytes : (size_t)(span.size - at);
-        if (!ctr_read(r, span, at, bytes, n)) return false;
-        snx_sha256_update(&context, bytes, n);
+        if (!ctr_read(r, span, at, bytes, n)) {
+            EVP_MD_CTX_free(context);
+            return false;
+        }
+        ok = EVP_DigestUpdate(context, bytes, n);
         at += n;
     }
-    snx_sha256_final(&context, hash);
-    return true;
+    ok = ok && EVP_DigestFinal_ex(context, hash, NULL);
+    EVP_MD_CTX_free(context);
+    return ok || ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "SHA-256 failed (out of memory)");
 }
 bool ctr_hash_matches(CtrReader* r, CtrSpan span, const unsigned char expected[32]) {
     unsigned char hash[32];
-    return ctr_hash(r, span, hash) && (!memcmp(hash, expected, 32) ||
-        ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "archive SHA-256 mismatch"));
+    return ctr_hash(r, span, hash) &&
+           (!memcmp(hash, expected, 32) || ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "archive SHA-256 mismatch"));
 }
 static bool budget(CtrReader* r, uint64_t bytes) {
     if (bytes > CTR_OUTPUT_LIMIT - r->output_bytes || r->entries >= 100000)
@@ -72,20 +80,22 @@ bool ctr_copy(CtrReader* r, CtrSpan span, const char* path, const unsigned char*
     FILE* out = snx_fopen(path, "wbx");
     if (!out) return ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot create new output file: %s", path);
     unsigned char bytes[32768], hash[32];
-    SnxSha256 context;
-    snx_sha256_init(&context);
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    bool hashed = context && EVP_DigestInit_ex(context, EVP_sha256(), NULL);
     bool ok = true;
     for (uint64_t at = 0; at < span.size && ok;) {
         size_t n = span.size - at > sizeof bytes ? sizeof bytes : (size_t)(span.size - at);
         ok = ctr_read(r, span, at, bytes, n);
         if (ok) {
-            snx_sha256_update(&context, bytes, n);
+            hashed = hashed && EVP_DigestUpdate(context, bytes, n);
             ok = fwrite(bytes, 1, n, out) == n;
         }
         at += n;
     }
     if (fclose(out)) ok = false;
-    snx_sha256_final(&context, hash);
+    hashed = hashed && EVP_DigestFinal_ex(context, hash, NULL);
+    EVP_MD_CTX_free(context);
+    if (ok && !hashed) return ctr_fail(r, SNX_CTR_EXTRACT_LIMIT, "SHA-256 failed (out of memory)");
     if (ok && expected && memcmp(hash, expected, 32))
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "content SHA-256 mismatch");
     return ok || ctr_fail(r, SNX_CTR_EXTRACT_IO, "cannot copy archive section");
@@ -98,8 +108,9 @@ bool ctr_directory(CtrReader* r, const char* path) {
 }
 bool ctr_name(const char* name) {
     size_t size = strlen(name);
-    if (!size || size > 255 || !strcmp(name, ".") || !strcmp(name, "..") ||
-        name[size - 1] == '.' || name[size - 1] == ' ') return false;
+    if (!size || size > 255 || !strcmp(name, ".") || !strcmp(name, "..") || name[size - 1] == '.' ||
+        name[size - 1] == ' ')
+        return false;
     for (const unsigned char* p = (const unsigned char*)name; *p; ++p)
         if (*p < 32 || *p == 127 || strchr("/\\:<>\"|?*", *p)) return false;
     char base[8] = {0};
@@ -107,7 +118,8 @@ bool ctr_name(const char* name) {
     if (n <= 7) {
         for (size_t i = 0; i < n; ++i) base[i] = (char)toupper((unsigned char)name[i]);
         if (!strcmp(base, "CON") || !strcmp(base, "PRN") || !strcmp(base, "AUX") || !strcmp(base, "NUL") ||
-            !strcmp(base, "CONIN$") || !strcmp(base, "CONOUT$") || !strcmp(base, "CLOCK$")) return false;
+            !strcmp(base, "CONIN$") || !strcmp(base, "CONOUT$") || !strcmp(base, "CLOCK$"))
+            return false;
         if (!memcmp(base, "COM", 3) || !memcmp(base, "LPT", 3)) {
             if (n == 4 && base[3] >= '1' && base[3] <= '9') return false;
             /* Windows also recognizes superscript 1/2/3 as device numbers. */
@@ -134,8 +146,8 @@ static bool no_links(const char* path) {
     free(part);
     return ok;
 }
-SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination,
-                                  char** published, char* error, size_t error_size) {
+SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination, char** published, char* error,
+                                    size_t error_size) {
     CtrReader r = {.error = error, .error_size = error_size};
     CtrCia cia = {0};
     char *target = NULL, *parent = NULL, *stage = NULL, *generated = NULL;
@@ -193,7 +205,10 @@ SnxCtrExtractResult snx_ctr_extract(const char* input, const char* destination,
     }
     free(stage);
     stage = NULL;
-    if (published) { *published = target; target = NULL; }
+    if (published) {
+        *published = target;
+        target = NULL;
+    }
 done:
     if (stage) snx_remove_tree(stage);
     if (r.input) fclose(r.input);

@@ -14,6 +14,13 @@ void backend_ini(const char* k, const char* v);
 void frontend_frame(void);
 /* the window's size in pixels for the Vulkan swapchain, or 0 x 0 when headless */
 void backend_window_size(int* w, int* h);
+/* the part of the window the system's bars and the camera's cutout leave clear, in pixels: all of it when
+   fullscreen, where the bars are hidden */
+void backend_window_safe(int* x, int* y, int* w, int* h);
+/* Android takes the window's surface away while the app is in the background: whether it is there now, and a count
+   that moves each time it comes back made anew, its Vulkan surface to be made anew too */
+int backend_window_shown(void);
+u32 backend_window_generation(void);
 /* fatal's error box, on every platform despite the name (a no-op where the backend has none), from any thread */
 void win_fatal_box(const char* msg);
 

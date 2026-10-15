@@ -7,9 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct { uint32_t address, pages, bytes; } Segment;
-static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage,
-                         unsigned char** stored, unsigned char** code) {
+typedef struct {
+    uint32_t address, pages, bytes;
+} Segment;
+static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage, unsigned char** stored,
+                         unsigned char** code) {
     unsigned char h[0x200], exheader[0x800], exefs[0x200];
     if (!ctr_read(r, cia->boot, 0, h, sizeof h)) return false;
     if (memcmp(h + 0x100, "NCCH", 4)) return ctr_fail(r, SNX_CTR_EXTRACT_UNSUPPORTED, "boot content is not NCCH");
@@ -43,7 +45,7 @@ static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage,
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExeFS superblock hash/range");
     if (!ctr_read(r, cia->boot, 0x200, exheader, sizeof exheader)) return false;
     unsigned char hash[32];
-    snx_sha256(exheader, 0x400, hash);
+    if (!ctr_sha256(r, exheader, 0x400, hash)) return false;
     if (memcmp(hash, h + 0x160, 32) || ctr_le64(exheader + 0x200) != cia->title_id)
         return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "ExHeader hash/program ID mismatch");
     Segment segments[3];
@@ -57,7 +59,7 @@ static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage,
         uint64_t length = (uint64_t)s->pages * 4096;
         uint64_t virtual_length = length + (i == 2 ? ((uint64_t)bss + 4095) / 4096 * 4096 : 0);
         if (s->bytes > length || (virtual_length && ((s->address & 4095) || s->address < 0x100000 ||
-            !ctr_fits(0x4000000, s->address, virtual_length))))
+                                                     !ctr_fits(0x4000000, s->address, virtual_length))))
             return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "invalid ExHeader segment/BSS range");
         for (size_t j = 0; virtual_length && j < i; ++j) {
             uint64_t end = (uint64_t)segments[j].address + (uint64_t)segments[j].pages * 4096;
@@ -93,8 +95,9 @@ static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage,
         if (!ctr_fits(exe.size, at, size)) return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "ExeFS file exceeds section");
         files[i] = (CtrSpan){exe.offset + at, size};
         for (size_t j = 0; j < i; ++j)
-            if (*names[j] && (!strcmp(names[i], names[j]) || (files[i].size && files[j].size &&
-                files[i].offset < files[j].offset + files[j].size && files[j].offset < files[i].offset + size)))
+            if (*names[j] && (!strcmp(names[i], names[j]) ||
+                              (files[i].size && files[j].size && files[i].offset < files[j].offset + files[j].size &&
+                               files[j].offset < files[i].offset + size)))
                 return ctr_fail(r, SNX_CTR_EXTRACT_FORMAT, "duplicate or overlapping ExeFS files");
         if (!strcmp(names[i], ".code")) code_index = (int)i;
     }
@@ -126,7 +129,8 @@ static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage,
         const unsigned char* file_hash = exefs + 0x1e0 - i * 32;
         if ((int)i == code_index)
             ok = ctr_hash_matches(r, files[i], file_hash) && ctr_write(r, path, *code, (size_t)expected);
-        else ok = ctr_copy(r, files[i], path, file_hash);
+        else
+            ok = ctr_copy(r, files[i], path, file_hash);
         free(path);
     }
     if (!ok) return false;
@@ -151,28 +155,30 @@ static bool extract_ncch(CtrReader* r, const CtrCia* cia, const char* stage,
         if (!ok) return false;
     }
     char input_hash[65], code_hash[65];
-    snx_sha256(*code, (size_t)expected, hash);
+    if (!ctr_sha256(r, *code, (size_t)expected, hash)) return false;
     for (size_t i = 0; i < 32; ++i) {
         snprintf(input_hash + i * 2, 3, "%02x", cia->input_hash[i]);
         snprintf(code_hash + i * 2, 3, "%02x", hash[i]);
     }
-    char* manifest = snx_format(
-        "format=1\nstate=extracted\ntitle_id=%016" PRIx64 "\ntitle_version=%u\ninput_sha256=%s\n"
-        "code_sha256=%s\nentry=0x%08" PRIx32 "\nstack_size=0x%08" PRIx32 "\nbss_size=0x%08" PRIx32 "\n"
-        "text_address=0x%08" PRIx32 "\ntext_pages=%" PRIu32 "\ntext_bytes=%" PRIu32 "\n"
-        "ro_address=0x%08" PRIx32 "\nro_pages=%" PRIu32 "\nro_bytes=%" PRIu32 "\n"
-        "data_address=0x%08" PRIx32 "\ndata_pages=%" PRIu32 "\ndata_bytes=%" PRIu32 "\n",
-        cia->title_id, (unsigned)cia->version, input_hash, code_hash, segments[0].address, stack, bss,
-        segments[0].address, segments[0].pages, segments[0].bytes, segments[1].address, segments[1].pages,
-        segments[1].bytes, segments[2].address, segments[2].pages, segments[2].bytes);
+    char* manifest =
+        snx_format("format=1\nstate=extracted\ntitle_id=%016" PRIx64 "\ntitle_version=%u\ninput_sha256=%s\n"
+                   "code_sha256=%s\nentry=0x%08" PRIx32 "\nstack_size=0x%08" PRIx32 "\nbss_size=0x%08" PRIx32 "\n"
+                   "text_address=0x%08" PRIx32 "\ntext_pages=%" PRIu32 "\ntext_bytes=%" PRIu32 "\n"
+                   "ro_address=0x%08" PRIx32 "\nro_pages=%" PRIu32 "\nro_bytes=%" PRIu32 "\n"
+                   "data_address=0x%08" PRIx32 "\ndata_pages=%" PRIu32 "\ndata_bytes=%" PRIu32 "\n",
+                   cia->title_id, (unsigned)cia->version, input_hash, code_hash, segments[0].address, stack, bss,
+                   segments[0].address, segments[0].pages, segments[0].bytes, segments[1].address, segments[1].pages,
+                   segments[1].bytes, segments[2].address, segments[2].pages, segments[2].bytes);
     path = snx_path_join(stage, "manifest.ini");
     ok = ctr_write(r, path, manifest, strlen(manifest));
-    free(path); free(manifest);
+    free(path);
+    free(manifest);
     return ok;
 }
 bool ctr_ncch_extract(CtrReader* r, const CtrCia* cia, const char* stage) {
     unsigned char *stored = NULL, *code = NULL;
     bool ok = extract_ncch(r, cia, stage, &stored, &code);
-    free(stored); free(code);
+    free(stored);
+    free(code);
     return ok;
 }

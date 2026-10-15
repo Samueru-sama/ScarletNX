@@ -7,8 +7,8 @@
 /* Separate opt-in ABI; SnxArmCPU and SNX_ARM_ABI are unchanged. Generated
    checked blocks take &state.cpu, NEVER a standalone SnxArmCPU. No flat memory
    pointer is read. The runtime serializes CPU, mappings, devices and callbacks. */
-#define SNX_ARM_CHECKED_ABI 1u
-#define SNX_ARM_ACCESS_READ 1u
+#define SNX_ARM_CHECKED_ABI  1u
+#define SNX_ARM_ACCESS_READ  1u
 #define SNX_ARM_ACCESS_WRITE 2u
 #define SNX_ARM_ACCESS_FETCH 3u
 /* One whole-instruction RAM transaction, not one combined MMIO access.

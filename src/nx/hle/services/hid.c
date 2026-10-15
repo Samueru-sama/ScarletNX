@@ -13,9 +13,11 @@
 #include "hle/services/hid.swipc.inc"
 
 PadState g_pad;
+TouchState g_touch;
 static struct {
     KShmem* shm;
     u64 samp;
+    HidFingers fingers;
     u32 style_supported;
     KEvent* style_ev[10]; /* AcquireNpadStyleSetUpdateEventHandle, per npad index */
     /* the legacy lifos (GetJoyXpadLifoHandle, GetSixAxisSensorLifoHandle, GetJoySixAxisSensorLifoHandle): one shared
@@ -123,10 +125,9 @@ void hid_update(void) {
               six, sizeof six, hid.samp);
     lifo_push(eh + HO_HidNpadInternalState_handheld_six_axis_sensor_lifo, HS_HidSixAxisSensorStateAtomicStorage, six,
               sizeof six, hid.samp);
-    /* touch screen: no touches, only the counters */
+    /* touch screen: the fingers the frontend saw */
     u8 ts[HS_HidTouchScreenState];
-    memset(ts, 0, sizeof ts);
-    memcpy(ts, &hid.samp, 8);
+    hid_touch_sample(&hid.fingers, &g_touch, hid.samp, ts);
     lifo_push(b + HO_HidSharedMemory_touchscreen + HO_HidTouchScreenSharedMemoryFormat_lifo,
               HS_HidTouchScreenStateAtomicStorage, ts, sizeof ts, hid.samp);
     /* keyboard/mouse/debug pad: only bump the counters */

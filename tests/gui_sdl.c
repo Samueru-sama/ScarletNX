@@ -19,8 +19,8 @@ static void mouse(App* app, int col, int row, bool click) {
     layout(app);
     SDL_Event e = {0};
     float x, y;
-    assert(SDL_RenderCoordinatesToWindow(app->renderer, (col + 0.5f) * 8 * app->scale,
-                                        (row + 0.5f) * 16 * app->scale, &x, &y));
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (col + 0.5f) * 8 * app->scale, (row + 0.5f) * 16 * app->scale,
+                                         &x, &y));
     if (click) {
         e.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
         e.button.button = SDL_BUTTON_LEFT;
@@ -33,6 +33,36 @@ static void mouse(App* app, int col, int row, bool click) {
     }
     event(app, &e);
 }
+/* a finger down on one cell and lifted on another, as SDL gives it: 0 to 1 across the window */
+static void swipe(App* app, int col, int row, int to_col, int to_row) {
+    SDL_Event e = {0};
+    float x, y;
+    int w, h;
+    layout(app);
+    SDL_GetWindowSize(app->window, &w, &h);
+    e.tfinger.fingerID = 7;
+    e.type = SDL_EVENT_FINGER_DOWN;
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (col + 0.5f) * 8 * app->scale, (row + 0.5f) * 16 * app->scale,
+                                         &x, &y));
+    e.tfinger.x = x / (float)w;
+    e.tfinger.y = y / (float)h;
+    event(app, &e);
+    e.type = SDL_EVENT_FINGER_UP;
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (to_col + 0.5f) * 8 * app->scale,
+                                         (to_row + 0.5f) * 16 * app->scale, &x, &y));
+    e.tfinger.x = x / (float)w;
+    e.tfinger.y = y / (float)h;
+    event(app, &e);
+}
+static void tap(App* app, int col, int row) { swipe(app, col, row, col, row); }
+/* what the system's picker answers, from its own thread */
+static void pick(App* app, const char* uri) {
+    SDL_Event e = {0};
+    e.type = app->picked;
+    e.user.data1 = uri ? SDL_strdup(uri) : NULL;
+    assert(SDL_PushEvent(&e));
+    while (SDL_PollEvent(&e)) event(app, &e);
+}
 static void colored_text_on(App* app, int col, int row, const char* prompt, SDL_Color color, SDL_Color back) {
     /* Verify the exact text, its glyph color and what is behind it in the real renderer. */
     SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
@@ -41,8 +71,8 @@ static void colored_text_on(App* app, int col, int row, const char* prompt, SDL_
         for (int y = 0; y < 16; ++y)
             for (int x = 0; x < 8; ++x) {
                 Uint8 r, g, b, a;
-                assert(SDL_ReadSurfacePixel(image, ((i + col) * 8 + x) * app->scale, (row * 16 + y) * app->scale, &r, &g,
-                                            &b, &a));
+                assert(SDL_ReadSurfacePixel(image, ((i + col) * 8 + x) * app->scale, (row * 16 + y) * app->scale, &r,
+                                            &g, &b, &a));
                 bool ink = (gui_vga_font[(unsigned char)prompt[i] * 16 + y] & (0x80 >> x)) != 0;
                 SDL_Color want = ink ? color : back;
                 assert(r == want.r && g == want.g && b == want.b);
@@ -122,7 +152,7 @@ int main(int argc, char** argv) {
         SDL_WaitThread(thread, NULL); /* Never returns. ESC must kill, not request a graceful exit. */
         return 1;
     }
-    if (argc == 2 && !strcmp(argv[1], "-f")) {
+    if (argc == 4 && !strcmp(argv[1], "-f") && !strcmp(argv[2], "--touch=1") && !strcmp(argv[3], "--controls=0")) {
         puts("prepared game stdout");
         fputs("prepared game stderr\n", stderr);
         return 0;
@@ -134,14 +164,15 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && strstr(argv[1], "option flags")) {
         int i = 2;
-        assert(argc == 5 + SNX_GUI_HAS_GCCJIT && !strcmp(argv[i++], "-f"));
+        assert(argc == 7 + SNX_GUI_HAS_GCCJIT && !strcmp(argv[i++], "-f") && !strcmp(argv[i++], "--touch=1") &&
+               !strcmp(argv[i++], "--controls=0"));
         if (SNX_GUI_HAS_GCCJIT) assert(!strcmp(argv[i++], "--backend=gcc"));
         assert(!strcmp(argv[i++], "-S") && !strcmp(argv[i++], "-s") && i == argc);
         puts("Recompiling option flags\nScarletNX - option flags"); /* the runner's banner: now loading */
         return 0;
     }
     if (argc > 1) {
-        assert(argc == 2 || argc == 3);
+        assert(argc == 2 || argc == 5);
         assert(snx_is_file(argv[1]));
         if (strstr(argv[1], "Game00")) {
             assert(argc == 2 && strstr(argv[0], "gnuabi"));
@@ -151,7 +182,8 @@ int main(int argc, char** argv) {
         assert(strstr(argv[1], "game with spaces"));
         bool nx = strstr(argv[0], "mariko") != NULL;
         if (nx)
-            assert(argc == 3 && !strcmp(argv[2], "-f"));
+            assert(argc == 5 && !strcmp(argv[2], "-f") && !strcmp(argv[3], "--touch=1") &&
+                   !strcmp(argv[4], "--controls=0"));
         else
             assert(argc == 2);
         size_t size;
@@ -168,6 +200,26 @@ int main(int argc, char** argv) {
     assert(initialize(&app));
     /* the window says which build it is: commit, compiler, platform */
     assert(!strcmp(SDL_GetWindowTitle(app.window), snx_build_info()) && !strncmp(snx_build_info(), "ScarletNX ", 10));
+    /* the boot's splash: the default theme's black page with the icon in the middle until its time; a key ends it and
+       does nothing else. A theme's own shows in its chance of boots, the default's in the others */
+    {
+        SDL_Rect view;
+        SDL_Color black = {0, 0, 0, 255}, icon = {17, 206, 161, 255}; /* wimsy.png's middle */
+        splash_start(&app);
+        assert(app.splash && !app.splash_page.r && !app.splash_page.g && !app.splash_page.b);
+        app.clock = app.splash_until - 1;
+        render(&app);
+        assert(app.splash);
+        SDL_GetRenderViewport(app.renderer, &view);
+        assert(same_colour(pixel(&app, 1, 1), black) && same_colour(pixel(&app, view.w / 2.0f, view.h / 2.0f), icon));
+        key(&app, SDLK_RETURN);
+        assert(!app.splash_until && app.menu.selected == GUI_SWITCH && !app.menu.activated);
+        render(&app);
+        assert(!app.splash);
+        app.clock = 0;
+        assert(gui_splash_theme(gui_theme_builtin("yorha"), 24) == gui_theme_builtin("yorha"));
+        assert(gui_splash_theme(gui_theme_builtin("yorha"), 25) == gui_theme_builtin("default"));
+    }
     char* temporary = snx_temp_dir(NULL);
     char* self = snx_executable(argv[0]);
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
@@ -292,8 +344,10 @@ int main(int argc, char** argv) {
     render(&app);
     colored_text(&app, menu_row(&app, GUI_GCCJIT), "- [OFF] Enable libgccjit", yellow);
     colored_text(&app, menu_row(&app, GUI_FULLSCREEN), "- [ON] Fullscreen", pink);
-    colored_text(&app, app.rows - 4, SNX_GUI_HAS_GCCJIT ? "libgccjit will be used instead of llvm"
-                                                      : "Program was not compiled with libgccjit", normal);
+    colored_text(&app, app.rows - 4,
+                 SNX_GUI_HAS_GCCJIT ? "libgccjit will be used instead of llvm"
+                                    : "Program was not compiled with libgccjit",
+                 normal);
     mouse(&app, 2, menu_row(&app, GUI_GCCJIT), true);
     assert(app.menu.gccjit == !!SNX_GUI_HAS_GCCJIT);
     render(&app);
@@ -385,10 +439,19 @@ int main(int argc, char** argv) {
     assert(app.menu.view == GUI_LOAD_DROP && !app.menu.running);
     e.type = SDL_EVENT_DROP_FILE;
     e.drop.data = input;
+    app.run_log = snx_path_join(temporary, "last-run.log"); /* the run's output, kept as it comes */
     event(&app, &e);
     assert(app.menu.running && app.menu.selected == GUI_SWITCH);
     finish(&app, 0);
     assert(!app.native && !app.banner.seen); /* a driver that started no game stayed compiling */
+    {
+        size_t size;
+        char* kept = (char*)snx_read_file(app.run_log, &size);
+        assert(kept && !app.run_out && !strncmp(kept, "$ ", 2) &&
+               strstr(kept, "game with spaces;literal.nro -f --touch=1 --controls=0\n"));
+        assert(strstr(kept, "driver stdout") && strstr(kept, "driver stderr") && strstr(kept, "\n[ended, status 0]\n"));
+        free(kept);
+    }
     key(&app, SDLK_DOWN);
     key(&app, SDLK_SPACE);
     assert(app.menu.selected == GUI_LINUX && app.menu.view == GUI_LOAD_OPTIONS);
@@ -573,6 +636,30 @@ int main(int argc, char** argv) {
     assert(!strcmp(app.message, "Program ended abnormally (force-terminated by ESC)."));
     render(&app);
     red_text(&app, app.log_top - 4, app.message);
+    /* a finger on a running run's ESC line aborts it, anywhere else it does nothing */
+    assert(!snx_write_file(hung, "", 0));
+    launch(&app, snx_strdup(hung), false);
+    for (until = SDL_GetTicks() + 5000, ready = false; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
+        unsigned char* data = snx_read_file(hung, &size);
+        ready = data && size == 5 && !memcmp(data, "ready", 5);
+        free(data);
+        pump(&app);
+    }
+    assert(ready && app.menu.running);
+    assert(escape_row(&app) == 3); /* the console's ESC line, under the head */
+    tap(&app, 20, 5);
+    assert(app.menu.running && !app.aborting);
+    app.theme = *gui_theme_builtin("yorha"); /* a loading screen's is the last row */
+    tap(&app, 20, 3);
+    assert(!app.aborting);
+    tap(&app, 20, app.rows - 1);
+    assert(app.aborting);
+    app.theme = *gui_theme_builtin("default");
+    while (app.menu.running && SDL_GetTicks() < until) {
+        pump(&app);
+        SDL_Delay(5);
+    }
+    assert(!app.menu.running && app.abnormal_exit);
     free(hung);
 
     /* Browser: missing/empty directories, filtering, page controls and both
@@ -678,6 +765,33 @@ int main(int argc, char** argv) {
         colored_text(&app, app.rows - 4, "Enables gdbstub on port 1234", normal);
         assert(menu_row(&app, GUI_EXIT) < app.rows - 4);
     }
+    /* a text size too big for the window: the menu slides up as the focus goes down, then back, and a size that
+       would leave fewer than 16 rows falls back */
+    {
+        assert(SDL_SetWindowSize(app.window, 1280, 1024));
+        SDL_SyncWindow(app.window);
+        app.menu.text_size = GUI_TEXT_MAX;
+        app.menu.recent_focus = 0;
+        app.menu.selected = GUI_SWITCH;
+        render(&app);
+        assert(app.scale == GUI_TEXT_MAX && app.rows == 16);
+        assert(menu_row_in_full(&app, GUI_EXIT) > menu_last_row(&app) && !menu_offset(&app));
+        assert(menu_shows(&app, menu_row(&app, GUI_SWITCH)) && !menu_shows(&app, menu_row(&app, GUI_EXIT)));
+        app.menu.selected = GUI_EXIT;
+        render(&app);
+        assert(menu_row(&app, GUI_EXIT) == menu_last_row(&app) && !menu_shows(&app, menu_row(&app, GUI_SWITCH)));
+        app.menu.selected = GUI_SWITCH;
+        render(&app);
+        assert(!menu_offset(&app));
+        assert(SDL_SetWindowSize(app.window, 800, 480));
+        SDL_SyncWindow(app.window);
+        render(&app);
+        assert(app.scale == 1);
+        app.menu.text_size = 0;
+        assert(SDL_SetWindowSize(app.window, 1280, 800));
+        SDL_SyncWindow(app.window);
+        render(&app);
+    }
     {
         SDL_Color half;
         char row_text[160];
@@ -714,6 +828,14 @@ int main(int argc, char** argv) {
         colored_text_on(&app, 3, menu_row(&app, GUI_THEME), "Theme: YoRHa", page, ink); /* the focused line's band */
         colored_text_on(&app, 3, menu_row(&app, GUI_EXIT), "Exit", ink, page);
         colored_text_on(&app, 1, app.rows - 2, "CWD:", page, ink);
+        /* the footer's bar goes on below its last whole row, to the window's edge */
+        assert(SDL_SetWindowSize(app.window, 1280, 810));
+        SDL_SyncWindow(app.window);
+        render(&app);
+        assert(800 % (16 * app.scale) == 0 && same_colour(pixel(&app, 4, 809), ink));
+        assert(same_colour(pixel(&app, 4, 16.0f * (float)(app.scale * (app.rows - 3)) - 1), page));
+        assert(SDL_SetWindowSize(app.window, 1280, 800));
+        SDL_SyncWindow(app.window);
         mouse(&app, 2, menu_row(&app, GUI_THEME), true);
         assert(!strcmp(app.theme.id, "custom") && !strcmp(app.theme.name, "Custom test"));
         render(&app);
@@ -758,7 +880,8 @@ int main(int argc, char** argv) {
         app.clock = entered;
         render(&app);
         colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", rgb(app.theme.page), rgb(app.theme.ink));
-        for (row = app.log_top - 2; row <= app.log_top; ++row) /* the run's output waits for the run */
+        /* the run's output waits for the run: its rows, which end above the message (a small window has few) */
+        for (row = app.log_top - 2; row <= app.log_top && row < app.rows - 4; ++row)
             colored_text_on(&app, 1, row, "                            ", rgb(app.theme.ink), rgb(app.theme.page));
         app.clock = entered + app.theme.fade_out_ms / 2;
         render(&app);
@@ -949,6 +1072,84 @@ int main(int argc, char** argv) {
         app.menu.gccjit = app.menu.gdbstub = false;
         free(steps_input);
     }
+    /* fingers: a tap clicks anywhere on a row, which a mouse does on the label only; a drag is no tap, nor a second
+       finger; a swipe across turns the games' pages; back is ESC */
+    {
+        bool fullscreen = app.menu.fullscreen;
+        int row = menu_row(&app, GUI_FULLSCREEN);
+        SDL_Event second = {0};
+        assert(app.menu.view == GUI_LOAD_NONE && !app.menu.running && !app.finished);
+        mouse(&app, app.cols - 3, row, true);
+        assert(app.menu.fullscreen == fullscreen);
+        tap(&app, app.cols - 3, row);
+        assert(app.menu.fullscreen != fullscreen && app.menu.selected == GUI_FULLSCREEN);
+        swipe(&app, 10, row, 10, row + 4);
+        assert(app.menu.fullscreen != fullscreen);
+        second.type = SDL_EVENT_FINGER_DOWN;
+        second.tfinger.fingerID = 8;
+        event(&app, &second); /* the first finger is still down */
+        assert(app.finger == 8);
+        tap(&app, 2, row); /* finger 7: no finger of the screen's */
+        assert(app.menu.fullscreen != fullscreen);
+        second.type = SDL_EVENT_FINGER_UP;
+        second.tfinger.x = app.finger_x;
+        second.tfinger.y = app.finger_y;
+        event(&app, &second); /* finger 8 lifts where it went down, on the title: nothing there */
+        assert(!app.finger && app.menu.fullscreen != fullscreen);
+        tap(&app, 2, row);
+        assert(app.menu.fullscreen == fullscreen);
+        tap(&app, 2, menu_row(&app, GUI_SWITCH));
+        assert(app.menu.view == GUI_LOAD_OPTIONS);
+        key(&app, SDLK_AC_BACK);
+        assert(app.menu.view == GUI_LOAD_NONE);
+        app.menu.view = GUI_LOAD_GAMES;
+        app.browser = (GuiBrowser){.count = 1000};
+        layout(&app);
+        swipe(&app, 60, 10, 10, 11);
+        assert(app.browser.page == 1);
+        swipe(&app, 10, 10, 60, 10);
+        assert(app.browser.page == 0);
+        app.menu.view = GUI_LOAD_NONE;
+        app.browser = (GuiBrowser){0};
+    }
+    /* Share log off Android: scarletnx.log in the working folder, with the message and the last run's output */
+    {
+        char* saved = snx_path_join(temporary, "scarletnx.log");
+        size_t size = 0;
+        char* text;
+        SDL_free(app.cwd);
+        app.cwd = SDL_strdup(temporary);
+        snprintf(app.message, sizeof(app.message), "before the log");
+        app.menu.selected = GUI_LOG;
+        key(&app, SDLK_RETURN);
+        assert(!strncmp(app.message, "Log saved to ", 13) && strstr(app.message, "scarletnx.log"));
+        text = (char*)snx_read_file(saved, &size);
+        assert(text && strstr(text, "Message: before the log") && strstr(text, "== the last run: "));
+        free(text);
+        free(saved);
+    }
+    /* the system's picker, as the Android menu opens it for a file to load or for the keys: a document with no path
+       stays on the screen, and so does none, saying so, for the screen's messages to be read; a path loads */
+    app.picked = SDL_RegisterEvents(1);
+    assert(app.picked);
+    app.menu.selected = GUI_KEYS;
+    key(&app, SDLK_RETURN);
+    assert(app.menu.view == GUI_LOAD_KEYS);
+    pick(&app, NULL);
+    assert(app.menu.view == GUI_LOAD_KEYS && !strcmp(app.message, "No file was picked."));
+    key(&app, SDLK_ESCAPE);
+    assert(app.menu.view == GUI_LOAD_NONE);
+    app.menu.selected = GUI_SWITCH;
+    key(&app, SDLK_RETURN);
+    key(&app, SDLK_RETURN);
+    assert(app.menu.view == GUI_LOAD_DROP);
+    pick(&app, "content://com.android.providers.downloads.documents/document/msf%3A12");
+    assert(app.menu.view == GUI_LOAD_DROP && !app.menu.running && app.message[0]);
+    pick(&app, NULL);
+    assert(app.menu.view == GUI_LOAD_DROP && !strcmp(app.message, "No file was picked."));
+    pick(&app, input);
+    assert(app.menu.running && app.menu.selected == GUI_SWITCH);
+    finish(&app, 0);
     e.type = SDL_EVENT_QUIT;
     event(&app, &e);
     assert(app.menu.quit);

@@ -15,7 +15,8 @@ static void usage(FILE* out) {
           "Stage 2a: decrypted application CIA extraction and memory controller.\n"
           "  -x, --extract   extract only (no guest execution)\n"
           "  --output DIR    new output directory; default work/3ds/<title>-<sha256>\n"
-          "ARM11 static compilation/execution and encrypted content are not implemented.\n", out);
+          "ARM11 static compilation/execution and encrypted content are not implemented.\n",
+          out);
 }
 static bool cia_path(const char* path) {
     size_t n = strlen(path);
@@ -36,14 +37,20 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
-        if (!positional && !strcmp(arg, "--")) positional = true;
+        if (!positional && !strcmp(arg, "--"))
+            positional = true;
         else if (!positional && (!strcmp(arg, "--help") || !strcmp(arg, "-h"))) {
             usage(stdout);
             return 0;
-        } else if (!positional && !strcmp(arg, "--board-info")) info = true;
-        else if (!positional && (!strcmp(arg, "-x") || !strcmp(arg, "--extract"))) extract_only = true;
+        } else if (!positional && !strcmp(arg, "--board-info"))
+            info = true;
+        else if (!positional && (!strcmp(arg, "-x") || !strcmp(arg, "--extract")))
+            extract_only = true;
         else if (!positional && !strcmp(arg, "--output")) {
-            if (++i == argc || !*argv[i]) { fputs("scarletnx-3ds: --output requires a directory\n", stderr); return 2; }
+            if (++i == argc || !*argv[i]) {
+                fputs("scarletnx-3ds: --output requires a directory\n", stderr);
+                return 2;
+            }
             output = argv[i];
         } else if (!positional && !strcmp(arg, "--model")) {
             if (++i == argc || (strcmp(argv[i], "old") && strcmp(argv[i], "new"))) {
@@ -55,7 +62,8 @@ int main(int argc, char** argv) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);
             usage(stderr);
             return 2;
-        } else input = arg;
+        } else
+            input = arg;
     }
     if ((!input && !info) || (info && (input || extract_only || output))) {
         usage(stderr);
@@ -63,9 +71,8 @@ int main(int argc, char** argv) {
     }
     if (!snx_ctr_board_init(&board, model)) return 1;
     if (info) {
-        printf("3DS board: %s\nARM11 cores: %u\nBase clock: %" PRIu64 " Hz\nFCRAM: %u MiB\n",
-               board.profile->name, board.profile->arm11_cores, SNX_CTR_BASE_CLOCK_HZ,
-               board.profile->fcram_size / (1024u * 1024u));
+        printf("3DS board: %s\nARM11 cores: %u\nBase clock: %" PRIu64 " Hz\nFCRAM: %u MiB\n", board.profile->name,
+               board.profile->arm11_cores, SNX_CTR_BASE_CLOCK_HZ, board.profile->fcram_size / (1024u * 1024u));
         for (size_t i = 0; i < board.profile->region_count; ++i) {
             const SnxCtrRegion* r = &board.profile->regions[i];
             printf("  %-10s physical 0x%08" PRIx32 " size 0x%08" PRIx32 "\n", r->name, r->base, r->size);

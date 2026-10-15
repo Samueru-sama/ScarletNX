@@ -7,6 +7,7 @@ An independent ISA oracle, unlike arm_checked_matrix.py. Exclusives are not
 implemented on the checked backend and are covered by explicit unsupported
 witnesses instead. Thumb legacy BL halves have separate C golden witnesses.
 """
+
 import argparse
 import ctypes as C
 import pathlib
@@ -19,6 +20,7 @@ import arm_checked_matrix as M
 def main():
     import unicorn as U
     from unicorn import arm_const as R
+
     assert U.__version__ == '2.1.4', 'Use the pinned unicorn==2.1.4'
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--emitter', required=True)
@@ -31,9 +33,9 @@ def main():
     emu.mem_map(0, A.SIZE)
     with tempfile.TemporaryDirectory(prefix='snx-arm11-diff-') as tmp:
         root = pathlib.Path(tmp)
-        (root / 'words.txt').write_text(''.join(
-            f'{pc:x} ' + ' '.join(f'{w:08x}' for w in words) + '\n'
-            for pc, words in zip(A.PCS, A.PROGRAMS)))
+        (root / 'words.txt').write_text(
+            ''.join(f'{pc:x} ' + ' '.join(f'{w:08x}' for w in words) + '\n' for pc, words in zip(A.PCS, A.PROGRAMS))
+        )
         for opt in ('0', '2'):
             functions = M.compile_blocks(args, root, 'arm11', 'checked', opt)
             total = invalid = 0

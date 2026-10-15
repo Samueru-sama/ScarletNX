@@ -2,10 +2,11 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* the smaller services, most of which answer success: apm, lm, pctl, friend, ns, ssl, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin.
+/* the smaller services, most of which answer success: apm, lm, pctl, friend, ns, prepo, psm, fatal, csrng, mm, nfp, caps, bcat, aoc, irs, mii, ldn, ectx, spl, btm, audin.
    Their interfaces are in misc.swipc */
 #include "hle/services/services_int.h"
 #include "hle/services/misc.swipc.inc"
+#include <openssl/rand.h>
 /* ================================================================ apm and misc */
 static int nn_apm_ISession_GetPerformanceConfiguration(SvcObj* self, nn_apm_PerformanceMode mode,
                                                        nn_apm_PerformanceConfiguration* config) {
@@ -156,12 +157,6 @@ static int nn_ns_detail_IServiceGetterInterface_GetDocumentInterface(SvcObj* sel
 }
 SvcObj* new_ns(void) { return nn_ns_detail_IServiceGetterInterface_new(0); }
 
-static int nn_ssl_sf_ISslService_CreateContext(SvcObj* self, nn_ssl_sf_SslVersion ssl_version, u64 pid,
-                                               SvcObj** context) {
-    *context = nn_ssl_sf_ISslContext_new(0);
-    return 0;
-}
-SvcObj* new_ssl(void) { return nn_ssl_sf_ISslService_new(0); }
 SvcObj* new_prepo(void) { return nn_prepo_detail_ipc_IPrepoService_new(0); }
 static int nn_psm_IPsmSession_BindStateChangeEvent(SvcObj* self, u32* event) { return new_event(event, "psm", 0); }
 static int nn_psm_IPsmServer_GetBatteryChargePercentage(SvcObj* self, u32* percentage) {
@@ -193,23 +188,22 @@ static int nn_fatalsrv_IService_ThrowFatalWithCpuContext(SvcObj* self, u32 resul
 SvcObj* new_fatal(void) { return nn_fatalsrv_IService_new(0); }
 #define MM_REQ_MAX 32
 static struct {
-    u64 random_ctr; /* random_fill's counter */
     struct {
         u32 id, module, rate;
     } mm[MM_REQ_MAX]; /* mm:u's requests */
     u32 mm_next;
     KShmem* irs_shm; /* GetIrsensorSharedMemoryHandle's, made by the first call */
-} misc = {.random_ctr = 0x9E3779B97F4A7C15ull, .mm_next = 1};
-/* random bytes for csrng and spl: splitmix64 over a shared counter, so parallel callers never share a state */
+} misc = {.mm_next = 1};
+/* random bytes for csrng and spl, which the console draws from its CSPRNG: games seed their own generators and key
+   material with them. OpenSSL's RAND_bytes is thread-safe and seeded from the host's. The console's never fails, so a
+   failure here (no entropy source) can't be answered */
 static int random_fill(IpcBuf b) {
     if (!b.addr) return 0;
     u8* d = GP(b.addr);
-    for (u64 i = 0; i < b.size; i += 8) {
-        u64 z = __atomic_add_fetch(&misc.random_ctr, 0x9E3779B97F4A7C15ull, __ATOMIC_RELAXED);
-        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-        z ^= z >> 31;
-        memcpy(d + i, &z, b.size - i < 8 ? b.size - i : 8);
+    for (u64 at = 0; at < b.size;) {
+        int n = b.size - at > 1u << 30 ? 1 << 30 : (int)(b.size - at);
+        if (RAND_bytes(d + at, n) != 1) fatal("csrng: OpenSSL has no random source\n");
+        at += (u64)n;
     }
     return 0;
 }

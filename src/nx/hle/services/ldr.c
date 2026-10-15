@@ -6,7 +6,7 @@
    fixed-address AOT functions cannot safely be rebased by changing their dispatch entries. */
 #include "hle/services/services_int.h"
 #include "hle/services/ldr.swipc.inc"
-#include "utilities/sha256.h"
+#include <openssl/evp.h>
 
 #define RO_ERROR(d) RC(22, d)
 #define RO_LIMIT    64
@@ -100,7 +100,7 @@ static int ro_validate_nro(RoState* s, const MemCodeMap* m, u32* text, u32* ro, 
         ro_u32(h + 0x28) != *text || ro_u32(h + 0x30) != (u64)*text + *ro || (u64)*text + *ro + *data != m->size)
         return RO_ERROR(4);
     u8 hash[32];
-    snx_sha256(h, (size_t)m->size, hash);
+    if (!EVP_Digest(h, (size_t)m->size, hash, NULL, EVP_sha256(), NULL)) fatal("ldr: SHA-256 failed (out of memory)\n");
     int authorized = 0;
     for (int i = 0; i < RO_LIMIT && !authorized; i++)
         for (u32 j = 0; j < s->nrr[i].count; j++)

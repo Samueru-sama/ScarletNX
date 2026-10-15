@@ -210,6 +210,9 @@ int main(int argc, char** argv) {
         const char* fullscreen = getenv("SNX_WORKFLOW_FLAGS");
         if (fullscreen && (!strcmp(fullscreen, "--fullscreen") || !strcmp(fullscreen, "-f")))
             CHECK(argc == 2 && !strcmp(argv[1], "-f"));
+        /* the game's own settings reach it as they were given */
+        if (fullscreen && (!strncmp(fullscreen, "--touch=", 8) || !strncmp(fullscreen, "--controls=", 11)))
+            CHECK(argc == 2 && !strcmp(argv[1], fullscreen));
         if (getenv("SNX_WORKFLOW_BACKEND") && *getenv("SNX_WORKFLOW_BACKEND")) CHECK(argc == 1);
         if (flag && *flag) CHECK(argc == 2 && !strcmp(argv[1], "-H"));
         if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
@@ -280,6 +283,10 @@ int main(int argc, char** argv) {
             set_env("SNX_WORKFLOW_FLAGS", flags[j]);
             run(exe, repo, dump, log, 0, "G", NULL);
         }
+        set_env("SNX_WORKFLOW_FLAGS", "--touch=2");
+        run(exe, repo, dump, log, 0, "G", NULL);
+        set_env("SNX_WORKFLOW_FLAGS", "--controls=1");
+        run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=invalid");
         run(exe, repo, dump, log, 1, "", "unknown option");
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=0");
