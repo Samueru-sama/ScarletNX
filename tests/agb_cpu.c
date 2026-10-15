@@ -99,7 +99,7 @@ int main(void) {
     CHECK(!agb_board_insert(&board, rom, size, error, sizeof error));
     free(rom);
     CHECK(!agb_map_init(&map, &board, error, sizeof error));
-    agb_cpu_init(&cpu, map.base);
+    agb_cpu_init(&cpu, &board, map.base);
     agb_recomp_init(&recomp, "agb_cpu_test.code", SNX_AGB_TEST_CC);
     if (agb_recomp_build(&recomp, &board, error, sizeof error)) {
         fprintf(stderr, "agb_cpu: recompiling the ROM: %s\n", error);

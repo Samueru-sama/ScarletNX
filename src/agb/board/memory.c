@@ -3,6 +3,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "memory.h"
 #include "board.h"
+#include "save.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -14,6 +15,8 @@ void agb_memory_init(AgbMemory* memory) {
     memory->vram = (uint8_t*)calloc(1, AGB_VRAM_SIZE);
     memory->oam = (uint8_t*)calloc(1, AGB_OAM_SIZE);
     memory->sram = (uint8_t*)calloc(1, AGB_SRAM_SIZE);
+    /* save memory reads 0xFF until the game writes it */
+    if (memory->sram) memset(memory->sram, 0xFF, AGB_SRAM_SIZE);
     memory->owned = 1;
 }
 
@@ -79,6 +82,7 @@ uint8_t agb_read8(AgbBoard* board, uint32_t address) {
     const uint8_t* rom;
     uint8_t* p;
     if ((address >> 24) == 0x04) return (uint8_t)(agb_io_read16(board, address & 0x0FFFFFFE) >> ((address & 1) * 8));
+    if ((address >> 24) >= 0x0E) return agb_save_read8(board, address);
     p = region8(board, address);
     if (p) return *p;
     rom = rom_bytes(board, address, 1, &offset);
@@ -91,6 +95,11 @@ uint16_t agb_read16(AgbBoard* board, uint32_t address) {
     uint8_t* p;
     address &= 0x0FFFFFFE;
     if ((address >> 24) == 0x04) return agb_io_read16(board, address);
+    if ((address >> 24) >= 0x0E) {
+        /* the save memory sits on an 8 bit bus: a wider read returns the byte twice */
+        uint8_t byte = agb_save_read8(board, address);
+        return (uint16_t)(byte * 0x0101u);
+    }
     p = region8(board, address);
     if (p) return load16(p);
     rom = rom_bytes(board, address, 2, &offset);
@@ -106,6 +115,10 @@ uint32_t agb_read32(AgbBoard* board, uint32_t address) {
     address &= 0x0FFFFFFC;
     if ((address >> 24) == 0x04)
         return agb_io_read16(board, address) | (uint32_t)agb_io_read16(board, address + 2) << 16;
+    if ((address >> 24) >= 0x0E) {
+        uint8_t byte = agb_save_read8(board, address);
+        return byte * 0x01010101u;
+    }
     p = region8(board, address);
     if (p) return load32(p);
     rom = rom_bytes(board, address, 4, &offset);
@@ -121,6 +134,10 @@ void agb_write8(AgbBoard* board, uint32_t address, uint8_t value) {
         uint32_t halfword = address & 0x0FFFFFFE;
         uint16_t old = agb_io_read16(board, halfword);
         agb_io_write16(board, halfword, (uint16_t)(address & 1 ? (old & 0x00FF) | value << 8 : (old & 0xFF00) | value));
+        return;
+    }
+    if ((address >> 24) >= 0x0E) {
+        agb_save_write8(board, address, value);
         return;
     }
     p = region8(board, address);
@@ -142,23 +159,26 @@ void agb_write8(AgbBoard* board, uint32_t address, uint8_t value) {
 
 void agb_write16(AgbBoard* board, uint32_t address, uint16_t value) {
     uint8_t* p;
+    if ((address >> 24) >= 0x0E) {
+        /* the save memory is 8 bits wide: a wider store puts one lane's byte down */
+        agb_save_write8(board, address, (uint8_t)(value >> ((address & 1) * 8)));
+        return;
+    }
     address &= 0x0FFFFFFE;
     if ((address >> 24) == 0x04) {
         agb_io_write16(board, address, value);
         return;
     }
     p = region8(board, address);
-    if (!p) return;
-    switch (address >> 24) {
-        /* the save memory sits on an 8-bit bus: a wider write lands the low byte in both bytes */
-        case 0x0E:
-        case 0x0F: memset(p, (int)(uint8_t)value, 2); break;
-        default: store16(p, value); break;
-    }
+    if (p) store16(p, value);
 }
 
 void agb_write32(AgbBoard* board, uint32_t address, uint32_t value) {
     uint8_t* p;
+    if ((address >> 24) >= 0x0E) {
+        agb_save_write8(board, address, (uint8_t)(value >> ((address & 3) * 8)));
+        return;
+    }
     address &= 0x0FFFFFFC;
     if ((address >> 24) == 0x04) {
         agb_io_write16(board, address, (uint16_t)value);
@@ -166,10 +186,5 @@ void agb_write32(AgbBoard* board, uint32_t address, uint32_t value) {
         return;
     }
     p = region8(board, address);
-    if (!p) return;
-    switch (address >> 24) {
-        case 0x0E:
-        case 0x0F: memset(p, (int)(uint8_t)value, 4); break;
-        default: store32(p, value); break;
-    }
+    if (p) store32(p, value);
 }

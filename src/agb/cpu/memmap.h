@@ -9,6 +9,8 @@
 #include <stdint.h>
 
 typedef struct AgbBoard AgbBoard;
+/* The flat window: 256 MiB of guest map, twice, because the console mirrors everything with bit 31
+   set. The guest's 0x00000000 is the window's base. */
 typedef struct {
     uint8_t* base; /* AGB_MAP_SIZE bytes, the guest's 0x00000000 */
     int fds[9];    /* one shared backing per region, -1 where mirroring is unavailable */

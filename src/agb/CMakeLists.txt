@@ -13,8 +13,9 @@ if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${CMAKE_SOURCE_DIR}/src/common/cpu/arm" agb-arm-backend)
 endif()
 
-add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c cartridge/cartridge.c
-                                bios/bios.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c cpu/cpu.c)
+add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c board/save.c
+                                 cartridge/cartridge.c bios/bios.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c
+                                 cpu/cpu.c)
 set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_include_directories(scarletnx-agb PUBLIC "${PROJECT_SOURCE_DIR}/src/agb" "${PROJECT_SOURCE_DIR}/src/common")
 target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm)

@@ -13,9 +13,9 @@
 #define AGB_PALETTE_SIZE 0x400u      /* 0x05000000: background and object palette */
 #define AGB_VRAM_SIZE 0x18000u       /* 0x06000000: video RAM */
 #define AGB_OAM_SIZE 0x400u          /* 0x07000000: object attribute memory */
-#define AGB_SRAM_SIZE (64u * 1024)   /* 0x0E000000: the cartridge's save memory */
+#define AGB_SRAM_SIZE (128u * 1024) /* 0x0E000000: the cartridge's save memory, up to the 128 KiB flash */
 #define AGB_IO_COUNT 0x200u          /* 0x04000000: register halfwords */
-#define AGB_MAP_SIZE 0x10000000u     /* the flat window the recompiled code sees */
+#define AGB_MAP_SIZE 0x100000000ull /* the flat window: the 256 MiB map twice, for the bit 31 mirror */
 
 typedef struct AgbBoard AgbBoard;
 typedef struct {
@@ -26,8 +26,8 @@ typedef struct {
 void agb_memory_init(AgbMemory* memory);
 void agb_memory_free(AgbMemory* memory);
 
-/* Addresses fold through the region mirrors before the access. Reads of unmapped
-   space and writes to the cartridge ROM are dropped and return zero. */
+/* Addresses fold through the region mirrors before the access, down to the palette's and OAM's 1 KiB
+   repeats. Reads of unmapped space and writes to the cartridge ROM are dropped and return zero. */
 uint8_t agb_read8(AgbBoard* board, uint32_t address);
 uint16_t agb_read16(AgbBoard* board, uint32_t address);
 uint32_t agb_read32(AgbBoard* board, uint32_t address);

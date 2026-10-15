@@ -109,13 +109,13 @@ static int mirror_region(AgbMap* map, uint32_t address, uint32_t window, uint32_
     return 0;
 }
 
-static int mirror_vram(AgbMap* map, int backing) {
+static int mirror_vram(AgbMap* map, uint32_t base, int backing) {
     if (!aliased(map)) return 0;
     for (uint32_t offset = 0; offset < 0x1000000; offset += 0x20000) {
         for (uint32_t page = 0; page < 0x20000; page += 0x1000) {
             /* the window's last 32 KiB repeat the 32 KiB above the bitmap region */
             uint32_t within = page >= 0x18000 ? page - 0x8000 : page;
-            if (map_alias(map, 0x06000000 + offset + page, 0x1000, (size_t)backing, within)) return -1;
+            if (map_alias(map, base + 0x06000000 + offset + page, 0x1000, (size_t)backing, within)) return -1;
         }
     }
     return 0;
@@ -152,17 +152,21 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
             {0x05000000, 0x1000000, 0x1000, palette},       {0x07000000, 0x1000000, 0x1000, oam},
             {0x0E000000, 0x2000000, AGB_SRAM_SIZE, sram},
         };
-        for (size_t i = 0; i < sizeof(mirrors) / sizeof(mirrors[0]); ++i) {
-            if (mirror_region(map, mirrors[i].address, mirrors[i].window, mirrors[i].unit, mirrors[i].backing)) {
-                snprintf(error, error_size, "cannot mirror the guest memory regions");
+        for (uint32_t base = 0;; base = 0x80000000u) {
+            for (size_t i = 0; i < sizeof(mirrors) / sizeof(mirrors[0]); ++i) {
+                if (mirror_region(map, base + mirrors[i].address, mirrors[i].window, mirrors[i].unit,
+                                  mirrors[i].backing)) {
+                    snprintf(error, error_size, "cannot mirror the guest memory regions");
+                    agb_map_destroy(map, board);
+                    return -1;
+                }
+            }
+            if (mirror_vram(map, base, vram)) {
+                snprintf(error, error_size, "cannot mirror the guest video RAM");
                 agb_map_destroy(map, board);
                 return -1;
             }
-        }
-        if (mirror_vram(map, vram)) {
-            snprintf(error, error_size, "cannot mirror the guest video RAM");
-            agb_map_destroy(map, board);
-            return -1;
+            if (base) break;
         }
     }
     if (board->has_cartridge) {
@@ -171,13 +175,16 @@ int agb_map_init(AgbMap* map, AgbBoard* board, char* error, size_t error_size) {
             backing = map_backing(map, rom_backing_size);
             if (backing >= 0) {
                 memcpy(map->backings[backing], board->cartridge.data, rom);
-                if (mirror_region(map, 0x08000000, 0x6000000, (uint32_t)rom_backing_size, backing)) backing = -1;
+                if (mirror_region(map, 0x08000000, 0x6000000, (uint32_t)rom_backing_size, backing) ||
+                    mirror_region(map, 0x88000000, 0x6000000, (uint32_t)rom_backing_size, backing))
+                    backing = -1;
             }
         }
         if (backing < 0) memcpy(map->base + 0x08000000, board->cartridge.data, rom); /* the window is RAM */
     }
     /* the board's devices read and write the regions through these pointers */
     agb_memory_free(&board->memory);
+    memset(map->base + 0x0E000000, 0xFF, AGB_SRAM_SIZE); /* save memory reads 0xFF until written */
     board->memory.ewram = map->base + 0x02000000;
     board->memory.iwram = map->base + 0x03000000;
     board->memory.palette = map->base + 0x05000000;

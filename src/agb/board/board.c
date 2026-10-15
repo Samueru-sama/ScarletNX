@@ -15,6 +15,7 @@ int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* erro
     agb_cartridge_unload(&board->cartridge);
     board->cartridge = cartridge;
     board->has_cartridge = 1;
+    agb_save_reset(board, agb_save_detect((const uint8_t*)image, size));
     return 0;
 }
 
@@ -70,20 +71,6 @@ void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value) {
         return;
     }
     board->io[offset] = value;
-}
-
-/* Recompiled code writes the register window through the flat map. The sync applies those writes to the
-   devices and refreshes the whole window with what the registers read back, so the CPU sees live values. */
-void agb_io_sync(AgbBoard* board, uint8_t* io_window) {
-    for (uint32_t i = 0; i < AGB_IO_COUNT; ++i) {
-        uint16_t value = (uint16_t)(io_window[i * 2] | io_window[i * 2 + 1] << 8);
-        uint16_t read;
-        if (value != board->io_shadow[i]) agb_io_write16(board, 0x04000000 + i * 2, value);
-        read = agb_io_read16(board, 0x04000000 + i * 2);
-        board->io_shadow[i] = read;
-        io_window[i * 2] = (uint8_t)read;
-        io_window[i * 2 + 1] = (uint8_t)(read >> 8);
-    }
 }
 
 void agb_irq_request(AgbBoard* board, uint32_t mask) {

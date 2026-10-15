@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
             agb_board_destroy(&board);
             return 1;
         }
-        agb_cpu_init(&cpu, map.base);
+        agb_cpu_init(&cpu, &board, map.base);
         base = (char*)malloc(strlen(path) + 16);
         if (base) sprintf(base, "%s.code", path);
         agb_recomp_init(&recomp, base ? base : "agb-code", SNX_AGB_CC);

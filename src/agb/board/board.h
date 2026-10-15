@@ -9,6 +9,7 @@
 #include "../cartridge/cartridge.h"
 #include "../ppu/ppu.h"
 #include "memory.h"
+#include "save.h"
 
 /* The interrupt lines devices raise, the bits of the interrupt controller's registers. */
 enum {
@@ -40,13 +41,12 @@ typedef struct AgbBoard {
     AgbMemory memory;
     AgbPpu ppu;
     AgbApu apu;
+    AgbSave save;
     AgbDmaChannel dma[4];
     AgbTimer timer[4];
     uint16_t irq_ie, irq_if, irq_ime;
-    uint32_t cpu_halted;              /* the CPU waits for an interrupt (Halt) */
-    uint32_t bios_wait_mask;          /* IntrWait is waiting for these interrupt flags */
-    uint16_t io[AGB_IO_COUNT];        /* the I/O register file; devices claim registers here */
-    uint16_t io_shadow[AGB_IO_COUNT]; /* what the last sync applied */
+    uint32_t cpu_halted;       /* the CPU waits for an interrupt (Halt) */
+    uint16_t io[AGB_IO_COUNT]; /* the I/O register file; devices claim registers here */
     int has_cartridge;
 } AgbBoard;
 
@@ -55,11 +55,10 @@ void agb_board_init(AgbBoard* board);
 int agb_board_insert(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size);
 void agb_board_destroy(AgbBoard* board);
 
-/* The I/O window at 0x04000000: the devices own their registers here. Recompiled code writes the window
-   through the flat map; agb_io_sync applies those writes and refreshes the registers the CPU reads back. */
+/* The I/O window at 0x04000000: the devices own their registers here. Recompiled code reaches them
+   through the bus hook of AgbCpu, which routes every access to these. */
 uint16_t agb_io_read16(AgbBoard* board, uint32_t address);
 void agb_io_write16(AgbBoard* board, uint32_t address, uint16_t value);
-void agb_io_sync(AgbBoard* board, uint8_t* io_window);
 /* Devices request interrupts here. */
 void agb_irq_request(AgbBoard* board, uint32_t mask);
 
