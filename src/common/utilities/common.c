@@ -21,6 +21,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -682,6 +683,66 @@ unsigned snx_cpu_count(void) {
     int mib[2] = {CTL_HW, HW_NCPU};
     if (sysctl(mib, 2, &ncpu, &len, NULL, 0) == -1) return 1;
     return ncpu;
+#endif
+}
+/* Code arenas (code_loader.c) reserve their address space once and give each page access only when it is used: the
+   loader writes into read-write pages and makes them executable before anything jumps there */
+size_t snx_vm_page_size(void) {
+#ifdef _WIN32
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return info.dwPageSize;
+#else
+    long size = sysconf(_SC_PAGESIZE);
+    return size > 0 ? (size_t)size : 4096;
+#endif
+}
+void* snx_vm_reserve(size_t size) {
+#ifdef _WIN32
+    return VirtualAlloc(NULL, size, MEM_RESERVE, PAGE_NOACCESS);
+#else
+    int flags = MAP_PRIVATE;
+    void* p;
+#ifdef MAP_ANONYMOUS
+    flags |= MAP_ANONYMOUS;
+#else
+    flags |= MAP_ANON;
+#endif
+#ifdef MAP_NORESERVE
+    flags |= MAP_NORESERVE; /* address space only: no swap is set aside for pages never committed */
+#endif
+    p = mmap(NULL, size, PROT_NONE, flags, -1, 0);
+    return p == MAP_FAILED ? NULL : p;
+#endif
+}
+int snx_vm_protect(void* p, size_t size, int access) {
+#ifdef _WIN32
+    static const DWORD protection[] = {PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_EXECUTE_READ};
+    DWORD old;
+    if (access == SNX_VM_NONE) return VirtualFree(p, size, MEM_DECOMMIT) ? 0 : -1;
+    /* reserved pages are committed first: VirtualProtect only changes committed ones */
+    if (!VirtualAlloc(p, size, MEM_COMMIT, PAGE_READWRITE)) return -1;
+    return VirtualProtect(p, size, protection[access], &old) ? 0 : -1;
+#else
+    static const int protection[] = {PROT_NONE, PROT_READ, PROT_READ | PROT_WRITE, PROT_READ | PROT_EXEC};
+    return mprotect(p, size, protection[access]);
+#endif
+}
+void snx_vm_release(void* p, size_t size) {
+#ifdef _WIN32
+    (void)size;
+    VirtualFree(p, 0, MEM_RELEASE);
+#else
+    munmap(p, size);
+#endif
+}
+void snx_vm_flush_code(void* p, size_t size) {
+#ifdef _WIN32
+    FlushInstructionCache(GetCurrentProcess(), p, size);
+#else
+    /* nothing on x86-64, whose instruction fetch sees stores; AArch64 cleans the data cache to the point of
+       unification and invalidates the instruction cache over the range */
+    __builtin___clear_cache((char*)p, (char*)p + size);
 #endif
 }
 void snx_tool_console(void) {

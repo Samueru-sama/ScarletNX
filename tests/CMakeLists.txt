@@ -308,6 +308,12 @@ target_link_libraries(snx-test-llvm-differential PRIVATE snx_llvm snx_driver ${C
 add_test(NAME llvm_differential COMMAND snx-test-llvm-differential "${CMAKE_C_COMPILER}" "${PROJECT_SOURCE_DIR}"
     --quiet)
 set_tests_properties(llvm_differential PROPERTIES TIMEOUT 900)
+# the same steps through the JIT's loader (code_loader.c), which reads ELF objects only so far
+if(NOT WIN32)
+    add_test(NAME llvm_differential_jit COMMAND snx-test-llvm-differential "${CMAKE_C_COMPILER}" "${PROJECT_SOURCE_DIR}"
+        --quiet --jit)
+    set_tests_properties(llvm_differential_jit PROPERTIES TIMEOUT 900)
+endif()
 # not a test: timings of the generated code (llvm_bench SCARLETNX REPO CLANG)
 add_executable(snx-llvm-bench llvm_bench.c)
 snx_test_target(snx-llvm-bench 11)

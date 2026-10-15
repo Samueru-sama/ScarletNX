@@ -5,13 +5,16 @@
    backend's (snx_ir_static_step, compiled and linked by the backend itself) run from the same random CPU state and
    guest memory; registers, flags, FP state, the exclusive monitor, memory, the returned pc and the runtime callbacks
    must all match.
-     llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--quiet]
-   --match keeps patterns whose name starts with NAME. */
+     llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--quiet] [--jit]
+   --match keeps patterns whose name starts with NAME. --jit loads the LLVM steps with the JIT's loader
+   (code_loader.c) instead of linking them into a shared object for dlopen, and checks that loaded code reaches the
+   runtime's functions and data, outside the code arena. */
 #include "common.h"
 #include "cpu.h"
 #include "a64.h"
 #include "ir.h"
 #include "link.h"
+#include "code_loader.h"
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
@@ -311,6 +314,53 @@ static void* load(const char* path, TableFn* table) {
 #endif
 }
 
+/* --jit: a unit that reaches into this executable, as JIT code reaches into the runtime: a hidden function, called
+   (R_X86_64_PLT32, through a stub when it is out of reach), and a default-visibility variable (through the GOT) */
+static u64 probe_value = 0x1234;
+static u64 probe_add(u64 a) { return a + 7; }
+
+static int load_probe(SnxCodeLoader* loader) {
+    char error[1024];
+    const char* names[1] = {"snx_test_probe"};
+    SnxU64 address;
+    SnxIr* ir = snx_ir_new("probe", '2', error, sizeof(error));
+    LLVMValueRef value, add, probe, args[1];
+    LLVMTypeRef params[1];
+    unsigned char* object;
+    size_t object_size, used;
+    SnxLinkInput input;
+    u64 (*call)(u64);
+    if (!ir) return snx_error("%s", error);
+    params[0] = ir->t_i64;
+    value = LLVMAddGlobal(ir->mod, ir->t_i64, "snx_test_probe_value");
+    add = ir_extern(ir, "snx_test_probe_add", ir->t_i64, params, 1);
+    probe = LLVMAddFunction(ir->mod, "snx_test_probe", LLVMFunctionType(ir->t_i64, params, 1, 0));
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, probe, "entry"));
+    args[0] = LLVMGetParam(probe, 0);
+    LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, LLVMBuildLoad2(ir->b, ir->t_i64, value, "v"),
+                                     LLVMBuildCall2(ir->b, LLVMGlobalGetValueType(add), add, args, 1, "c"), "r"));
+    if (snx_ir_object(ir, '2', &object, &object_size, error, sizeof(error))) return snx_error("%s", error);
+    snx_ir_free(ir);
+    input.data = object;
+    input.size = object_size;
+    input.name = "probe";
+    if (snx_code_define(loader, "snx_test_probe_value", (SnxU64)(size_t)&probe_value) ||
+        snx_code_define(loader, "snx_test_probe_add", (SnxU64)(size_t)&probe_add))
+        return snx_error("jit: the probe's symbols are defined already");
+    if (snx_code_load(loader, &input, 1, names, 1, &address, error, sizeof(error))) return snx_error("jit: %s", error);
+    call = (u64 (*)(u64))(size_t)address;
+    if (call(100) != 100 + 7 + 0x1234) return snx_error("jit: the probe returned %llx", (unsigned long long)call(100));
+    /* the same unit again defines snx_test_probe twice: refused, with the arena as it was */
+    used = snx_code_used(loader);
+    if (!snx_code_load(loader, &input, 1, NULL, 0, NULL, error, sizeof(error)) || snx_code_used(loader) != used)
+        return snx_error("jit: a second snx_test_probe was loaded");
+    free(object);
+    /* an empty unit names what earlier ones defined */
+    if (snx_code_load(loader, NULL, 0, names, 1, &address, error, sizeof(error)) || address != (SnxU64)(size_t)call)
+        return snx_error("jit: snx_test_probe is not where it was loaded");
+    return 0;
+}
+
 /* words of one case: random operand fields, the case's specialization fields set, valid encodings only */
 static size_t generate(const SnxA64Pattern* p, size_t index, size_t want, Word* out) {
     size_t got = 0, attempts;
@@ -508,7 +558,8 @@ int main(int argc, char** argv) {
     TableFn table_p, table_l;
     StepFn *steps_p, *steps_l;
     RtAPI rt;
-    int quiet = 0, a, gccjit = 0;
+    int quiet = 0, a, gccjit = 0, jit = 0;
+    SnxCodeLoader* loader = NULL;
 #ifdef SNX_TEST_GCCJIT
     TableFn table_g = NULL;
 #endif
@@ -518,7 +569,8 @@ int main(int argc, char** argv) {
     char* c_native;
     unsigned long fallbacks, gccjit_fallbacks = 0;
     if (argc < 3) {
-        fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N]\n",
+        fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] "
+              "[--quiet] [--gccjit] [--jit]\n",
               stderr);
         return 2;
     }
@@ -529,6 +581,8 @@ int main(int argc, char** argv) {
             quiet = 1;
         else if (!strcmp(argv[a], "--gccjit"))
             gccjit = 1;
+        else if (!strcmp(argv[a], "--jit"))
+            jit = 1;
         else if (a + 1 < argc && !strcmp(argv[a], "--match"))
             match = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "--per-case"))
@@ -640,14 +694,28 @@ int main(int argc, char** argv) {
     inputs[1].data = object;
     inputs[1].size = object_size;
     inputs[1].name = "steps";
-    if (snx_link(inputs, 2, exports, 1, "llvm.so", &linked, error, sizeof(error))) return snx_error("link: %s", error);
-    if (snx_write_file(l_lib, linked.data, linked.size)) return snx_error("cannot write %s", l_lib);
-    free(linked.data);
+    if (jit) {
+        /* the runtime library first, as the JIT service loads it, then the steps calling into it */
+        SnxU64 address;
+        loader = snx_code_loader_new(0, error, sizeof(error));
+        if (!loader) return snx_error("jit: %s", error);
+        if (snx_code_load(loader, &inputs[0], 1, NULL, 0, NULL, error, sizeof(error)) ||
+            snx_code_load(loader, &inputs[1], 1, exports, 1, &address, error, sizeof(error)))
+            return snx_error("jit: %s", error);
+        if (load_probe(loader)) return 1;
+        table_l = (TableFn)(size_t)address;
+        if (!quiet) printf("loaded %lu KiB of code\n", (unsigned long)(snx_code_used(loader) >> 10));
+    } else {
+        if (snx_link(inputs, 2, exports, 1, "llvm.so", &linked, error, sizeof(error)))
+            return snx_error("link: %s", error);
+        if (snx_write_file(l_lib, linked.data, linked.size)) return snx_error("cannot write %s", l_lib);
+        free(linked.data);
+    }
     free(object);
     if (!load(c_lib, &table_p) || !table_p) return snx_error("cannot load the reference steps");
     if (!load(c_native, &table_h) || !table_h) return snx_error("cannot load the native reference steps");
     steps_h = table_h();
-    if (!load(l_lib, &table_l) || !table_l) return snx_error("cannot load the LLVM steps");
+    if (!jit && (!load(l_lib, &table_l) || !table_l)) return snx_error("cannot load the LLVM steps");
     steps_p = table_p();
     steps_l = table_l();
     if (gccjit) {
@@ -753,9 +821,10 @@ int main(int argc, char** argv) {
     /* every pattern has an emitter, in both backends */
     fallbacks += gccjit_fallbacks;
     if (gccjit) printf("libgccjit: %lu through snx_step\n", gccjit_fallbacks);
-    printf("LLVM differential: %lu words, %lu runs, %lu differing words, %lu through snx_step: %s\n",
-           (unsigned long)count, (unsigned long)compared, (unsigned long)failures, fallbacks,
-           failures || fallbacks ? "FAILED" : "passed");
+    printf("LLVM differential%s: %lu words, %lu runs, %lu differing words, %lu through snx_step: %s\n",
+           jit ? " (JIT loader)" : "", (unsigned long)count, (unsigned long)compared, (unsigned long)failures,
+           fallbacks, failures || fallbacks ? "FAILED" : "passed");
     snx_remove_tree(dir);
+    snx_code_loader_free(loader);
     return failures || fallbacks;
 }
