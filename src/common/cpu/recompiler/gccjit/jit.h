@@ -96,6 +96,25 @@ void jit_fp_compare_fast(SnxJit* jit, unsigned cmp, unsigned width, unsigned lan
                          gcc_jit_rvalue* const* b, SnxJitFpFast* out);
 /* one lane through snx_fp_compare, signalling for all but EQ: all ones (uN) or zero */
 gcc_jit_rvalue* jit_fp_compare_mask(SnxJit* jit, unsigned cmp, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width);
+/* ir_fp_from_int_fast's SCVTF/UCVTF of integers (the low integer bits of each v) scaled by 2^-fbits; inexact is
+   NULL */
+void jit_fp_from_int_fast(SnxJit* jit, unsigned width, unsigned lanes, gcc_jit_rvalue* const* v, unsigned integer,
+                          unsigned uns, unsigned fbits, SnxJitFpFast* out);
+/* ir_fp_to_int_fast's FCVT[NPMZA][SU], results uN of the integer's width; 0 when the host can't round inline */
+int jit_fp_to_int_fast(SnxJit* jit, unsigned width, unsigned lanes, gcc_jit_rvalue* const* bits, unsigned integer,
+                       unsigned uns, unsigned rm, unsigned fbits, SnxJitFpFast* out);
+/* ir_fp_estimate_fast's FRECPE (rsqrt 0) or FRSQRTE (1) estimate; inexact is NULL */
+void jit_fp_estimate_fast(SnxJit* jit, unsigned rsqrt, unsigned width, unsigned lanes, gcc_jit_rvalue* const* bits,
+                          SnxJitFpFast* out);
+/* ir_fp_step_fast's FRECPS (rsqrt 0) or FRSQRTS (1) */
+void jit_fp_step_fast(SnxJit* jit, unsigned rsqrt, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a,
+                      gcc_jit_rvalue* const* b, SnxJitFpFast* out);
+/* one lane through snx_fp_unary, snx_fp_to_int and snx_fp_from_int (result u64) */
+gcc_jit_rvalue* jit_fp_unary(SnxJit* jit, gcc_jit_rvalue* bits, unsigned width, unsigned op);
+gcc_jit_rvalue* jit_fp_to_int(SnxJit* jit, gcc_jit_rvalue* bits, unsigned fp, unsigned integer, unsigned uns,
+                              unsigned fbits, unsigned rm);
+gcc_jit_rvalue* jit_fp_from_int(SnxJit* jit, gcc_jit_rvalue* bits, unsigned integer, unsigned fp, unsigned uns,
+                                unsigned fbits);
 
 /* ---- building blocks (jit.c) ----
    Values follow the C's evaluation order: anything that reads memory or calls is assigned to a fresh local where it

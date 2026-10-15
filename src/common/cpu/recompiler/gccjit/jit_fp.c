@@ -223,7 +223,7 @@ V jit_fp_minmax(SnxJit* j, V a, V b, unsigned width, unsigned minimum, unsigned 
     x[0] = a, x[1] = b, x[2] = jit_int(j, (int)width), x[3] = jit_int(j, (int)minimum), x[4] = jit_int(j, (int)numeric);
     return fp_call(j, "snx_fp_minmax", j->t_u64, 2, x, 5);
 }
-static V unary(SnxJit* j, V bits, unsigned width, unsigned op) {
+V jit_fp_unary(SnxJit* j, V bits, unsigned width, unsigned op) {
     V x[3];
     x[0] = bits, x[1] = jit_int(j, (int)width), x[2] = jit_int(j, (int)op);
     return fp_call(j, "snx_fp_unary", j->t_u64, 1, x, 3);
@@ -243,13 +243,13 @@ static V compare(SnxJit* j, V a, V b, unsigned width, V signal) {
     x[0] = a, x[1] = b, x[2] = jit_int(j, (int)width), x[3] = signal;
     return fp_call(j, "snx_fp_compare", j->t_u32, 2, x, 4);
 }
-static V to_int(SnxJit* j, V bits, unsigned fp, unsigned integer, unsigned uns, unsigned fbits, unsigned rm) {
+V jit_fp_to_int(SnxJit* j, V bits, unsigned fp, unsigned integer, unsigned uns, unsigned fbits, unsigned rm) {
     V x[6];
     x[0] = bits, x[1] = jit_int(j, (int)fp), x[2] = jit_int(j, (int)integer), x[3] = jit_int(j, (int)uns),
     x[4] = jit_int(j, (int)fbits), x[5] = jit_int(j, (int)rm);
     return fp_call(j, "snx_fp_to_int", j->t_u64, 1, x, 6);
 }
-static V from_int(SnxJit* j, V bits, unsigned integer, unsigned fp, unsigned uns, unsigned fbits) {
+V jit_fp_from_int(SnxJit* j, V bits, unsigned integer, unsigned fp, unsigned uns, unsigned fbits) {
     V x[5];
     x[0] = bits, x[1] = jit_int(j, (int)integer), x[2] = jit_int(j, (int)fp), x[3] = jit_int(j, (int)uns),
     x[4] = jit_int(j, (int)fbits);
@@ -359,7 +359,7 @@ static int fp1(SnxJit* j, SnxU32 w, size_t index) {
             join = jit_fp_branch(j, f.ok, &slow);
             set_bits(j, rd, width, f.value[0]);
             jit_fp_else(j, join, slow, f.inexact);
-            set_bits(j, rd, width, unary(j, a, width, 0));
+            set_bits(j, rd, width, jit_fp_unary(j, a, width, 0));
             jit_fp_join(j, join);
             return 1;
         }
@@ -558,24 +558,29 @@ static void fp3(SnxJit* j, SnxU32 w, size_t index) {
     jit_fp_join(j, join);
 }
 
-/* FCVT[NPMZA][SU] to a 32/64-bit integer: round with the instruction's mode, convert, inexact when rounding changed
-   the value. Fast for finite values in range (no IOC), denormals only without FZ (flushing sets IDC) */
-static V to_int_fast(SnxJit* j, V bits, unsigned width, unsigned integer, unsigned uns, unsigned rm, V* ok,
-                     V* inexact) {
+/* 2^e, exactly (|e| <= 64 here) */
+static double pow2(int e) {
+    double r = 1.0;
+    for (; e > 0; --e) r *= 2.0;
+    for (; e < 0; ++e) r *= 0.5;
+    return r;
+}
+
+/* ir_fp_to_int_fast: round with the instruction's mode, convert, inexact when rounding changed the value. Fast for
+   finite values in range (no IOC), denormals only without FZ (flushing sets IDC) */
+int jit_fp_to_int_fast(SnxJit* j, unsigned width, unsigned lanes, V const* bits, unsigned integer, unsigned uns,
+                       unsigned rm, unsigned fbits, SnxJitFpFast* out) {
     static const char* const rounding[5] = {"__builtin_roundeven", "__builtin_ceil", "__builtin_floor", NULL,
                                             "__builtin_round"};
     Shape s;
-    V f, rounded, limit, low, result, e, mantissa, in_range;
+    V scaled[4], rounded[4], limit, low, ok, normal, inexact;
+    gcc_jit_lvalue* r[4];
+    gcc_jit_block *convert, *done;
     T it = uns ? jit_uint(j, integer) : jit_sint(j, integer);
     double top = integer == 64 ? 9223372036854775808.0 : 2147483648.0;
+    unsigned i;
+    if (rm != 3 && !j->round) return 0;
     shape(j, width, &s);
-    f = jit_val(j, to_float(j, &s, bits));
-    rounded = rm == 3 ? f : math(j, &s, rounding[rm], 1, &f); /* the conversion truncates by itself */
-    e = exponent(j, &s, bits);
-    mantissa = AND(jit_cast(j, bits, s.it), kint(j, &s, ((SnxU64)1 << s.mantissa) - 1));
-    *ok = jit_land(
-        j, NE(e, kint(j, &s, s.emax)),
-        jit_lor(j, jit_lnot(j, flush_to_zero(j)), jit_lor(j, NE(e, kint(j, &s, 0)), EQ(mantissa, kint(j, &s, 0)))));
     if (uns) {
         limit = kfloat(j, &s, top * 2);
         low = kfloat(j, &s, 0.0); /* -0 compares equal: FCVTPU(-0.3) is 0, inexact */
@@ -583,24 +588,138 @@ static V to_int_fast(SnxJit* j, V bits, unsigned width, unsigned integer, unsign
         limit = kfloat(j, &s, top);
         low = kfloat(j, &s, -top);
     }
-    in_range = jit_land(j, GE(rounded, low), LT(rounded, limit));
-    *ok = jit_val(j, jit_land(j, *ok, in_range));
-    /* converted only where it is in range: out of range the C conversion is undefined, and GCC may assume it isn't */
-    {
-        gcc_jit_lvalue* r = jit_local(j, it);
-        gcc_jit_block *convert = jit_block(j), *done = jit_block(j);
-        jit_assign(j, r, jit_k(j, it, 0));
-        jit_branch(j, *ok, convert, done);
-        jit_enter(j, convert);
-        jit_assign(j, r, jit_cast(j, rounded, it));
-        jit_goto(j, done);
-        jit_enter(j, done);
-        result = jit_val(j, gcc_jit_lvalue_as_rvalue(r));
+    ok = jit_true(j);
+    normal = jit_true(j);
+    for (i = 0; i < lanes; ++i) {
+        V e = exponent(j, &s, bits[i]),
+          mantissa = AND(jit_cast(j, bits[i], s.it), kint(j, &s, ((SnxU64)1 << s.mantissa) - 1));
+        scaled[i] = jit_val(j, to_float(j, &s, bits[i]));
+        /* scaling by 2^fbits is exact, or overflows to an infinity, which is out of range */
+        if (fbits) scaled[i] = jit_val(j, MUL(scaled[i], kfloat(j, &s, pow2((int)fbits))));
+        rounded[i] = rm == 3 ? scaled[i] : math(j, &s, rounding[rm], 1, &scaled[i]); /* the conversion truncates */
+        ok = jit_land(j, ok,
+                      jit_land(j, NE(e, kint(j, &s, s.emax)), jit_land(j, GE(rounded[i], low), LT(rounded[i], limit))));
+        normal = jit_land(j, normal, jit_lor(j, NE(e, kint(j, &s, 0)), EQ(mantissa, kint(j, &s, 0))));
     }
-    if (rm == 3) /* the conversion rounded: the integer, converted back (exact while it is in range) */
-        rounded = jit_cast(j, result, s.ft);
-    *inexact = jit_val(j, NE(rounded, f));
-    return U64(jit_cast(j, result, jit_uint(j, integer))); /* the helper masks a 32-bit result to 32 bits */
+    ok = jit_val(j, jit_land(j, ok, jit_lor(j, jit_lnot(j, flush_to_zero(j)), normal)));
+    /* converted only where every lane is in range: out of range the C conversion is undefined, and GCC may assume it
+       isn't */
+    convert = jit_block(j);
+    done = jit_block(j);
+    for (i = 0; i < lanes; ++i) {
+        r[i] = jit_local(j, it);
+        jit_assign(j, r[i], jit_k(j, it, 0));
+    }
+    jit_branch(j, ok, convert, done);
+    jit_enter(j, convert);
+    for (i = 0; i < lanes; ++i) jit_assign(j, r[i], jit_cast(j, rounded[i], it));
+    jit_goto(j, done);
+    jit_enter(j, done);
+    inexact = jit_false(j);
+    for (i = 0; i < lanes; ++i) {
+        V result = jit_val(j, gcc_jit_lvalue_as_rvalue(r[i]));
+        /* the conversion rounded: the integer, converted back (exact while it is in range) */
+        V back = rm == 3 ? jit_cast(j, result, s.ft) : rounded[i];
+        inexact = jit_lor(j, inexact, NE(back, scaled[i]));
+        out->value[i] = jit_val(j, jit_cast(j, result, jit_uint(j, integer)));
+    }
+    out->ok = ok;
+    out->inexact = jit_val(j, inexact);
+    return 1;
+}
+
+/* ir_fp_from_int_fast: exact for magnitudes up to 2^precision; with IXC set the host's rounding suffices. Scaling by
+   2^-fbits is exact: the smallest nonzero result, 2^-64, is a normal number */
+void jit_fp_from_int_fast(SnxJit* j, unsigned width, unsigned lanes, V const* v, unsigned integer, unsigned uns,
+                          unsigned fbits, SnxJitFpFast* out) {
+    Shape s;
+    SnxU64 p;
+    V small = jit_true(j);
+    unsigned i;
+    shape(j, width, &s);
+    p = (SnxU64)1 << s.precision;
+    for (i = 0; i < lanes; ++i) {
+        V x, f;
+        if (uns) {
+            x = jit_val(j, jit_cast(j, v[i], jit_uint(j, integer)));
+            small = jit_land(j, small, LE(U64(x), K64(p)));
+        } else {
+            x = jit_val(j, jit_cast(j, v[i], jit_sint(j, integer)));
+            small = jit_land(j, small, LE(ADD(U64(jit_cast(j, x, j->t_s64)), K64(p)), K64(2 * p)));
+        }
+        f = jit_cast(j, x, s.ft);
+        if (fbits) f = MUL(f, kfloat(j, &s, pow2(-(int)fbits)));
+        out->value[i] = jit_val(j, to_bits(j, &s, f));
+    }
+    out->ok = jit_val(j, jit_land(j, rounds_to_nearest(j), jit_lor(j, small, ixc_set(j))));
+    out->inexact = NULL;
+}
+
+/* ir_fp_estimate_fast, a lane at a time (ir_fp.c says why the float division gives recip_est's quotient exactly) */
+void jit_fp_estimate_fast(SnxJit* j, unsigned rsqrt, unsigned width, unsigned lanes, V const* bits, SnxJitFpFast* out) {
+    Shape s;
+    V ok = jit_true(j);
+    unsigned i, k, f, bias;
+    shape(j, width, &s);
+    f = s.mantissa;
+    bias = s.emax >> 1;
+    for (i = 0; i < lanes; ++i) {
+        V x = jit_val(j, jit_cast(j, bits[i], s.it)), e = jit_val(j, exponent(j, &s, x)), est, power;
+        if (!rsqrt) { /* (2^19 / (513 + 2t) + 1) >> 1 */
+            V t = jit_cast(j, AND(SHR(x, kint(j, &s, f - 8)), kint(j, &s, 255)), j->t_u32);
+            V d = jit_cast(j, ADD(SHL(t, K32(1)), K32(513)), j->t_f32);
+            est = jit_cast(j, DIV(gcc_jit_context_new_rvalue_from_double(j->ctx, j->t_f32, 524288.0), d), j->t_u32);
+            est = SHR(ADD(est, K32(1)), K32(1));
+            ok = jit_land(j, ok, exponent_in(j, &s, x, 1, s.emax - 3));
+            power =
+                OR(AND(x, kint(j, &s, (SnxU64)1 << (width - 1))), SHL(SUB(kint(j, &s, s.emax - 2), e), kint(j, &s, f)));
+        } else { /* rsqrt_est of 257 + 2t (odd exponent) or 514 + 4t (even), t the fraction's top 7 bits */
+            V t = jit_val(j, jit_cast(j, AND(SHR(x, kint(j, &s, f - 7)), kint(j, &s, 127)), j->t_u32));
+            V odd = NE(AND(e, kint(j, &s, 1)), kint(j, &s, 0));
+            V a = jit_val(j, jit_sel(j, odd, ADD(SHL(t, K32(1)), K32(257)), ADD(SHL(t, K32(2)), K32(514))));
+            V lo = K32(512), hi = K32(1024);
+            for (k = 0; k < 9; ++k) {
+                V mid = jit_val(j, SHR(ADD(lo, hi), K32(1)));
+                V below = jit_val(j, LT(MUL(MUL(a, mid), mid), K32(1u << 28)));
+                lo = jit_val(j, jit_sel(j, below, mid, lo));
+                hi = jit_val(j, jit_sel(j, below, hi, mid));
+            }
+            est = SHR(ADD(lo, K32(1)), K32(1));
+            ok = jit_land(
+                j, ok,
+                jit_land(j, exponent_in(j, &s, x, 1, s.emax - 1), EQ(SHR(x, kint(j, &s, width - 1)), kint(j, &s, 0))));
+            power = SHL(SHR(SUB(kint(j, &s, 3 * bias - 1), e), kint(j, &s, 1)), kint(j, &s, f));
+        }
+        out->value[i] = jit_val(j, OR(power, SHL(jit_cast(j, AND(est, K32(255)), s.it), kint(j, &s, f - 8))));
+    }
+    out->ok = jit_val(j, ok);
+    out->inexact = NULL;
+}
+
+/* ir_fp_step_fast: 2 + (-a)*b or (3 + (-a)*b) / 2 under jit_fp_fast's FMA guard, the half kept out of the smallest
+   binade */
+void jit_fp_step_fast(SnxJit* j, unsigned rsqrt, unsigned width, unsigned lanes, V const* a, V const* b,
+                      SnxJitFpFast* out) {
+    Shape s;
+    V negated[4], add[4];
+    SnxU64 two;
+    unsigned i;
+    shape(j, width, &s);
+    two = (SnxU64)((s.emax >> 1) + 1) << s.mantissa;
+    for (i = 0; i < lanes; ++i) {
+        negated[i] = jit_val(j, XOR(jit_cast(j, a[i], s.it), kint(j, &s, (SnxU64)1 << (width - 1))));
+        add[i] = kint(j, &s, two | (rsqrt ? (SnxU64)1 << (s.mantissa - 1) : 0));
+    }
+    jit_fp_fast(j, SNX_JIT_FP_FMA, width, lanes, negated, b, add, out);
+    if (rsqrt) {
+        V ok = out->ok;
+        for (i = 0; i < lanes; ++i) {
+            V half = jit_val(j, to_bits(j, &s, MUL(to_float(j, &s, out->value[i]), kfloat(j, &s, 0.5))));
+            ok = jit_land(j, ok, exponent_in(j, &s, half, 2, s.emax - 1));
+            out->value[i] = half;
+        }
+        out->ok = jit_val(j, ok);
+    }
 }
 
 /* FCVT_INT and FCVT_FIX: index = opcode | rmode << 3 | ftype << 5 | sf << 7 */
@@ -608,6 +727,8 @@ static int fcvt(SnxJit* j, SnxU32 w, size_t index, int fixed) {
     unsigned opcode = index & 7, rmode = (index >> 3) & 3, type = (index >> 5) & 3, sf = (unsigned)(index >> 7);
     unsigned rd = F(0, 5), rn = F(5, 5), integer = sf ? 64 : 32, width = type == 0 ? 32 : type == 1 ? 64 : 16;
     unsigned fbits = fixed ? 64 - F(10, 6) : 0;
+    gcc_jit_block *slow, *join;
+    SnxJitFpFast f;
     switch (opcode) {
         case 0:
         case 1:
@@ -616,48 +737,28 @@ static int fcvt(SnxJit* j, SnxU32 w, size_t index, int fixed) {
             if (type > 1) return 0;
             {
                 unsigned rm = opcode >= 4 ? 4 : rmode;
-                V a = operand(j, rn, width), ok, inexact, fast;
-                gcc_jit_block *slow, *join;
-                if (fbits || (rm != 3 && !j->round)) {
-                    jit_setx(j, rd, to_int(j, a, width, integer, opcode & 1, fbits, rm));
+                V a = operand(j, rn, width);
+                if (!jit_fp_to_int_fast(j, width, 1, &a, integer, opcode & 1, rm, fbits, &f)) {
+                    jit_setx(j, rd, jit_fp_to_int(j, a, width, integer, opcode & 1, fbits, rm));
                     return 1;
                 }
-                fast = to_int_fast(j, a, width, integer, opcode & 1, rm, &ok, &inexact);
-                join = jit_fp_branch(j, ok, &slow);
-                jit_setx(j, rd, fast);
-                jit_fp_else(j, join, slow, inexact);
-                jit_setx(j, rd, to_int(j, a, width, integer, opcode & 1, fbits, rm));
+                join = jit_fp_branch(j, f.ok, &slow);
+                jit_setx(j, rd, U64(f.value[0])); /* the helper masks a 32-bit result to 32 bits */
+                jit_fp_else(j, join, slow, f.inexact);
+                jit_setx(j, rd, jit_fp_to_int(j, a, width, integer, opcode & 1, fbits, rm));
                 jit_fp_join(j, join);
             }
             return 1;
         case 2:
         case 3:
             if (type > 1) return 0;
-            if (fbits) {
-                set_bits(j, rd, width, from_int(j, jit_rx(j, rn), integer, width, opcode & 1, fbits));
-                return 1;
-            }
             {
-                /* SCVTF/UCVTF: exact for magnitudes up to 2^precision; with IXC set the host's rounding suffices */
-                Shape s;
-                V x = jit_rx(j, rn), v, f, ok, small;
-                gcc_jit_block *slow, *join;
-                SnxU64 p;
-                shape(j, width, &s);
-                p = (SnxU64)1 << s.precision;
-                if (opcode & 1) {
-                    v = jit_cast(j, x, jit_uint(j, integer));
-                    small = LE(U64(v), K64(p));
-                } else {
-                    v = jit_cast(j, x, jit_sint(j, integer));
-                    small = LE(ADD(U64(jit_cast(j, v, j->t_s64)), K64(p)), K64(2 * p));
-                }
-                f = jit_cast(j, v, s.ft);
-                ok = jit_val(j, jit_land(j, rounds_to_nearest(j), jit_lor(j, small, ixc_set(j))));
-                join = jit_fp_branch(j, ok, &slow);
-                set_bits(j, rd, width, to_bits(j, &s, f));
-                jit_fp_else(j, join, slow, NULL);
-                set_bits(j, rd, width, from_int(j, x, integer, width, opcode & 1, fbits));
+                V x = jit_rx(j, rn);
+                jit_fp_from_int_fast(j, width, 1, &x, integer, opcode & 1, fbits, &f);
+                join = jit_fp_branch(j, f.ok, &slow);
+                set_bits(j, rd, width, f.value[0]);
+                jit_fp_else(j, join, slow, f.inexact);
+                set_bits(j, rd, width, jit_fp_from_int(j, x, integer, width, opcode & 1, fbits));
                 jit_fp_join(j, join);
             }
             return 1;

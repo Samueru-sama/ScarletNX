@@ -32,7 +32,7 @@ typedef StepFn* (*TableFn)(void);
 
 #define MEMORY_SIZE 0x220000u
 #define PC_BASE     0x100000u
-#define DIRECTED    22u /* words directed() makes per round */
+#define DIRECTED    28u /* words directed() makes per round */
 
 static u64 seed = 0x9E3779B97F4A7C15ull;
 static u64 next_random(void) {
@@ -144,6 +144,37 @@ static u64 fp_value(void) {
     return special64();
 }
 
+/* for SCVTF/UCVTF and FCVT*: two 32-bit lanes or one 64-bit lane of integers near the precision limits of float and
+   double (exact up to 2^24 and 2^53, rounded beyond) or small, or of floats near the integer ranges' ends and
+   halfway values, a few units in the last place either side, of either sign */
+static u64 conversion_edge(void) {
+    static const u32 floats[] = {
+        0x4B800000u /* 2^24 */, 0x4F000000u /* 2^31 */, 0x4F800000u /* 2^32 */, 0x5F000000u /* 2^63 */,
+        0x5F800000u /* 2^64 */, 0x3F000000u /* 0.5 */,  0x3FC00000u /* 1.5 */,  0x40200000u /* 2.5 */};
+    static const u64 doubles[] = {0x4340000000000000ull /* 2^53 */, 0x41E0000000000000ull /* 2^31 */,
+                                  0x41F0000000000000ull /* 2^32 */, 0x43E0000000000000ull /* 2^63 */,
+                                  0x43F0000000000000ull /* 2^64 */, 0x3FE0000000000000ull /* 0.5 */,
+                                  0x3FF8000000000000ull /* 1.5 */,  0x4004000000000000ull /* 2.5 */};
+    u64 r = next_random(), k = next_random(), lane[2];
+    unsigned i;
+    if (r % 4 == 1) { /* one 64-bit integer */
+        u64 v = (r >> 8) & 1 ? ((u64)1 << 53) + (k % 5) - 2 : k % 4096;
+        return (r >> 9) & 1 ? 0 - v : v;
+    }
+    if (r % 4 == 3) /* one double */
+        return ((r >> 9) & 1) << 63 | (doubles[(r >> 10) % 8] + (k % 5) - 2);
+    for (i = 0; i < 2; ++i, k >>= 16) {
+        u32 v;
+        if (r % 4 == 0) { /* 32-bit integers */
+            v = (k >> 3) & 1 ? (1u << 24) + (u32)(k % 5) - 2 : (u32)(k >> 4) % 4096;
+            if ((k >> 15) & 1) v = 0 - v;
+        } else /* floats */
+            v = (u32)((k >> 15) & 1) << 31 | (floats[(k >> 4) % 8] + (u32)(k % 5) - 2);
+        lane[i] = v;
+    }
+    return lane[1] << 32 | lane[0];
+}
+
 static void random_state(CPU* c, unsigned char* memory, const Word* w) {
     unsigned i;
     int addresses = memory_pattern(w->pattern->name);
@@ -182,6 +213,10 @@ static void random_state(CPU* c, unsigned char* memory, const Word* w) {
         if ((r >> 40) % 24 == 0) {
             c->v[rn].d[0] = c->v[rn].d[1] = 0x3F8000013F800000ull;
             c->v[rm].d[0] = c->v[rm].d[1] = 0x018000013F800000ull;
+        }
+        if ((r >> 48) % 4 == 0) {
+            c->v[rn].d[0] = conversion_edge();
+            c->v[rn].d[1] = conversion_edge();
         }
     }
     c->n = next_random() & 1;
@@ -340,6 +375,23 @@ static size_t directed(const char* match, size_t want, Word* out) {
            compares against #0.0 (2-reg misc 0x0C-0x0E), with random Q, U and sz */
         words[20] = (r & 0x60DF03FFUL) | 0x0E200400UL | fp_ops[next_random() % 5] << 11;
         words[21] = (r & 0x604003FFUL) | 0x0EA00800UL | (0x0Cu + (SnxU32)(next_random() % 3)) << 12;
+        /* FP two-register misc, vector and scalar: FCVT[NPMZA][SU], SCVTF/UCVTF, FRECPE/FRSQRTE, FSQRT (k = U:o2:op);
+           three-same FABD, FMULX, FRECPS, FRSQRTS (U:o2:op), vector and scalar; SCVTF/UCVTF/FCVTZS/FCVTZU fixed
+           point (shift by immediate, 32 or 64-bit lanes), vector and scalar */
+        {
+            static const SnxU32 misc[] = {0x1A, 0x1B, 0x1C, 0x1D, 0x3A, 0x3B, 0x3D, 0x5A,
+                                          0x5B, 0x5C, 0x5D, 0x7A, 0x7B, 0x7D, 0x7F},
+                                steps[] = {0x7A, 0x1B, 0x1F, 0x3F};
+            SnxU32 m = misc[next_random() % 15], t = steps[next_random() % 4], f = next_random() % 2 ? 0x1C : 0x1F;
+            m = (m >> 6) << 29 | ((m >> 5) & 1) << 23 | (m & 31) << 12;
+            t = (t >> 6) << 29 | ((t >> 5) & 1) << 23 | (t & 31) << 11;
+            words[22] = (r & 0x404003FFUL) | 0x0E200800UL | m;
+            words[23] = (r & 0x004003FFUL) | 0x5E200800UL | m;
+            words[24] = (r & 0x405F03FFUL) | 0x0E200400UL | t;
+            words[25] = (r & 0x005F03FFUL) | 0x5E200400UL | t;
+            words[26] = (r & 0x607F03FFUL) | 0x0F200400UL | f << 11;
+            words[27] = (r & 0x207F03FFUL) | 0x5F200400UL | f << 11;
+        }
         for (k = 0; k < DIRECTED; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
             if (c->kind != SNX_FLOW_PLAIN) continue;

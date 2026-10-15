@@ -730,69 +730,129 @@ static int fp_sign_misc(SnxJit* j, SnxU32 w) {
     return 1;
 }
 
-enum { FP_LANES_ADD, FP_LANES_MINMAX, FP_LANES_COMPARE };
-/* x op y in each of n lanes of 1<<s bytes, into Vd: inline when the fast path's guard holds for every lane
-   (jit_fp_fast, jit_fp_minmax_fast, jit_fp_compare_fast), otherwise the helper a lane at a time, as simd_3same's and
-   simd_2misc's loops call it. arg is the minimum flag or the comparison (ir_simd.c's fp_lanes) */
-static void fp_lanes(SnxJit* j, unsigned kind, unsigned arg, unsigned numeric, unsigned s, unsigned n, V const* x,
-                     V const* y, unsigned rd, unsigned q) {
-    unsigned width = 8u << s, i;
-    gcc_jit_block *slow, *join;
-    SnxJitFpFast f;
-    V r[4];
-    if (kind == FP_LANES_ADD)
-        jit_fp_fast(j, SNX_JIT_FP_ADD, width, n, x, y, NULL, &f);
-    else if (kind == FP_LANES_MINMAX)
-        jit_fp_minmax_fast(j, width, n, x, y, arg, &f);
-    else
-        jit_fp_compare_fast(j, arg, width, n, x, y, &f);
-    join = jit_fp_branch(j, f.ok, &slow);
-    write_q(j, rd, s, n, f.value, q);
-    jit_fp_else(j, join, slow, f.inexact);
-    for (i = 0; i < n; ++i) {
-        if (kind == FP_LANES_ADD)
-            r[i] = jit_fp_binary(j, x[i], y[i], width, 0); /* SNX_FP_ADD */
-        else if (kind == FP_LANES_MINMAX)
-            r[i] = jit_fp_minmax(j, x[i], y[i], width, arg, numeric);
-        else
-            r[i] = jit_fp_compare_mask(j, arg, x[i], y[i], width);
+enum {
+    FP_LANES_ADD,
+    FP_LANES_ABD,
+    FP_LANES_MULX,
+    FP_LANES_STEP,
+    FP_LANES_MINMAX,
+    FP_LANES_COMPARE,
+    FP_LANES_SQRT,
+    FP_LANES_ESTIMATE,
+    FP_LANES_TO_INT,
+    FP_LANES_FROM_INT
+};
+/* what fp_lanes computes (ir_simd.c's FpOp). arg: the minimum flag (MINMAX), the comparison (COMPARE), rsqrt (STEP,
+   ESTIMATE) or snx_fp_to_int's rounding mode (TO_INT). flag: numeric (MINMAX) or unsigned (the conversions). fbits:
+   the conversions' fixed point */
+typedef struct {
+    unsigned kind, arg, flag, fbits;
+} FpOp;
+
+/* one lane through the helper simd_3same's and simd_2misc's loops call (helpers/simd.c) */
+static V fp_lane(SnxJit* j, const FpOp* op, V a, V b, unsigned width) {
+    switch (op->kind) {
+        case FP_LANES_ADD: return jit_fp_binary(j, a, b, width, SNX_FP_ADD);
+        case FP_LANES_ABD: return jit_fp_binary(j, a, b, width, SNX_FP_ABD);
+        case FP_LANES_MULX: return jit_fp_binary(j, a, b, width, SNX_FP_MULX);
+        case FP_LANES_STEP: return jit_fp_binary(j, a, b, width, op->arg ? SNX_FP_RSQRTS : SNX_FP_RECPS);
+        case FP_LANES_MINMAX: return jit_fp_minmax(j, a, b, width, op->arg, op->flag);
+        case FP_LANES_COMPARE: return jit_fp_compare_mask(j, op->arg, a, b, width);
+        case FP_LANES_SQRT: return jit_fp_unary(j, a, width, SNX_FP_SQRT);
+        case FP_LANES_ESTIMATE: return jit_fp_unary(j, a, width, op->arg ? SNX_FP_RSQRTE : SNX_FP_RECPE);
+        case FP_LANES_TO_INT: return jit_fp_to_int(j, a, width, width, op->flag, op->fbits, op->arg);
+        default: return jit_fp_from_int(j, a, width, width, op->flag, op->fbits);
     }
-    write_q(j, rd, s, n, r, q);
-    jit_fp_join(j, join);
 }
 
-/* FP three-same (vector) beyond fast_simd's arithmetic: simd_3same's FADDP, FMAX/FMIN/FMAXNM/FMINNM and their
-   pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT */
-static int fp_three_same(SnxJit* j, SnxU32 w) {
-    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1, rm = (w >> 16) & 31,
-             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), i;
-    unsigned kind, arg = hi, pair = 0, absolute = 0;
+/* the operation on n lanes of 1<<s bytes (x, and y for two operands) into Vd: inline when the fast path's guard holds
+   for every lane, otherwise the helper a lane at a time (ir_simd.c's fp_lanes). One lane is a scalar form: the rest
+   of Vd is zero */
+static void fp_lanes(SnxJit* j, const FpOp* op, unsigned s, unsigned n, V const* x, V const* y, unsigned rd,
+                     unsigned q) {
+    unsigned width = 8u << s, i;
+    gcc_jit_block *slow, *join = NULL;
+    SnxJitFpFast f;
+    V r[4];
+    switch (op->kind) {
+        case FP_LANES_ADD: jit_fp_fast(j, SNX_JIT_FP_ADD, width, n, x, y, NULL, &f); break;
+        case FP_LANES_ABD: /* |x - y|: snx_fp_binary clears the difference's sign */
+            jit_fp_fast(j, SNX_JIT_FP_SUB, width, n, x, y, NULL, &f);
+            for (i = 0; i < n; ++i) f.value[i] = AND(f.value[i], klane(j, s, ((SnxU64)1 << (width - 1)) - 1));
+            break;
+        case FP_LANES_MULX: /* FMUL's result but for infinity times zero, which the guard keeps out */
+            jit_fp_fast(j, SNX_JIT_FP_MUL, width, n, x, y, NULL, &f);
+            break;
+        case FP_LANES_STEP: jit_fp_step_fast(j, op->arg, width, n, x, y, &f); break;
+        case FP_LANES_MINMAX: jit_fp_minmax_fast(j, width, n, x, y, op->arg, &f); break;
+        case FP_LANES_COMPARE: jit_fp_compare_fast(j, op->arg, width, n, x, y, &f); break;
+        case FP_LANES_SQRT: jit_fp_fast(j, SNX_JIT_FP_SQRT, width, n, x, NULL, NULL, &f); break;
+        case FP_LANES_ESTIMATE: jit_fp_estimate_fast(j, op->arg, width, n, x, &f); break;
+        case FP_LANES_TO_INT:
+            if (!jit_fp_to_int_fast(j, width, n, x, width, op->flag, op->arg, op->fbits, &f)) f.ok = NULL;
+            break;
+        default: jit_fp_from_int_fast(j, width, n, x, width, op->flag, op->fbits, &f); break;
+    }
+    if (f.ok) { /* else no fast path: the helper alone */
+        join = jit_fp_branch(j, f.ok, &slow);
+        by_element_store(j, rd, s, n, f.value, n == 1, q);
+        jit_fp_else(j, join, slow, f.inexact);
+    }
+    for (i = 0; i < n; ++i) r[i] = fp_lane(j, op, x[i], y ? y[i] : NULL, width);
+    by_element_store(j, rd, s, n, r, n == 1, q);
+    if (join) jit_fp_join(j, join);
+}
+
+/* FP three-same beyond fast_simd's arithmetic (ir_simd.c's fp_three_same): FADDP, FABD, FMULX, FRECPS, FRSQRTS,
+   FMAX/FMIN/FMAXNM/FMINNM and their pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT; the scalar FABD, FMULX,
+   FRECPS and FRSQRTS */
+static int fp_three_same(SnxJit* j, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1,
+             rm = (w >> 16) & 31, op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2,
+             n = scalar ? 1
+                 : sz   ? 2
+                        : (q ? 4 : 2),
+             i;
+    unsigned pair = 0, absolute = 0;
+    FpOp o;
     V a[4], b[4], x[4], y[4];
-    if (sz && !q) return 0;
+    if (!scalar && sz && !q) return 0;
+    o.arg = hi;
+    o.flag = op == 0x18;
+    o.fbits = 0;
     switch (op) {
         case 0x18: /* FMAXNM, FMINNM */
         case 0x1E: /* FMAX, FMIN; with U, the pairwise FMAXNMP, FMINNMP, FMAXP, FMINP */
-            kind = FP_LANES_MINMAX;
+            o.kind = FP_LANES_MINMAX;
             pair = u;
             break;
-        case 0x1A: /* FADDP (FADD is fast_simd's, FABD stays in snx_simd) */
-            if (!u || hi) return 0;
-            kind = FP_LANES_ADD;
-            pair = 1;
+        case 0x1A: /* FADDP, FABD (FADD and FSUB are fast_simd's) */
+            if (!u) return 0;
+            o.kind = hi ? FP_LANES_ABD : FP_LANES_ADD;
+            pair = !hi;
+            break;
+        case 0x1B: /* FMULX (FMUL is fast_simd's) */
+            if (u || hi) return 0;
+            o.kind = FP_LANES_MULX;
+            break;
+        case 0x1F: /* FRECPS, FRSQRTS (FDIV is fast_simd's) */
+            if (u) return 0;
+            o.kind = FP_LANES_STEP;
             break;
         case 0x1C:
             if (!u && hi) return 0;
-            kind = FP_LANES_COMPARE;
-            arg = !u ? SNX_JIT_CMP_EQ : hi ? SNX_JIT_CMP_GT : SNX_JIT_CMP_GE;
+            o.kind = FP_LANES_COMPARE;
+            o.arg = !u ? SNX_JIT_CMP_EQ : hi ? SNX_JIT_CMP_GT : SNX_JIT_CMP_GE;
             break;
         case 0x1D: /* FACGE, FACGT: the comparison of the magnitudes */
             if (!u) return 0;
-            kind = FP_LANES_COMPARE;
-            arg = hi ? SNX_JIT_CMP_GT : SNX_JIT_CMP_GE;
+            o.kind = FP_LANES_COMPARE;
+            o.arg = hi ? SNX_JIT_CMP_GT : SNX_JIT_CMP_GE;
             absolute = 1;
             break;
         default: return 0;
     }
+    if (scalar && o.kind != FP_LANES_ABD && o.kind != FP_LANES_MULX && o.kind != FP_LANES_STEP) return 0;
     read_lanes(j, rn, s, n, a);
     read_lanes(j, rm, s, n, b);
     for (i = 0; i < n; ++i) {
@@ -810,37 +870,100 @@ static int fp_three_same(SnxJit* j, SnxU32 w) {
             y[i] = jit_val(j, AND(y[i], klane(j, s, sz ? ~((SnxU64)1 << 63) : 0x7FFFFFFFUL)));
         }
     }
-    fp_lanes(j, kind, arg, op == 0x18, s, n, x, y, rd, q);
+    fp_lanes(j, &o, s, n, x, y, rd, q);
     return 1;
 }
 
-/* FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector): simd_2misc's fcmpmask against +0 */
-static int fp_compare_zero(SnxJit* j, SnxU32 w) {
-    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31,
-             rd = w & 31, sz = size & 1, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), cmp, i;
+/* FP two-register misc (ir_simd.c's fp_misc): FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector), FCVT[NPMZA][SU],
+   SCVTF, UCVTF, FRECPE and FRSQRTE (vector and scalar) and FSQRT (vector) */
+static int fp_misc(SnxJit* j, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
+             rn = (w >> 5) & 31, rd = w & 31, sz = size & 1, s = sz ? 3 : 2,
+             n = scalar ? 1
+                 : sz   ? 2
+                        : (q ? 4 : 2),
+             i;
+    unsigned k = u << 6 | (size >> 1) << 5 | op;
+    FpOp o;
     V a[4], zero[4];
-    if (op < 0x0C || op > 0x0E || !(size >> 1) || (sz && !q)) return 0;
-    if (op == 0x0C)
-        cmp = u ? SNX_JIT_CMP_GE : SNX_JIT_CMP_GT;
-    else if (op == 0x0D)
-        cmp = u ? SNX_JIT_CMP_LE : SNX_JIT_CMP_EQ;
-    else if (!u)
-        cmp = SNX_JIT_CMP_LT;
-    else
-        return 0;
+    if (!scalar && sz && !q) return 0;
+    o.arg = 0;
+    o.flag = u;
+    o.fbits = 0;
     read_lanes(j, rn, s, n, a);
-    for (i = 0; i < n; ++i) zero[i] = klane(j, s, 0);
-    fp_lanes(j, FP_LANES_COMPARE, cmp, 0, s, n, a, zero, rd, q);
+    if (op >= 0x0C && op <= 0x0E && (size >> 1) && !scalar) {
+        if (op == 0x0C)
+            o.arg = u ? SNX_JIT_CMP_GE : SNX_JIT_CMP_GT;
+        else if (op == 0x0D)
+            o.arg = u ? SNX_JIT_CMP_LE : SNX_JIT_CMP_EQ;
+        else if (!u)
+            o.arg = SNX_JIT_CMP_LT;
+        else
+            return 0;
+        o.kind = FP_LANES_COMPARE;
+        for (i = 0; i < n; ++i) zero[i] = klane(j, s, 0);
+        fp_lanes(j, &o, s, n, a, zero, rd, q);
+        return 1;
+    }
+    switch (k) {
+        case 0x1A: /* FCVTNS, FCVTPS, FCVTMS, FCVTZS, FCVTAS and the unsigned ones: snx_fp_to_int's mode */
+        case 0x3A:
+        case 0x1B:
+        case 0x3B:
+        case 0x1C:
+        case 0x5A:
+        case 0x7A:
+        case 0x5B:
+        case 0x7B:
+        case 0x5C:
+            o.kind = FP_LANES_TO_INT;
+            o.arg = (k & 0x1F) == 0x1C ? 4 : (k & 0x1F) == 0x1A ? (size >> 1 ? 1 : 0) : (size >> 1 ? 3 : 2);
+            break;
+        case 0x1D: /* SCVTF, UCVTF */
+        case 0x5D: o.kind = FP_LANES_FROM_INT; break;
+        case 0x3D: /* FRECPE, FRSQRTE */
+        case 0x7D:
+            o.kind = FP_LANES_ESTIMATE;
+            o.arg = u;
+            break;
+        case 0x7F:
+            if (scalar) return 0; /* FSQRT has no scalar AdvSIMD form */
+            o.kind = FP_LANES_SQRT;
+            break;
+        default: return 0;
+    }
+    fp_lanes(j, &o, s, n, a, NULL, rd, q);
     return 1;
 }
 
+/* SCVTF, UCVTF, FCVTZS, FCVTZU (vector and scalar, fixed point): simd_shimm's conversions with fbits = 2*esize - imm */
+static int fp_fixed(SnxJit* j, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, immh = (w >> 19) & 15, immb = (w >> 16) & 7,
+             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s, n;
+    FpOp o;
+    V a[4];
+    if ((op != 0x1C && op != 0x1F) || immh < 4) return 0; /* 32 and 64-bit lanes only */
+    s = immh & 8 ? 3 : 2;
+    if (s == 3 && !q && !scalar) return 0;
+    n = scalar ? 1 : (q ? 128u : 64u) >> (3 + s);
+    o.kind = op == 0x1C ? FP_LANES_FROM_INT : FP_LANES_TO_INT;
+    o.arg = 3; /* toward zero */
+    o.flag = u;
+    o.fbits = 2 * (8u << s) - ((immh << 3) | immb);
+    read_lanes(j, rn, s, n, a);
+    fp_lanes(j, &o, s, n, a, NULL, rd, q);
+    return 1;
+}
 int snx_jit_more_simd(SnxJit* j, SnxU32 w) {
     if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL) return ld1_multiple(j, w);
     if ((w & 0xBF000000UL) == 0x0D000000UL) return ld1_single(j, w);
-    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(j, w) || fp_three_same(j, w);
-    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(j, w) || fp_sign_misc(j, w) || fp_compare_zero(j, w);
+    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(j, w) || fp_three_same(j, w, 0);
+    if ((w & 0xDF200400UL) == 0x5E200400UL) return fp_three_same(j, w, 1);
+    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(j, w) || fp_sign_misc(j, w) || fp_misc(j, w, 0);
+    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(j, w, 1);
     if ((w & 0x9FF80400UL) == 0x0F000400UL) return modified_immediate(j, w);
-    if ((w & 0x9F800400UL) == 0x0F000400UL) return shift_immediate(j, w);
+    if ((w & 0x9F800400UL) == 0x0F000400UL) return fp_fixed(j, w, 0) || shift_immediate(j, w);
+    if ((w & 0xDF800400UL) == 0x5F000400UL) return fp_fixed(j, w, 1);
     if ((w & 0xBF208C00UL) == 0x0E000800UL) return permute(j, w);
     if ((w & 0xBFE08400UL) == 0x2E000000UL) return extract(j, w);
     return 0;

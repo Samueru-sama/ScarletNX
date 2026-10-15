@@ -165,6 +165,30 @@ void ir_fp_compare_fast(SnxIr* ir, unsigned cmp, unsigned width, unsigned lanes,
                         SnxFpFast* out);
 /* one lane through snx_fp_compare, signalling for all but EQ: all ones (iN) or zero */
 LLVMValueRef ir_fp_compare_mask(SnxIr* ir, unsigned cmp, LLVMValueRef a, LLVMValueRef b, unsigned width);
+/* SCVTF/UCVTF of integer lanes v (one iN, or lanes as wide as the float) scaled by 2^-fbits: exact when every magnitude fits the
+   precision, or once IXC is set, in round to nearest (the host rounds the same way, and no conversion can overflow
+   or be tiny). inexact is false */
+void ir_fp_from_int_fast(SnxIr* ir, unsigned width, unsigned lanes, LLVMValueRef v, unsigned uns, unsigned fbits,
+                         SnxFpFast* out);
+/* FCVT[NPMZA][SU] (rm 0-4 as snx_fp_to_int's) of float lanes scaled by 2^fbits, to integer lanes of the integer's
+   width: fast for finite values whose rounded value is in range (no IOC), denormals only without FZ (flushing sets
+   IDC), inexact when rounding changed the value. 0 when the host can't round inline (no fast path: out unset) */
+int ir_fp_to_int_fast(SnxIr* ir, unsigned width, unsigned lanes, LLVMValueRef bits, unsigned integer, unsigned uns,
+                      unsigned rm, unsigned fbits, SnxFpFast* out);
+/* FRECPE (rsqrt 0) or FRSQRTE (1): snx_fp_unary's 8-bit estimate computed inline for the lanes whose result is a
+   normal number and raises nothing (a normal operand, positive for FRSQRTE, and for FRECPE an exponent below
+   emax-2: from there the reciprocal is denormal, or flushed under FZ). inexact is false */
+void ir_fp_estimate_fast(SnxIr* ir, unsigned rsqrt, unsigned width, unsigned lanes, LLVMValueRef bits, SnxFpFast* out);
+/* FRECPS (rsqrt 0: 2 - a*b) or FRSQRTS (1: (3 - a*b) / 2), fused with one rounding, under ir_fp_fast's FMA guard
+   (which also keeps out the infinity-times-zero lanes) */
+void ir_fp_step_fast(SnxIr* ir, unsigned rsqrt, unsigned width, unsigned lanes, LLVMValueRef a, LLVMValueRef b,
+                     SnxFpFast* out);
+/* one lane through the helpers: snx_fp_binary, snx_fp_unary, snx_fp_to_int and snx_fp_from_int (result i64) */
+LLVMValueRef ir_fp_binary(SnxIr* ir, LLVMValueRef a, LLVMValueRef b, unsigned width, unsigned op);
+LLVMValueRef ir_fp_unary(SnxIr* ir, LLVMValueRef bits, unsigned width, unsigned op);
+LLVMValueRef ir_fp_to_int(SnxIr* ir, LLVMValueRef bits, unsigned fp, unsigned integer, unsigned uns, unsigned fbits,
+                          unsigned rm);
+LLVMValueRef ir_fp_from_int(SnxIr* ir, LLVMValueRef bits, unsigned integer, unsigned fp, unsigned uns, unsigned fbits);
 
 /* ---- building blocks (ir.c) ---- */
 LLVMValueRef ir_i8(SnxIr* ir, unsigned v);

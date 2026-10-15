@@ -34,19 +34,6 @@ static void assign(SnxIr* ir, V destination, V source) {
     LLVMBuildMemCpy(B, destination, 1, source, 1, ir_i64(ir, 16));
 }
 
-static V fp_binary(SnxIr* ir, V a, V b, unsigned width, unsigned op) {
-    LLVMTypeRef p[5];
-    V args[5];
-    p[0] = ir->t_ptr;
-    p[1] = p[2] = ir->t_i64;
-    p[3] = p[4] = ir->t_i32;
-    args[0] = ir->c;
-    args[1] = ir_u64(ir, a);
-    args[2] = ir_u64(ir, b);
-    args[3] = ir_i32(ir, width);
-    args[4] = ir_i32(ir, op);
-    return ir_call(ir, ir_extern(ir, "snx_fp_binary", ir->t_i64, p, 5), args, 5);
-}
 static V fp_fma(SnxIr* ir, V add, V a, V b, unsigned width) {
     LLVMTypeRef p[5];
     V args[5];
@@ -174,7 +161,7 @@ int snx_ir_fast_simd(SnxIr* ir, SnxU32 w) {
                         value = fp_fma(ir, get(ir, r, s, i), negate(ir, get(ir, a, s, i), sz, negated),
                                        get(ir, b, s, i), sz ? 64 : 32);
                     else
-                        value = fp_binary(ir, get(ir, a, s, i), get(ir, b, s, i), sz ? 64 : 32, (unsigned)operation);
+                        value = ir_fp_binary(ir, get(ir, a, s, i), get(ir, b, s, i), sz ? 64 : 32, (unsigned)operation);
                     set(ir, r, s, i, value);
                 }
                 if (!q) set(ir, r, 3, 1, ir_i64(ir, 0));
@@ -240,7 +227,7 @@ int snx_ir_fast_simd(SnxIr* ir, SnxU32 w) {
             for (i = 0; i < lanes; ++i) {
                 V value;
                 if (op == 9)
-                    value = fp_binary(ir, get(ir, a, s, i), e, sz ? 64 : 32, 2);
+                    value = ir_fp_binary(ir, get(ir, a, s, i), e, sz ? 64 : 32, 2);
                 else
                     value = fp_fma(ir, scalar ? d0 : get(ir, r, s, i), negate(ir, get(ir, a, s, i), sz, op == 5), e,
                                    sz ? 64 : 32);
@@ -404,6 +391,7 @@ static int ld1_single(SnxIr* ir, SnxU32 w) {
 /* store <lanes> into Vd with the upper half cleared when Q is 0 (simd_perm and EXT write r from zero) */
 static void write_lanes(SnxIr* ir, unsigned rd, V value, unsigned q) {
     V local = ir_local(ir, ir_v128(ir));
+    set(ir, local, 3, 0, ir_i64(ir, 0)); /* a scalar lane narrower than 64 bits leaves the rest of d[0] */
     set(ir, local, 3, 1, ir_i64(ir, 0));
     set_lanes(ir, local, value);
     if (!q) set(ir, local, 3, 1, ir_i64(ir, 0));
@@ -944,72 +932,135 @@ static int fp_sign_misc(SnxIr* ir, SnxU32 w) {
     return 1;
 }
 
-enum { FP_LANES_ADD, FP_LANES_MINMAX, FP_LANES_COMPARE };
-/* x op y in each of n lanes of 1<<s bytes, into Vd: every lane at once on the host's vector unit when the fast
-   path's guard holds for all of them (ir_fp_fast, ir_fp_minmax_fast, ir_fp_compare_fast), otherwise the helper a
-   lane at a time, as simd_3same's and simd_2misc's loops call it. arg is the minimum flag or the comparison */
-static void fp_lanes(SnxIr* ir, unsigned kind, unsigned arg, unsigned numeric, unsigned s, unsigned n, V x, V y,
-                     unsigned rd, unsigned q) {
-    unsigned width = 8u << s, i;
-    LLVMBasicBlockRef slow, join;
-    SnxFpFast f;
-    V r;
-    if (kind == FP_LANES_ADD)
-        ir_fp_fast(ir, SNX_IR_FP_ADD, width, n, x, y, NULL, &f);
-    else if (kind == FP_LANES_MINMAX)
-        ir_fp_minmax_fast(ir, width, n, x, y, arg, &f);
-    else
-        ir_fp_compare_fast(ir, arg, width, n, x, y, &f);
-    join = ir_fp_branch(ir, f.ok, &slow);
-    write_lanes(ir, rd, f.value, q);
-    ir_fp_else(ir, join, slow, f.inexact);
-    r = LLVMGetUndef(LLVMTypeOf(x));
-    for (i = 0; i < n; ++i) {
-        V a = LLVMBuildExtractElement(B, x, ir_i32(ir, i), ""), b = LLVMBuildExtractElement(B, y, ir_i32(ir, i), ""), v;
-        if (kind == FP_LANES_ADD)
-            v = fp_binary(ir, a, b, width, 0); /* SNX_FP_ADD */
-        else if (kind == FP_LANES_MINMAX)
-            v = ir_fp_minmax(ir, a, b, width, arg, numeric);
-        else
-            v = ir_fp_compare_mask(ir, arg, a, b, width);
-        r = LLVMBuildInsertElement(B, r, ir_cast(ir, v, lane_type(ir, s), 0), ir_i32(ir, i), "");
+enum {
+    FP_LANES_ADD,
+    FP_LANES_ABD,
+    FP_LANES_MULX,
+    FP_LANES_STEP,
+    FP_LANES_MINMAX,
+    FP_LANES_COMPARE,
+    FP_LANES_SQRT,
+    FP_LANES_ESTIMATE,
+    FP_LANES_TO_INT,
+    FP_LANES_FROM_INT
+};
+/* what fp_lanes computes. arg: the minimum flag (MINMAX), the comparison (COMPARE), rsqrt (STEP: FRSQRTS rather
+   than FRECPS, ESTIMATE: FRSQRTE rather than FRECPE) or snx_fp_to_int's rounding mode (TO_INT). flag: numeric
+   (MINMAX) or unsigned (the conversions). fbits: the conversions' fixed point */
+typedef struct {
+    unsigned kind, arg, flag, fbits;
+} FpOp;
+
+/* one lane through the helper simd_3same's and simd_2misc's loops call (helpers/simd.c), as iN */
+static V fp_lane(SnxIr* ir, const FpOp* op, V a, V b, unsigned width) {
+    switch (op->kind) {
+        case FP_LANES_ADD: return ir_fp_binary(ir, a, b, width, 0);                /* SNX_FP_ADD */
+        case FP_LANES_ABD: return ir_fp_binary(ir, a, b, width, 5);                /* SNX_FP_ABD */
+        case FP_LANES_MULX: return ir_fp_binary(ir, a, b, width, 4);               /* SNX_FP_MULX */
+        case FP_LANES_STEP: return ir_fp_binary(ir, a, b, width, op->arg ? 7 : 6); /* SNX_FP_RSQRTS, SNX_FP_RECPS */
+        case FP_LANES_MINMAX: return ir_fp_minmax(ir, a, b, width, op->arg, op->flag);
+        case FP_LANES_COMPARE: return ir_fp_compare_mask(ir, op->arg, a, b, width);
+        case FP_LANES_SQRT: return ir_fp_unary(ir, a, width, 0);                   /* SNX_FP_SQRT */
+        case FP_LANES_ESTIMATE: return ir_fp_unary(ir, a, width, op->arg ? 2 : 1); /* SNX_FP_RSQRTE, SNX_FP_RECPE */
+        case FP_LANES_TO_INT: return ir_fp_to_int(ir, a, width, width, op->flag, op->fbits, op->arg);
+        default: return ir_fp_from_int(ir, a, width, width, op->flag, op->fbits);
     }
-    write_lanes(ir, rd, r, q);
-    ir_fp_join(ir, join);
 }
 
-/* FP three-same (vector) beyond fast_simd's arithmetic: simd_3same's FADDP, FMAX/FMIN/FMAXNM/FMINNM and their
-   pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT */
-static int fp_three_same(SnxIr* ir, SnxU32 w) {
-    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1, rm = (w >> 16) & 31,
-             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), i;
-    unsigned kind, arg = hi, pair = 0, absolute = 0;
+/* the operation on n lanes of 1<<s bytes (x, and y for two operands) into Vd: every lane at once on the host's
+   vector unit when the fast path's guard holds for all of them (ir_fp.c's fast paths), otherwise the helper a lane
+   at a time. One lane is a scalar form: the rest of Vd is zero */
+static void fp_lanes(SnxIr* ir, const FpOp* op, unsigned s, unsigned n, V x, V y, unsigned rd, unsigned q) {
+    unsigned width = 8u << s, i;
+    LLVMBasicBlockRef slow, join = NULL;
+    SnxFpFast f;
+    V r;
+    switch (op->kind) {
+        case FP_LANES_ADD: ir_fp_fast(ir, SNX_IR_FP_ADD, width, n, x, y, NULL, &f); break;
+        case FP_LANES_ABD: /* |x - y|: snx_fp_binary clears the difference's sign */
+            ir_fp_fast(ir, SNX_IR_FP_SUB, width, n, x, y, NULL, &f);
+            f.value = LLVMBuildAnd(
+                B, f.value, broadcast(ir, LLVMConstInt(lane_type(ir, s), ((SnxU64)1 << (width - 1)) - 1, 0), n), "");
+            break;
+        case FP_LANES_MULX: /* FMUL's result but for infinity times zero, which the guard keeps out */
+            ir_fp_fast(ir, SNX_IR_FP_MUL, width, n, x, y, NULL, &f);
+            break;
+        case FP_LANES_STEP: ir_fp_step_fast(ir, op->arg, width, n, x, y, &f); break;
+        case FP_LANES_MINMAX: ir_fp_minmax_fast(ir, width, n, x, y, op->arg, &f); break;
+        case FP_LANES_COMPARE: ir_fp_compare_fast(ir, op->arg, width, n, x, y, &f); break;
+        case FP_LANES_SQRT: ir_fp_fast(ir, SNX_IR_FP_SQRT, width, n, x, NULL, NULL, &f); break;
+        case FP_LANES_ESTIMATE: ir_fp_estimate_fast(ir, op->arg, width, n, x, &f); break;
+        case FP_LANES_TO_INT:
+            if (!ir_fp_to_int_fast(ir, width, n, x, width, op->flag, op->arg, op->fbits, &f)) f.ok = NULL;
+            break;
+        default: ir_fp_from_int_fast(ir, width, n, x, op->flag, op->fbits, &f); break;
+    }
+    if (f.ok) { /* else no fast path: the helper alone */
+        join = ir_fp_branch(ir, f.ok, &slow);
+        write_lanes(ir, rd, f.value, q);
+        ir_fp_else(ir, join, slow, f.inexact);
+    }
+    r = n == 1 ? NULL : LLVMGetUndef(LLVMTypeOf(x));
+    for (i = 0; i < n; ++i) {
+        V a = n == 1 ? x : LLVMBuildExtractElement(B, x, ir_i32(ir, i), ""), b = NULL, v;
+        if (y) b = n == 1 ? y : LLVMBuildExtractElement(B, y, ir_i32(ir, i), "");
+        v = ir_cast(ir, fp_lane(ir, op, a, b, width), lane_type(ir, s), 0);
+        r = n == 1 ? v : LLVMBuildInsertElement(B, r, v, ir_i32(ir, i), "");
+    }
+    write_lanes(ir, rd, r, q);
+    if (join) ir_fp_join(ir, join);
+}
+
+/* FP three-same beyond fast_simd's arithmetic: simd_3same's FADDP, FABD, FMULX, FRECPS, FRSQRTS, FMAX/FMIN/FMAXNM/
+   FMINNM and their pairwise forms, FCMEQ/FCMGE/FCMGT and FACGE/FACGT; the scalar forms of FABD, FMULX, FRECPS and
+   FRSQRTS (simd_3same refuses the scalar pairwise, accumulating and min/max ones) */
+static int fp_three_same(SnxIr* ir, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, sz = (w >> 22) & 1, hi = (w >> 23) & 1,
+             rm = (w >> 16) & 31, op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s = sz ? 3 : 2,
+             n = scalar ? 1
+                 : sz   ? 2
+                        : (q ? 4 : 2),
+             i;
+    unsigned pair = 0, absolute = 0;
+    FpOp o;
     V x, y;
-    if (sz && !q) return 0;
+    if (!scalar && sz && !q) return 0;
+    o.arg = hi;
+    o.flag = op == 0x18;
+    o.fbits = 0;
     switch (op) {
         case 0x18: /* FMAXNM, FMINNM */
         case 0x1E: /* FMAX, FMIN; with U, the pairwise FMAXNMP, FMINNMP, FMAXP, FMINP */
-            kind = FP_LANES_MINMAX;
+            o.kind = FP_LANES_MINMAX;
             pair = u;
             break;
-        case 0x1A: /* FADDP (FADD is fast_simd's, FABD stays in snx_simd) */
-            if (!u || hi) return 0;
-            kind = FP_LANES_ADD;
-            pair = 1;
+        case 0x1A: /* FADDP, FABD (FADD and FSUB are fast_simd's) */
+            if (!u) return 0;
+            o.kind = hi ? FP_LANES_ABD : FP_LANES_ADD;
+            pair = !hi;
+            break;
+        case 0x1B: /* FMULX (FMUL is fast_simd's) */
+            if (u || hi) return 0;
+            o.kind = FP_LANES_MULX;
+            break;
+        case 0x1F: /* FRECPS, FRSQRTS (FDIV is fast_simd's) */
+            if (u) return 0;
+            o.kind = FP_LANES_STEP;
             break;
         case 0x1C:
             if (!u && hi) return 0;
-            kind = FP_LANES_COMPARE;
-            arg = !u ? SNX_IR_CMP_EQ : hi ? SNX_IR_CMP_GT : SNX_IR_CMP_GE;
+            o.kind = FP_LANES_COMPARE;
+            o.arg = !u ? SNX_IR_CMP_EQ : hi ? SNX_IR_CMP_GT : SNX_IR_CMP_GE;
             break;
         case 0x1D: /* FACGE, FACGT: the comparison of the magnitudes */
             if (!u) return 0;
-            kind = FP_LANES_COMPARE;
-            arg = hi ? SNX_IR_CMP_GT : SNX_IR_CMP_GE;
+            o.kind = FP_LANES_COMPARE;
+            o.arg = hi ? SNX_IR_CMP_GT : SNX_IR_CMP_GE;
             absolute = 1;
             break;
         default: return 0;
     }
+    if (scalar && o.kind != FP_LANES_ABD && o.kind != FP_LANES_MULX && o.kind != FP_LANES_STEP) return 0;
     x = get_lanes(ir, vreg(ir, rn), s, n);
     y = get_lanes(ir, vreg(ir, rm), s, n);
     if (pair) { /* lanes 0..n/2-1 from pairs of Vn, the rest from pairs of Vm: in Vn:Vm, elements 2i and 2i+1 */
@@ -1027,36 +1078,97 @@ static int fp_three_same(SnxIr* ir, SnxU32 w) {
         x = LLVMBuildAnd(B, x, magnitude, "");
         y = LLVMBuildAnd(B, y, magnitude, "");
     }
-    fp_lanes(ir, kind, arg, op == 0x18, s, n, x, y, rd, q);
+    fp_lanes(ir, &o, s, n, x, y, rd, q);
     return 1;
 }
 
-/* FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector): simd_2misc's fcmpmask against +0 */
-static int fp_compare_zero(SnxIr* ir, SnxU32 w) {
-    unsigned q = (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31, rn = (w >> 5) & 31,
-             rd = w & 31, sz = size & 1, s = sz ? 3 : 2, n = sz ? 2 : (q ? 4 : 2), cmp;
-    if (op < 0x0C || op > 0x0E || !(size >> 1) || (sz && !q)) return 0;
-    if (op == 0x0C)
-        cmp = u ? SNX_IR_CMP_GE : SNX_IR_CMP_GT;
-    else if (op == 0x0D)
-        cmp = u ? SNX_IR_CMP_LE : SNX_IR_CMP_EQ;
-    else if (!u)
-        cmp = SNX_IR_CMP_LT;
-    else
-        return 0;
-    fp_lanes(ir, FP_LANES_COMPARE, cmp, 0, s, n, get_lanes(ir, vreg(ir, rn), s, n), LLVMConstNull(lanes_type(ir, s, n)),
-             rd, q);
+/* FP two-register misc: simd_2misc's FCMGT, FCMGE, FCMEQ, FCMLE, FCMLT #0.0 (vector), FCVT[NPMZA][SU], SCVTF,
+   UCVTF, FRECPE and FRSQRTE (vector and scalar) and FSQRT (vector) */
+static int fp_misc(SnxIr* ir, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, size = (w >> 22) & 3, op = (w >> 12) & 31,
+             rn = (w >> 5) & 31, rd = w & 31, sz = size & 1, s = sz ? 3 : 2,
+             n = scalar ? 1
+                 : sz   ? 2
+                        : (q ? 4 : 2);
+    unsigned k = u << 6 | (size >> 1) << 5 | op;
+    FpOp o;
+    V x;
+    if (!scalar && sz && !q) return 0;
+    o.arg = 0;
+    o.flag = u;
+    o.fbits = 0;
+    if (op >= 0x0C && op <= 0x0E && (size >> 1) && !scalar) {
+        if (op == 0x0C)
+            o.arg = u ? SNX_IR_CMP_GE : SNX_IR_CMP_GT;
+        else if (op == 0x0D)
+            o.arg = u ? SNX_IR_CMP_LE : SNX_IR_CMP_EQ;
+        else if (!u)
+            o.arg = SNX_IR_CMP_LT;
+        else
+            return 0;
+        o.kind = FP_LANES_COMPARE;
+        fp_lanes(ir, &o, s, n, get_lanes(ir, vreg(ir, rn), s, n), LLVMConstNull(lanes_type(ir, s, n)), rd, q);
+        return 1;
+    }
+    switch (k) {
+        case 0x1A: /* FCVTNS, FCVTPS, FCVTMS, FCVTZS, FCVTAS and the unsigned ones: snx_fp_to_int's mode */
+        case 0x3A:
+        case 0x1B:
+        case 0x3B:
+        case 0x1C:
+        case 0x5A:
+        case 0x7A:
+        case 0x5B:
+        case 0x7B:
+        case 0x5C:
+            o.kind = FP_LANES_TO_INT;
+            o.arg = (k & 0x1F) == 0x1C ? 4 : (k & 0x1F) == 0x1A ? (size >> 1 ? 1 : 0) : (size >> 1 ? 3 : 2);
+            break;
+        case 0x1D: /* SCVTF, UCVTF */
+        case 0x5D: o.kind = FP_LANES_FROM_INT; break;
+        case 0x3D: /* FRECPE, FRSQRTE */
+        case 0x7D:
+            o.kind = FP_LANES_ESTIMATE;
+            o.arg = u;
+            break;
+        case 0x7F:
+            if (scalar) return 0; /* FSQRT has no scalar AdvSIMD form */
+            o.kind = FP_LANES_SQRT;
+            break;
+        default: return 0;
+    }
+    x = get_lanes(ir, vreg(ir, rn), s, n);
+    fp_lanes(ir, &o, s, n, x, NULL, rd, q);
     return 1;
 }
 
+/* SCVTF, UCVTF, FCVTZS, FCVTZU (vector and scalar, fixed point): simd_shimm's conversions with fbits = 2*esize - imm */
+static int fp_fixed(SnxIr* ir, SnxU32 w, unsigned scalar) {
+    unsigned q = scalar ? 0 : (w >> 30) & 1, u = (w >> 29) & 1, immh = (w >> 19) & 15, immb = (w >> 16) & 7,
+             op = (w >> 11) & 31, rn = (w >> 5) & 31, rd = w & 31, s, n;
+    FpOp o;
+    if ((op != 0x1C && op != 0x1F) || immh < 4) return 0; /* 32 and 64-bit lanes only */
+    s = immh & 8 ? 3 : 2;
+    if (s == 3 && !q && !scalar) return 0;
+    n = scalar ? 1 : (q ? 128u : 64u) >> (3 + s);
+    o.kind = op == 0x1C ? FP_LANES_FROM_INT : FP_LANES_TO_INT;
+    o.arg = 3; /* toward zero */
+    o.flag = u;
+    o.fbits = 2 * (8u << s) - ((immh << 3) | immb);
+    fp_lanes(ir, &o, s, n, get_lanes(ir, vreg(ir, rn), s, n), NULL, rd, q);
+    return 1;
+}
 int snx_ir_more_simd(SnxIr* ir, SnxU32 w) {
     if ((w & 0xBF800000UL) == 0x0C000000UL || (w & 0xBF800000UL) == 0x0C800000UL) return ld1_multiple(ir, w);
     if ((w & 0xBF000000UL) == 0x0D000000UL) return ld1_single(ir, w);
-    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(ir, w) || fp_three_same(ir, w);
-    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(ir, w) || fp_sign_misc(ir, w) || fp_compare_zero(ir, w);
+    if ((w & 0x9F200400UL) == 0x0E200400UL) return three_same(ir, w) || fp_three_same(ir, w, 0);
+    if ((w & 0xDF200400UL) == 0x5E200400UL) return fp_three_same(ir, w, 1);
+    if ((w & 0x9F3E0C00UL) == 0x0E200800UL) return byte_misc(ir, w) || fp_sign_misc(ir, w) || fp_misc(ir, w, 0);
+    if ((w & 0xDF3E0C00UL) == 0x5E200800UL) return fp_misc(ir, w, 1);
     if ((w & 0xBFE0FC00UL) == 0x0EE0E000UL) return pmull_1q(ir, w);
     if ((w & 0x9FF80400UL) == 0x0F000400UL) return modified_immediate(ir, w);
-    if ((w & 0x9F800400UL) == 0x0F000400UL) return shift_immediate(ir, w);
+    if ((w & 0x9F800400UL) == 0x0F000400UL) return fp_fixed(ir, w, 0) || shift_immediate(ir, w);
+    if ((w & 0xDF800400UL) == 0x5F000400UL) return fp_fixed(ir, w, 1);
     if ((w & 0xBF208C00UL) == 0x0E000800UL) return permute(ir, w);
     if ((w & 0xBFE08400UL) == 0x2E000000UL) return extract(ir, w);
     if ((w & 0xFFFF0C00UL) == 0x4E280800UL) return aes(ir, w);
