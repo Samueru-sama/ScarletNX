@@ -309,6 +309,7 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
+    vk_renderdoc_present(g_vk_present);
     vk_frame_next();
     if (signal) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,

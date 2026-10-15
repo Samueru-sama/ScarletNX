@@ -15,6 +15,7 @@
    render.c    the render target set (dynamic rendering), clears and draws
    compute.c   compute dispatches (on a queue of their own when there is one), landing their results in guest memory
    renderer.c  the renderer interface the GPU front end calls (gpu/renderer.h) and presenting
+   renderdoc.c RenderDoc captures of chosen frames (SNX_RENDERDOC)
    vma.cpp     VulkanMemoryAllocator's implementation
 
    Everything that records commands runs under vk_lock(), which is reentrant: submits come from the game's GPU channel
@@ -292,6 +293,11 @@ void vk_buf_mem_need(u64 gva, u64 len);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
+/* renderdoc.c: with SNX_RENDERDOC set, RenderDoc loaded before the instance exists (load) and the frames
+   SNX_RENDERDOC_FRAMES names captured (present, at each present under vk_lock) */
+void vk_renderdoc_load(void);
+void vk_renderdoc_present(u64 present);
+
 /* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
 void vk_release_write(u64 gva, const void* data, u32 len);
 void vk_release_incr(u32 id);
@@ -392,14 +398,13 @@ VkShaderModule vk_module_spv_location(const u32* words, size_t count, u32 locati
 
 /* compute.c */
 void vk_dispatch(GpuChannel* ch, const u32* q, u64 code);
-void vk_compute_land(void);
+void vk_compute_land(void); /* pending compute results into guest memory, now */
 /* the compute results so far, submitted and put aside to land later: the batch to wait for (0: none pending) */
 u64 vk_compute_put_aside(void);
-void vk_compute_wait(u64 value); /* until the compute batch is done (any thread, without vk_lock) */
-void vk_compute_land_through(u64 value);
-    /* the batches up to it, done, land (vk_lock) */ /* pending compute results into guest memory, now */
-void vk_compute_before_write(u64 gva, u64 size);     /* gpu.c's g_gpu_before_write */
-void vk_compute_mem_need(u64 a, u64 n);              /* a read of [a, a + n): land results there first */
+void vk_compute_wait(u64 value);                 /* until the compute batch is done (any thread, without vk_lock) */
+void vk_compute_land_through(u64 value);         /* the batches up to it, done, land (vk_lock) */
+void vk_compute_before_write(u64 gva, u64 size); /* gpu.c's g_gpu_before_write */
+void vk_compute_mem_need(u64 a, u64 n);          /* a read of [a, a + n): land results there first */
 /* a pending compute result covering [gva, gva + len): the arena buffer and offset to read it from on the GPU */
 int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off);
 extern VkSemaphore g_vk_csem;  /* timeline semaphore the compute queue signals */
