@@ -17,18 +17,20 @@
 
    A load's symbols resolve to the load's own definitions first, then to the loader's table: the globals of earlier
    loads and the names given to snx_code_define (the runtime's functions and data, anywhere in the address space). A
-   call to a table symbol out of a 32-bit displacement's reach goes through a stub in the load, and a GOT reference gets
-   a slot in the load's read-only GOT, which holds the full address.
+   call to a table symbol out of its displacement's reach (x86-64's 2 GiB, AArch64's 128 MiB) goes through a stub in
+   the load, and a GOT reference gets a slot in the load's read-only GOT, which holds the full address.
 
    Threads: one call at a time per loader, which the caller serializes. Code from earlier loads keeps running during a
    load, which writes only bytes no earlier load uses, and an address comes out of snx_code_load only once its code is
    written and the instruction cache flushed: the caller can hand it to other threads (with release ordering) as is.
    x86-64 keeps instruction fetch coherent with stores from every core, checked on physical addresses (Intel SDM vol.
    3A, 11.6), so through the other view too, and no thread can jump to the new bytes before it loads their address.
-   An AArch64 host would need more for code on pages that already ran: an ISB in each thread after it loads the
-   address, or membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE) before the address goes out.
+   AArch64 needs more: the instruction cache is invalidated at the executable view's addresses, and every core of the
+   process synchronizes its instruction stream (membarrier's PRIVATE_EXPEDITED_SYNC_CORE) before the address goes out,
+   since a core may have fetched those bytes before they were written. An AArch64 Linux kernel without it (before
+   4.16) gets no loader.
 
-   x86-64 ELF hosts with memfd_create (Linux) or SHM_ANON (FreeBSD). On Windows, where the objects are COFF,
+   x86-64 and AArch64 ELF hosts with memfd_create (Linux) or SHM_ANON (FreeBSD). On Windows, where the objects are COFF,
    snx_code_load refuses for now. The views would be a pagefile-backed section (CreateFileMapping, with
    PAGE_EXECUTE_READWRITE as its maximum protection) mapped twice: with MapViewOfFile3 and PAGE_EXECUTE_READ into a
    placeholder cut out of the arena's reservation (VirtualAlloc2 with MEM_RESERVE_PLACEHOLDER, VirtualFree with
@@ -46,6 +48,9 @@ typedef struct SnxCodeLoader SnxCodeLoader;
 /* Reserves an arena of reserve bytes (0 for SNX_CODE_ARENA_DEFAULT, at most 2 GiB), five eighths of it code, two
    eighths read-only data and the rest data. NULL with the reason in error */
 SnxCodeLoader* snx_code_loader_new(size_t reserve, char* error, size_t error_size);
+/* The same for objects of another machine (an ELF e_machine: 62 x86-64, 183 AArch64), for tests of the loader on a
+   host that cannot run them: their code is placed and relocated, and must never run */
+SnxCodeLoader* snx_code_loader_new_machine(size_t reserve, unsigned machine, char* error, size_t error_size);
 /* Gives the arena back: nothing may run the loaded code any more */
 void snx_code_loader_free(SnxCodeLoader* loader);
 /* Defines name at address for the loads that follow. 0, or -1 when the table has the name already */

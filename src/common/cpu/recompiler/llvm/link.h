@@ -50,9 +50,10 @@ void snx_link_names_free(SnxLinkNames* names);
 
 /* The writes relocations come down to, shared by link_elf.c, link_coff.c and the JIT loader (code_loader.c):
    little-endian fields, and a 32-bit PC-relative one that must reach its target. A relocation that cannot be written
-   gives SNX_LINK_RANGE (its value does not fit), SNX_LINK_OUTSIDE (its field is not inside its section) or
-   SNX_LINK_UNSUPPORTED (a type the linkers do not know) */
-enum { SNX_LINK_RANGE = 1, SNX_LINK_OUTSIDE, SNX_LINK_UNSUPPORTED };
+   gives SNX_LINK_RANGE (its value does not fit), SNX_LINK_OUTSIDE (its field is not inside its section),
+   SNX_LINK_UNSUPPORTED (a type the linkers do not know) or SNX_LINK_MISALIGNED (an AArch64 load or store offset that
+   its access size does not divide) */
+enum { SNX_LINK_RANGE = 1, SNX_LINK_OUTSIDE, SNX_LINK_UNSUPPORTED, SNX_LINK_MISALIGNED };
 void snx_link_put32(unsigned char* p, uint32_t value);
 void snx_link_put64(unsigned char* p, uint64_t value);
 /* target - place into the signed 32-bit field at p: 0, or SNX_LINK_RANGE with nothing written when it does not fit */

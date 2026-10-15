@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The JIT's loader (code_loader.h): a code arena, and the LLVM backend's ELF objects linked into it */
 #ifdef __linux__
-#define _GNU_SOURCE /* memfd_create */
+#define _GNU_SOURCE /* memfd_create, syscall */
 #else
 #define _POSIX_C_SOURCE 200809L /* snprintf */
 #endif
@@ -14,10 +14,27 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "elf_object.h"
+#endif
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/syscall.h>
+/* <linux/membarrier.h>'s commands (Linux 4.16), by number for C libraries whose headers predate them */
+#define MEMBARRIER_SYNC_CORE          (1 << 5) /* MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE */
+#define MEMBARRIER_REGISTER_SYNC_CORE (1 << 6) /* MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE */
 #endif
 
 /* the table keeps addresses in SnxLinkNames' size_t values */
 typedef char snx_code_loader_needs_64_bits[sizeof(size_t) >= 8 ? 1 : -1];
+
+/* the machine whose code this process runs, as an ELF e_machine: x86-64's 62, AArch64's 183; 0 where the loader
+   cannot run what it loads */
+#if defined(__x86_64__) || defined(_M_X64)
+#define HOST_MACHINE 62u
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#define HOST_MACHINE 183u
+#else
+#define HOST_MACHINE 0u
+#endif
 
 /* the arena's regions, in address order (code_loader.h) */
 enum { CODE, RODATA, DATA, REGIONS };
@@ -33,6 +50,7 @@ typedef struct {
 struct SnxCodeLoader {
     unsigned char* base; /* the arena */
     size_t reserved, page;
+    unsigned machine; /* the objects' ELF e_machine */
     Region region[REGIONS];
     size_t committed;     /* bytes from the data region's start that are read-write */
     SnxLinkNames symbols; /* name -> address: the globals of earlier loads and the defined names */
@@ -68,7 +86,38 @@ static unsigned char* map_views(unsigned char* at, size_t size, int executable, 
 }
 #endif
 
+/* Whether code written by this thread can be published to threads running on other cores (code_loader.h). An
+   AArch64 core may hold instructions it fetched before the code was written, which neither the writer's cache
+   maintenance nor the reader's acquire load discards: each core needs a context synchronization event, which
+   membarrier's SYNC_CORE command makes every thread of the process take (an ISB on the way back to user space), and
+   which the process registers for once. Without it a load would hand out code another core might run stale, so the
+   loader refuses and the JIT stays off (the interpreter runs those functions) */
+static int can_publish(unsigned machine, char* error, size_t error_size) {
+    if (machine != HOST_MACHINE) return 1; /* nothing loaded runs: tests of another machine's objects */
+#if defined(__aarch64__)
+#if defined(__linux__) && defined(__NR_membarrier)
+    if (!syscall(__NR_membarrier, MEMBARRIER_REGISTER_SYNC_CORE, 0u, 0)) return 1;
+    snprintf(error, error_size, "the kernel has no membarrier SYNC_CORE (Linux 4.16), which publishing JIT code needs");
+#else
+    snprintf(error, error_size, "no way to synchronize other cores with new JIT code on this system");
+#endif
+    return 0;
+#else
+    (void)error;
+    (void)error_size;
+    return 1; /* x86-64 fetches what stores wrote, on every core (code_loader.h) */
+#endif
+}
+
 SnxCodeLoader* snx_code_loader_new(size_t reserve, char* error, size_t error_size) {
+    if (!HOST_MACHINE) {
+        snprintf(error, error_size, "the JIT loader runs on x86-64 and AArch64 hosts");
+        return NULL;
+    }
+    return snx_code_loader_new_machine(reserve, HOST_MACHINE, error, error_size);
+}
+
+SnxCodeLoader* snx_code_loader_new_machine(size_t reserve, unsigned machine, char* error, size_t error_size) {
     SnxCodeLoader* loader;
     size_t page = snx_vm_page_size();
     int i;
@@ -78,6 +127,7 @@ SnxCodeLoader* snx_code_loader_new(size_t reserve, char* error, size_t error_siz
         snprintf(error, error_size, "a code arena holds at most 2 GiB, so 32-bit displacements reach across it");
         return NULL;
     }
+    if (!can_publish(machine, error, error_size)) return NULL;
     loader = (SnxCodeLoader*)calloc(1, sizeof(*loader));
     if (!loader) {
         snprintf(error, error_size, "out of memory");
@@ -91,6 +141,7 @@ SnxCodeLoader* snx_code_loader_new(size_t reserve, char* error, size_t error_siz
     }
     loader->reserved = reserve;
     loader->page = page;
+    loader->machine = machine;
     /* code is most of what a unit holds. Read-only data is its jump tables, constants, function table and GOT, and
        generated code writes no data of its own (nor does the runtime library) */
     loader->region[CODE].size = reserve / 8 * 5;
@@ -144,22 +195,24 @@ size_t snx_code_used(const SnxCodeLoader* loader) {
 }
 
 #ifndef _WIN32
-#include "elf_object.h"
-
-/* jmp *slot(%rip), and two int3 to the next stub: the call of a table symbol beyond 32-bit reach, through its GOT
-   slot */
-#define STUB_SIZE 8
+/* A stub is how a call reaches a table symbol beyond its displacement, through the stub area after the load's code.
+   x86-64: jmp *slot(%rip) through the symbol's GOT slot, and two int3 to the next stub (8 bytes), for a symbol
+   outside the arena. AArch64: an elf_object.c veneer (12 bytes), for any table symbol, since B and BL reach 128 MiB
+   and the arena is larger: direct (ADRP, ADD) to one in the arena, indirect through its GOT slot (ADRP, LDR) to one
+   outside, which ADRP's 4 GiB may not reach */
+#define STUB_SIZE_X86 8
 /* where each load's code starts: a line no running code shares, so writing it never touches a line another core may
    be executing from */
-#define CODE_LINE 64
+#define CODE_LINE     64
 
 /* One snx_code_load call. Addresses are absolute, the arena's [arena_start, arena_end) */
 typedef struct {
     SnxElfObject* objs;
     size_t count;
+    unsigned machine;
     SnxLinkNames globals; /* the unit's own: name -> object << 32 | symbol index */
     SnxLinkNames got;     /* "object:symbol" of a unit definition, or "@address" of a table symbol -> GOT slot */
-    SnxLinkNames stubs;   /* "@address" of a far table symbol that code calls -> stub */
+    SnxLinkNames stubs;   /* "@address" of a table symbol that a call may not reach -> stub */
     size_t got_count, stub_count;
     uint64_t arena_start, arena_end, got_address, stub_address;
 } Load;
@@ -167,11 +220,15 @@ typedef struct {
 /* What a relocation's symbol resolves to */
 typedef struct {
     uint64_t address;
-    int far;      /* a table symbol outside the arena, which a 32-bit displacement may not reach */
-    char key[48]; /* its GOT slot's and stub's key; empty for the GOT itself and an undefined weak symbol (address 0) */
+    int far; /* a table symbol outside the arena, which a 32-bit displacement may not reach */
+    /* its GOT slot's and stub's key: "object:symbol" for the unit's own, "@address" for a table symbol; empty for the
+       GOT itself and an undefined weak symbol (address 0) */
+    char key[48];
 } Target;
 
 static uint64_t align_up(uint64_t value, uint64_t alignment) { return (value + alignment - 1) / alignment * alignment; }
+
+static uint64_t stub_size(const Load* ld) { return ld->machine == EM_AARCH64 ? SNX_ELF_VENEER_SIZE : STUB_SIZE_X86; }
 
 /* where the loader writes the byte the arena has at address: through its region's read-write view */
 static unsigned char* at(const SnxCodeLoader* loader, uint64_t address) {
@@ -207,7 +264,8 @@ static int resolve(const SnxCodeLoader* loader, const Load* ld, size_t object, s
     if (snx_link_find(&loader->symbols, name, &found)) {
         t->address = found;
         t->far = t->address < ld->arena_start || t->address >= ld->arena_end;
-        sprintf(t->key, "@%lx", (unsigned long)found);
+        /* in hexadecimal by halves: unsigned long is 32 bits on LLP64 systems */
+        sprintf(t->key, "@%lx:%08lx", (unsigned long)(t->address >> 32), (unsigned long)(t->address & 0xFFFFFFFFu));
         return 0;
     }
     if (!strcmp(name, "_GLOBAL_OFFSET_TABLE_")) {
@@ -219,6 +277,14 @@ static int resolve(const SnxCodeLoader* loader, const Load* ld, size_t object, s
     return -1;
 }
 
+/* Whether a call to t may need a stub: on x86-64 one outside the arena (inside, rel32 reaches across it); on AArch64
+   any table symbol, earlier loads' included, since the arena is larger than B's reach. The unit's own definitions are
+   in reach of its calls, the unit being far smaller than 128 MiB */
+static int may_need_stub(const Load* ld, const Target* t) {
+    if (ld->machine == EM_AARCH64) return t->key[0] == '@';
+    return t->far;
+}
+
 /* Section number section when it holds the relocations of a loaded section, which the two passes walk; else NULL */
 static const Elf64_Shdr* relocations(const SnxElfObject* o, size_t section) {
     const Elf64_Shdr* s = &o->sh[section];
@@ -226,7 +292,7 @@ static const Elf64_Shdr* relocations(const SnxElfObject* o, size_t section) {
     return s;
 }
 
-/* First pass: the GOT slots and stubs the unit needs */
+/* First pass: the GOT slots and stubs the unit needs. A stub that jumps through a GOT slot gets one */
 static int scan(const SnxCodeLoader* loader, Load* ld, char* error, size_t error_size) {
     size_t i, j, k, n, slot;
     Target t;
@@ -245,15 +311,17 @@ static int scan(const SnxCodeLoader* loader, Load* ld, char* error, size_t error
             for (k = 0; k < n; ++k) {
                 unsigned type = ELF64_R_TYPE(r[k].r_info);
                 if (resolve(loader, ld, i, ELF64_R_SYM(r[k].r_info), &t, error, error_size)) return -1;
-                if (snx_elf_got_relocation(type)) {
+                if (snx_elf_got_relocation(ld->machine, type)) {
                     if (!t.key[0]) {
                         snprintf(error, error_size, "%s: GOT reference to an undefined weak symbol", o->input->name);
                         return -1;
                     }
                     if (!snx_link_find(&ld->got, t.key, &slot)) snx_link_insert(&ld->got, t.key, ld->got_count++);
-                } else if (type == R_X86_64_PLT32 && t.far && !snx_link_find(&ld->stubs, t.key, &slot)) {
+                } else if (snx_elf_call_relocation(ld->machine, type) && may_need_stub(ld, &t) &&
+                           !snx_link_find(&ld->stubs, t.key, &slot)) {
                     snx_link_insert(&ld->stubs, t.key, ld->stub_count++);
-                    if (!snx_link_find(&ld->got, t.key, &slot)) snx_link_insert(&ld->got, t.key, ld->got_count++);
+                    if (t.far && !snx_link_find(&ld->got, t.key, &slot))
+                        snx_link_insert(&ld->got, t.key, ld->got_count++);
                 }
             }
         }
@@ -271,18 +339,27 @@ static uint64_t got_slot(const SnxCodeLoader* loader, const Load* ld, const Targ
     return address;
 }
 
-/* t's stub, written to jump through its GOT slot: the stub's address */
-static uint64_t stub(const SnxCodeLoader* loader, const Load* ld, const Target* t) {
-    size_t index = 0;
-    uint64_t address, slot = got_slot(loader, ld, t);
-    unsigned char* p;
-    snx_link_find(&ld->stubs, t->key, &index);
-    address = ld->stub_address + STUB_SIZE * (uint64_t)index;
-    p = at(loader, address);
-    p[0] = 0xFF; /* jmp qword ptr [rip + slot - next] */
-    p[1] = 0x25;
-    snx_link_rel32(p + 2, slot, address + 6); /* both in the arena: in reach */
-    return address;
+/* The call of relocation type at p (address P, addend A) to t, which it cannot reach, through t's stub: the stub
+   written and the call to it. 0, or SNX_LINK_RANGE when t has no stub */
+static int call_stub(const SnxCodeLoader* loader, const Load* ld, const Target* t, unsigned char* p, size_t room,
+                     unsigned type, int64_t A, uint64_t P) {
+    size_t index;
+    uint64_t address, slot;
+    unsigned char* s;
+    if (!t->key[0] || !snx_link_find(&ld->stubs, t->key, &index)) return SNX_LINK_RANGE;
+    address = ld->stub_address + stub_size(ld) * (uint64_t)index;
+    s = at(loader, address);
+    slot = t->far ? got_slot(loader, ld, t) : 0;
+    if (ld->machine == EM_AARCH64) {
+        /* the stub goes to the symbol itself, shared by every call to it: a call to an offset from it has none */
+        if (A) return SNX_LINK_RANGE;
+        return snx_elf_branch_veneer(p, P, s, address, t->far ? slot : t->address, t->far);
+    }
+    s[0] = 0xFF; /* jmp qword ptr [rip + slot - next] */
+    s[1] = 0x25;
+    snx_link_rel32(s + 2, slot, address + 6); /* both in the arena: in reach */
+    /* PLT32's addend is the call's own, its displacement's distance from the next instruction */
+    return snx_elf_relocate(ld->machine, p, room, type, address, A, P, ld->got_address, 0);
 }
 
 /* Second pass: every relocation of the unit, written into its placed sections */
@@ -306,21 +383,25 @@ static int relocate(const SnxCodeLoader* loader, const Load* ld, char* error, si
                 int written = SNX_LINK_OUTSIDE;
                 if (resolve(loader, ld, i, ELF64_R_SYM(r[k].r_info), &t, error, error_size)) return -1;
                 if (r[k].r_offset <= target->sh_size) {
+                    size_t room = (size_t)(target->sh_size - r[k].r_offset);
                     p = at(loader, P);
-                    if (snx_elf_got_relocation(type)) slot = got_slot(loader, ld, &t);
-                    written = snx_elf_relocate(p, target->sh_size - r[k].r_offset, type, t.address, r[k].r_addend, P,
-                                               ld->got_address, slot);
-                    if (written == SNX_LINK_RANGE && type == R_X86_64_PLT32 && t.far)
-                        written = snx_elf_relocate(p, target->sh_size - r[k].r_offset, type, stub(loader, ld, &t),
-                                                   r[k].r_addend, P, ld->got_address, slot);
+                    if (snx_elf_got_relocation(ld->machine, type)) slot = got_slot(loader, ld, &t);
+                    written = snx_elf_relocate(ld->machine, p, room, type, t.address, r[k].r_addend, P, ld->got_address,
+                                               slot);
+                    if (written == SNX_LINK_RANGE && snx_elf_call_relocation(ld->machine, type))
+                        written = call_stub(loader, ld, &t, p, room, type, r[k].r_addend, P);
                 }
                 if (written == SNX_LINK_OUTSIDE) {
                     snprintf(error, error_size, "%s: relocation outside its section", o->input->name);
                     return -1;
                 }
                 if (written == SNX_LINK_RANGE) {
-                    snprintf(error, error_size, "%s: relocation out of range of %s", o->input->name,
+                    snprintf(error, error_size, "%s: relocation %u out of range of %s", o->input->name, type,
                              t.far ? "a symbol outside the code arena" : "its target");
+                    return -1;
+                }
+                if (written == SNX_LINK_MISALIGNED) {
+                    snprintf(error, error_size, "%s: relocation %u to a misaligned address", o->input->name, type);
                     return -1;
                 }
                 if (written) {
@@ -343,6 +424,7 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
     int rc = -1, absolute;
     memset(&ld, 0, sizeof(ld));
     ld.count = count;
+    ld.machine = loader->machine;
     ld.arena_start = (uint64_t)(size_t)loader->base;
     ld.arena_end = ld.arena_start + loader->reserved;
     ld.objs = (SnxElfObject*)calloc(count ? count : 1, sizeof(SnxElfObject));
@@ -351,7 +433,7 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
         return -1;
     }
     for (i = 0; i < count; ++i)
-        if (snx_elf_parse(&ld.objs[i], &inputs[i], error, error_size)) goto done;
+        if (snx_elf_parse(&ld.objs[i], &inputs[i], &ld.machine, error, error_size)) goto done;
     if (snx_elf_collect_globals(ld.objs, count, &loader->symbols, &ld.globals, error, error_size)) goto done;
     for (i = 0; i < name_count; ++i)
         if (!snx_link_find(&ld.globals, names[i], &found) && !snx_link_find(&loader->symbols, names[i], &found)) {
@@ -365,7 +447,7 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
         align_up(next_free(loader, CODE), kind_align[SNX_ELF_TEXT] > CODE_LINE ? kind_align[SNX_ELF_TEXT] : CODE_LINE);
     kind_address[SNX_ELF_TEXT] = start[CODE];
     ld.stub_address = align_up(start[CODE] + kind_size[SNX_ELF_TEXT], 8);
-    end[CODE] = ld.stub_address + STUB_SIZE * (uint64_t)ld.stub_count;
+    end[CODE] = ld.stub_address + stub_size(&ld) * (uint64_t)ld.stub_count;
     start[RODATA] = align_up(next_free(loader, RODATA), kind_align[SNX_ELF_RODATA]);
     kind_address[SNX_ELF_RODATA] = start[RODATA];
     ld.got_address = align_up(start[RODATA] + kind_size[SNX_ELF_RODATA], 8);
@@ -394,8 +476,10 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
         loader->committed = (size_t)need;
     }
     /* Written through the read-write views, from each region's first free byte: a failed load leaves its bytes for the
-       next to write over, since no address of theirs went out and nothing runs there. int3 between functions */
-    memset(at(loader, next_free(loader, CODE)), 0xCC, (size_t)(end[CODE] - next_free(loader, CODE)));
+       next to write over, since no address of theirs went out and nothing runs there. Between functions and in unused
+       stubs, an instruction that traps: int3 on x86-64, UDF #0 (all zero bits) on AArch64 */
+    memset(at(loader, next_free(loader, CODE)), ld.machine == EM_AARCH64 ? 0 : 0xCC,
+           (size_t)(end[CODE] - next_free(loader, CODE)));
     memset(at(loader, next_free(loader, RODATA)), 0, (size_t)(end[RODATA] - next_free(loader, RODATA)));
     memset(at(loader, next_free(loader, DATA)), 0, (size_t)(end[DATA] - next_free(loader, DATA)));
     for (i = 0; i < count; ++i) {
@@ -408,8 +492,21 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
         }
     }
     if (relocate(loader, &ld, error, error_size)) goto done;
-    /* the code is complete: visible to instruction fetch before any address goes out (code_loader.h) */
-    if (end[CODE] > start[CODE]) snx_vm_flush_code((void*)(size_t)start[CODE], (size_t)(end[CODE] - start[CODE]));
+    /* The code is complete: visible to instruction fetch before any address goes out (code_loader.h). On AArch64 the
+       clear-cache builtin cleans the data cache to the point of unification and invalidates the instruction cache by
+       virtual address, and it is given the executable view's addresses, not the read-write view's the bytes were
+       written through. Data caches behave as physically indexed and tagged, so the clean finds the written lines
+       through either view (it needs a readable one: the arena's code is read-execute); an instruction cache may be
+       virtually indexed, so only the addresses instruction fetch uses invalidate the lines it would hit. Both
+       operations reach every core of the inner shareable domain. The read-only data and GOT need none: no instruction
+       is fetched from them, and data accesses are coherent between the views */
+    if (end[CODE] > start[CODE]) {
+        snx_vm_flush_code((void*)(size_t)start[CODE], (size_t)(end[CODE] - start[CODE]));
+#if defined(__linux__) && defined(__aarch64__) && defined(__NR_membarrier)
+        /* and every other core of the process drops what it fetched before (can_publish) */
+        if (ld.machine == HOST_MACHINE) syscall(__NR_membarrier, MEMBARRIER_SYNC_CORE, 0u, 0);
+#endif
+    }
     for (i = 0; i < name_count; ++i)
         if (snx_link_find(&ld.globals, names[i], &found))
             addresses[i] = snx_elf_symbol_address(ld.objs, found >> 32, found & 0xFFFFFFFFu, &absolute);
