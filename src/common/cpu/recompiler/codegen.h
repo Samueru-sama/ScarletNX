@@ -31,6 +31,13 @@ typedef struct {
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
                         size_t hint_count, int quiet);
+/* The runtime JIT's discovery: the function at pc and those it calls, found as snx_codegen_analyze finds functions,
+   until they hold budget instructions. known(user, address) says code exists already at an address (the AOT module,
+   an earlier compile): a function stops there and isn't searched from there. 0, or -1 when pc is unaligned or outside
+   the modules. The codegen is snx_codegen_free'd either way */
+typedef int (*SnxCodegenKnown)(void* user, SnxU64 address);
+int snx_codegen_discover(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, SnxU64 pc,
+                         SnxCodegenKnown known, void* user, size_t budget);
 void snx_codegen_free(SnxCodegen* codegen);
 SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address);
 int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);

@@ -451,12 +451,13 @@ gcc_jit_function* snx_jit_guest_function(SnxJit* jit, SnxU64 address, int define
     return f;
 }
 
-/* snx_lookup (cpu.h): the guest function at pc, or the interpreter */
+/* snx_lookup (cpu.h): the guest function at pc, or the runtime's RtAPI.miss */
 static gcc_jit_function* lookup_function(SnxJit* jit) {
     gcc_jit_param* params[2];
     gcc_jit_function* f;
     gcc_jit_block *entry, *table, *found, *none;
-    gcc_jit_rvalue *c, *pc, *lo, *o, *inside, *entry_fn;
+    gcc_jit_rvalue *c, *pc, *lo, *o, *inside, *args[2];
+    gcc_jit_function* atomic_load8;
     gcc_jit_lvalue* fn;
     if (jit->lookup) return jit->lookup;
     params[0] = gcc_jit_context_new_param(jit->ctx, NULL, jit->t_ptr, "c");
@@ -482,24 +483,34 @@ static gcc_jit_function* lookup_function(SnxJit* jit) {
                 jit_u64(jit, 0)));
     gcc_jit_block_end_with_conditional(entry, NULL, inside, table, none);
     fn = gcc_jit_function_new_local(f, NULL, jit->t_guest_ptr, "fn");
+    /* __atomic_load_n(&c->disp[o>>2],__ATOMIC_RELAXED): the runtime JIT fills slots while this runs (cpu.h). The
+       builtin takes a const volatile void* and returns an integer as wide as the pointer */
+    atomic_load8 = jit_builtin(jit, "__atomic_load_8");
+    args[0] = gcc_jit_context_new_cast(
+        jit->ctx, NULL,
+        gcc_jit_lvalue_get_address(
+            gcc_jit_context_new_array_access(
+                jit->ctx, NULL,
+                gcc_jit_context_new_cast(jit->ctx, NULL, load(jit_at(jit, c, offsetof(CPU, disp), jit->t_ptr)),
+                                         gcc_jit_type_get_pointer(jit->t_guest_ptr)),
+                gcc_jit_context_new_binary_op(jit->ctx, NULL, GCC_JIT_BINARY_OP_RSHIFT, jit->t_u64, o,
+                                              jit_u64(jit, 2))),
+            NULL),
+        gcc_jit_rvalue_get_type(gcc_jit_param_as_rvalue(gcc_jit_function_get_param(atomic_load8, 0))));
+    args[1] = gcc_jit_context_new_cast(
+        jit->ctx, NULL, jit_int(jit, 0 /* __ATOMIC_RELAXED */),
+        gcc_jit_rvalue_get_type(gcc_jit_param_as_rvalue(gcc_jit_function_get_param(atomic_load8, 1))));
     gcc_jit_block_add_assignment(
         table, NULL, fn,
-        load(gcc_jit_context_new_array_access(
-            jit->ctx, NULL,
-            gcc_jit_context_new_cast(jit->ctx, NULL, load(jit_at(jit, c, offsetof(CPU, disp), jit->t_ptr)),
-                                     gcc_jit_type_get_pointer(jit->t_guest_ptr)),
-            gcc_jit_context_new_binary_op(jit->ctx, NULL, GCC_JIT_BINARY_OP_RSHIFT, jit->t_u64, o, jit_u64(jit, 2)))));
+        jit_bitcast(jit, gcc_jit_context_new_call(jit->ctx, NULL, atomic_load8, 2, args), jit->t_guest_ptr));
     gcc_jit_block_end_with_conditional(
         table, NULL, compare(jit, GCC_JIT_COMPARISON_NE, load(fn), gcc_jit_context_null(jit->ctx, jit->t_guest_ptr)),
         found, none);
     gcc_jit_block_end_with_return(found, NULL, load(fn));
-    if (!jit->interp_entry) {
-        jit->interp_entry =
-            gcc_jit_context_new_global(jit->ctx, NULL, GCC_JIT_GLOBAL_IMPORTED, jit->t_guest_ptr, "snx_interp_entry");
-        gcc_jit_lvalue_add_string_attribute(jit->interp_entry, GCC_JIT_VARIABLE_ATTRIBUTE_VISIBILITY, "hidden");
-    }
-    entry_fn = load(jit->interp_entry);
-    gcc_jit_block_end_with_return(none, NULL, entry_fn);
+    /* c->rt->miss */
+    gcc_jit_block_end_with_return(none, NULL,
+                                  load(jit_at(jit, load(jit_at(jit, c, offsetof(CPU, rt), jit->t_ptr)),
+                                              offsetof(RtAPI, miss), jit->t_guest_ptr)));
     return jit->lookup = f;
 }
 

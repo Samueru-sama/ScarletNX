@@ -205,10 +205,11 @@ static void execute(u64 base) {
     cpu.disp = dispatch;
     cpu.code_lo = 0;
     cpu.code_hi = 4;
-    const RtAPI rt = {0};
+    /* the runtime's RtAPI.miss with cpu_fallback=interp: the interpreter */
+    const RtAPI rt = {.miss = snx_interp};
     cpu.rt = &rt;
     cpu.x[30] = 0x1234;
-    CHECK(snx_lookup(&cpu, base + 0x80) == snx_interp_entry);
+    CHECK(snx_lookup(&cpu, base + 0x80) == snx_interp);
     snx_lookup(&cpu, base + 0x80)(&cpu, base + 0x80);
     CHECK(cpu.x[0] == 42 && cpu.pc == 0x1234);
     /* NRO -> AOT dispatch -> NRO -> caller, with a saved link register. */

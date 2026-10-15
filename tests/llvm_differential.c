@@ -619,9 +619,7 @@ int main(int argc, char** argv) {
     l_lib = snx_path_join(dir, "llvm.so");
     /* the reference: snx_a64_static_step's C for each word, compiled by Clang with the flags generated C had */
     f = snx_fopen(c_path, "wb");
-    fputs(
-        "#include \"cpu.h\"\n#include \"cpu_helpers.c\"\nGuestFn snx_interp_entry;\ntypedef u64 (*StepFnPtr)(CPU*);\n",
-        f);
+    fputs("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\ntypedef u64 (*StepFnPtr)(CPU*);\n", f);
     for (i = 0; i < count; ++i) {
         char name[32];
         sprintf(name, "S_%lu", (unsigned long)i);

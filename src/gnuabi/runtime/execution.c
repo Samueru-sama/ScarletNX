@@ -13,6 +13,10 @@
 #include <signal.h>
 #endif
 static GnuProcess* active_process;
+static SnxExecution* active_execution;
+/* RtAPI.miss: a pc the generated module has no function for runs in its interpreter. One guest thread, so the running
+   execution is the one the miss came from */
+void gnu_runtime_miss(CPU* cpu, uint64_t pc) { active_execution->interp(cpu, pc); }
 static void instruction_fetch(CPU* cpu, uint64_t address, uint32_t* word) {
     GnuProcess* p = cpu->thread;
     cpu->pc = address;
@@ -65,6 +69,7 @@ static void access_fault(int signal, siginfo_t* information, void* context) {
 #endif
 int gnu_runtime_run(GnuProcess* p, SnxExecution* execution) {
     active_process = p;
+    active_execution = execution;
     execution->fetch = instruction_fetch;
 #ifdef _WIN32
     PVOID guard = AddVectoredExceptionHandler(1, access_fault);
@@ -95,5 +100,6 @@ int gnu_runtime_run(GnuProcess* p, SnxExecution* execution) {
     if (have_bus) (void)sigaction(SIGBUS, &previous_bus, NULL);
 #endif
     active_process = NULL;
+    active_execution = NULL;
     return p->exit_code;
 }

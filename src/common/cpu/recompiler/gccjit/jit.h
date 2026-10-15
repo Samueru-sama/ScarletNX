@@ -23,7 +23,6 @@ typedef struct SnxJit {
     gcc_jit_type *t_void, *t_ptr, *t_char_ptr, *t_bool, *t_int, *t_guest, *t_guest_ptr;
     gcc_jit_type *t_u8, *t_u16, *t_u32, *t_u64, *t_u128, *t_s8, *t_s16, *t_s32, *t_s64, *t_s128, *t_f32, *t_f64;
     gcc_jit_function* lookup; /* snx_lookup */
-    gcc_jit_lvalue* interp_entry;
     /* out-of-line functions of the runtime library and GCC builtins, declared on first use */
     SnxJitExtern externs[64];
     size_t extern_count;

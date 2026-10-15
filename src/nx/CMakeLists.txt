@@ -28,7 +28,7 @@ function(snx_component name)
 endfunction()
 
 snx_component(core runtime/main.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c runtime/startup.c runtime/gdbstub.c
-              runtime/present.c)
+              runtime/present.c runtime/jit.c)
 target_link_libraries(snx_core PRIVATE snx_driver)
 snx_component(kernel hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c hle/kernel/ipc.c)

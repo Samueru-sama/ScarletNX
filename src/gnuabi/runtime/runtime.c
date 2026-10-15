@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "../process/process.h"
 #include "../abi/errno/errno.h"
+#include "execution.h"
 #include <stdio.h>
 static void syscall_entry(CPU* c, u32 immediate) {
     GnuProcess* p = c->thread;
@@ -34,4 +35,5 @@ static void fpcr(CPU* c) { (void)c; }
 static void event(void) {}
 static void wait_event(CPU* c) { (void)c; }
 static void poll(CPU* c) { (void)c; } /* one thread at a time here: nothing asks for the core back */
-const RtAPI gnu_rtapi = {syscall_entry, undefined, hint, ticks, breakpoint, fpcr, event, wait_event, poll};
+const RtAPI gnu_rtapi = {syscall_entry, undefined, hint,       ticks, breakpoint,
+                         fpcr,          event,     wait_event, poll,  gnu_runtime_miss};

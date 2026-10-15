@@ -12,6 +12,7 @@ typedef void (*SnxFetchFn)(CPU* cpu, u64 pc, u32* word);
 typedef struct {
     void* module;
     GuestFn entry;
+    GuestFn interp; /* the module's interpreter: what the runtime's RtAPI.miss runs for a pc without code */
     GuestFn* dispatch;
     u64 code_lo, code_hi;
     char* temporary;

@@ -6,6 +6,7 @@
 #include "ir.h"
 #include "link.h"
 #include "module_abi.h"
+#include "rtlib_object.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,10 +16,6 @@
 #else
 #include <pthread.h>
 #endif
-
-/* the runtime library, compiled when the recompiler is built (rtlib.c, snx-rtlib-gen embed) */
-extern const unsigned char snx_rtlib_object[];
-extern const unsigned long snx_rtlib_object_size;
 
 typedef struct {
     size_t first, last; /* functions */
@@ -234,7 +231,7 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
                        size_t* entry_count, char* error, size_t error_size) {
     SnxModuleEntry* entries;
     size_t count, arraysize, i, j, nfns = codegen->function_count ? codegen->function_count : 1;
-    LLVMValueRef *values, fns, ent_off, ent_fn, ent_addr, ent_ptr, mods, mod, interp, entry, fn, loop_i, phi_values[2];
+    LLVMValueRef *values, fns, ent_off, ent_fn, ent_addr, ent_ptr, mods, mod, interp, fn, loop_i, phi_values[2];
     LLVMTypeRef info, t_fns, t_u32s, t_addrs, t_ptrs, t_mods;
     LLVMBasicBlockRef start, head, body, done, phi_blocks[2];
     SnxU64 lo = ~(SnxU64)0, hi = 0;
@@ -299,10 +296,9 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     /* static SnxModule MOD; */
     mod = global(ir, LLVMArrayType(ir->t_i8, sizeof(SnxModule)), "MOD", NULL, 0);
     LLVMSetAlignment(mod, 8);
-    interp = LLVMAddFunction(ir->mod, "snx_interp", ir->t_guest); /* the interpreter, in rtlib.c */
+    /* the interpreter, in rtlib.c: the runtime's RtAPI.miss runs it with cpu_fallback=interp */
+    interp = LLVMAddFunction(ir->mod, "snx_interp", ir->t_guest);
     LLVMSetVisibility(interp, LLVMHiddenVisibility);
-    entry = LLVMAddGlobal(ir->mod, ir->t_ptr, "snx_interp_entry"); /* GuestFn snx_interp_entry, in rtlib.c */
-    LLVMSetVisibility(entry, LLVMHiddenVisibility);
     /* SNX_EXPORT const SnxModule* snx_module(void) */
     fn = LLVMAddFunction(ir->mod, "snx_module", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
     if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
@@ -334,7 +330,6 @@ static int emit_module(SnxIr* ir, const SnxCodegen* codegen, const SnxCodegenOpt
     phi_blocks[1] = body;
     LLVMAddIncoming(loop_i, phi_values, phi_blocks, 2);
     LLVMPositionBuilderAtEnd(ir->b, done);
-    ir_store(ir, interp, entry);
     field(ir, mod, offsetof(SnxModule, abi), ir_i32(ir, options->abi));
     field(ir, mod, offsetof(SnxModule, nmods), ir_i32(ir, (SnxU32)loaded->module_count));
     field(ir, mod, offsetof(SnxModule, mods), mods);

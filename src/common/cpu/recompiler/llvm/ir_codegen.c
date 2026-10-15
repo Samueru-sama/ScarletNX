@@ -70,13 +70,17 @@ static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
 }
 
 /* call(): F_target(c,target) when the target is a recompiled function and direct calls aren't hooked
-   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return */
+   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return. The runtime JIT also calls the AOT module's
+   functions directly, at the host addresses ir->direct gives (jit_service.c) */
 static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) {
     LLVMValueRef args[2], site;
+    SnxU64 host = 0;
     args[0] = ir->c;
     args[1] = ir_i64(ir, target);
     if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
+    else if (!codegen->hook_direct_calls && ir->direct && (host = ir->direct(ir->direct_user, target)) != 0)
+        site = LLVMBuildCall2(B, ir->t_guest, LLVMConstIntToPtr(ir_i64(ir, host), ir->t_ptr), args, 2, "");
     else
         site = call_dynamic(ir, args[1]);
     if (tail) must_tail(ir, site);

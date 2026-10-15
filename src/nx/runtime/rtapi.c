@@ -5,6 +5,8 @@
 /* what the game module calls through RtAPI: undefined instructions, BRK, hints, ticks, FPCR */
 #include "runtime/rtapi.h"
 #include "runtime/clock.h"
+#include "runtime/jit.h"
+#include "runtime/loader.h"
 #include "runtime/main.h"
 #include "hle/kernel/kernel.h"
 #include "runtime/platform/log.h"
@@ -47,14 +49,17 @@ static int hset_add(u64 pc) { /* 1 when pc is new. Hints are never 0 */
     g_hints[g_nhints++] = pc;
     return 1;
 }
-static void rt_note_hint(u64 pc) {
-    if (!pc) return;
+/* 1 when pc is a new hint */
+static int hint_add(u64 pc) {
+    int added;
     pm_lock(&g_hint_lock);
-    if (hset_add(pc)) {
-        g_hints_dirty = 1;
-        LOGV("interpreter: entering %llx (not recompiled)\n", (unsigned long long)pc);
-    }
+    added = hset_add(pc);
+    if (added) g_hints_dirty = 1;
     pm_unlock(&g_hint_lock);
+    return added;
+}
+static void rt_note_hint(u64 pc) {
+    if (pc && hint_add(pc)) LOGV("interpreter: entering %llx (not recompiled)\n", (unsigned long long)pc);
 }
 /* the hints file, <Game>.hints next to the executable */
 void hints_init(void) {
@@ -114,4 +119,15 @@ static void rt_wfe(CPU* c) { /* a spin wait: let another thread on this core run
     if (t) core_enter(t);
 }
 static void rt_poll(CPU* c) { core_poll((KThread*)c->thread); }
-const RtAPI g_rtapi = {snx_svc, rt_undef, rt_note_hint, rt_ticks, rt_brk, rt_fpcr, rt_sev, rt_wfe, rt_poll};
+/* snx_lookup found no function for pc. The JIT's code is noted as a hint as the interpreter notes its entries, so the
+   next recompile has the function in the module */
+static void rt_miss(CPU* c, u64 pc) {
+    GuestFn f = jit_resolve(c, pc);
+    if (f)
+        hint_add(pc);
+    else if (!(f = g_mod->interp))
+        fatal("The game reached code at %llx that was not recompiled, and its module has no interpreter",
+              (unsigned long long)pc);
+    f(c, pc);
+}
+const RtAPI g_rtapi = {snx_svc, rt_undef, rt_note_hint, rt_ticks, rt_brk, rt_fpcr, rt_sev, rt_wfe, rt_poll, rt_miss};

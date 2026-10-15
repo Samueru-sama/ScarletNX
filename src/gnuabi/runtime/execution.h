@@ -7,4 +7,6 @@
 /* Single guest thread. Protected arena faults terminate the guest and allow
    compiler-module cleanup; guest signal-frame delivery is not implemented. */
 int gnu_runtime_run(GnuProcess* process, SnxExecution* execution);
+/* gnu_rtapi's miss: the running execution's interpreter */
+void gnu_runtime_miss(CPU* cpu, uint64_t pc);
 #endif

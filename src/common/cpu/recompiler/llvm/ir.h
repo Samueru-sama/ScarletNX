@@ -86,6 +86,10 @@ typedef struct SnxIr {
     LLVMValueRef scope_cpu, scope_guest;
     /* PLAIN instructions emitted as a call to the interpreter's snx_step, for patterns without an emitter */
     unsigned long fallbacks;
+    /* the runtime JIT's: the host address of the function to call for a target outside the codegen (an AOT module's
+       function, called as a constant), or 0 for CALLDYN. NULL in the AOT build */
+    SnxU64 (*direct)(void* user, SnxU64 target);
+    void* direct_user;
 } SnxIr;
 
 /* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
@@ -257,6 +261,7 @@ size_t ir_rt_brk(void);
 size_t ir_rt_sev(void);
 size_t ir_rt_wfe(void);
 size_t ir_rt_poll(void);
+size_t ir_rt_miss(void);
 size_t ir_off_poll(void);                         /* CPU.poll */
 void ir_undef(SnxIr* ir, SnxU64 pc, SnxU32 word); /* c->rt->undef(c,pc,w) */
 void ir_fence(SnxIr* ir);                         /* SNX_FENCE() */

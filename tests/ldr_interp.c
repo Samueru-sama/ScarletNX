@@ -9,4 +9,3 @@ u64 snx_step(CPU* c, u32 word, u64 pc);
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #include "ldr_interp.inc"
 #pragma GCC diagnostic pop
-GuestFn snx_interp_entry = snx_interp;

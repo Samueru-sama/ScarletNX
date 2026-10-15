@@ -313,6 +313,12 @@ if(NOT WIN32)
     add_test(NAME llvm_differential_jit COMMAND snx-test-llvm-differential "${CMAKE_C_COMPILER}" "${PROJECT_SOURCE_DIR}"
         --quiet --jit)
     set_tests_properties(llvm_differential_jit PROPERTIES TIMEOUT 900)
+    # the runtime JIT (jit_service.c): misses compiled, published and shared between threads, on that loader
+    add_executable(snx-test-jit-service jit_service.c)
+    snx_test_target(snx-test-jit-service 11)
+    target_link_libraries(snx-test-jit-service PRIVATE snx_llvm Threads::Threads)
+    add_test(NAME jit_service COMMAND snx-test-jit-service)
+    set_tests_properties(jit_service PROPERTIES TIMEOUT 120)
 endif()
 # not a test: timings of the generated code (llvm_bench SCARLETNX REPO CLANG)
 add_executable(snx-llvm-bench llvm_bench.c)

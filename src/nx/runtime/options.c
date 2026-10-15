@@ -22,6 +22,7 @@ float g_opt_resf = 1.0f;
 int g_opt_shadows = 1;
 int g_opt_prof = 0;
 int g_opt_network = 0;
+int g_opt_cpu_fallback = CPU_FALLBACK_INTERP;
 /* legacy (spanish) key names -> current ones */
 static const char* const INI_ALIAS[][2] = {{"modo_tv", "docked"},  {"idioma", "language"}, {"resolucion", "resolution"},
                                            {"sombras", "shadows"}, {"perfil", "profile"},  {NULL, NULL}};
@@ -95,8 +96,8 @@ static const char* ini_get(const char* k, const char* def) {
     return def;
 }
 /* what only applies when the game starts: the services, the window and the renderer read them once */
-static const char* const INI_RESTART[] = {"docked",    "language",    "fullscreen", "resolution",
-                                          "memory_gb", "heap_max_mb", "profile",    NULL};
+static const char* const INI_RESTART[] = {"docked",      "language", "fullscreen",   "resolution", "memory_gb",
+                                          "heap_max_mb", "profile",  "cpu_fallback", NULL};
 static int g_ini_started; /* the game runs: a reload leaves INI_RESTART's settings alone */
 static int ini_restart_only(const char* k) {
     for (int i = 0; INI_RESTART[i]; i++)
@@ -145,6 +146,8 @@ static void ini_apply(const char* k, const char* v) {
         g_opt_prof = atoi(v);
     else if (!strcmp(k, "network"))
         g_opt_network = atoi(v);
+    else if (!strcmp(k, "cpu_fallback")) /* the miss path is chosen before any guest thread runs (runtime/jit.c) */
+        g_opt_cpu_fallback = !strcmp(v, "jit") ? CPU_FALLBACK_JIT : CPU_FALLBACK_INTERP;
     else if (!strcmp(k, "memory_gb")) {
         g_opt_mem_gb = atoi(v);
     } else if (!strcmp(k, "heap_max_mb")) { /* 0 or less: no cap but the heap region's */
@@ -178,6 +181,8 @@ static const IniOpt INI_PERF[] = {
      "1 = 60 FPS (the speed of a Switch), 0 = unlimited (the game runs faster). Values under 60 are treated as 60: the game advances one step per image, so 30 meant half speed. F4 changes it in game"},
     {"memory_gb", "0",
      "Memory the game sees: 0 or 4 = 3.2 GB like the console, 6 or 8 = more (like yuzu's extended memory layout).\n;   Games that run out of memory on 3.2 GB, like Tears of the Kingdom, need 6"},
+    {"cpu_fallback", "interp",
+     "Game code the recompiler missed: interp = the interpreter, jit = compiled when it first runs (experimental).\n;   Applies when the game starts"},
     {NULL, NULL, NULL}};
 static const IniOpt INI_NETWORK[] = {
     {"network", "0",
@@ -249,7 +254,7 @@ static void ini_write(void) {
     fprintf(f, "; =====================================================================\n");
     fprintf(f, "; ScarletNX settings for %s\n", g_mod && g_mod->title ? g_mod->title : g_exename);
     fprintf(f, ";  Edit a value and save: most settings apply while the game runs.\n");
-    fprintf(f, ";  docked, language, fullscreen, resolution, memory_gb and profile\n");
+    fprintf(f, ";  docked, language, fullscreen, resolution, memory_gb, profile and cpu_fallback\n");
     fprintf(f, ";  apply when the game starts again.\n");
     fprintf(f, ";  Keys in game: F1 help, F3 screenshot, F4 FPS limit, F5 thread dump,\n");
     fprintf(f, ";  F11 or Alt+Enter fullscreen.\n");

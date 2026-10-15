@@ -219,7 +219,8 @@ static void emit_interp(FILE* out, int step_mode, int checked) {
         fputs(" U_: c->pc=pc; c->rt->undef(c,pc,w); return;\n N_: pc+=4; continue;\n"
               /* every taken branch: a loop the recompiler never found spins here, and gives its core up on poll */
               " J_: { if(UNLIKELY(__atomic_load_n(&c->poll,__ATOMIC_RELAXED))){ c->pc=pc; c->rt->poll(c); }\n"
-              " GuestFn f_=snx_lookup(c,pc); if(f_!=snx_interp_entry){ f_(c,pc); return; } continue; }\n }\n}\n",
+              /* compiled code takes over where there is some: a miss stays here */
+              " GuestFn f_=snx_lookup(c,pc); if(f_!=c->rt->miss){ f_(c,pc); return; } continue; }\n }\n}\n",
               out);
 }
 

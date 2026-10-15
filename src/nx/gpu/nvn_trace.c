@@ -9,6 +9,7 @@
 #include "gpu/nvn_trace.h"
 #include "gpu/gpu.h"
 #include "runtime/loader.h"
+#include "runtime/rtapi.h"
 #include "hle/kernel/kernel.h"
 #include "memory/mem.h"
 #include "runtime/platform/log.h"
@@ -104,7 +105,7 @@ static void trace_proc(u64 addr, const char* name) {
         u32 i = slot_hash(addr);
         while (procs[i].addr) i = (i + 1) & (NVN_PROC_SLOTS - 1);
         p = &procs[i];
-        p->original = *dispatch ? *dispatch : snx_interp_entry;
+        p->original = *dispatch ? *dispatch : g_rtapi.miss; /* what snx_lookup gives an empty slot */
         memcpy(p->name, name, strlen(name) + 1);
         p->queue_op = !strcmp(name, "nvnQueueSubmitCommands") || !strcmp(name, "nvnQueueFlush") ||
                       !strcmp(name, "nvnQueueFenceSync") || !strcmp(name, "nvnQueuePresentTexture") ||
@@ -171,6 +172,8 @@ void nvn_trace_init(void) {
     *slot = bootstrap_trace; /* before any guest thread runs */
     LOG("nvn: tracing bootstrap function requests (direct calls are only seen with --hook-direct-calls)\n");
 }
+
+int nvn_trace_active(void) { return tracing; }
 
 void nvn_trace_report(void) {
     if (!tracing || !bootstrap_original) return;

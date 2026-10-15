@@ -7,5 +7,7 @@
    game's symbols and dispatch table are loaded, before any guest thread starts. */
 void nvn_trace_init(void);
 void nvn_trace_report(void);
+/* 1 once nvn_trace_init found SNX_NVN_TRACE=1: wrappers replace dispatch slots */
+int nvn_trace_active(void);
 
 #endif

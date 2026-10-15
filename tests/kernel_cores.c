@@ -16,7 +16,6 @@ u64 g_code_lo, g_code_hi, g_core_mask = 7, g_prio_mask, g_code_memory, g_main_st
 int g_verbose;
 PMutex g_klock = PMUTEX_INIT;
 const RtAPI g_rtapi;
-GuestFn snx_interp_entry;
 __thread void* tls_thread;
 void fatal(const char* fmt, ...) {
     va_list a;

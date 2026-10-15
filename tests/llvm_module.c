@@ -105,6 +105,7 @@ static int run(const char* path, const unsigned char* image, int interp, u64 wat
     rt.svc = svc;
     rt.undef = undefined;
     rt.poll = on_poll;
+    rt.miss = mod->interp; /* the runtime's cpu_fallback=interp */
     calls = &out->calls;
     current = out;
     memory = (unsigned char*)calloc(1, (size_t)mod->mods[0].base + MEMORY);
