@@ -46,6 +46,9 @@ interface nn::am::service::ICommonStateGetter {
     @stub [11] ReleaseSleepLock();
     @stub [12] ReleaseSleepLockTransiently();
     [13] GetAcquiredSleepLockEvent() -> handle<copy, event> event;
+    [30] GetHomeButtonReaderLockAccessor() -> object<nn::am::service::ILockAccessor> accessor;
+    [31] GetReaderLockAccessorEx(u32 button_type) -> object<nn::am::service::ILockAccessor> accessor;
+    [32] GetWriterLockAccessorEx(u32 button_type) -> object<nn::am::service::ILockAccessor> accessor;
     @stub [50] IsVrModeEnabled() -> b8 enabled;
     @stub [51] SetVrModeEnabled(b8 enabled);
     @stub [52] SetLcdBacklighOffEnabled(b8 enabled);
@@ -61,6 +64,16 @@ interface nn::am::service::ICommonStateGetter {
     @stub [67] CancelCpuBoostMode();
     @stub [68] GetBuiltInDisplayType() -> i32 type;
     [91] GetCurrentPerformanceConfiguration() -> u32 configuration;
+    @stub [900] SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled();
+}
+
+# a lock on a system button (the home button's): no home menu here waits for it, so a lock is always granted, and
+# the event is signaled when it is released
+interface nn::am::service::ILockAccessor {
+    [1] TryLock(b8 return_handle) -> (b8 is_locked, handle<copy, event> event);
+    [2] Unlock();
+    [3] GetEvent() -> handle<copy, event> event;
+    [4] IsLocked() -> b8 is_locked;
 }
 
 interface nn::am::service::ISelfController {
@@ -156,8 +169,12 @@ interface nn::am::service::IApplicationFunctions {
 interface nn::am::service::ILibraryAppletCreator {
     [0] CreateLibraryApplet(u32 applet_id, u32 library_applet_mode)
         -> object<nn::am::service::ILibraryAppletAccessor> accessor;
+    [3] CreateLibraryAppletEx(u32 applet_id, u32 library_applet_mode, u64 thread_id)
+        -> object<nn::am::service::ILibraryAppletAccessor> accessor;
     [10] CreateStorage(i64 size) -> object<nn::am::service::IStorage> storage;
     [11] CreateTransferMemoryStorage(b8 is_writable, i64 size, handle<copy, transfer_memory> transfer_memory)
+        -> object<nn::am::service::IStorage> storage;
+    [12] CreateHandleStorage(i64 size, handle<copy, transfer_memory> transfer_memory)
         -> object<nn::am::service::IStorage> storage;
 }
 

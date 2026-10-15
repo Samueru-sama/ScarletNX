@@ -8,6 +8,7 @@
 #include "hle/filesystem/fs_tree.h"
 #include "runtime/main.h"
 #include "hle/services/services.h"
+#include "hle/services/services_int.h"
 #include "hle/kernel/ipc.h"
 #include "hle/filesystem/fs.swipc.inc"
 #include "memory/mem.h"
@@ -893,6 +894,38 @@ static u32 save_migrate(void) { /* tree.lock held */
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataFileSystemByCurrentProcess(SvcObj* self, SvcObj** filesystem) {
     return RC(2, 1001);
 }
+static int nn_fssrv_sf_IFileSystemProxy_OpenFileSystem(SvcObj* self, IpcBuf path, nn_fs_FileSystemProxyType type,
+                                                       SvcObj** filesystem) {
+    return RC(2, 1001);
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenDataFileSystemByProgramId(SvcObj* self, nn_ncm_ProgramId program_id,
+                                                                      SvcObj** filesystem) {
+    return RC(2, 1001);
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenBisStorage(SvcObj* self, u32 partition_id, SvcObj** storage) {
+    return RC(2, 1001);
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenGameCardStorage(SvcObj* self, u32 handle, u32 partition, SvcObj** storage) {
+    return RC(2, 1001);
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenImageDirectoryFileSystem(SvcObj* self, u32 storage_id,
+                                                                     SvcObj** filesystem) {
+    return RC(2, 1001);
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenContentStorageFileSystem(SvcObj* self, u32 content_storage_id,
+                                                                     SvcObj** filesystem) {
+    return RC(2, 1001);
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByPath(SvcObj* self, IpcBuf path,
+                                                              nn_fs_ContentAttributes attributes, u32 type,
+                                                              SvcObj** storage) {
+    return RC(2, 1001);
+}
+/* index 0 is this program, the only one GetProgramIndexForAccessLog reports: its data filesystem is not here either */
+static int nn_fssrv_sf_IFileSystemProxy_OpenDataFileSystemWithProgramIndex(SvcObj* self, u8 program_index,
+                                                                           SvcObj** filesystem) {
+    return program_index ? RC(2, 1002) : RC(2, 1001);
+}
 static int nn_fssrv_sf_IFileSystemProxy_OpenFileSystemWithPatch(SvcObj* self, nn_ncm_ProgramId program_id,
                                                                 nn_fs_FileSystemProxyType type, SvcObj** filesystem) {
     return RC(2, 1001);
@@ -998,6 +1031,12 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageWithProgramIndex(SvcObj* 
     if (program_index) return RC(2, 1002);
     return nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(self, storage);
 }
+/* this program's id is the only one there is: another program's is TargetNotFound */
+static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByProgramId(SvcObj* self, nn_ncm_ProgramId program_id,
+                                                                   SvcObj** storage) {
+    if (program_id != g_title_id) return RC(2, 1002);
+    return nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByCurrentProcess(self, storage);
+}
 static int nn_fssrv_sf_IFileSystemProxy_OpenDataStorageByDataId(SvcObj* self, nn_ncm_DataId data_id,
                                                                 nn_ncm_StorageId storage_id, SvcObj** storage) {
     char p[64];
@@ -1018,8 +1057,37 @@ static int nn_fssrv_sf_IFileSystemProxy_OpenDeviceOperator(SvcObj* self, SvcObj*
     *device_operator = nn_fssrv_sf_IDeviceOperator_new(0);
     return 0;
 }
+/* a notifier keeps one event (u[0]), which GetEventHandle gives each time. The card is always there, no game card
+   comes or goes and system data never updates, so it is never signaled */
+static void notifier_destroy(SvcObj* o) { kobj_unref(&((KEvent*)(size_t)o->u[0])->o); }
+static SvcObj* notifier_new(const char* name) {
+    SvcObj* o = nn_fssrv_sf_IEventNotifier_new(0);
+    o->u[0] = (u64)(size_t)owned_event(name);
+    o->destroy = notifier_destroy;
+    return o;
+}
+static int nn_fssrv_sf_IEventNotifier_GetEventHandle(SvcObj* self, u32* event) {
+    *event = ev_handle((KEvent*)(size_t)self->u[0]);
+    return 0;
+}
 static int nn_fssrv_sf_IFileSystemProxy_OpenSdCardDetectionEventNotifier(SvcObj* self, SvcObj** notifier) {
-    *notifier = nn_fssrv_sf_IEventNotifier_new(0);
+    *notifier = notifier_new("sd card detection");
+    return 0;
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenGameCardDetectionEventNotifier(SvcObj* self, SvcObj** notifier) {
+    *notifier = notifier_new("game card detection");
+    return 0;
+}
+static int nn_fssrv_sf_IFileSystemProxy_OpenSystemDataUpdateEventNotifier(SvcObj* self, SvcObj** notifier) {
+    *notifier = notifier_new("system data update");
+    return 0;
+}
+/* the SDK holds the prohibiter while it writes a save that mustn't be moved to another console meanwhile: nothing
+   moves saves here, so it has nothing to do */
+static int nn_fssrv_sf_IFileSystemProxy_OpenSaveDataTransferProhibiter(SvcObj* self,
+                                                                       nn_ncm_ApplicationId application_id,
+                                                                       SvcObj** prohibiter) {
+    *prohibiter = nn_fssrv_sf_ISaveDataTransferProhibiter_new(0);
     return 0;
 }
 static int nn_fssrv_sf_IFileSystemProxy_OpenMultiCommitManager(SvcObj* self, SvcObj** manager) {

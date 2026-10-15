@@ -138,6 +138,43 @@ static int nn_am_service_ICommonStateGetter_GetAcquiredSleepLockEvent(SvcObj* se
     *event = ev_handle(am.sleep_ev);
     return 0;
 }
+/* a lock accessor's event (u[0]) and whether it is held (u[1], atomic: game threads call at once) */
+static void lock_accessor_destroy(SvcObj* o) { kobj_unref(&((KEvent*)(size_t)o->u[0])->o); }
+static int lock_accessor(SvcObj** accessor) {
+    SvcObj* o = nn_am_service_ILockAccessor_new(0);
+    o->u[0] = (u64)(size_t)owned_event("button lock");
+    o->destroy = lock_accessor_destroy;
+    *accessor = o;
+    return 0;
+}
+static int nn_am_service_ICommonStateGetter_GetHomeButtonReaderLockAccessor(SvcObj* self, SvcObj** accessor) {
+    return lock_accessor(accessor);
+}
+static int nn_am_service_ICommonStateGetter_GetReaderLockAccessorEx(SvcObj* self, u32 button_type, SvcObj** accessor) {
+    return lock_accessor(accessor);
+}
+static int nn_am_service_ICommonStateGetter_GetWriterLockAccessorEx(SvcObj* self, u32 button_type, SvcObj** accessor) {
+    return lock_accessor(accessor);
+}
+static int nn_am_service_ILockAccessor_TryLock(SvcObj* self, u8 return_handle, u8* is_locked, u32* event) {
+    __atomic_store_n(&self->u[1], 1, __ATOMIC_RELAXED);
+    *is_locked = 1;
+    if (return_handle) *event = ev_handle((KEvent*)(size_t)self->u[0]);
+    return 0;
+}
+static int nn_am_service_ILockAccessor_Unlock(SvcObj* self) {
+    __atomic_store_n(&self->u[1], 0, __ATOMIC_RELAXED);
+    kevent_signal((KEvent*)(size_t)self->u[0]);
+    return 0;
+}
+static int nn_am_service_ILockAccessor_GetEvent(SvcObj* self, u32* event) {
+    *event = ev_handle((KEvent*)(size_t)self->u[0]);
+    return 0;
+}
+static int nn_am_service_ILockAccessor_IsLocked(SvcObj* self, u8* is_locked) {
+    *is_locked = (u8)__atomic_load_n(&self->u[1], __ATOMIC_RELAXED);
+    return 0;
+}
 static int nn_am_service_ICommonStateGetter_GetDefaultDisplayResolution(SvcObj* self, i32* width, i32* height) {
     *width = g_opt_docked ? 1920 : 1280;
     *height = g_opt_docked ? 1080 : 720;
@@ -430,6 +467,12 @@ static int nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(SvcObj* self,
     *accessor = a;
     return 0;
 }
+/* the thread id names the caller's thread for the applet's scheduling: nothing to schedule here */
+static int nn_am_service_ILibraryAppletCreator_CreateLibraryAppletEx(SvcObj* self, u32 applet_id,
+                                                                     u32 library_applet_mode, u64 thread_id,
+                                                                     SvcObj** accessor) {
+    return nn_am_service_ILibraryAppletCreator_CreateLibraryApplet(self, applet_id, library_applet_mode, accessor);
+}
 static int nn_am_service_ILibraryAppletCreator_CreateStorage(SvcObj* self, i64 size, SvcObj** storage) {
     return out_storage(storage, (u64)size, NULL);
 }
@@ -445,6 +488,11 @@ static int nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(SvcOb
     if (!st) return RC(128, 503);
     *storage = st;
     return 0;
+}
+/* a handle storage is transfer memory the caller doesn't map: the applet reads it the same way */
+static int nn_am_service_ILibraryAppletCreator_CreateHandleStorage(SvcObj* self, i64 size, u32 transfer_memory,
+                                                                   SvcObj** storage) {
+    return nn_am_service_ILibraryAppletCreator_CreateTransferMemoryStorage(self, 0, size, transfer_memory, storage);
 }
 static int nn_am_service_IAudioController_GetMainAppletExpectedMasterVolume(SvcObj* self, float* volume) {
     *volume = 1.0f;

@@ -118,6 +118,11 @@ static int nn_timesrv_detail_service_ITimeZoneService_GetTimeZoneRuleVersion(Svc
     memcpy(version->v, "2021a", 6);
     return 0;
 }
+/* signaled when SetDeviceLocationName changes the location, which nothing does here */
+static int nn_timesrv_detail_service_ITimeZoneService_GetDeviceLocationNameOperationEventReadableHandle(SvcObj* self,
+                                                                                                        u32* event) {
+    return new_event(event, "location name op", 0);
+}
 /* guest wall clock = host local time, whatever rule is passed */
 static int nn_timesrv_detail_service_ITimeZoneService_ToCalendarTime(SvcObj* self, nn_time_PosixTime time, IpcBuf rule,
                                                                      nn_time_CalendarTime* calendar,

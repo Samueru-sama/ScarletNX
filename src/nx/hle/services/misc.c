@@ -278,22 +278,172 @@ static int nn_mmnv_IRequest_Get(SvcObj* self, u32 request_id, nn_mmnv_Setting* c
     return mm_get(request_id, 0, current);
 }
 SvcObj* new_mm(void) { return nn_mmnv_IRequest_new(0); }
+/* nfp and nfc as on a console with no NFC device available: amiibo aren't read here. Each client (an nfp or nfc
+   IUser) has its state, NonInitialized (0) or Initialized (1), in u[0] (atomic: game threads call at once), and the
+   availability change event in u[1], given each time it is asked for and never signaled. A device handle can't be
+   valid: DeviceNotFound (115/64), what ListDevices also answers with no device, as the console does */
+#define NFP_DEVICE_NOT_FOUND RC(115, 64)
+#define NFP_NOT_INITIALIZED  RC(115, 77)
+static void nfp_user_destroy(SvcObj* o) { kobj_unref(&((KEvent*)(size_t)o->u[1])->o); }
+static SvcObj* nfp_user_init(SvcObj* o) {
+    o->u[1] = (u64)(size_t)owned_event("nfp availability");
+    o->destroy = nfp_user_destroy;
+    return o;
+}
+static int nfp_set_state(SvcObj* self, u32 state) {
+    __atomic_store_n(&self->u[0], state, __ATOMIC_RELAXED);
+    return 0;
+}
+static u32 nfp_state(SvcObj* self) { return (u32)__atomic_load_n(&self->u[0], __ATOMIC_RELAXED); }
+static int nfp_list_devices(SvcObj* self) { return nfp_state(self) ? NFP_DEVICE_NOT_FOUND : NFP_NOT_INITIALIZED; }
+static int nfp_availability_event(SvcObj* self, u32* event) {
+    *event = ev_handle((KEvent*)(size_t)self->u[1]);
+    return 0;
+}
+static int nn_nfp_detail_IUser_Initialize(SvcObj* self, u64 applet_resource_user_id, u64 pid, IpcBuf mcu_version_data) {
+    return nfp_set_state(self, 1);
+}
+static int nn_nfp_detail_IUser_Finalize(SvcObj* self) { return nfp_set_state(self, 0); }
+static int nn_nfp_detail_IUser_ListDevices(SvcObj* self, IpcBuf devices, i32* count) { return nfp_list_devices(self); }
+static int nn_nfp_detail_IUser_StartDetection(SvcObj* self, const nn_nfc_DeviceHandle* device_handle) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_StopDetection(SvcObj* self, const nn_nfc_DeviceHandle* device_handle) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_Mount(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32 model_type,
+                                     u32 mount_target) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_Unmount(SvcObj* self, const nn_nfc_DeviceHandle* device_handle) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_OpenApplicationArea(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
+                                                   u32 access_id) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_GetApplicationArea(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf data,
+                                                  u32* size) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_SetApplicationArea(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf data) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_Flush(SvcObj* self, const nn_nfc_DeviceHandle* device_handle) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_Restore(SvcObj* self, const nn_nfc_DeviceHandle* device_handle) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_CreateApplicationArea(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
+                                                     u32 access_id, IpcBuf data) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_GetTagInfo(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf info) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_GetRegisterInfo(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf info) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_GetCommonInfo(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf info) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_GetModelInfo(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf info) {
+    return NFP_DEVICE_NOT_FOUND;
+}
 static int nn_nfp_detail_IUser_AttachActivateEvent(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* event) {
-    return new_event(event, "nfp", 0);
+    return NFP_DEVICE_NOT_FOUND;
 }
 static int nn_nfp_detail_IUser_AttachDeactivateEvent(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
                                                      u32* event) {
-    return new_event(event, "nfp", 0);
+    return NFP_DEVICE_NOT_FOUND;
 }
 static int nn_nfp_detail_IUser_GetState(SvcObj* self, u32* state) {
-    *state = 1; /* initialized */
+    *state = nfp_state(self);
     return 0;
 }
+/* the SDK aborts on a failed GetDeviceState: an unknown handle is a Finalized device (6), as Eden answers */
+static int nn_nfp_detail_IUser_GetDeviceState(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* state) {
+    *state = 6;
+    return 0;
+}
+static int nn_nfp_detail_IUser_GetNpadId(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* npad_id) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_GetApplicationAreaSize(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
+                                                      u32* size) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfp_detail_IUser_AttachAvailabilityChangeEvent(SvcObj* self, u32* event) {
+    return nfp_availability_event(self, event);
+}
+static int nn_nfp_detail_IUser_RecreateApplicationArea(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
+                                                       u32 access_id, IpcBuf data) {
+    return NFP_DEVICE_NOT_FOUND;
+}
 static int nn_nfp_detail_IUserManager_CreateUserInterface(SvcObj* self, SvcObj** user) {
-    *user = nn_nfp_detail_IUser_new(0);
+    *user = nfp_user_init(nn_nfp_detail_IUser_new(0));
     return 0;
 }
 SvcObj* new_nfp(void) { return nn_nfp_detail_IUserManager_new(0); }
+static int nn_nfc_detail_IUser_InitializeOld(SvcObj* self, u64 applet_resource_user_id, u64 pid,
+                                             IpcBuf mcu_version_data) {
+    return nfp_set_state(self, 1);
+}
+static int nn_nfc_detail_IUser_FinalizeOld(SvcObj* self) { return nfp_set_state(self, 0); }
+static int nn_nfc_detail_IUser_GetStateOld(SvcObj* self, u32* state) {
+    *state = nfp_state(self);
+    return 0;
+}
+/* the console's NFC setting, which is on even when no device can read */
+static int nn_nfc_detail_IUser_IsNfcEnabledOld(SvcObj* self, u8* enabled) {
+    *enabled = 1;
+    return 0;
+}
+static int nn_nfc_detail_IUser_Initialize(SvcObj* self, u64 applet_resource_user_id, u64 pid, IpcBuf mcu_version_data) {
+    return nfp_set_state(self, 1);
+}
+static int nn_nfc_detail_IUser_Finalize(SvcObj* self) { return nfp_set_state(self, 0); }
+static int nn_nfc_detail_IUser_GetState(SvcObj* self, u32* state) {
+    *state = nfp_state(self);
+    return 0;
+}
+static int nn_nfc_detail_IUser_IsNfcEnabled(SvcObj* self, u8* enabled) {
+    *enabled = 1;
+    return 0;
+}
+static int nn_nfc_detail_IUser_ListDevices(SvcObj* self, IpcBuf devices, i32* count) { return nfp_list_devices(self); }
+static int nn_nfc_detail_IUser_GetDeviceState(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* state) {
+    *state = 6;
+    return 0;
+}
+static int nn_nfc_detail_IUser_GetNpadId(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* npad_id) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfc_detail_IUser_AttachAvailabilityChangeEvent(SvcObj* self, u32* event) {
+    return nfp_availability_event(self, event);
+}
+static int nn_nfc_detail_IUser_StartDetection(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32 protocol) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfc_detail_IUser_StopDetection(SvcObj* self, const nn_nfc_DeviceHandle* device_handle) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfc_detail_IUser_GetTagInfo(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, IpcBuf info) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfc_detail_IUser_AttachActivateEvent(SvcObj* self, const nn_nfc_DeviceHandle* device_handle, u32* event) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfc_detail_IUser_AttachDeactivateEvent(SvcObj* self, const nn_nfc_DeviceHandle* device_handle,
+                                                     u32* event) {
+    return NFP_DEVICE_NOT_FOUND;
+}
+static int nn_nfc_detail_IUserManager_CreateUserInterface(SvcObj* self, SvcObj** user) {
+    *user = nfp_user_init(nn_nfc_detail_IUser_new(0));
+    return 0;
+}
+SvcObj* new_nfc(void) { return nn_nfc_detail_IUserManager_new(0); }
 SvcObj* new_caps(void) { return nn_capsrv_sf_IAlbumApplicationService_new(0); }
 /* BCAT. behave like an offline console: sync completes immediately (Done/OK) and the delivery cache
    is empty. games do wait on the progress object, so it has to exist */
@@ -501,4 +651,23 @@ static int nn_btm_IBtmUser_GetCore(SvcObj* self, SvcObj** core) {
     return 0;
 }
 SvcObj* new_btmu(void) { return nn_btm_IBtmUser_new(0); }
+/* ListAudioIns lists no microphone, so there is none to open: audio's DeviceNotFound (153/1, as Ryujinx answers) */
+static int nn_audio_detail_IAudioInManager_OpenAudioIn(SvcObj* self, const nn_audio_AudioInParameter* params, u64 aruid,
+                                                       u32 process, IpcBuf name, IpcBuf name_out, u32* sample_rate,
+                                                       u32* channel_count, u32* sample_format, u32* state,
+                                                       SvcObj** in) {
+    return RC(153, 1);
+}
+static int nn_audio_detail_IAudioInManager_OpenAudioInAuto(SvcObj* self, const nn_audio_AudioInParameter* params,
+                                                           u64 aruid, u32 process, IpcBuf name, IpcBuf name_out,
+                                                           u32* sample_rate, u32* channel_count, u32* sample_format,
+                                                           u32* state, SvcObj** in) {
+    return RC(153, 1);
+}
+static int nn_audio_detail_IAudioInManager_OpenAudioInProtocolSpecified(
+    SvcObj* self, const nn_audio_AudioInProtocol* protocol, const nn_audio_AudioInParameter* params, u64 aruid,
+    u32 process, IpcBuf name, IpcBuf name_out, u32* sample_rate, u32* channel_count, u32* sample_format, u32* state,
+    SvcObj** in) {
+    return RC(153, 1);
+}
 SvcObj* new_audin(void) { return nn_audio_detail_IAudioInManager_new(0); }

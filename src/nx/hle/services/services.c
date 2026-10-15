@@ -72,6 +72,7 @@ void svc_core_init(void) {
     nn_spl_detail_IRandomInterface_register(new_csrng);
     nn_mmnv_IRequest_register(new_mm);
     nn_nfp_detail_IUserManager_register(new_nfp);
+    nn_nfc_detail_IUserManager_register(new_nfc);
     nn_capsrv_sf_IAlbumApplicationService_register(new_caps);
     nn_bcat_detail_ipc_IServiceCreator_register(new_bcat);
     nn_aocsrv_detail_IAddOnContentManager_register(new_aoc);

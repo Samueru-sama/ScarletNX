@@ -119,8 +119,10 @@ int ipc_warn_once(const char* name, u32 cmd) {
     __atomic_clear(&lk, __ATOMIC_RELEASE);
     return r;
 }
+/* "undeclared", not "stub": a declared @stub is silent, and this success carries none of the command's outputs, so a
+   command that gives an object or a handle leaves the SDK holding null (fsp-srv 205 in Metroid Prime 4) */
 int stub_ok(SvcObj* o, IpcCtx* c) {
-    if (ipc_warn_once(o->name, c->cmd)) LOG("  [stub] %s cmd %u -> ok\n", o->name, c->cmd);
+    if (ipc_warn_once(o->name, c->cmd)) LOG("  [undeclared] %s cmd %u -> ok\n", o->name, c->cmd);
     return 0;
 }
 int quiet_ok(SvcObj* o, IpcCtx* c) {

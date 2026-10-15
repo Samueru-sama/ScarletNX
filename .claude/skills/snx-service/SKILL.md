@@ -31,8 +31,9 @@ description: "Implement or fix a high-level-emulated Switch service or device (I
 
 1. **Find the command.** `-v` logs every call: `grep "IAudioOut cmd" run1.log | sort | uniq -c` (the object's
    name is the interface's, `nn::audio::detail::IAudioOut`, but bsd's and ldr's carry the service's, `bsd:u` and
-   `ldr:ro`). An undeclared command is logged by the interface's fallback, the first three times: `[stub] I cmd N ->
-   ok` from `stub_ok`, `[unknown]` from `ipc_unknown`, `[not implemented]` from bsd's, nothing from `quiet_ok`.
+   `ldr:ro`). An undeclared command is logged by the interface's fallback, the first three times: `[undeclared] I cmd N
+   -> ok` from `stub_ok` (success with no outputs: for a command that gives an object or a handle the game ends up
+   calling through null), `[unknown]` from `ipc_unknown`, `[not implemented]` from bsd's, nothing from `quiet_ok`.
    `[not implemented] NAME cmd N -> ok` also comes from sm's stand-in for a service the runtime doesn't have. A
    `[bad request] I cmd N: pid .., A .., ... -> InvalidCmifRequest` means the declaration doesn't match what the SDK
    sends (step 2): the game gets an error, and often aborts on it. `[bad request] ... -> InvalidNumInObjects` is the

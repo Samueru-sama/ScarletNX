@@ -176,17 +176,67 @@ interface nn::mmnv::IRequest is mm:u {
 # ================================================================ nfp:user, nfc:user
 type nn::nfc::DeviceHandle = bytes<8, 4>;
 
-# nfc:user is nn::nfc::detail::IUserManager on the console. Its IUser shares only Initialize (0) and Finalize (1) with
-# nfp's, and its other commands (2, 3, 400 and up) answer success from stub_ok
 @fallback(quiet_ok)
-interface nn::nfp::detail::IUserManager is nfp:user, nfc:user {
+interface nn::nfp::detail::IUserManager is nfp:user {
     [0] CreateUserInterface() -> object<nn::nfp::detail::IUser> user;
 }
+@fallback(quiet_ok)
+interface nn::nfc::detail::IUserManager is nfc:user {
+    [0] CreateUserInterface() -> object<nn::nfc::detail::IUser> user;
+}
+# nfp as on a console with no NFC device available: amiibo aren't read here. The layouts are the SDK's (Super Mario
+# Odyssey's IUser proxy)
+type nn::nfp::TagInfo = bytes<0x58>;
+type nn::nfp::RegisterInfo = bytes<0x100>;
+type nn::nfp::CommonInfo = bytes<0x40>;
+type nn::nfp::ModelInfo = bytes<0x40>;
 interface nn::nfp::detail::IUser {
-    @stub [1] Finalize();
+    [0] Initialize(u64 applet_resource_user_id, pid, buffer<u8, 5> mcu_version_data);
+    [1] Finalize();
+    [2] ListDevices(array<nn::nfc::DeviceHandle, 0xa> devices) -> i32 count;
+    [3] StartDetection(nn::nfc::DeviceHandle device_handle);
+    [4] StopDetection(nn::nfc::DeviceHandle device_handle);
+    [5] Mount(nn::nfc::DeviceHandle device_handle, u32 model_type, u32 mount_target);
+    [6] Unmount(nn::nfc::DeviceHandle device_handle);
+    [7] OpenApplicationArea(nn::nfc::DeviceHandle device_handle, u32 access_id);
+    [8] GetApplicationArea(nn::nfc::DeviceHandle device_handle, buffer<u8, 6> data) -> u32 size;
+    [9] SetApplicationArea(nn::nfc::DeviceHandle device_handle, buffer<u8, 5> data);
+    [10] Flush(nn::nfc::DeviceHandle device_handle);
+    [11] Restore(nn::nfc::DeviceHandle device_handle);
+    [12] CreateApplicationArea(nn::nfc::DeviceHandle device_handle, u32 access_id, buffer<u8, 5> data);
+    [13] GetTagInfo(nn::nfc::DeviceHandle device_handle, buffer<nn::nfp::TagInfo, 0x1a> info);
+    [14] GetRegisterInfo(nn::nfc::DeviceHandle device_handle, buffer<nn::nfp::RegisterInfo, 0x1a> info);
+    [15] GetCommonInfo(nn::nfc::DeviceHandle device_handle, buffer<nn::nfp::CommonInfo, 0x1a> info);
+    [16] GetModelInfo(nn::nfc::DeviceHandle device_handle, buffer<nn::nfp::ModelInfo, 0x1a> info);
     [17] AttachActivateEvent(nn::nfc::DeviceHandle device_handle) -> handle<copy, event> event;
     [18] AttachDeactivateEvent(nn::nfc::DeviceHandle device_handle) -> handle<copy, event> event;
     [19] GetState() -> u32 state;
+    [20] GetDeviceState(nn::nfc::DeviceHandle device_handle) -> u32 state;
+    [21] GetNpadId(nn::nfc::DeviceHandle device_handle) -> u32 npad_id;
+    [22] GetApplicationAreaSize(nn::nfc::DeviceHandle device_handle) -> u32 size;
+    [23] AttachAvailabilityChangeEvent() -> handle<copy, event> event;
+    [24] RecreateApplicationArea(nn::nfc::DeviceHandle device_handle, u32 access_id, buffer<u8, 5> data);
+}
+# nfc's own IUser: the commands before 400 are the old numbers of 400 to 403. The Mifare and pass-through commands
+# need a device, and there is none
+interface nn::nfc::detail::IUser {
+    [0] InitializeOld(u64 applet_resource_user_id, pid, buffer<u8, 5> mcu_version_data);
+    [1] FinalizeOld();
+    [2] GetStateOld() -> u32 state;
+    [3] IsNfcEnabledOld() -> b8 enabled;
+    [400] Initialize(u64 applet_resource_user_id, pid, buffer<u8, 5> mcu_version_data);
+    [401] Finalize();
+    [402] GetState() -> u32 state;
+    [403] IsNfcEnabled() -> b8 enabled;
+    [404] ListDevices(array<nn::nfc::DeviceHandle, 0xa> devices) -> i32 count;
+    [405] GetDeviceState(nn::nfc::DeviceHandle device_handle) -> u32 state;
+    [406] GetNpadId(nn::nfc::DeviceHandle device_handle) -> u32 npad_id;
+    [407] AttachAvailabilityChangeEvent() -> handle<copy, event> event;
+    [408] StartDetection(nn::nfc::DeviceHandle device_handle, u32 protocol);
+    [409] StopDetection(nn::nfc::DeviceHandle device_handle);
+    [410] GetTagInfo(nn::nfc::DeviceHandle device_handle, buffer<nn::nfp::TagInfo, 0x1a> info);
+    [411] AttachActivateEvent(nn::nfc::DeviceHandle device_handle) -> handle<copy, event> event;
+    [412] AttachDeactivateEvent(nn::nfc::DeviceHandle device_handle) -> handle<copy, event> event;
 }
 
 # ================================================================ bcat
@@ -339,8 +389,27 @@ interface nn::btm::IBtmUserCore {
 }
 
 # ================================================================ audin:u: no microphones
+type nn::audio::AudioInParameter = struct {
+    u32 sample_rate;
+    u16 channel_count;
+    u16 reserved;
+};
+type nn::audio::AudioInProtocol = u32[2];
 interface nn::audio::detail::IAudioInManager is audin:u {
     @stub [0] ListAudioIns(array<nn::audio::AudioDeviceName, 6> names) -> u32 count;
+    [1] OpenAudioIn(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
+                    buffer<nn::audio::AudioDeviceName, 5> name, buffer<nn::audio::AudioDeviceName, 6> name_out)
+        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
     @stub [2] ListAudioInsAuto(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
+    [3] OpenAudioInAuto(nn::audio::AudioInParameter params, aruid aruid, handle<copy, process> process,
+                        buffer<nn::audio::AudioDeviceName, 0x21> name, buffer<nn::audio::AudioDeviceName, 0x22> name_out)
+        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
     @stub [4] ListAudioInsAutoFiltered(array<nn::audio::AudioDeviceName, 0x22> names) -> u32 count;
+    [5] OpenAudioInProtocolSpecified(nn::audio::AudioInProtocol protocol, nn::audio::AudioInParameter params,
+                                     aruid aruid, handle<copy, process> process,
+                                     buffer<nn::audio::AudioDeviceName, 0x21> name,
+                                     buffer<nn::audio::AudioDeviceName, 0x22> name_out)
+        -> (u32 sample_rate, u32 channel_count, u32 sample_format, u32 state, object<nn::audio::detail::IAudioIn> in);
+}
+interface nn::audio::detail::IAudioIn {
 }

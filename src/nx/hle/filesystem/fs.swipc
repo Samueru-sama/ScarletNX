@@ -18,6 +18,7 @@ type nn::fs::FileSystemProxyErrorInfo = bytes<0x80, 4>;
 type nn::fs::MemoryReportInfo = bytes<0x80, 8>;
 type nn::fs::SaveDataCreationInfo2 = bytes<0x200>;
 type nn::fs::FileSystemProxyType = u32;
+type nn::fs::ContentAttributes = u8;
 type nn::ncm::ProgramId = u64;
 type nn::ncm::StorageId = u8;
 type nn::fs::SaveDataAttribute = struct {
@@ -92,19 +93,26 @@ interface nn::fssrv::sf::ISaveDataInfoReader {
 interface nn::fssrv::sf::IDeviceOperator {
 }
 interface nn::fssrv::sf::IEventNotifier {
+    [0] GetEventHandle() -> handle<copy, event> event;
+}
+interface nn::fssrv::sf::ISaveDataTransferProhibiter {
 }
 interface nn::fssrv::sf::IMultiCommitManager {
 }
 
 interface nn::fssrv::sf::IFileSystemProxy is fsp-srv {
+    [0] OpenFileSystem(buffer<nn::fssrv::sf::Path, 0x19> path, nn::fs::FileSystemProxyType type)
+        -> object<nn::fssrv::sf::IFileSystem> filesystem;
     @stub [1] SetCurrentProcess(pid);
     [2] OpenDataFileSystemByCurrentProcess() -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [7] OpenFileSystemWithPatch(nn::ncm::ProgramId program_id, nn::fs::FileSystemProxyType type)
         -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [8] OpenFileSystemWithId(buffer<nn::fssrv::sf::Path, 0x19> path, nn::ncm::ProgramId program_id,
                              nn::fs::FileSystemProxyType type) -> object<nn::fssrv::sf::IFileSystem> filesystem;
+    [9] OpenDataFileSystemByProgramId(nn::ncm::ProgramId program_id) -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [11] OpenBisFileSystem(buffer<nn::fssrv::sf::Path, 0x19> path, u32 partition_id)
         -> object<nn::fssrv::sf::IFileSystem> filesystem;
+    [12] OpenBisStorage(u32 partition_id) -> object<nn::fssrv::sf::IStorage> storage;
     [17] OpenHostFileSystem(buffer<nn::fssrv::sf::Path, 0x19> path) -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [18] OpenSdCardFileSystem() -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [19] FormatSdCardFileSystem();
@@ -120,6 +128,7 @@ interface nn::fssrv::sf::IFileSystemProxy is fsp-srv {
     @stub [27] IsExFatSupported() -> b8 supported;
     @stub [28] DeleteSaveDataFileSystemBySaveDataAttribute(nn::fs::SaveDataSpaceId space_id,
                                                            nn::fs::SaveDataAttribute attribute);
+    [30] OpenGameCardStorage(u32 handle, u32 partition) -> object<nn::fssrv::sf::IStorage> storage;
     [31] OpenGameCardFileSystem(u32 handle, u32 partition) -> object<nn::fssrv::sf::IFileSystem> filesystem;
     @stub [32] ExtendSaveDataFileSystem(nn::fs::SaveDataSpaceId space_id, u64 save_data_id, i64 available_size,
                                         i64 journal_size);
@@ -142,13 +151,23 @@ interface nn::fssrv::sf::IFileSystemProxy is fsp-srv {
     [61] OpenSaveDataInfoReaderBySaveDataSpaceId(nn::fs::SaveDataSpaceId space_id)
         -> object<nn::fssrv::sf::ISaveDataInfoReader> reader;
     [62] OpenSaveDataInfoReaderOnlyCacheStorage() -> object<nn::fssrv::sf::ISaveDataInfoReader> reader;
+    [83] OpenSaveDataTransferProhibiter(nn::ncm::ApplicationId application_id)
+        -> object<nn::fssrv::sf::ISaveDataTransferProhibiter> prohibiter;
+    [100] OpenImageDirectoryFileSystem(u32 storage_id) -> object<nn::fssrv::sf::IFileSystem> filesystem;
+    [110] OpenContentStorageFileSystem(u32 content_storage_id) -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [200] OpenDataStorageByCurrentProcess() -> object<nn::fssrv::sf::IStorage> storage;
+    [201] OpenDataStorageByProgramId(nn::ncm::ProgramId program_id) -> object<nn::fssrv::sf::IStorage> storage;
     [202] OpenDataStorageByDataId(nn::ncm::DataId data_id, nn::ncm::StorageId storage_id)
         -> object<nn::fssrv::sf::IStorage> storage;
     [203] OpenPatchDataStorageByCurrentProcess() -> object<nn::fssrv::sf::IStorage> storage;
+    [204] OpenDataFileSystemWithProgramIndex(u8 program_index) -> object<nn::fssrv::sf::IFileSystem> filesystem;
     [205] OpenDataStorageWithProgramIndex(u8 program_index) -> object<nn::fssrv::sf::IStorage> storage;
+    [206] OpenDataStorageByPath(buffer<nn::fssrv::sf::Path, 0x19> path, nn::fs::ContentAttributes attributes, u32 type)
+        -> object<nn::fssrv::sf::IStorage> storage;
     [400] OpenDeviceOperator() -> object<nn::fssrv::sf::IDeviceOperator> device_operator;
     [500] OpenSdCardDetectionEventNotifier() -> object<nn::fssrv::sf::IEventNotifier> notifier;
+    [501] OpenGameCardDetectionEventNotifier() -> object<nn::fssrv::sf::IEventNotifier> notifier;
+    [510] OpenSystemDataUpdateEventNotifier() -> object<nn::fssrv::sf::IEventNotifier> notifier;
     @stub [620] SetSdCardEncryptionSeed(nn::fs::EncryptionSeed seed);
     @stub [630] SetSdCardAccessibility(b8 accessible);
     [631] IsSdCardAccessible() -> b8 accessible;

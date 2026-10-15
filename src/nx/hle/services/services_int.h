@@ -66,6 +66,7 @@ SvcObj* new_fatal(void);
 SvcObj* new_csrng(void);
 SvcObj* new_mm(void);
 SvcObj* new_nfp(void);
+SvcObj* new_nfc(void);
 SvcObj* new_caps(void);
 SvcObj* new_bcat(void);
 SvcObj* new_aoc(void);

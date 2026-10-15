@@ -181,6 +181,34 @@ void svcobj_unref(SvcObj* obj) {
     free(obj);
     test_objects--;
 }
+/* the notifiers' events: counted, so the test sees each one dropped with its notifier */
+u64 g_title_id = 0x0100000000010000ull;
+static int test_events;
+KEvent* owned_event(const char* name) {
+    KEvent* event = calloc(1, sizeof *event);
+    CHECK(event != NULL);
+    (void)name;
+    event->o.refs = 1;
+    test_events++;
+    return event;
+}
+void kobj_unref(KObj* o) {
+    if (--o->refs) return;
+    free(o);
+    test_events--;
+}
+static KEvent* test_handles[32]; /* handle 0x100 + i is a reference on test_handles[i], as the kernel's would be */
+static unsigned test_nhandles;
+u32 ev_handle(KEvent* event) {
+    CHECK(test_nhandles < sizeof test_handles / sizeof test_handles[0]);
+    event->o.refs++;
+    test_handles[test_nhandles] = event;
+    return 0x100 + test_nhandles++;
+}
+void out_copy_h(IpcCtx* c, u32 handle) {
+    CHECK(c->nout_copy < 8);
+    c->out_copy[c->nout_copy++] = handle;
+}
 void out_obj(IpcCtx* c, SvcObj* obj) { /* NULL from a failed command, which ipc.c drops */
     CHECK(c->nout_objs < 8);
     c->out_objs[c->nout_objs++] = obj;
@@ -755,7 +783,17 @@ static void test_raw_romfs(SvcObj* proxy) {
     r.raw[0] = 1;
     dispatch(proxy, &r, RC(2, 1002));
     CHECK(r.c.nout_objs == 0);
-    puts("PASS raw RomFS reads, cached image size and the storage by program index");
+    /* OpenDataStorageByProgramId (201): this program's id is the RomFS, another program's fails */
+    request(&r, 201);
+    argument64(&r, 0, g_title_id);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1 && get_size(r.c.out_objs[0]) == sizeof expected);
+    svcobj_unref(r.c.out_objs[0]);
+    request(&r, 201);
+    argument64(&r, 0, g_title_id + 1);
+    dispatch(proxy, &r, RC(2, 1002));
+    CHECK(r.c.nout_objs == 0);
+    puts("PASS raw RomFS reads, cached image size and the storage by program index and id");
 }
 
 /* OpenSaveDataFileSystem (51): the SaveDataSpaceId (u8) at 0 and the 0x40 byte SaveDataAttribute at 8, whose
@@ -779,6 +817,45 @@ static int tree_has(const char* path) {
     pm_unlock(&fsp.tree.lock);
     return found;
 }
+/* the event notifiers (500, 501, 510) give the same event each time, never signaled, and drop it with themselves;
+   OpenSaveDataTransferProhibiter (83) gives a prohibiter; OpenDataFileSystemWithProgramIndex (204) has no data
+   filesystem for this program and no other program */
+static void test_notifiers_and_program_index(SvcObj* proxy) {
+    static const u32 notifiers[] = {500, 501, 510};
+    Request r;
+    for (unsigned i = 0; i < sizeof notifiers / sizeof notifiers[0]; i++) {
+        request(&r, notifiers[i]);
+        dispatch(proxy, &r, 0);
+        CHECK(r.c.nout_objs == 1 && test_events == 1);
+        SvcObj* notifier = r.c.out_objs[0];
+        u32 handles[2];
+        for (int k = 0; k < 2; k++) {
+            request(&r, 0);
+            dispatch(notifier, &r, 0);
+            CHECK(r.c.nout_copy == 1);
+            handles[k] = r.c.out_copy[0];
+        }
+        KEvent* event = test_handles[handles[0] - 0x100];
+        CHECK(test_handles[handles[1] - 0x100] == event && !event->signaled);
+        kobj_unref(&event->o); /* the game closes both handles */
+        kobj_unref(&event->o);
+        svcobj_unref(notifier);
+        CHECK(test_events == 0);
+    }
+    request(&r, 83);
+    argument64(&r, 0, g_title_id);
+    dispatch(proxy, &r, 0);
+    CHECK(r.c.nout_objs == 1);
+    svcobj_unref(r.c.out_objs[0]);
+    request(&r, 204);
+    dispatch(proxy, &r, RC(2, 1001));
+    CHECK(r.c.nout_objs == 0);
+    request(&r, 204);
+    r.raw[0] = 1;
+    dispatch(proxy, &r, RC(2, 1002));
+    puts("PASS event notifiers, the save data transfer prohibiter and the data filesystem by program index");
+}
+
 static void test_save_data(SvcObj* proxy) {
     /* each SaveDataType has its folder: System (0), Account (1), Bcat (2), Device (3) */
     SvcObj* system = open_save_data(proxy, 51, 0);
@@ -908,6 +985,7 @@ int main(int argc, char** argv) {
     test_virtual_services(fs, proxy);
     test_extracted_romfs(proxy);
     test_save_data(proxy);
+    test_notifiers_and_program_index(proxy);
     svcobj_unref(fs);
     svcobj_unref(proxy);
     CHECK(test_objects == 0);
