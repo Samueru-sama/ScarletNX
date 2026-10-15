@@ -201,8 +201,46 @@ static int page_cmp(const void* a, const void* b) {
     u64 x = *(const u64*)a, y = *(const u64*)b;
     return (x > y) - (x < y);
 }
-static int backing_overlap(u64 a, u64 an, const GfxOut* o) {
+/* A range's guest pages, translated once for a walk of the pending results (translating them again for every result
+   was the GPU thread's top cost once results stayed pending through a frame). Up to 16 pages are kept; a longer
+   range compares with each result's pages through bounds alone, then page by page */
+typedef struct {
+    u64 page[16];
+    u32 n;
+    u64 lo, hi; /* the lowest and highest guest page, ~0 and 0 when none is mapped */
+    u64 a, an;
+} RangePages;
+static void range_pages(u64 a, u64 an, RangePages* q) {
+    q->n = 0;
+    q->lo = ~0ull;
+    q->hi = 0;
+    q->a = a;
+    q->an = an;
     for (u64 ap = a >> 12, ae = (a + an - 1) >> 12; ap <= ae; ap++) {
+        u64 ac = gmmu_translate(ap << 12), page;
+        if (!ac) continue;
+        page = ac >> 12;
+        if (q->n < 16) q->page[q->n] = page;
+        q->n++;
+        if (page < q->lo) q->lo = page;
+        if (page > q->hi) q->hi = page;
+    }
+}
+static int backing_overlap(const RangePages* q, const GfxOut* o) {
+    u64 olo, ohi;
+    u32 i;
+    if (!q->n || !o->npages) return 0;
+    olo = o->pages[0];
+    ohi = o->pages[o->npages - 1];
+    if (ohi == ~0ull) /* unmapped pages sort last */
+        for (i = o->npages; i-- && o->pages[i] == ~0ull;) ohi = i ? o->pages[i - 1] : 0;
+    if (q->hi < olo || ohi < q->lo) return 0;
+    if (q->n <= 16) {
+        for (i = 0; i < q->n; i++)
+            if (bsearch(&q->page[i], o->pages, o->npages, sizeof q->page[i], page_cmp)) return 1;
+        return 0;
+    }
+    for (u64 ap = q->a >> 12, ae = (q->a + q->an - 1) >> 12; ap <= ae; ap++) {
         u64 ac = gmmu_translate(ap << 12);
         if (!ac) continue;
         u64 page = ac >> 12;
@@ -211,10 +249,12 @@ static int backing_overlap(u64 a, u64 an, const GfxOut* o) {
     return 0;
 }
 static void mem_need_reason(u64 gva, u64 len, int reason) {
+    RangePages q;
     if (!g_gfx_any || g_out_landing || !len) return;
     vk_lock();
+    range_pages(gva, len, &q);
     for (GfxOut* o = g_out; o; o = o->next)
-        if ((gva < o->addr + o->size && o->addr < gva + len) || backing_overlap(gva, len, o)) {
+        if ((gva < o->addr + o->size && o->addr < gva + len) || backing_overlap(&q, o)) {
             wait_finish(reason);
             break;
         }
@@ -228,9 +268,11 @@ int vk_buf_pending_unsubmitted(void) {
     return 0;
 }
 int vk_buf_pending(u64 gva, u64 len) {
+    RangePages q;
     if (!g_gfx_any || !len) return 0;
+    range_pages(gva, len, &q);
     for (GfxOut* o = g_out; o; o = o->next)
-        if ((gva < o->addr + o->size && o->addr < gva + len) || backing_overlap(gva, len, o)) return 1;
+        if ((gva < o->addr + o->size && o->addr < gva + len) || backing_overlap(&q, o)) return 1;
     return 0;
 }
 void vk_buf_mem_need_map(u64 gva, u64 len) { mem_need_reason(gva, len, WB_MAP); }
@@ -342,12 +384,14 @@ static void gfx_overlay(u64 gva, u64 len, VkBuffer dst, u64 dst_off) {
 static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable) {
     GfxOut* match = NULL;
     int count = 0;
+    RangePages q;
     if (!g_gfx_any || g_out_landing || !gva || !len) return 0;
     if (g_cs_any) vk_compute_mem_need(gva, len);
+    range_pages(gva, len, &q);
     for (GfxOut* o = g_out; o; o = o->next) {
         u64 lo = gva > o->addr ? gva : o->addr, hi = gva + len < o->addr + o->size ? gva + len : o->addr + o->size;
         if (lo >= hi) {
-            if (!backing_overlap(gva, len, o)) continue;
+            if (!backing_overlap(&q, o)) continue;
             land_reason(WB_DRAW);
             return 0;
         }
