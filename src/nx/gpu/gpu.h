@@ -87,6 +87,10 @@ extern void (*g_gpu_mem_changed)(u64 cpu_addr, u64 len); /* the renderer's side 
 /* the renderer lands pending shader results before the stream goes on past them: before a write of
    memory those results overlap (size > 0), and before anything the game can observe (gpu_signal_point, size 0) */
 extern void (*g_gpu_before_write)(u64 gva, u64 size);
+extern int g_gpu_releases; /* the renderer holds releases waiting to happen (renderer.h release_need) */
+/* a semaphore or report payload the game can poll, and a syncpoint increment of the stream: they happen once
+   everything before them in the stream is done */
+void gpu_release_write(u64 gva, const void* data, u32 len);
 /* Hold the renderer's memory lock across a backing change. full is for CPU guest pages, whose GPU aliases are
    unknown; GPU-VA changes supply the affected range. Begin precedes the memory manager's own lock. */
 extern void (*g_gpu_mapping_begin)(u64 gva, u64 size, int full);

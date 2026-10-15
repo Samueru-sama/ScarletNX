@@ -328,6 +328,9 @@ void vk_frame_check(void) {
 }
 
 u64 vk_submit_number(void) { return g_gval + 1; }
+u64 vk_last_submit(void) { return g_gval; }
+void vk_wait_submit(u64 value) { timeline_wait(value); }
+void vk_land_through(u64 value) { land_through(value < g_gval ? value : g_gval); }
 u64 vk_frame_id(void) { return g_frame_id; }
 
 static VkDescriptorPool desc_pool_new(void) {

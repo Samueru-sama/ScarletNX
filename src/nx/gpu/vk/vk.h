@@ -99,6 +99,9 @@ void vk_defer_buffer_view(VkBufferView v);
    is checked against it), and the frame (grows at vk_frame_next: frame f's work is done once f + VK_FRAMES started) */
 u64 vk_submit_number(void);
 u64 vk_frame_id(void);
+u64 vk_last_submit(void);        /* the last submission's number, which its completion signals */
+void vk_wait_submit(u64 value);  /* until the GPU has done that submission (any thread, without vk_lock) */
+void vk_land_through(u64 value); /* the results of the submissions up to value, done, into guest memory (vk_lock) */
 void vk_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect, VkPipelineStageFlags2 src_stage,
                 VkAccessFlags2 src_access, VkImageLayout from, VkPipelineStageFlags2 dst_stage,
                 VkAccessFlags2 dst_access, VkImageLayout to);
@@ -287,6 +290,13 @@ void vk_buf_writable_abort(void);
 void vk_buf_writable_commit(void);
 void vk_buf_mem_need(u64 gva, u64 len);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
+int vk_buf_pending_any(void);         /* any graphics result is pending */
+int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
+/* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
+void vk_release_write(u64 gva, const void* data, u32 len);
+void vk_release_incr(u32 id);
+void vk_release_need(u64 gva, u64 len);
+u32 vk_release_queued(u32 id);
 void vk_buf_mem_need_map(u64 gva, u64 len);
 void vk_buf_before_write(u64 gva, u64 len);
 void vk_buf_land(void);

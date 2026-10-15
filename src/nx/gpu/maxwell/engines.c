@@ -58,7 +58,6 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     u64 addr = ((u64)(r[base] & 0xFF) << 32) | r[base + 1];
     u32 seq = r[base + 2];
     u32 op = v & 3;
-    if (op != 1) gpu_signal_point();
     if (op == 0) { /* release */
         fake_report_mark(addr, 0);
         if (((v >> 4) & 1) && !((v >> 28) & 1)) { /* the size is bit 28: does bit 4 alone mean one word? */
@@ -66,10 +65,10 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
                       (unsigned long long)addr);
         }
         if (((v >> 4) & 1) || ((v >> 28) & 1))
-            gmem_w32(addr, seq);
+            gpu_release_write(addr, &seq, 4);
         else {
             u64 q[2] = {seq, gpu_ticks()};
-            gmem_write(addr, q, 16);
+            gpu_release_write(addr, q, 16);
         }
     } else if (op == 1) { /* acquire: COMPARISON (bit 16) is EQ (0) or GE (1) */
         int ge = (v >> 16) & 1;
@@ -90,11 +89,12 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
         u32 sel = (v >> 23) & 31;
         u64 val = sel == 0 ? 0 : (sel == 1 ? g_draws * 3 : 1000);
         fake_report_mark(addr, sel != 0);
-        if ((v >> 28) & 1)
-            gmem_w32(addr, (u32)val);
-        else {
+        if ((v >> 28) & 1) {
+            u32 w32 = (u32)val;
+            gpu_release_write(addr, &w32, 4);
+        } else {
             u64 q[2] = {val, gpu_ticks()};
-            gmem_write(addr, q, 16);
+            gpu_release_write(addr, q, 16);
         }
     }
 }

@@ -221,6 +221,12 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
     vk_unlock();
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
+int vk_buf_pending_any(void) { return g_gfx_any; }
+int vk_buf_pending_unsubmitted(void) {
+    for (GfxOut* o = g_out; o; o = o->next)
+        if (o->frame == vk_submit_number()) return 1;
+    return 0;
+}
 int vk_buf_pending(u64 gva, u64 len) {
     if (!g_gfx_any || !len) return 0;
     for (GfxOut* o = g_out; o; o = o->next)

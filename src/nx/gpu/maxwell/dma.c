@@ -210,13 +210,13 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
     u32 sem = (v >> 3) & 3;
     if (sem) {
         u64 sa = ((u64)r[0x90] << 32) | r[0x91];
-        gpu_signal_point(); /* the game can see this: what the renderer holds lands first */
-        if (sem == 1) gmem_w32(sa, r[0x92]);
+        /* the game can see this: it happens once the work before it is in memory */
+        if (sem == 1) gpu_release_write(sa, &r[0x92], 4);
         if (sem == 2) {
             u32 q[4] = {r[0x92], 0, 0, 0};
             u64 t = gpu_ticks();
             memcpy(&q[2], &t, 8);
-            gmem_write(sa, q, 16);
+            gpu_release_write(sa, q, 16);
         }
     }
 }

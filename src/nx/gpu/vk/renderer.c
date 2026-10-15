@@ -140,12 +140,7 @@ static void vkr_before_syncwait(void) {
     vk_gfx_image_land();
     vk_compute_land();
 }
-static void vkr_stream_incr(u32 id) {
-    vk_buf_land();
-    vk_gfx_image_land();
-    vk_compute_land();
-    syncpt_incr(id);
-}
+static void vkr_stream_incr(u32 id) { vk_release_incr(id); }
 
 /* ------------------------------------------------------------ presenting */
 /* the frame from memory when no render target holds it (the game drew it on the CPU, or a video frame) */
@@ -442,6 +437,9 @@ const Renderer vk_renderer = {
     .gfx_mem_need = vkr_gfx_mem_need,
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
+    .release_write = vk_release_write,
+    .release_need = vk_release_need,
+    .release_queued = vk_release_queued,
     .present_buffer = vkr_present_buffer,
     .screenshot = vkr_screenshot,
     .save = vk_pipeline_save,

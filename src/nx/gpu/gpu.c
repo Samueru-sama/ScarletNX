@@ -17,8 +17,10 @@ GpuState g_gpu;
 static PMutex g_gpulock; /* everything below runs on the GPU thread, which takes it anyway for any future caller */
 
 /* ============================================================ GPU memory */
+int g_gpu_releases;
 int gmem_read(u64 gva, void* dst, u64 size) {
     u8* d = dst;
+    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) g_renderer->release_need(gva, size);
     if (g_cs_any) g_renderer->cs_mem_need(gva, size);
     if (g_gfx_any || g_gfx_img_any) g_renderer->gfx_mem_need(gva, size);
     while (size) {
@@ -72,8 +74,17 @@ void (*g_gpu_mapping_end)(void);
 void gpu_signal_point(void) {
     if (g_gpu_before_write) g_gpu_before_write(0, 0);
 }
+void gpu_release_write(u64 gva, const void* data, u32 len) {
+    if (g_renderer_up && g_renderer->release_write)
+        g_renderer->release_write(gva, data, len);
+    else {
+        gpu_signal_point();
+        gmem_write(gva, data, len);
+    }
+}
 /* gmem_write without recording the write, for a caller that records the whole range once */
 static void gmem_write_unlogged(u64 gva, const void* src, u64 size) {
+    if (size && __atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) g_renderer->release_need(gva, size);
     if (g_gpu_before_write && size) g_gpu_before_write(gva, size);
     const u8* s = src;
     while (size) {
@@ -93,6 +104,7 @@ int gmem_write(u64 gva, const void* src, u64 size) {
 }
 u8* gmem_ptr(u64 gva, u64 size) {
     /* host pointer, only if the whole range is contiguous */
+    if (__atomic_load_n(&g_gpu_releases, __ATOMIC_ACQUIRE)) g_renderer->release_need(gva, size);
     if (g_cs_any) g_renderer->cs_mem_need(gva, size);
     if (g_gfx_any || g_gfx_img_any) g_renderer->gfx_mem_need(gva, size);
     return gmem_ptr_untracked(gva, size);
@@ -170,15 +182,14 @@ static void puller_method(GpuChannel* ch, u32 m, u32 v) {
             u64 addr = ((u64)(r[4] & 0xFF) << 32) | r[5];
             u32 op = v & 0x1F;
             if (op == 2) { /* release */
-                gpu_signal_point();
                 if (v & (1u << 24)) {
-                    gmem_w32(addr, r[6]);
+                    gpu_release_write(addr, &r[6], 4);
                 } /* 4 bytes only */
                 else {
                     u32 q[4] = {r[6], 0, 0, 0};
                     u64 t = gpu_ticks();
                     memcpy(&q[2], &t, 8);
-                    gmem_write(addr, q, 16);
+                    gpu_release_write(addr, q, 16);
                 }
             } else if (op == 1 || op == 4) { /* acquire, with a timeout so a bad value can't hang us */
                 u64 end = plat_ns() + 2000000000ull;
@@ -457,10 +468,12 @@ static void gpu_run(GpuJob* j) {
             "gpu: a submission waited 2 s on the GPU thread for syncpoint %u to reach %u (it is at %u), and runs anyway\n",
             j->wait_id, j->wait_val, syncpt_read(j->wait_id));
     gpu_submit_now(j->e, j->n, j->channel);
-    gpu_signal_point();
-    for (u32 i = 0; i < j->incs; i++) syncpt_incr(j->channel);
-    /* a stream that increments less than its fence promised leaves whoever waits for the fence waiting 2 s */
-    if ((i32)(syncpt_read(j->channel) - j->expect) < 0)
+    /* the submission's own increments, after its work like the stream's (nothing else of a job's end is seen) */
+    for (u32 i = 0; i < j->incs; i++) g_renderer->stream_incr(j->channel);
+    /* a stream that increments less than its fence promised leaves whoever waits for the fence waiting 2 s. Increments
+       the renderer still holds count: they happen once the work before them lands */
+    if ((i32)(syncpt_read(j->channel) + (g_renderer->release_queued ? g_renderer->release_queued(j->channel) : 0) -
+              j->expect) < 0)
         WARN_LIMIT(16, "gpu: channel %u's submission left its syncpoint at %u, short of the %u its fence promised\n",
                    j->channel, syncpt_read(j->channel), j->expect);
 }
