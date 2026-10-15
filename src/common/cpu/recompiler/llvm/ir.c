@@ -483,9 +483,19 @@ void ir_argmem(SnxIr* ir, LLVMValueRef function) { memory_effects(ir, function, 
 
 LLVMBasicBlockRef ir_block(SnxIr* ir, const char* name) { return LLVMAppendBasicBlockInContext(ir->ctx, ir->fn, name); }
 
+/* A local of the C ({ V128 r; ... } in the instruction's block) as an alloca of the whole function, zeroed where it is
+   made. Without that, SROA reads the local's previous contents wherever the first write leaves part of it (a lane,
+   r.s[i]=...) or has another type than the one SROA gives the local (a <16 x i8> store into a local it makes
+   <4 x i32>), and mem2reg then carries the local around the whole function: a PHI per local in every block that
+   joins paths (labels, the dispatch, loop heads). Tears of the Kingdom's large functions got 1388 PHIs in each such
+   block, which InstCombine compares pairwise, for hours per code unit. The zeroing is a copy from a constant because
+   SROA turns a copy of the whole local into a store of its own type, while a store or memset of another vector type
+   loads the old value again. Every emitter writes all of a local before reading it, so the zero folds away */
 LLVMValueRef ir_local(SnxIr* ir, LLVMTypeRef type) {
     LLVMBasicBlockRef here = LLVMGetInsertBlock(ir->b), entry = LLVMGetEntryBasicBlock(ir->fn);
-    LLVMValueRef first = LLVMGetFirstInstruction(entry), slot;
+    LLVMValueRef first = LLVMGetFirstInstruction(entry), slot, zero;
+    unsigned long size = (unsigned long)LLVMABISizeOfType(LLVMGetModuleDataLayout(ir->mod), type);
+    char name[32];
     if (first)
         LLVMPositionBuilderBefore(ir->b, first);
     else
@@ -493,6 +503,17 @@ LLVMValueRef ir_local(SnxIr* ir, LLVMTypeRef type) {
     slot = LLVMBuildAlloca(ir->b, type, "");
     LLVMSetAlignment(slot, 8);
     LLVMPositionBuilderAtEnd(ir->b, here);
+    sprintf(name, "snx_zero%lu", size); /* one per size in each module */
+    zero = LLVMGetNamedGlobal(ir->mod, name);
+    if (!zero) {
+        LLVMTypeRef bytes = LLVMArrayType(ir->t_i8, (unsigned)size);
+        zero = LLVMAddGlobal(ir->mod, bytes, name);
+        LLVMSetLinkage(zero, LLVMPrivateLinkage);
+        LLVMSetUnnamedAddress(zero, LLVMGlobalUnnamedAddr);
+        LLVMSetGlobalConstant(zero, 1);
+        LLVMSetInitializer(zero, LLVMConstNull(bytes));
+    }
+    LLVMBuildMemCpy(ir->b, slot, 8, zero, 1, ir_i64(ir, (SnxU64)size));
     return slot;
 }
 
