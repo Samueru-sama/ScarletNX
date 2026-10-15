@@ -37,10 +37,13 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. On Android the picker opens at once.
-- **Load 3DS CIA** uses `scarletnx-3ds`. The driver extracts supported decrypted application CIAs,
-  then returns an explicit error because ARM11 AOT/execution is still pending.
-  Existing extraction directories are refused rather than treated as cache hits.
-  See [3DS port](3DS.md) for limits and extract-only usage.
+- **Load 3DS CIA** uses `scarletnx-3ds`. Its `games/` browser lists CIA inputs,
+  not host executables. The driver extracts supported decrypted application CIAs.
+  A native Linux build with `SNX_3DS_AOT=ON` then compiles/runs small ARM11 integer
+  images; the default build reports missing AOT support. This is not full title
+  support: text is capped at 4 KiB and HLE/devices remain incomplete. Install the
+  adjacent `scarletnx-3ds-aot` compiler too. Existing extraction directories are
+  refused rather than treated as cache hits. See [3DS port](3DS.md) for limits.
 - **Setup device keys**, immediately after the three load entries, prompts you to
   pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of
   the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. It installs the file to `~/.switch/prod.keys`, or
