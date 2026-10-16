@@ -177,22 +177,22 @@ if(TARGET snx_ctr_board)
             add_test(NAME 3ds_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_driver.py"
                 $<TARGET_FILE:scarletnx-3ds>)
             set(snx_ctr_extract_test_args "")
-            if(SNX_3DS_AOT)
-                set(snx_ctr_extract_test_args --aot)
-                add_test(NAME 3ds_static_pipeline COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot.py"
-                    $<TARGET_FILE:scarletnx-3ds> $<TARGET_FILE:scarletnx-3ds-aot> $<TARGET_FILE:snx-test-3ds-native>)
-                set_tests_properties(3ds_static_pipeline PROPERTIES TIMEOUT 180)
-                if(SNX_TEST_3DS_SUPERTUX)
-                    get_filename_component(snx_supertux_cia "${SNX_TEST_3DS_SUPERTUX}" ABSOLUTE)
-                    set(snx_supertux_oracle_args "")
-                    if(SNX_TEST_ARM_DIFF)
-                        set(snx_supertux_oracle_args --oracle)
-                    endif()
-                    add_test(NAME 3ds_supertux_bootstrap COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_supertux.py"
-                        $<TARGET_FILE:scarletnx-3ds> "${snx_supertux_cia}" $<TARGET_FILE:snx-test-3ds-native> ${snx_supertux_oracle_args})
-                    set_tests_properties(3ds_supertux_bootstrap PROPERTIES TIMEOUT 1800 LABELS "external;bootstrap")
+
+            set(snx_ctr_extract_test_args --aot)
+            add_test(NAME 3ds_static_pipeline COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_aot.py"
+                $<TARGET_FILE:scarletnx-3ds> $<TARGET_FILE:scarletnx-3ds-aot> $<TARGET_FILE:snx-test-3ds-native>)
+            set_tests_properties(3ds_static_pipeline PROPERTIES TIMEOUT 180)
+            if(SNX_TEST_3DS_SUPERTUX)
+                get_filename_component(snx_supertux_cia "${SNX_TEST_3DS_SUPERTUX}" ABSOLUTE)
+                set(snx_supertux_oracle_args "")
+                if(SNX_TEST_ARM_DIFF)
+                    set(snx_supertux_oracle_args --oracle)
                 endif()
+                add_test(NAME 3ds_supertux_bootstrap COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_supertux.py"
+                    $<TARGET_FILE:scarletnx-3ds> "${snx_supertux_cia}" $<TARGET_FILE:snx-test-3ds-native> ${snx_supertux_oracle_args})
+                set_tests_properties(3ds_supertux_bootstrap PROPERTIES TIMEOUT 1800 LABELS "external;bootstrap")
             endif()
+            
             add_test(NAME 3ds_extract COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_extract.py"
                 $<TARGET_FILE:scarletnx-3ds> ${snx_ctr_extract_test_args})
             set_tests_properties(3ds_extract PROPERTIES TIMEOUT 120)

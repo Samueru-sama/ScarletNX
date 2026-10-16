@@ -31,50 +31,47 @@ set_target_properties(scarletnx-3ds PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_compile_options(scarletnx-3ds PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include(GNUInstallDirs)
-if(SNX_3DS_AOT)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
-    if(NOT TARGET snx_arm_llvm)
-        add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" ctr-arm-backend)
-    endif()
-    set(ctr_runtime_source "${CMAKE_CURRENT_BINARY_DIR}/ctr-runtime-$<CONFIG>.c")
-    add_custom_command(OUTPUT "${ctr_runtime_source}"
-        COMMAND "${CMAKE_COMMAND}" "-DINPUT=$<TARGET_FILE:snx_arm_rt>" "-DOUTPUT=${ctr_runtime_source}"
-            -P "${PROJECT_SOURCE_DIR}/cmake/ctr-runtime.cmake"
-        DEPENDS snx_arm_rt "${PROJECT_SOURCE_DIR}/cmake/ctr-runtime.cmake" VERBATIM)
-    add_executable(scarletnx-3ds-aot aot/compiler.c aot/discover.c "${ctr_runtime_source}")
-    target_link_libraries(scarletnx-3ds-aot PRIVATE snx_ctr_loader snx_arm_llvm)
-    # The offline compiler loads the LLVM toolchain's own libraries (including
-    # its z3) at startup: resolve them without a caller-provided environment.
-    set(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
-    find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
-        HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
-        PATH_SUFFIXES lib x86_64-linux-gnu)
-    if(SNX_Z3_LIBRARY)
-        get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
-        string(APPEND ctr_llvm_rpath ":${ctr_z3_dir}")
-        # Forced into the dependency table (--as-needed would drop unreferenced
-        # libraries): libLLVM's own z3/xml2 dependencies then resolve through
-        # the binary's search path instead of the caller's environment.
-        find_library(SNX_XML2_LIBRARY NAMES xml2 libxml2.so.2 HINTS "${ctr_z3_dir}" "${SNX_LLVM_LIBRARY_DIR}"
-                     PATH_SUFFIXES lib x86_64-linux-gnu)
-        target_link_libraries(scarletnx-3ds-aot PRIVATE "-Wl,--no-as-needed" "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY}
-                            "-Wl,--as-needed")
-    endif()
-    target_link_options(scarletnx-3ds-aot PRIVATE "-Wl,-rpath,${ctr_llvm_rpath}")
-    target_compile_definitions(scarletnx-3ds-aot PRIVATE "SNX_CTR_HOST_CC=\"${CMAKE_C_COMPILER}\"")
-    target_compile_options(scarletnx-3ds-aot PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-    set_target_properties(scarletnx-3ds-aot PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-    add_library(snx_ctr_native STATIC aot/load.c)
-    target_link_libraries(snx_ctr_native PUBLIC snx_ctr_process ${CMAKE_DL_LIBS})
-    set_target_properties(snx_ctr_native PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-    target_compile_options(snx_ctr_native PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-    target_sources(scarletnx-3ds PRIVATE aot/run.c)
-    target_link_libraries(scarletnx-3ds PRIVATE snx_ctr_native)
-    target_compile_definitions(scarletnx-3ds PRIVATE SNX_CTR_HAVE_AOT=1)
-    add_dependencies(scarletnx-3ds scarletnx-3ds-aot)
-    install(TARGETS scarletnx-3ds-aot RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
+if(NOT TARGET snx_arm_llvm)
+    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" ctr-arm-backend)
 endif()
+set(ctr_runtime_source "${CMAKE_CURRENT_BINARY_DIR}/ctr-runtime-$<CONFIG>.c")
+add_custom_command(OUTPUT "${ctr_runtime_source}"
+    COMMAND "${CMAKE_COMMAND}" "-DINPUT=$<TARGET_FILE:snx_arm_rt>" "-DOUTPUT=${ctr_runtime_source}"
+        -P "${PROJECT_SOURCE_DIR}/cmake/ctr-runtime.cmake"
+    DEPENDS snx_arm_rt "${PROJECT_SOURCE_DIR}/cmake/ctr-runtime.cmake" VERBATIM)
+add_executable(scarletnx-3ds-aot aot/compiler.c aot/discover.c "${ctr_runtime_source}")
+target_link_libraries(scarletnx-3ds-aot PRIVATE snx_ctr_loader snx_arm_llvm)
+# The offline compiler loads the LLVM toolchain's own libraries (including
+# its z3) at startup: resolve them without a caller-provided environment.
+set(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
+find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
+    HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
+    PATH_SUFFIXES lib x86_64-linux-gnu)
+if(SNX_Z3_LIBRARY)
+    get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
+    string(APPEND ctr_llvm_rpath ":${ctr_z3_dir}")
+    # Forced into the dependency table (--as-needed would drop unreferenced
+    # libraries): libLLVM's own z3/xml2 dependencies then resolve through
+    # the binary's search path instead of the caller's environment.
+    find_library(SNX_XML2_LIBRARY NAMES xml2 libxml2.so.2 HINTS "${ctr_z3_dir}" "${SNX_LLVM_LIBRARY_DIR}"
+                    PATH_SUFFIXES lib x86_64-linux-gnu)
+    target_link_libraries(scarletnx-3ds-aot PRIVATE "-Wl,--no-as-needed" "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY}
+                        "-Wl,--as-needed")
+endif()
+target_link_options(scarletnx-3ds-aot PRIVATE "-Wl,-rpath,${ctr_llvm_rpath}")
+target_compile_definitions(scarletnx-3ds-aot PRIVATE "SNX_CTR_HOST_CC=\"${CMAKE_C_COMPILER}\"")
+target_compile_options(scarletnx-3ds-aot PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+set_target_properties(scarletnx-3ds-aot PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+add_library(snx_ctr_native STATIC aot/load.c)
+target_link_libraries(snx_ctr_native PUBLIC snx_ctr_process ${CMAKE_DL_LIBS})
+set_target_properties(snx_ctr_native PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+target_compile_options(snx_ctr_native PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+target_sources(scarletnx-3ds PRIVATE aot/run.c)
+target_link_libraries(scarletnx-3ds PRIVATE snx_ctr_native)
+add_dependencies(scarletnx-3ds scarletnx-3ds-aot)
+install(TARGETS scarletnx-3ds-aot RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS scarletnx-3ds RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(WIN32)
     target_compile_definitions(scarletnx-3ds PRIVATE _CRT_SECURE_NO_WARNINGS)

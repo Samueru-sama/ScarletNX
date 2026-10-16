@@ -28,11 +28,7 @@ static void usage(FILE* out) {
           "                  its cache folder)\n"
           "  --output DIR    new output directory; default work/3ds/<title>-<sha256>\n"
           "  --max-blocks N  execution budget, 1..10000000 (default 100000)\n"
-#ifdef SNX_CTR_HAVE_AOT
           "Static ARM11 AOT enabled: bounded integer CFG; no full HLE/devices.\n"
-#else
-          "ARM11 pipeline disabled in this build (SNX_3DS_AOT=OFF).\n"
-#endif
           "Encrypted content is not implemented.\n",
           out);
 }
@@ -160,18 +156,8 @@ int main(int argc, char** argv) {
         free(published);
         return 0;
     }
-#ifdef SNX_CTR_HAVE_AOT
     int status = snx_ctr_aot_run(argv[0], published, model, max_blocks, error, sizeof error);
     free(published);
     if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
     return status;
-#else
-    (void)max_blocks;
-    free(published);
-    /* Never silently substitute NX's A64 compiler or A32's MCJIT runner. */
-    fputs("scarletnx-3ds: extraction complete; ARM11 static compilation/execution is not implemented in this build "
-          "(enable SNX_3DS_AOT).\n",
-          stderr);
-    return 3;
-#endif
 }
