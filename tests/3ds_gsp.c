@@ -9,7 +9,7 @@
 #include "services/gsp.h"
 #include "gpu/present.h"
 #include "filesystem/host.h"
-#include "common.h"
+#include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

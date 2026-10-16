@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#ifndef SNX_FS_TREE_H
-#define SNX_FS_TREE_H
+#ifndef SNX_NX_HLE_FS_TREE_H
+#define SNX_NX_HLE_FS_TREE_H
 
 #include "nx/runtime/platform/plat.h"
 

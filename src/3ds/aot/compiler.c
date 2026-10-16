@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Separate offline compiler executable. Never creates an execution engine. */
-#include "ctr_module.h"
-#include "ctr_runtime.h"
-#include "ctr_discover.h"
-#include "cpu/arm/llvm.h"
-#include "common.h"
+#include "3ds/aot/ctr_module.h"
+#include "3ds/aot/ctr_runtime.h"
+#include "3ds/aot/ctr_discover.h"
+#include "common/cpu/arm/llvm.h"
+#include "common/utilities/common.h"
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Error.h>
 #include <llvm-c/Target.h>

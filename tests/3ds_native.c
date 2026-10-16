@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "aot/ctr_module.h"
-#include "common.h"
+#include "common/utilities/common.h"
 #include "kernel/ctr_kernel.h"
 #include <openssl/evp.h>
 #include <assert.h>

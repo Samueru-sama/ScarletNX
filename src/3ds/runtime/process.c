@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "common.h"
+#include "common/utilities/common.h"
 static bool map(SnxCtrProcess* p, uint32_t va, uint32_t size, unsigned permissions) {
     if (!size) return true;
     if ((uint64_t)p->physical_next + size > p->physical_end ||

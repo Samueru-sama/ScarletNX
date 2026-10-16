@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "ctr_module.h"
+#include "3ds/aot/ctr_module.h"
 #include <dlfcn.h>
 #include <stdio.h>
 

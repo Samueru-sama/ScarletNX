@@ -8,7 +8,7 @@
 #include "runtime/internal.h"
 #include "services/gsp.h"
 #include "gpu/present.h"
-#include "common.h"
+#include "common/utilities/common.h"
 #include <stdlib.h>
 #include <string.h>
 #if defined(_WIN32)

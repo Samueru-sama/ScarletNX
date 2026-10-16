@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_CTR_MODULE_H
 #define SNX_CTR_MODULE_H
-#include "runtime/ctr_process.h"
+#include "3ds/runtime/ctr_process.h"
 #define SNX_CTR_MODULE_MAGIC         UINT64_C(0x31525443584e5353)
 #define SNX_CTR_MODULE_ABI           1u
 #define SNX_CTR_MODULE_CODEGEN_ABI   1u

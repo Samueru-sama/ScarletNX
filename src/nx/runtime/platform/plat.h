@@ -7,7 +7,7 @@
 #ifndef SNX_PLAT_H
 #define SNX_PLAT_H
 #include "common/cpu/aarch64/cpu.h"
-#include "nx/filesystem/host.h"
+#include "common/filesystem/host.h"
 #include <stddef.h>
 #include <stdio.h>
 

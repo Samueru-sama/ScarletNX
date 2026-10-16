@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "ctr_module.h"
-#include "kernel/ctr_kernel.h"
-#include "runtime/internal.h"
+#include "3ds/aot/ctr_module.h"
+#include "3ds/kernel/ctr_kernel.h"
+#include "3ds/runtime/internal.h"
 #include <string.h>
 
 bool snx_ctr_module_compatible(const SnxCtrModule* m, const SnxCtrImage* image) {
