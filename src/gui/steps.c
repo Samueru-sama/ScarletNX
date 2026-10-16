@@ -46,6 +46,14 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         sscanf(block, "compiled block %u/%u", &value, &total) == 2) {
         last->value = value;
         last->total = total;
+    } else if (last &&
+               ((!strcmp(last->label, "UNPACK") && sscanf(s, " unpacked %u of %u MB", &value, &total) == 2) ||
+                (!strcmp(last->label, "EXTRACT") && sscanf(s, " extracted %u of %u MB", &value, &total) == 2))) {
+        /* the driver's row a second, over itself: the step's own line shows it, no note under it */
+        last->value = value;
+        last->total = total;
+        last->megabytes = 1;
+        return;
     } else if (prefix(s, "Unpacking "))
         begin(steps, "UNPACK", s + 10, strlen(s + 10), now);
     else if (prefix(s, "Extracting "))
@@ -103,6 +111,8 @@ int gui_steps_percent(const GuiSteps* steps) {
         const GuiStep* s = &steps->step[i];
         if (!strcmp(s->label, "RECOMPILE"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : 0;
+        else if (!strcmp(s->label, "UNPACK") || !strcmp(s->label, "EXTRACT"))
+            percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : -1;
         else if (!strcmp(s->label, "BUILT") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
             percent = 100;
     }

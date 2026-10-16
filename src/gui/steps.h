@@ -13,7 +13,8 @@ typedef enum { GUI_STEP_ACTIVE, GUI_STEP_DONE, GUI_STEP_FAILED } GuiStepState;
 typedef struct {
     char label[12], detail[96];
     GuiStepState state;
-    uint32_t value, total; /* the recompile's blocks */
+    uint32_t value, total; /* the recompile's blocks, or the MB an unpack or an extraction has written (megabytes) */
+    int megabytes;
     uint64_t shown_ms;
     uint32_t serial;
 } GuiStep;
@@ -36,7 +37,8 @@ typedef struct {
 void gui_steps_reset(GuiSteps* steps);
 void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now_ms);
 void gui_steps_finish(GuiSteps* steps, int ok);
-/* how far the recompile is, 0 to 100; 100 once the game launches; -1 before anything says */
+/* how far the step at work is, 0 to 100: the unpack, the extraction or the recompile; 100 once the game launches; -1
+   before anything says */
 int gui_steps_percent(const GuiSteps* steps);
 /* the latest step of label, NULL for none: LAUNCH, the runner's banner, says the game is loading */
 const GuiStep* gui_steps_last(const GuiSteps* steps, const char* label);
