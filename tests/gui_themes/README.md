@@ -9,3 +9,6 @@ They are never changed. A GUI change that makes one read otherwise is the change
 folder; a new fixture's JSON comes from the GUI itself:
 
     snx-test-gui-theme-formats --print tests/gui_themes/1/<name>.ini <name> > tests/gui_themes/1/<name>.json
+
+`deprecated/<name>.ini` are files that use a key a newer one replaced, as a GUI wrote them: `gui_theme_write` reads
+each to the new keys as the old one said, says so, and never writes the old key again.

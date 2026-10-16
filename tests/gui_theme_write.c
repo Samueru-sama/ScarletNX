@@ -52,6 +52,27 @@ static int round_trip(const char* text, size_t size, const char* id, const char*
 }
 
 int main(int argc, char** argv) {
+    /* a file with a deprecated key, as a GUI wrote it: read as the new keys say, written with them alone */
+    {
+        char* path = snx_path_join(SNX_GUI_THEME_FIXTURES, "deprecated/yorha-boxes.ini");
+        size_t size = 0;
+        char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+        char *written, note[256];
+        GuiTheme t, again;
+        GuiThemeFile file;
+        assert(text && gui_theme_parse(&t, "yorha-boxes", text, size) && gui_theme_file_read(&file, text, size));
+        assert(t.layout == GUI_LAYOUT_PANELS && t.panels == GUI_PANELS_FILL &&
+               gui_theme_old_keys(&t, note, sizeof note));
+        written = gui_theme_write(&t, &file);
+        assert(written && strstr(written, "\nlayout = panels\n") && strstr(written, "\npanels = fill\n"));
+        assert(!strstr(written, "boxes ="));
+        assert(gui_theme_parse(&again, "yorha-boxes", written, strlen(written)) && !again.old_keys);
+        assert(again.layout == t.layout && again.panels == t.panels);
+        gui_theme_file_free(&file);
+        free(written);
+        free(text);
+        free(path);
+    }
     const char* fixtures = argc > 1 ? argv[1] : SNX_GUI_THEME_FIXTURES "/1";
     static const char* const builtins[] = {"default", "yorha"};
     char** names = NULL;

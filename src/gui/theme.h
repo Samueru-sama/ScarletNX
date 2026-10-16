@@ -15,7 +15,8 @@ typedef enum { GUI_LINE_NONE, GUI_LINE_TYPING, GUI_LINE_SLIDE, GUI_LINE_FADE } G
 typedef enum { GUI_RING_NONE, GUI_RING_LEFT, GUI_RING_RIGHT, GUI_RING_NEAR_TEXT } GuiRing;
 typedef enum { GUI_ALIGN_LEFT, GUI_ALIGN_CENTER, GUI_ALIGN_RIGHT } GuiAlign;
 /* the menus' screens: lines down the page, or boxes side by side, outlined or filled */
-typedef enum { GUI_BOXES_NONE, GUI_BOXES_LINE, GUI_BOXES_FILL } GuiBoxStyle;
+typedef enum { GUI_LAYOUT_CLASSIC, GUI_LAYOUT_PANELS } GuiLayout;
+typedef enum { GUI_PANELS_OUTLINE, GUI_PANELS_FILL } GuiPanels; /* the boxes framed, or filled */
 /* the edges drawn along the top and the bottom of a screen in boxes, and the mark repeated along them */
 typedef enum { GUI_EDGES_NONE, GUI_EDGES_TOP, GUI_EDGES_BOTTOM, GUI_EDGES_BOTH } GuiEdges;
 typedef enum { GUI_MARK_DOT, GUI_MARK_DASH, GUI_MARK_DOTS } GuiMark;
@@ -58,7 +59,8 @@ typedef struct {
     int title_shadow;
     int focus_bar; /* the focused line as a band of ink, its text in the page colour */
     char marker[16];
-    GuiBoxStyle boxes;
+    GuiLayout layout;
+    GuiPanels panels;
     char cursor[16]; /* in the list's margin, beside the focused box */
     GuiEdges edges;
     GuiMark mark;
@@ -82,6 +84,7 @@ typedef struct {
        boots of 100, the default theme's in the others */
     GuiRgb splash_page;
     uint32_t splash_ms, splash_chance;
+    unsigned old_keys; /* the deprecated keys its file had, a bit each: gui_theme_old_keys says them */
 } GuiTheme;
 typedef struct {
     char (*ids)[64]; /* the built-ins, then each folder of themes/ with a theme.ini, in one block */
@@ -126,6 +129,9 @@ void gui_theme_file_free(GuiThemeFile* file);
 /* the theme as a theme.ini of the newest format, every key in it so it reads the same over any base; owned, NULL
    when out of memory */
 char* gui_theme_write(const GuiTheme* theme, const GuiThemeFile* file);
+
+/* what the deprecated keys theme's file had were read as, a sentence for the screen; 0 when it had none */
+int gui_theme_old_keys(const GuiTheme* theme, char* out, size_t size);
 
 /* "default" and "yorha"; NULL for any other id */
 const GuiTheme* gui_theme_builtin(const char* id);

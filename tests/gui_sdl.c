@@ -109,10 +109,10 @@ static SDL_Color pixel(App* app, float x, float y) {
     return out;
 }
 static int same_colour(SDL_Color a, SDL_Color b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
-/* the checks are the lines layout's ([body] boxes none), but for those of the boxes, which say so */
+/* the checks are the lines layout's ([body] layout classic), but for those of the panels, which say so */
 static void lines(App* app, const char* id) {
     if (id) app->theme = *gui_theme_builtin(id);
-    app->theme.boxes = GUI_BOXES_NONE;
+    app->theme.layout = GUI_LAYOUT_CLASSIC;
 }
 /* a list's margin: an arrow up on row first or none, and one down on row last or none */
 static void marks(App* app, int first, int last, bool up, bool down) {
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
     /* the menu runs Switch inputs with the runtime it is part of, the other drivers from beside it */
     assert(initialize(&app, "/nonexistent/snx-gui-test/bin/scarletnx"));
     /* the lines down the page at first (Settings > App's Layout, Classic), whatever the theme's boxes */
-    assert(!app.menu.panels && app.theme.boxes != GUI_BOXES_NONE && !boxed(&app));
+    assert(!app.menu.panels && app.theme.layout == GUI_LAYOUT_PANELS && !boxed(&app));
     lines(&app, NULL);
     assert(!strcmp(app.self, "/nonexistent/snx-gui-test/bin/scarletnx"));
     assert(!strcmp(app.drivers, "/nonexistent/snx-gui-test/bin"));
@@ -1765,13 +1765,13 @@ int main(int argc, char** argv) {
         char* custom = snx_path_join(themes, "custom");
         char* custom_ini = snx_path_join(custom, "theme.ini");
         const char* ini = "[theme]\nbase = yorha\nname = Custom test\n[colors]\npage = #102030\nink = not a colour\n"
-                          "[head]\nmenu = TEST  /  MENU\n[body]\nmarker = \"> \"\n";
+                          "[head]\nmenu = TEST  /  MENU\n[body]\nmarker = \"> \"\nboxes = line\n";
         assert(!snx_mkdirs(custom) && !snx_write_file(custom_ini, ini, strlen(ini)));
         free(app.themes_dirs[0]);
         app.themes_dirs[0] = snx_strdup(themes);
         assert(!strcmp(app.theme.id, "default"));
         app_select(&app, GUI_APP_THEME);
-        assert(!strcmp(app.theme.id, "yorha") && !app.editing && app.theme.boxes == GUI_BOXES_FILL);
+        assert(!strcmp(app.theme.id, "yorha") && !app.editing && app.theme.panels == GUI_PANELS_FILL);
         lines(&app, NULL);
         app.menu.selected = GUI_SETTINGS;
         app.menu.recent_focus = 0;
@@ -1792,7 +1792,9 @@ int main(int argc, char** argv) {
         SDL_SyncWindow(app.window);
         app_select(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "custom") && !strcmp(app.theme.name, "Custom test"));
-        assert(app.theme.boxes == GUI_BOXES_FILL); /* a file that says nothing of boxes: its base's */
+        /* its base's panels, outlined as its deprecated boxes = line says, and the App's note saying so */
+        assert(app.theme.layout == GUI_LAYOUT_PANELS && app.theme.panels == GUI_PANELS_OUTLINE);
+        assert(!strncmp(app.editor.note, "custom: [body] boxes is deprecated", 34));
         lines(&app, NULL);
         gui_app_render(&app);
         page.r = 0x10; /* its own page; its ink, unreadable, is YoRHa's */
@@ -1877,7 +1879,7 @@ int main(int argc, char** argv) {
             key(&app, SDLK_ESCAPE); /* nothing left unsaved: it leaves at once, back to App */
             assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_EDITOR);
             gui_app_leave_editor(&app);
-            assert(app.theme.boxes == GUI_BOXES_NONE); /* the editor writes every key: none, not its base's line */
+            assert(app.theme.layout == GUI_LAYOUT_CLASSIC); /* the editor writes every key: not its base's panels */
             gui_app_render(&app);
             colored_text_on(&app, 1, menu_row(&app, GUI_LOG), "- Share log", normal, night);
             /* opened on a theme of themes/, it saves there under its own name */
@@ -2163,7 +2165,7 @@ int main(int argc, char** argv) {
         launcher(&app, false);
         free(steps_input);
     }
-    /* The menu in boxes ([body] boxes, the built-ins'): each entry a box of its own, the focused one framed in the focus
+    /* The menu in boxes (the Panels layout, the built-ins'): each entry a box of its own, the focused one framed in the focus
        colour (line) or inverted with the cursor in the margin (fill); beside the list what the focus is about, the
        status under it, the bar at the foot with the same, or the screen's message, over the keys. A box under the
        pointer takes the focus and a click selects it; many entries scroll, and a narrow window puts the side box under
@@ -2174,7 +2176,7 @@ int main(int argc, char** argv) {
         int s, cw, focus, exit_entry;
         SDL_Color dim, page, ink;
         app.theme = *gui_theme_builtin("default");
-        assert(app.theme.boxes == GUI_BOXES_LINE && !app.theme.cursor[0] && app.theme.edges == GUI_EDGES_NONE);
+        assert(app.theme.panels == GUI_PANELS_OUTLINE && !app.theme.cursor[0] && app.theme.edges == GUI_EDGES_NONE);
         app.menu.panels = true; /* Settings > App's Layout, Panels */
         app.menu.selected = GUI_KEYS;
         app.menu.recent_focus = 0;
@@ -2516,7 +2518,7 @@ int main(int argc, char** argv) {
         /* YoRHa: the boxes on its dim colour, the focused one on its focus colour with the cursor in the margin, the
            side box's name on a band of its ink */
         app.theme = *gui_theme_builtin("yorha");
-        assert(app.theme.boxes == GUI_BOXES_FILL && !strcmp(app.theme.cursor, "\xe2\x96\xba "));
+        assert(app.theme.panels == GUI_PANELS_FILL && !strcmp(app.theme.cursor, "\xe2\x96\xba "));
         /* the page behind the boxes: its grid and diagonals in the dim colour under them, the corners darkened over
            everything */
         {

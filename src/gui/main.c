@@ -70,6 +70,16 @@ char* gui_app_keys_in_use(const App* app) {
 #endif
     return NULL;
 }
+/* a theme's file with deprecated keys says what they were read as: in the note of the screen the theme was picked on,
+   else in the menu's message */
+static void theme_note(App* app) {
+    char note[256];
+    if (!gui_theme_old_keys(&app->theme, note, sizeof note)) return;
+    if (app->editing)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", app->theme.id, note);
+    else
+        snprintf(app->message, sizeof app->message, "%s: %s", app->theme.id, note);
+}
 /* the theme step themes after or before the one shown, round the list */
 static void next_theme(App* app, int step) {
     size_t i;
@@ -79,6 +89,7 @@ static void next_theme(App* app, int step) {
     while (i < app->themes.count && strcmp(app->themes.ids[i], app->theme.id)) ++i;
     if (app->themes.count)
         gui_theme_load(&app->theme, dirs, 2, app->themes.ids[(i + app->themes.count + step) % app->themes.count]);
+    theme_note(app);
 }
 /* the list as the menu and the file have it */
 static void recent_changed(App* app) {
@@ -235,6 +246,7 @@ static void open_editor(App* app) {
     int from_file = text && gui_theme_file_read(&file, text, size);
     free(text);
     gui_editor_start(&app->editor, &app->theme, from_file ? &file : NULL, from_file ? app->theme.id : "mytheme");
+    gui_theme_old_keys(&app->editor.theme, app->editor.note, sizeof app->editor.note); /* Save writes the new keys */
     if (from_file) gui_theme_file_free(&file);
     app->editing = true;
     app->form = GUI_FORM_THEME;

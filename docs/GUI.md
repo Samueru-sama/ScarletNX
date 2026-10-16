@@ -195,7 +195,7 @@ run, which is **compiling** until the runner prints its `ScarletNX - <name>` ban
 **loading** from then on.
 
 With Settings > App's **Layout** on **Panels**, the screens are drawn in the theme's boxes side by side
-(`[body] boxes`; on **Classic**, the default for now, they keep the lines above whatever the theme), the default framing them in thin lines and
+(`[body] layout = panels`; on **Classic**, the default for now, they keep the lines above whatever the theme), the default framing them in thin lines and
 YoRHa filling them: the list, each entry a box of its own, the focused one framed in the focus colour or inverted
 with the theme's cursor in the margin; beside it a box with what the focus is about (a recent game's path, Games'
 folders, the keys in use, the last run's output) and under it the status (resource use, the disk, the working
@@ -207,7 +207,7 @@ click on a row, opens the group, its rows taking the focus, and a click on anoth
 lists its keys, the preview beside them. A window too narrow for both puts the side box under the list. A run of the
 console layout shows the driver's output in a box sized to it, beside it what runs and how it ended over the status,
 the ESC line in the bar, which a tap aborts. The button map keeps its own boxes, between the title and the bar. A question, or the files an older version left, comes in a box over the
-screen darkened. `boxes = none` keeps the lines down the page described above.
+screen darkened. A theme's `[body] layout = classic` keeps the lines down the page described above.
 
 The built-ins are `default`, the look above, and `yorha`: paper and ink, a title twice the text's size over its
 shadow, square markers and the focused box inverted on the menus, and a run drawn as a
@@ -270,8 +270,10 @@ menu = NIGHT  /  MENU
 marker = "> "
 ; color | bar
 focus = bar
-; panels (Settings > App's Layout): line | fill, the boxes framed or filled; none: lines down the page
-boxes = fill
+; classic: lines down the page; panels: the screens in boxes side by side, where Settings > App's Layout is Panels
+layout = panels
+; panels: the boxes outline (framed) or fill (filled)
+panels = fill
 ; in the list's margin, beside the focused box
 cursor = "> "
 [frame]
@@ -372,8 +374,11 @@ ErET needs `[theme] layout`, so the built-in files carry one: `debug` and `menu`
   They are never changed: a field added to themes later is simply not in an older one's JSON.
 - A new key, or a new word for a key, keeps N: an older GUI leaves what it does not know, and
   a file that does not name it takes its base's value, so an older theme gets the new look of
-  the built-in it starts from (the boxes, the tabs: `boxes = none` keeps the lines).
+  the built-in it starts from (the panels, the tabs: `layout = classic` keeps the lines).
   `gui_theme_formats` checks that each fixture reads its base's value of every key added since.
+- A key a newer one replaces is deprecated, never reused: it still reads, as the new keys say, the screen saying so
+  (the menu's message, or the theme editor's note), and the GUI never writes it again. `[body] boxes` (none, line,
+  fill) reads as `layout = classic`, or `panels` outlined or filled; `tests/gui_themes/deprecated/` holds such files.
 - N goes up only when a key that exists has to mean something else. The GUI then reads the
   older format's files with the older meaning, their fixtures stay, and the new format's go
   in `tests/gui_themes/<N+1>/`.

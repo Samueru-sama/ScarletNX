@@ -37,7 +37,8 @@ static const char* const format_keys[] = {"theme/format",
                                           "head/loading",
                                           "body/marker",
                                           "body/focus",
-                                          "body/boxes",
+                                          "body/layout",
+                                          "body/panels",
                                           "body/cursor",
                                           "frame/edges",
                                           "frame/mark",
@@ -181,12 +182,14 @@ int main(void) {
     assert(def->head == GUI_STYLE_PLAIN && !def->focus_bar && !strcmp(def->marker, "- ") && !def->title[0][0]);
     assert(yorha->head == GUI_STYLE_PLAIN && yorha->focus_bar && yorha->title[GUI_SCREEN_COMPILING][0]);
     /* the menus in boxes: the default's framed, YoRHa's filled with a cursor in the margin */
-    assert(def->boxes == GUI_BOXES_LINE && !def->cursor[0] && def->tabs && yorha->tabs);
+    assert(def->layout == GUI_LAYOUT_PANELS && def->panels == GUI_PANELS_OUTLINE && !def->cursor[0] && def->tabs &&
+           yorha->tabs);
     assert(def->title_size == 1 && !def->title_shadow && yorha->title_size == 2 && yorha->title_shadow);
     assert(def->edges == GUI_EDGES_NONE && yorha->edges == GUI_EDGES_BOTH && yorha->mark == GUI_MARK_DOTS);
     assert(yorha->mark_spacing == 26 && yorha->edge_rule && same(yorha->edge_color, yorha->ink));
     assert(!def->grid && !def->diagonals && !def->corners && yorha->grid && yorha->diagonals && yorha->corners);
-    assert(yorha->boxes == GUI_BOXES_FILL && !strcmp(yorha->cursor, "\xe2\x96\xba "));
+    assert(yorha->layout == GUI_LAYOUT_PANELS && yorha->panels == GUI_PANELS_FILL &&
+           !strcmp(yorha->cursor, "\xe2\x96\xba "));
 
     parse(&theme, ""); /* nothing: the default, named after its folder */
     assert(same(theme.ink, def->ink) && !strcmp(theme.id, "mine") && !strcmp(theme.name, "mine"));
@@ -252,13 +255,28 @@ int main(void) {
 
     /* boxes: a file from before them takes its base's, one can say none for the lines; an unknown word keeps it */
     parse(&theme, "[theme]\nformat = 1\nbase = default\n[colors]\npage = #102030\n");
-    assert(theme.boxes == GUI_BOXES_LINE && rgb_is(theme.page, 0x10, 0x20, 0x30));
+    assert(theme.layout == GUI_LAYOUT_PANELS && theme.panels == GUI_PANELS_OUTLINE &&
+           rgb_is(theme.page, 0x10, 0x20, 0x30));
     parse(&theme, "[theme]\nbase = yorha\n[body]\ncursor = \"> \"\n");
-    assert(theme.boxes == GUI_BOXES_FILL && !strcmp(theme.cursor, "> "));
-    parse(&theme, "[theme]\nbase = yorha\n[body]\nboxes = none\n");
-    assert(theme.boxes == GUI_BOXES_NONE);
-    parse(&theme, "[body]\nboxes = round\n");
-    assert(theme.boxes == GUI_BOXES_LINE);
+    assert(theme.panels == GUI_PANELS_FILL && !strcmp(theme.cursor, "> "));
+    parse(&theme, "[theme]\nbase = yorha\n[body]\nlayout = classic\npanels = outline\n");
+    assert(theme.layout == GUI_LAYOUT_CLASSIC && theme.panels == GUI_PANELS_OUTLINE);
+    parse(&theme, "[body]\nlayout = boxes\npanels = round\n");
+    assert(theme.layout == GUI_LAYOUT_PANELS && theme.panels == GUI_PANELS_OUTLINE && !theme.old_keys);
+    /* [body] boxes, deprecated: read as layout and panels say, and said; a word it never had keeps the base's */
+    {
+        char note[256];
+        assert(!gui_theme_old_keys(&theme, note, sizeof note) && !note[0]);
+        parse(&theme, "[theme]\nbase = yorha\n[body]\nboxes = none\n");
+        assert(theme.layout == GUI_LAYOUT_CLASSIC && theme.panels == GUI_PANELS_FILL);
+        assert(gui_theme_old_keys(&theme, note, sizeof note) == 1 && strstr(note, "[body] boxes is deprecated"));
+        parse(&theme, "[theme]\nbase = yorha\n[body]\nboxes = line\n");
+        assert(theme.layout == GUI_LAYOUT_PANELS && theme.panels == GUI_PANELS_OUTLINE && theme.old_keys);
+        parse(&theme, "[body]\nlayout = classic\nboxes = fill\n"); /* the last line wins, as any key's */
+        assert(theme.layout == GUI_LAYOUT_PANELS && theme.panels == GUI_PANELS_FILL);
+        parse(&theme, "[body]\nboxes = round\n");
+        assert(theme.layout == def->layout && theme.panels == def->panels && theme.old_keys);
+    }
 
     /* a value longer than its field keeps the base's; an unknown base leaves the default */
     memset(longer, 0, sizeof longer);

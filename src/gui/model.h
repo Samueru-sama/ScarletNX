@@ -31,7 +31,7 @@ typedef struct {
     GuiLoadView view;
     bool running, quit;
     int text_size; /* the font's scale, 1 to GUI_TEXT_MAX; 0 fits the screen */
-    bool panels;   /* Settings > App's Layout: the theme's boxes ([body] boxes), else the lines (Classic) */
+    bool panels;   /* Settings > App's Layout: the theme's ([body] layout), else the lines (Classic) */
     /* the recent games above the items: how many, and the focused one + 1 (0: an item has the focus) */
     int recent, recent_focus;
 } GuiMenu;

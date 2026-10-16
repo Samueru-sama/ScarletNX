@@ -16,8 +16,9 @@ static GuiTheme builtins[SNX_GUI_THEME_COUNT];
 typedef char snx_gui_id_slot[sizeof(((GuiThemes*)0)->ids[0]) == sizeof(((GuiTheme*)0)->id) ? 1 : -1];
 typedef char snx_gui_word_int[sizeof(GuiStyle) == sizeof(int) && sizeof(GuiRunLayout) == sizeof(int) &&
                                       sizeof(GuiRing) == sizeof(int) && sizeof(GuiLineIn) == sizeof(int) &&
-                                      sizeof(GuiAlign) == sizeof(int) && sizeof(GuiBoxStyle) == sizeof(int) &&
-                                      sizeof(GuiEdges) == sizeof(int) && sizeof(GuiMark) == sizeof(int)
+                                      sizeof(GuiAlign) == sizeof(int) && sizeof(GuiLayout) == sizeof(int) &&
+                                      sizeof(GuiPanels) == sizeof(int) && sizeof(GuiEdges) == sizeof(int) &&
+                                      sizeof(GuiMark) == sizeof(int)
                                   ? 1
                                   : -1];
 
@@ -29,7 +30,8 @@ static const char* const progresses[] = {"amount", "percent", "time", NULL}; /* 
 static const char* const aligns[] = {"left", "center", "right", NULL};
 static const char* const entrances[] = {"none", "typing", "slide", "fade", NULL};
 static const char* const typings[] = {"async", "sync", NULL};
-static const char* const box_styles[] = {"none", "line", "fill", NULL};
+static const char* const layout_words[] = {"classic", "panels", NULL};
+static const char* const panel_words[] = {"outline", "fill", NULL};
 static const char* const edge_words[] = {"none", "top", "bottom", "both", NULL};
 static const char* const marks[] = {"dot", "dash", "dots", NULL};
 #define FIELD(f)                    offsetof(GuiTheme, f), sizeof(((GuiTheme*)0)->f)
@@ -62,7 +64,9 @@ const GuiThemeKey gui_theme_keys[] = {
     TEXT("head", "loading", title[GUI_SCREEN_LOADING], "a run's title once the runner's banner came"),
     TEXT("body", "marker", marker, "before each menu item"),
     WORD("body", "focus", focus_bar, focuses, "the focused line in the focus colour, or on a band of it"),
-    WORD("body", "boxes", boxes, box_styles, "Panels: the boxes outlined or filled; none: lines down the page"),
+    WORD("body", "layout", layout, layout_words,
+         "classic: lines down the page; panels: boxes, where Settings > App's is"),
+    WORD("body", "panels", panels, panel_words, "Panels: the boxes outlined or filled"),
     TEXT("body", "cursor", cursor, "in the margin, beside the focused box"),
     WORD("frame", "edges", edges, edge_words, "the edges drawn: none | top | bottom | both"),
     WORD("frame", "mark", mark, marks, "repeated along them: dot | dash | dots, three in a triangle"),
@@ -112,7 +116,8 @@ static const char* const sections[][2] = {
     {"theme", "Who made it. The theme's id is its folder's name."},
     {"colors", "The menus' colours, #RRGGBB."},
     {"head", "The top: a title per screen and the hints under it."},
-    {"body", "The menu's lines, or its boxes in the Panels layout (Settings > App)."},
+    {"body",
+     "The menu's lines, or its boxes in the Panels layout (Settings > App). boxes is deprecated: layout, panels."},
     {"frame", "Panels: the edges drawn along the top and the bottom, a mark repeated along them."},
     {"backdrop", "Panels: the page behind the boxes."},
     {"footer", "The bottom: resource use and the working folder."},
@@ -121,6 +126,26 @@ static const char* const sections[][2] = {
     {"transitions", "Milliseconds, 0 to 10000; 0 turns the thing off."},
     {"splash", "The boot's: the program's icon on a page."}};
 
+/* keys a newer one replaced: read as it says, never written, the screen saying so (gui_theme_old_keys) */
+static const char* const old_keys[][3] = {
+    {"body", "boxes", "[body] boxes is deprecated: none reads as layout = classic, line and fill as panels"}};
+static int old_key(const char* section, const char* key) {
+    size_t i;
+    for (i = 0; i < sizeof old_keys / sizeof *old_keys; ++i)
+        if (!strcmp(old_keys[i][0], section) && !strcmp(old_keys[i][1], key)) return (int)i;
+    return -1;
+}
+int gui_theme_old_keys(const GuiTheme* theme, char* out, size_t size) {
+    size_t i, n = 0;
+    int count = 0;
+    if (size) out[0] = 0;
+    for (i = 0; i < sizeof old_keys / sizeof *old_keys; ++i)
+        if (theme->old_keys & 1u << i) {
+            snprintf(out + n, size - n, "%s%s", count++ ? "; " : "", old_keys[i][2]);
+            n = strlen(out);
+        }
+    return count;
+}
 /* "quoted" keeps its spaces */
 static char* unquote(char* s) {
     size_t n = strlen(s);
@@ -230,6 +255,15 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
         gui_theme_set(t, gui_theme_key("head", "loading"), value);
         return;
     }
+    if (old_key(section, key) == 0) { /* [body] boxes: none, line or fill */
+        t->old_keys |= 1u;
+        if (!strcmp(value, "none")) t->layout = GUI_LAYOUT_CLASSIC;
+        if (!strcmp(value, "line") || !strcmp(value, "fill")) {
+            t->layout = GUI_LAYOUT_PANELS;
+            t->panels = value[0] == 'f' ? GUI_PANELS_FILL : GUI_PANELS_OUTLINE;
+        }
+        return;
+    }
     k = gui_theme_key(section, key);
     if (k) gui_theme_set(t, k, value);
 }
@@ -297,6 +331,7 @@ int gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t si
     *theme = bases[0] ? *bases[0] : bases[1] ? *bases[1] : builtins_read()[0];
     copy(theme->id, sizeof theme->id, id);
     copy(theme->name, sizeof theme->name, id);
+    theme->old_keys = 0; /* this file's, not its base's */
     return visit(text, size, theme, bases, 0, !bases[0] && bases[2]);
 }
 char* gui_theme_text(const char* const* dirs, size_t count, const char* id, size_t* size) {
@@ -431,7 +466,7 @@ int gui_theme_file_read(GuiThemeFile* file, const char* text, size_t size) {
             file->loading_title = 1;
         else if (!strcmp(ini.section, "colors") && !strcmp(key, "texture"))
             file->colors_texture = 1;
-        else if (ini.section[0] && key[0] && !gui_theme_key(ini.section, key) &&
+        else if (ini.section[0] && key[0] && !gui_theme_key(ini.section, key) && old_key(ini.section, key) < 0 &&
                  (strcmp(ini.section, "theme") || strcmp(key, "format"))) {
             if (strcmp(last, ini.section)) put(&others, "[%s]\n", strcpy(last, ini.section));
             put_key(&others, key, value);

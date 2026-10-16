@@ -301,7 +301,7 @@ static inline int entering(const App* app) {
     return app->entering_ms && now_ms(app) < app->entering_ms + app->theme.fade_out_ms;
 }
 /* the screens in the theme's boxes: Settings > App's Layout on Panels, and a theme that has them */
-static inline int boxed(const App* app) { return app->menu.panels && app->theme.boxes != GUI_BOXES_NONE; }
+static inline int boxed(const App* app) { return app->menu.panels && app->theme.layout == GUI_LAYOUT_PANELS; }
 static inline int cell_w(const App* app) { return 8 * app->scale; }
 static inline int cell_h(const App* app) { return 16 * app->scale; }
 static inline GuiRect box_rect(int x, int y, int w, int h) {

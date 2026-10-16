@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The screens in boxes, where the theme says so ([body] boxes): place.c puts each box, and nothing goes over
+/* The screens in boxes, the Panels layout ([body] layout, and Settings > App's): place.c puts each box, and nothing goes over
    another. The menu, Games, the screen a file is picked on, a run, the Settings and the theme editor, the boxes over
    them, and the pointer on each */
 #include "app.h"
@@ -66,7 +66,7 @@ static int head_h(const App* app) { return cell_h(app) + 4 * app->scale; }
    not NULL, its label on a band of ink (fill) or over a rule (line). Where its text starts */
 static int pane(App* app, GuiRect r, const char* label) {
     const GuiTheme* t = &app->theme;
-    int s = app->scale, filled = t->boxes == GUI_BOXES_FILL;
+    int s = app->scale, filled = t->panels == GUI_PANELS_FILL;
     if (filled) fill_rect(app, r, t->page);
     if (label && filled) fill_rect(app, box_rect(r.x, r.y, r.w, head_h(app)), t->ink);
     if (label && !filled) fill_rect(app, box_rect(r.x, r.y + head_h(app) - s, r.w, s), t->dim);
@@ -114,7 +114,7 @@ static int list_hit(const GuiList* l, float x, float y, bool touch) {
 static void list_item(App* app, const GuiList* l, int i, const char* label, int focused, int activated) {
     const GuiTheme* t = &app->theme;
     GuiRect b = list_box(l, i);
-    int s = app->scale, filled = t->boxes == GUI_BOXES_FILL, inverted = focused && t->focus_bar;
+    int s = app->scale, filled = t->panels == GUI_PANELS_FILL, inverted = focused && t->focus_bar;
     if (inverted)
         fill_rect(app, b, t->focus);
     else if (filled)
@@ -206,7 +206,7 @@ void gui_app_bar(App* app, GuiRect r, const char* about, SDL_Color color, const 
     GuiRect text = box_rect(r.x + 3 * cell_w(app), r.y, r.w - 4 * cell_w(app), r.h);
     pane(app, r, NULL);
     fill_rect(app, box_rect(r.x + 2 * s, r.y + 2 * s, 3 * s, r.h - 4 * s),
-              t->boxes == GUI_BOXES_FILL ? t->ink : t->soft);
+              t->panels == GUI_PANELS_FILL ? t->ink : t->soft);
     text_in(app, text, text.x, r.y + 2 * s, about, color);
     hints(app, keys, text.w / cell_w(app), text, r.y + 2 * s + cell_h(app), 1);
 }
@@ -279,9 +279,9 @@ static void draw_tabs(App* app, GuiRect row) {
         int on = i == shown, inverted = on && t->focus_bar;
         if (inverted)
             fill_rect(app, r, t->focus);
-        else if (t->boxes == GUI_BOXES_FILL)
+        else if (t->panels == GUI_PANELS_FILL)
             fill_rect(app, r, t->dim);
-        if (!inverted && (t->boxes == GUI_BOXES_LINE || on)) outline(app, r, on ? t->focus : t->dim);
+        if (!inverted && (t->panels == GUI_PANELS_OUTLINE || on)) outline(app, r, on ? t->focus : t->dim);
         text_in(app, r, r.x + cell_w(app), r.y + 2 * s, tab_names[i], rgb(inverted ? t->page : on ? t->focus : t->ink));
     }
     fill_rect(app, box_rect(row.x, row.y + row.h + cell_h(app) / 4 - s / 2, row.w, s), t->dim);
