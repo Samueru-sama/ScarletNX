@@ -2356,6 +2356,52 @@ int main(int argc, char** argv) {
             assert(app.editing && app.form == GUI_FORM_APP);
             leave_editor(&app);
         }
+        /* a box over the screen is a box on the screen darkened: the exit question, its choices as boxes, a click on
+           one taking it, a click off the box keeping on; the files an older version left, OK focused, a key closing it */
+        {
+            GuiList choices;
+            app.menu.selected = GUI_EXIT;
+            app.menu.recent_focus = 0;
+            render(&app);
+            menu_boxes(&app, &m);
+            b = list_box(&m.list, m.list.focus);
+            key(&app, SDLK_ESCAPE);
+            assert(app.confirm.shown && app.confirm.exit);
+            render(&app);
+            ask_boxes(&app, &r, &choices);
+            text_px_is(&app, r.x + cw, r.y + 4 * s, "Exit ScarletNX?", rgb(app.theme.warning), black);
+            text_px_is(&app, list_box(&choices, 0).x + cw / 2, list_box(&choices, 0).y + s, "- Stay", yellow, black);
+            assert(b.x + b.w < r.x &&
+                   same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), (SDL_Color){0x7F, 0x7F, 0, 255}));
+            mouse_px(&app, list_box(&choices, 1).x + 4, list_box(&choices, 1).y + 4, false);
+            assert(app.confirm.shown && app.confirm.selected == GUI_CONFIRM_ABORT);
+            mouse_px(&app, r.x + r.w + 8, r.y + r.h + 8, true);
+            assert(!app.confirm.shown && !app.menu.quit);
+            key(&app, SDLK_ESCAPE);
+            render(&app);
+            mouse_px(&app, list_box(&choices, 1).x + 4, list_box(&choices, 1).y + 4, true);
+            assert(!app.confirm.shown && app.menu.quit);
+            app.menu.quit = false;
+            app.left = snx_format("/old/recent.txt" SAY_LEFT_BY "/new/recent.txt\n");
+            app.lefts = 1;
+            app.left_shown = true;
+            app.left_at = SDL_GetTicks(); /* not looked for again, as there is no such file */
+            render(&app);
+            {
+                int width, height;
+                area(&app, &width, &height);
+                r = over_rect(&app, width / cw - 6, head_h(&app) + 2 * 16 * s + (16 + 2) * s + 16 * s);
+                text_px_is(&app, r.x + cw, r.y + 2 * s, "An older version left these files", normal, black);
+                text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s, "- /old/recent.txt", red, black);
+                text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s + 16 * s, "-> /new/recent.txt", normal, black);
+            }
+            key(&app, SDLK_DOWN);
+            assert(!app.left_shown && app.menu.selected == GUI_EXIT); /* the key closed it and did nothing else */
+            free(app.left);
+            app.left = NULL;
+            app.lefts = 0;
+            app.menu.selected = GUI_KEYS;
+        }
         /* YoRHa: the boxes on its dim colour, the focused one on its focus colour with the cursor in the margin, the
            side box's name on a band of its ink */
         app.theme = *gui_theme_builtin("yorha");

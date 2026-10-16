@@ -833,6 +833,7 @@ static void left_paths(const char* line, char* old, char* now, size_t size) {
 /* the box with what older builds left: each file where it is (-) and where this one would keep it (->, a proposal, so
    not in a diff's added colour), whole over as many rows as it needs, as many files as fit, and OK. Nothing is moved:
    the player does that */
+static void left_boxed(App* app);
 static void render_left(App* app) {
     const GuiTheme* t = &app->theme;
     SDL_Color warning = rgb(t->warning), failure = rgb(t->failure), ink = rgb(t->ink), soft = rgb(t->soft);
@@ -841,6 +842,10 @@ static void render_left(App* app) {
     const char* at;
     char old[4200], now[4200], label[64];
     if (!app->left_shown || !app->lefts) return;
+    if (boxed(app)) {
+        left_boxed(app);
+        return;
+    }
     /* a blank row, the title, a blank row, the files, a blank row or how many more, OK and a blank row */
     title = wrapped(app, 0, 0, "", SAY_LEFT_TITLE, width, NULL);
     room = app->rows - 2 - (title + 5);
@@ -871,6 +876,7 @@ static void render_left(App* app) {
     text(app, 4, row + rows - 2, label, rgb(t->focus));
 }
 /* the question over a running run, in the run screen's colours, its choices as the menu's entries */
+static void ask_boxed(App* app);
 static void render_ask(App* app) {
     static const char* const choices[2][2] = {{"Keep going", "Abort"}, {"Stay", "Exit"}}; /* by exit, GUI_CONFIRM_* */
     const GuiTheme* t = &app->theme;
@@ -879,6 +885,10 @@ static void render_ask(App* app) {
     GuiRgb soft = steps ? t->run_colors.soft : t->soft, warning = steps ? t->run_colors.warning : t->warning;
     float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale, line = (float)app->scale;
     if (!app->confirm.shown || (!app->menu.running && !app->confirm.exit)) return;
+    if (boxed(app)) {
+        ask_boxed(app);
+        return;
+    }
 
     ask_box(app, &col, &row, &cols);
     fill(app, (float)col * cw, (float)row * ch, (float)cols * cw, 6 * ch, soft, 255); /* framed in soft */
@@ -1377,6 +1387,90 @@ static void draw_menu_boxed(App* app) {
     menu_side(app, &m);
     status_box(app, m.place.status);
     bar_for(app, m.place.bar, entry_about(app, focus), screen_keys(app, SAY_MENU_KEYS, keys, sizeof keys));
+}
+/* the screen darkened under a box over it, to the window's edges as the fades */
+static void darken(App* app) {
+    static const GuiRgb black = {0, 0, 0};
+    SDL_Rect safe;
+    int width, height;
+    SDL_GetRenderViewport(app->renderer, &safe);
+    SDL_GetRenderOutputSize(app->renderer, &width, &height);
+    SDL_SetRenderViewport(app->renderer, NULL);
+    fill(app, 0, 0, (float)width, (float)height, black, 128);
+    SDL_SetRenderViewport(app->renderer, &safe);
+}
+/* a box over the screen, cols columns of text wide and h pixels high, in its middle */
+static GuiRect over_rect(const App* app, int cols, int h) {
+    int width, height, w;
+    area(app, &width, &height);
+    w = SDL_min((cols + 2) * cell_w(app), width - 2 * cell_w(app));
+    return box_rect((width - w) / 2, SDL_max(0, (height - h) / 2), w, h);
+}
+/* the box over the darkened screen, on the page colour whatever the theme's boxes, so nothing shows through it */
+static int over_box(App* app, GuiRect r, const char* label) {
+    darken(app);
+    fill_rect(app, r, app->theme.page);
+    return pane(app, r, label);
+}
+/* the question over a run or the menu: the question, its two choices as boxes, the one kept focused */
+static void ask_boxes(App* app, GuiRect* r, GuiList* choices) {
+    int s = app->scale, item = cell_h(app) + 2 * s;
+    *r = over_rect(app, SDL_max((int)SDL_utf8strlen(ask_question(app)), 16), cell_h(app) + 2 * (item + 6 * s) + 12 * s);
+    list_place(app, choices,
+               box_rect(r->x + cell_w(app), r->y + cell_h(app) + 10 * s, r->w - 2 * cell_w(app), 2 * (item + 6 * s)), 2,
+               app->confirm.selected);
+}
+static void ask_boxed(App* app) {
+    static const char* const choices[2][2] = {{"Keep going", "Abort"}, {"Stay", "Exit"}}; /* by exit, GUI_CONFIRM_* */
+    GuiRect r;
+    GuiList l;
+    char label[64];
+    int i;
+    ask_boxes(app, &r, &l);
+    over_box(app, r, NULL);
+    text_in(app, inner(app, r), r.x + cell_w(app), r.y + 4 * app->scale, ask_question(app), rgb(app->theme.warning));
+    for (i = 0; i < 2; ++i) {
+        snprintf(label, sizeof label, "%s%s", app->theme.marker, choices[app->confirm.exit][i]);
+        list_item(app, &l, i, label, app->confirm.selected == i, false);
+    }
+}
+/* the files an older version left, over the menu: each where it is (-) and where this one would keep it (->), as many
+   as fit, how many more, and OK, focused: any key closes it */
+static void left_boxed(App* app) {
+    char old[4200], now[4200], label[64];
+    const char* at;
+    int width, height, cols, room, used = 0, shown, i, y, s = app->scale, item = cell_h(app) + 2 * s, more;
+    GuiRect r, text;
+    GuiList ok;
+    SDL_Color failure = rgb(app->theme.failure), ink = rgb(app->theme.ink);
+    area(app, &width, &height);
+    cols = width / cell_w(app) - 6;
+    room = (height - head_h(app) - item - 24 * s) / cell_h(app) - 2; /* the files' rows, and one for how many more */
+    for (shown = 0, at = app->left; shown < app->lefts; ++shown, at = strchr(at, '\n') + 1) {
+        int need;
+        left_paths(at, old, now, sizeof old);
+        need = wrap_rows(old, cols - 2, 1) + wrap_rows(now, cols - 3, 1);
+        if (shown && used + need > room) break;
+        used += need;
+    }
+    more = app->lefts - shown;
+    r = over_rect(app, cols, head_h(app) + (used + (more > 0)) * cell_h(app) + item + 16 * s);
+    y = over_box(app, r, "An older version left these files: move each from - to ->") + 2 * s;
+    text = inner(app, r);
+    for (i = 0, at = app->left; i < shown; ++i, at = strchr(at, '\n') + 1) {
+        left_paths(at, old, now, sizeof old);
+        text_in(app, text, text.x, y, "-", failure);
+        y += wrap_in(app, text, text.x + 2 * cell_w(app), y, old, 1, failure) * cell_h(app);
+        text_in(app, text, text.x, y, "->", ink);
+        y += wrap_in(app, text, text.x + 3 * cell_w(app), y, now, 1, ink) * cell_h(app);
+    }
+    if (more > 0) {
+        snprintf(label, sizeof label, "and %d more, which Share log lists", more);
+        text_in(app, text, text.x, y, label, rgb(app->theme.soft));
+    }
+    list_place(app, &ok, box_rect(text.x, r.y + r.h - item - 6 * s, SDL_min(text.w, 26 * cell_w(app)), item), 1, 0);
+    snprintf(label, sizeof label, "%sOK, nothing is moved", app->theme.marker);
+    list_item(app, &ok, 0, label, true, false);
 }
 /* the games' screen in boxes: Back, then a page of the games, as many as the list's box holds */
 typedef struct {
@@ -3562,6 +3656,19 @@ static void ask_pointer(App* app, float x, float y, bool click) {
     } else if (click && (x < (float)col || x >= (float)(col + cols) || y < (float)row || y >= (float)(row + 6)))
         gui_confirm_key(&app->confirm, GUI_CANCEL);
 }
+/* the pointer on the question in boxes, at pixel x, y: a choice under it takes the focus, a click takes it; a click
+   off the box keeps going */
+static void ask_boxed_pointer(App* app, float x, float y, bool click) {
+    GuiRect r;
+    GuiList l;
+    int i;
+    ask_boxes(app, &r, &l);
+    if ((i = list_hit(&l, x, y, true)) >= 0) {
+        app->confirm.selected = i;
+        if (click && gui_confirm_key(&app->confirm, GUI_SELECT)) confirmed(app);
+    } else if (click && (x < (float)r.x || x >= (float)(r.x + r.w) || y < (float)r.y || y >= (float)(r.y + r.h)))
+        gui_confirm_key(&app->confirm, GUI_CANCEL);
+}
 /* the tab at pixel x, y, -1 for none */
 static int tab_hit(App* app, float x, float y) {
     GuiPlace p;
@@ -3625,7 +3732,11 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         if (click) form_boxed_pointer(app, x, y, touch);
         return;
     }
-    if (boxed(app) && !app->confirm.shown) {
+    if (boxed(app) && app->confirm.shown) {
+        ask_boxed_pointer(app, x, y, click);
+        return;
+    }
+    if (boxed(app)) {
         boxed_pointer(app, x, y, click, touch);
         return;
     }
