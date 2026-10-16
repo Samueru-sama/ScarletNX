@@ -34,16 +34,18 @@ include(GNUInstallDirs)
 # The menu: Android's activity loads it as libmain.so and runs its SDL_main (dist/android); scarletnx, the Switch
 # runtime, links it and opens it when started with nothing to run (#243); a build without that runtime makes it a
 # program of its own, beside the other runtimes
+# the menu's own files, which share its state (app.h); its test builds them in one unit with it
+set(gui_screens main.c draw.c boxes.c button_map.c)
 if(ANDROID)
-    add_library(scarletnx-gui SHARED main.c android.c)
+    add_library(scarletnx-gui SHARED ${gui_screens} android.c)
     set_target_properties(scarletnx-gui PROPERTIES OUTPUT_NAME main)
     install(TARGETS scarletnx-gui LIBRARY DESTINATION lib/${ANDROID_ABI})
     install(DIRECTORY "${SDL3_SOURCE_DIR}/android-project/app/src/main/java/" DESTINATION java)
 elseif(SNX_BUILD_NX)
-    add_library(scarletnx-gui STATIC main.c)
+    add_library(scarletnx-gui STATIC ${gui_screens})
     target_compile_definitions(scarletnx-gui PRIVATE SNX_GUI_NO_MAIN)
 else()
-    add_executable(scarletnx-gui main.c)
+    add_executable(scarletnx-gui ${gui_screens})
     install(TARGETS scarletnx-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     if(NOT WIN32)
         install(FILES "${PROJECT_SOURCE_DIR}/dist/scarletnx-gui.desktop"

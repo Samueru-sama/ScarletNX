@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A form, a screen of rows the menu opens: the theme editor, a row for the folder the theme is saved in, a row per key
-   of theme.ini (gui_theme_keys) and Save; or another table of keys over an object of its own, as the Settings. main.c
-   draws it, the theme editor with a preview of the menu or a run in the theme as it is; this holds what it edits and
-   what each key does to it, without SDL. */
+   of theme.ini (gui_theme_keys) and Save; or another table of keys over an object of its own, as the Settings. draw.c
+   and boxes.c draw it, the theme editor with a preview of the menu or a run in the theme as it is; this holds what it
+   edits and what each key does to it, without SDL. */
 #ifndef SNX_GUI_EDITOR_H
 #define SNX_GUI_EDITOR_H
 #include <stdbool.h>
