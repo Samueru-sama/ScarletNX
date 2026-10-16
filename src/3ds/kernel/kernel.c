@@ -9,6 +9,20 @@
 #include <stdlib.h>
 #include "services/gsp.h"
 #include <string.h>
+#include <stdio.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <time.h>
+#endif
+static void sleep_ns(uint64_t ns) {
+#if defined(_WIN32)
+    Sleep((DWORD)(ns / 1000000 ? ns / 1000000 : 1));
+#else
+    struct timespec ts = {(time_t)(ns / 1000000000), (long)(ns % 1000000000)};
+    nanosleep(&ts, NULL);
+#endif
+}
 #include "common.h"
 
 #define OK                  0u
@@ -429,14 +443,22 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             r[1] = out;
             return SNX_CTR_SVC_RETURN;
         }
-        case 0x13: { /* CreateMutex */
-            if (r[0] > 1) {
+        case 0x0a: { /* SleepThread: host-paced delay in the serialized scheduler.
+                        Zero yields at the next dispatch boundary; negative
+                        (sleep forever) is not modeled and stops. */
+            int64_t ns = (int64_t)((uint64_t)r[0] | (uint64_t)r[1] << 32);
+            if (ns < 0 || ns > INT64_C(3600) * 1000000000) return SNX_CTR_SVC_UNSUPPORTED;
+            if (ns) sleep_ns((uint64_t)ns);
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x13: { /* CreateMutex: initially-locked flag at r1 */
+            if (r[1] > 1) {
                 r[0] = INVALID_ENUM;
                 r[1] = 0;
                 return SNX_CTR_SVC_RETURN;
             }
             uint32_t out = 0, result = snx_ctr_object_create(p, CTR_OBJ_MUTEX, &out);
-            if (!result && r[0]) {
+            if (!result && r[1]) {
                 uint32_t id = snx_ctr_handle_object(p, out);
                 p->objects[id].data.mutex.owner = p->current_thread;
                 p->objects[id].data.mutex.depth = 1;
@@ -445,10 +467,11 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             r[1] = out;
             return SNX_CTR_SVC_RETURN;
         }
-        case 0x15: { /* CreateSemaphore: r0 initial count, r1 maximum */
-            uint32_t initial = r[0], max = r[1];
+        case 0x15: { /* CreateSemaphore: initial count at r1, maximum at r2 */
+            uint32_t initial = r[1], max = r[2];
             if (!max || initial > max) {
                 r[0] = INVALID_ENUM;
+                r[1] = 0;
                 return SNX_CTR_SVC_RETURN;
             }
             uint32_t out = 0, result = snx_ctr_object_create(p, CTR_OBJ_SEMAPHORE, &out);
@@ -461,20 +484,21 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             r[1] = out;
             return SNX_CTR_SVC_RETURN;
         }
-        case 0x16: { /* ReleaseSemaphore */
-            uint32_t id = snx_ctr_handle_object(p, r[0]);
+        case 0x16: { /* ReleaseSemaphore: handle at r1, release count at r2 */
+            uint32_t id = snx_ctr_handle_object(p, r[1]);
             if (!id || p->objects[id].type != CTR_OBJ_SEMAPHORE) {
                 r[0] = INVALID_HANDLE;
+                r[1] = 0;
                 return SNX_CTR_SVC_RETURN;
             }
             CtrObject* o = &p->objects[id];
             uint32_t previous = o->data.semaphore.count;
-            if (!r[1] || r[1] > o->data.semaphore.max - previous) {
+            if (!r[2] || r[2] > o->data.semaphore.max - previous) {
                 r[0] = INVALID_ENUM;
                 r[1] = 0;
                 return SNX_CTR_SVC_RETURN;
             }
-            o->data.semaphore.count = previous + r[1];
+            o->data.semaphore.count = previous + r[2];
             snx_ctr_wake_waiters(p, id);
             r[0] = OK;
             r[1] = previous;
@@ -600,6 +624,20 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             uint32_t out = 0, result = snx_ctr_named_connect(p, r[1], &out);
             r[0] = result;
             r[1] = out;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x37: { /* debug string: validated in full, captured to the host log */
+            uint32_t length = r[1] == UINT32_MAX ? 256u : r[1] > 256u ? 256u : r[1];
+            unsigned char text[256];
+            if (length && (snx_ctr_check_ram(p->space, r[0], length, SNX_CTR_READ) != SNX_CTR_MEM_OK ||
+                           snx_ctr_read_ram(p->space, r[0], text, length) != SNX_CTR_MEM_OK)) {
+                r[0] = INVALID_ADDRESS;
+                return SNX_CTR_SVC_RETURN;
+            }
+            uint32_t used = 0;
+            while (used < length && text[used]) ++used;
+            if (used) fprintf(stderr, "3ds debug: %.*s\n", (int)used, (const char*)text);
+            r[0] = OK;
             return SNX_CTR_SVC_RETURN;
         }
         case 0x32: {

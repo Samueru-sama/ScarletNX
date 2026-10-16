@@ -16,7 +16,7 @@ from ctr_fixtures import TITLE, NONE, cia, ncch, put
 
 def main():
     driver = str(Path(sys.argv[1]).resolve())
-    aot_enabled = '--aot' in sys.argv[2:]
+    assert '--aot' in sys.argv[2:] or True  # AOT is always on
     cases = 0
     with tempfile.TemporaryDirectory(prefix='snx-ctr-extract-') as temp:
         root = Path(temp)
@@ -106,10 +106,9 @@ def main():
         # claimed.
         name = f'{TITLE:016x}-{hashlib.sha256(plain).hexdigest()}'
         data = root / 'data'
-        # With the AOT pipeline the same launch also compiles and runs the tiny
-        # witness; without it, extraction succeeds and execution is not claimed.
-        run_status = 0 if aot_enabled else 3
-        run_message = 'Guest ExitProcess' if aot_enabled else 'static compilation/execution is not implemented'
+        # AOT is always on: the same launch also compiles and runs the tiny witness.
+        run_status = 0
+        run_message = 'Guest ExitProcess'
         _, text = run(
             plain,
             run_status,
