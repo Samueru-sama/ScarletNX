@@ -323,14 +323,15 @@ static int menu_last_row(const App* app) { return app->rows - 7; }
 static int menu_row_in_full(const App* app, int item) {
     return 4 + recent_rows(app) + item + (app->menu.view != GUI_LOAD_NONE && item > app->menu.active ? 2 : 0);
 }
-/* how far the menu slides up for the focus to show: only when its letters are too big for the screen */
-static int menu_offset(const App* app) {
-    int row = app->menu.recent_focus ? 4 + app->menu.recent_focus
-              : app->menu.view != GUI_LOAD_NONE && app->menu.focus_load
-                  ? menu_row_in_full(app, app->menu.active) + 1 + app->menu.load_selected
-                  : menu_row_in_full(app, app->menu.selected);
-    return SDL_max(0, row - menu_last_row(app));
+/* the focus's row in the whole menu: a recent game, the Load submenu's option or an item */
+static int menu_focus_row(const App* app) {
+    return app->menu.recent_focus ? 4 + app->menu.recent_focus
+           : app->menu.view != GUI_LOAD_NONE && app->menu.focus_load
+               ? menu_row_in_full(app, app->menu.active) + 1 + app->menu.load_selected
+               : menu_row_in_full(app, app->menu.selected);
 }
+/* how far the menu slides up for the focus to show: only when its letters are too big for the screen */
+static int menu_offset(const App* app) { return SDL_max(0, menu_focus_row(app) - menu_last_row(app)); }
 static int menu_row(const App* app, int item) { return menu_row_in_full(app, item) - menu_offset(app); }
 static int recent_row(const App* app, int game) { return 5 + game - menu_offset(app); }
 /* whether a row of the menu shows: under the head and above the message */
@@ -1754,6 +1755,23 @@ static int escape_row(const App* app) {
 static Uint64 finger_id(const SDL_TouchFingerEvent* f) {
     return (Uint64)f->fingerID | (f->touchID == SDL_PEN_TOUCHID ? 1ull << 63 : 0);
 }
+/* a row up or down for a finger's drag and the wheel, which stop at the first and last rows where the keys go round */
+static void scroll(App* app, GuiKey key) {
+    int row;
+    if (app->editing) {
+        editor_key(app, key); /* stops at its ends */
+        return;
+    }
+    if (app->menu.view == GUI_LOAD_GAMES) {
+        if (key == GUI_UP ? app->browser.selected > 0 : app->browser.selected < gui_browser_items(&app->browser))
+            menu_key(app, key);
+        return;
+    }
+    row = menu_focus_row(app);
+    menu_key(app, key);
+    if (key == GUI_UP ? menu_focus_row(app) > row : menu_focus_row(app) < row)
+        menu_key(app, key == GUI_UP ? GUI_DOWN : GUI_UP); /* it went round: back */
+}
 /* a drag up or down from where the finger went down, on a menu whose letters make it scroll */
 static bool drags(const App* app, float x, float y) {
     float dx = x - app->finger_x, dy = y - app->finger_y;
@@ -1765,13 +1783,12 @@ static bool drags(const App* app, float x, float y) {
    going */
 static void drag(App* app, float y) {
     float row = 1.0f / (float)SDL_max(1, app->rows);
-    void (*key)(App*, GuiKey) = app->editing ? editor_key : menu_key;
     while (y <= app->finger_mark - row) {
-        key(app, GUI_UP);
+        scroll(app, GUI_UP);
         app->finger_mark -= row;
     }
     while (y >= app->finger_mark + row) {
-        key(app, GUI_DOWN);
+        scroll(app, GUI_DOWN);
         app->finger_mark += row;
     }
 }
@@ -1887,11 +1904,10 @@ static void event(App* app, const SDL_Event* e) {
     }
     /* a notch of the wheel is a row, as a finger's drag, the way the system turns it */
     if (e->type == SDL_EVENT_MOUSE_WHEEL) {
-        void (*key)(App*, GuiKey) = app->editing ? editor_key : menu_key;
         int rows = e->wheel.integer_y;
         if (app->splash || app->menu.running || app->finished || app->confirm.shown) return;
-        for (; rows > 0; --rows) key(app, GUI_UP);
-        for (; rows < 0; ++rows) key(app, GUI_DOWN);
+        for (; rows > 0; --rows) scroll(app, GUI_UP);
+        for (; rows < 0; ++rows) scroll(app, GUI_DOWN);
         return;
     }
     /* a hovering pen highlights as the mouse does (it sends no mouse motion). Touching, it is a finger, and once it

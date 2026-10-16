@@ -988,6 +988,31 @@ int main(int argc, char** argv) {
             e.wheel.integer_y = 3;
             event(&app, &e);
             assert(app.menu.selected == GUI_SWITCH);
+            /* both stop at the menu's ends, where the keys go round */
+            app.menu.selected = GUI_EXIT;
+            e.wheel.integer_y = -2;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_EXIT && !app.menu.recent_focus);
+            app.menu.recent_focus = app.menu.recent ? 1 : 0;
+            app.menu.selected = 0;
+            e.wheel.integer_y = 2;
+            event(&app, &e);
+            assert(app.menu.selected == 0 && app.menu.recent_focus == (app.menu.recent ? 1 : 0));
+            app.menu.recent_focus = 0;
+            app.menu.selected = GUI_EXIT;
+            e.type = SDL_EVENT_FINGER_DOWN;
+            e.tfinger.fingerID = 7;
+            e.tfinger.x = 0.5f;
+            e.tfinger.y = 0.2f;
+            event(&app, &e);
+            e.type = SDL_EVENT_FINGER_MOTION;
+            e.tfinger.y = 0.2f + 2.5f / (float)app.rows;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_EXIT && !app.menu.recent_focus);
+            e.type = SDL_EVENT_FINGER_UP;
+            event(&app, &e);
+            app.menu.selected = GUI_SWITCH;
+            render(&app);
         }
         assert(SDL_SetWindowSize(app.window, 800, 480)); /* 800x512 at least: 4x would leave 8 rows */
         SDL_SyncWindow(app.window);
