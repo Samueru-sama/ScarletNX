@@ -61,11 +61,56 @@ static void change(GuiEditor* editor, const GuiThemeKey* key, int step) {
         long v = (long)*(uint32_t*)field + step * (key->max >= 1000 ? 10 : 1); /* ms by tens */
         *(uint32_t*)field = (uint32_t)(v<0 ? 0 : v>(long) key->max ? (long)key->max : v);
     } else {
-        snprintf(editor->note, sizeof editor->note, "Select to type it: %s",
-                 key->type == GUI_KEY_COLOUR ? "#RRGGBB" : "its text");
+        snprintf(editor->note, sizeof editor->note, "%s",
+                 key->type == GUI_KEY_COLOUR ? "Select to pick it, or type it as #RRGGBB"
+                                             : "Select to type it: its text");
         return;
     }
     editor->dirty = true;
+}
+GuiRgb* gui_editor_colour(GuiEditor* editor) {
+    const GuiThemeKey* key = gui_editor_key_of(editor, editor->row);
+    return key && key->type == GUI_KEY_COLOUR ? (GuiRgb*)(object(editor) + key->at) : NULL;
+}
+static uint8_t* channel_of(GuiRgb* c, int channel) {
+    return channel == GUI_PICK_RED ? &c->r : channel == GUI_PICK_GREEN ? &c->g : &c->b;
+}
+void gui_editor_pick(GuiEditor* editor, int channel, int value) {
+    GuiRgb* c = gui_editor_colour(editor);
+    uint8_t* at;
+    if (!editor->picking || !c || channel < GUI_PICK_RED || channel > GUI_PICK_BLUE) return;
+    at = channel_of(c, channel);
+    editor->channel = channel;
+    value = value < 0 ? 0 : value > 255 ? 255 : value;
+    if (*at == value) return;
+    *at = (uint8_t)value;
+    editor->dirty = true;
+}
+void gui_editor_pick_end(GuiEditor* editor, bool keep) {
+    GuiRgb* c = gui_editor_colour(editor);
+    if (!editor->picking) return;
+    if (!keep && c) {
+        *c = editor->was;
+        editor->dirty = editor->was_dirty;
+    }
+    editor->picking = editor->typing = false;
+}
+static GuiEditorDo pick_key(GuiEditor* editor, GuiKey key) {
+    int step = key == GUI_RIGHT ? 1 : key == GUI_LEFT ? -1 : key == GUI_PAGE_UP ? 16 : key == GUI_PAGE_DOWN ? -16 : 0;
+    if (key == GUI_UP)
+        editor->channel = editor->channel ? editor->channel - 1 : 0;
+    else if (key == GUI_DOWN)
+        editor->channel = editor->channel < GUI_PICK_HEX ? editor->channel + 1 : GUI_PICK_HEX;
+    else if (step && editor->channel < GUI_PICK_HEX)
+        gui_editor_pick(editor, editor->channel, *channel_of(gui_editor_colour(editor), editor->channel) + step);
+    else if (step)
+        snprintf(editor->note, sizeof editor->note, "Select to type it: #RRGGBB");
+    else if (key == GUI_SELECT && editor->channel == GUI_PICK_HEX) {
+        gui_editor_value(editor, editor->row, editor->text, sizeof editor->text);
+        editor->typing = true;
+    } else if (key == GUI_SELECT || key == GUI_CANCEL)
+        gui_editor_pick_end(editor, key == GUI_SELECT);
+    return GUI_EDITOR_STAY;
 }
 /* what was typed into the focused row: kept, or the note says what the row takes */
 static void take(GuiEditor* editor) {
@@ -100,6 +145,7 @@ GuiEditorDo gui_editor_key(GuiEditor* editor, GuiKey key) {
             editor->typing = false;
         return GUI_EDITOR_STAY;
     }
+    if (editor->picking) return pick_key(editor, key);
     switch (key) {
         case GUI_UP: editor->row = editor->row ? editor->row - 1 : 0; break;
         case GUI_DOWN: editor->row = editor->row + 1 < rows ? editor->row + 1 : rows - 1; break;
@@ -121,6 +167,13 @@ GuiEditorDo gui_editor_key(GuiEditor* editor, GuiKey key) {
             }
             if (k && (k->type == GUI_KEY_FLAG || k->type == GUI_KEY_WORD)) {
                 change(editor, k, 1);
+                break;
+            }
+            if (k && k->type == GUI_KEY_COLOUR) { /* the picker, on its first channel */
+                editor->picking = true;
+                editor->channel = GUI_PICK_RED;
+                editor->was = *gui_editor_colour(editor);
+                editor->was_dirty = editor->dirty;
                 break;
             }
             gui_editor_value(editor, editor->row, editor->text, sizeof editor->text);

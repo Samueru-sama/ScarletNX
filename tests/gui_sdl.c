@@ -1940,17 +1940,100 @@ int main(int argc, char** argv) {
             app.editor.row = 0;
             gui_app_render(&app);
             gui_app_preview_box(&app, &col, &prow, &cols, &rows);
-            /* page = #102030, typed: the preview's page takes it, the editor's own stays the menu's */
+            /* page = #102030, picked: Enter opens the picker over the keys, Left/Right and the pages step a channel,
+               a click or a drag on a bar sets it, its last row types the colour; the preview's page takes it, the
+               editor's own stays the menu's */
             for (r = 0; !gui_editor_key_of(&app.editor, r) || strcmp(gui_editor_key_of(&app.editor, r)->key, "page");
                  ++r) {}
             app.editor.row = r;
+            app.editor.theme.page = (GuiRgb){0x80, 0x40, 0x20}; /* the bars' marks off their ends */
             key(&app, SDLK_RETURN);
-            assert(app.editor.typing && SDL_TextInputActive(app.window));
-            for (int i = 0; i < 7; ++i) key(&app, SDLK_BACKSPACE);
-            typed(&app, "#102030");
-            key(&app, SDLK_RETURN);
-            assert(!app.editor.typing && !SDL_TextInputActive(app.window) && app.editor.dirty);
-            assert(!strcmp(app.editor.text, "#102030"));
+            assert(app.editor.picking && !app.editor.typing && app.editor.channel == GUI_PICK_RED);
+            {
+                GuiPicker pk;
+                GuiRgb was = app.editor.theme.page;
+                int s = app.scale, w;
+                SDL_Color c;
+                gui_app_render(&app);
+                colored_text_at(&app, 1, 1, SAY_PICKER, normal);
+                gui_app_picker_place(&app, &pk);
+                assert(pk.box.x + pk.box.w <= (col - 1) * 8 * s); /* over the keys: the preview shows */
+                /* each bar the colours its channel goes through, the red one's ends black and red */
+                w = pk.bars[0].w - 2 * s;
+                c = pixel(&app, (float)(pk.bars[0].x + s), (float)(pk.bars[0].y + pk.bars[0].h / 2));
+                assert(c.r == 0 && c.g == was.g && c.b == was.b);
+                c = pixel(&app, (float)(pk.bars[0].x + s + w - 1), (float)(pk.bars[0].y + pk.bars[0].h / 2));
+                assert(c.r == 255 && c.g == was.g && c.b == was.b);
+                key(&app, SDLK_RIGHT);
+                assert(app.editor.theme.page.r == was.r + 1 && app.editor.dirty);
+                key(&app, SDLK_PAGEUP);
+                assert(app.editor.theme.page.r == was.r + 17);
+                key(&app, SDLK_PAGEDOWN);
+                key(&app, SDLK_LEFT);
+                assert(app.editor.theme.page.r == was.r);
+                /* the mouse: a press at the green bar's start, a drag to its end, and the lift lets it go */
+                mouse_px(&app, pk.bars[1].x + s, pk.bars[1].y + 2, true);
+                assert(app.editor.channel == GUI_PICK_GREEN && app.editor.theme.page.g == 0 && app.pick_press == 2);
+                mouse_px(&app, pk.bars[1].x + pk.bars[1].w + 40, pk.bars[0].y, false); /* past it, on another row */
+                assert(app.editor.theme.page.g == 255 && app.editor.theme.page.r == was.r);
+                mouse_px(&app, pk.bars[1].x + s + (w - 1) / 2, pk.bars[1].y + 2, false); /* the middle's strip */
+                assert(app.editor.theme.page.g >= 126 && app.editor.theme.page.g <= 129);
+                {
+                    SDL_Event up = {0};
+                    up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                    up.button.button = SDL_BUTTON_LEFT;
+                    event(&app, &up);
+                }
+                mouse_px(&app, pk.bars[1].x + s, pk.bars[1].y + 2, false);
+                assert(!app.pick_press && app.editor.theme.page.g >= 126 && app.editor.theme.page.g <= 129);
+                /* a finger on the blue bar's end: set, and its lift taps nothing under it */
+                tap_px(&app, pk.bars[2].x + pk.bars[2].w - s - 1, pk.bars[2].y + 2);
+                assert(app.editor.picking && app.editor.channel == GUI_PICK_BLUE && app.editor.theme.page.b == 255);
+                assert(!app.pick_press && !app.editor.typing);
+                /* ESC puts it back; the wheel does not move the rows under it */
+                {
+                    SDL_Event wheel = {0};
+                    wheel.type = SDL_EVENT_MOUSE_WHEEL;
+                    wheel.wheel.integer_y = -1;
+                    event(&app, &wheel);
+                    assert(app.editor.row == r && app.editor.channel == GUI_PICK_BLUE);
+                }
+                key(&app, SDLK_ESCAPE);
+                assert(!app.editor.picking && !memcmp(&app.editor.theme.page, &was, sizeof was) && !app.editor.dirty);
+                assert(app.editing && app.form == GUI_FORM_THEME && app.editor.row == r);
+                /* a click on the focused row opens it again, a click on its last row types */
+                key(&app, SDLK_RETURN);
+                mouse_px(&app, pk.rows[GUI_PICK_HEX].x + 4, pk.rows[GUI_PICK_HEX].y + 4, true);
+                assert(app.editor.typing && app.editor.channel == GUI_PICK_HEX && SDL_TextInputActive(app.window));
+                for (int i = 0; i < 7; ++i) key(&app, SDLK_BACKSPACE);
+                typed(&app, "#102030");
+                key(&app, SDLK_RETURN);
+                assert(app.editor.picking && !app.editor.typing && !SDL_TextInputActive(app.window) &&
+                       app.editor.dirty);
+                assert(!strcmp(app.editor.text, "#102030") && app.editor.theme.page.r == 0x10);
+                gui_app_render(&app);
+                c = pixel(&app, (float)(pk.rows[GUI_PICK_HEX].x + 8 * s / 2 + 10 * 8 * s + 4 * s),
+                          (float)(pk.rows[GUI_PICK_HEX].y + 3 * s + 8 * s));
+                assert(same_colour(c, night)); /* the colour now, beside the one it had */
+                /* a click off the box keeps it, and does nothing else: the preview stays the menu */
+                mouse_px(&app, (col + 2) * 8 * s, (prow + 2) * 16 * s, true);
+                assert(!app.editor.picking && app.editor.preview == GUI_SCREEN_MENU && app.editor.theme.page.g == 0x20);
+                {
+                    SDL_Event up = {0};
+                    up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                    up.button.button = SDL_BUTTON_LEFT;
+                    event(&app, &up);
+                    assert(!app.pick_press);
+                }
+                /* a mouse's press on a bar whose lift never came: a finger after it still taps */
+                key(&app, SDLK_RETURN);
+                mouse_px(&app, pk.bars[0].x + pk.bars[0].w / 2, pk.bars[0].y + 2, true);
+                key(&app, SDLK_ESCAPE);
+                assert(!app.editor.picking && app.pick_press == 1);
+                tap(&app, 2, 4 + r + 1 - app.editor.top);
+                assert(app.editor.row == r + 1 && !app.pick_press);
+                app.editor.row = r;
+            }
             gui_app_render(&app);
             assert(same_colour(
                 pixel(&app, (col + cols * 76.0f / 80) * 8 * app.scale, (prow + rows * 12.5f / 25) * 16 * app.scale),
@@ -2510,6 +2593,38 @@ int main(int argc, char** argv) {
             assert(app.editor.preview == GUI_SCREEN_COMPILING);
             key_with(&app, SDLK_P, SDL_KMOD_LCTRL);
             assert(app.editor.preview == GUI_SCREEN_MENU);
+            /* the colour picker over the keys' box, under a head naming the key; a drag on a bar sets it, ESC puts
+               it back */
+            {
+                GuiPicker pk;
+                GuiRgb was;
+                for (row = 0;
+                     !gui_editor_key_of(&app.editor, row) || strcmp(gui_editor_key_of(&app.editor, row)->key, "ink");
+                     ++row) {}
+                app.editor.row = row;
+                was = app.editor.theme.ink;
+                key(&app, SDLK_RETURN);
+                assert(app.editor.picking);
+                gui_app_render(&app);
+                gui_app_picker_place(&app, &pk);
+                assert(pk.box.x >= f.place.list.x && pk.box.x + pk.box.w <= f.place.list.x + f.place.list.w);
+                text_px_is(&app, pk.box.x + cw, pk.box.y + 2 * s, "[colors] ink", normal, black);
+                text_px_is(&app, pk.rows[0].x + cw / 2, pk.rows[0].y + 3 * s, "R", yellow, black);
+                text_px_is(&app, pk.rows[1].x + cw / 2, pk.rows[1].y + 3 * s, "G", normal, black);
+                mouse_px(&app, pk.bars[2].x + s, pk.bars[2].y + 2, true);
+                assert(app.editor.channel == GUI_PICK_BLUE && !app.editor.theme.ink.b);
+                {
+                    SDL_Event up = {0};
+                    up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+                    up.button.button = SDL_BUTTON_LEFT;
+                    event(&app, &up);
+                }
+                gui_app_render(&app);
+                text_px_is(&app, pk.rows[2].x + cw / 2, pk.rows[2].y + 3 * s, "B", yellow, black);
+                key(&app, SDLK_ESCAPE);
+                assert(!app.editor.picking && !memcmp(&app.editor.theme.ink, &was, sizeof was));
+                assert(app.editing && app.form == GUI_FORM_THEME);
+            }
             for (row = 0;
                  !gui_editor_key_of(&app.editor, row) || strcmp(gui_editor_key_of(&app.editor, row)->key, "name");
                  ++row) {}

@@ -789,7 +789,8 @@ static void render_editor(App* app) {
     if (theme->head == GUI_STYLE_BAR) gui_app_band(app, 0, 1, theme->ink);
     text(app, 1, 0, title, rgb(theme->head == GUI_STYLE_BAR ? theme->page : theme->ink));
     text(app, 1, 1,
-         app->form == GUI_FORM_THEME      ? SAY_EDITOR
+         app->editor.picking              ? SAY_PICKER
+         : app->form == GUI_FORM_THEME    ? SAY_EDITOR
          : app->form == GUI_FORM_SETTINGS ? SAY_GROUPS
          : app->form == GUI_FORM_APP      ? SAY_APP
          : app->form == GUI_FORM_FOLDERS  ? SAY_FOLDERS
@@ -844,6 +845,7 @@ static void render_editor(App* app) {
     snprintf(value, sizeof value, "Saves in %s", app->themes_dirs[0] ? app->themes_dirs[0] : "(no themes folder)");
     text(app, 1, app->rows - 2, value, rgb(theme->soft));
     render_preview(app);
+    gui_app_draw_picker(app);
 }
 void gui_app_render(App* app) {
     gui_app_layout(app);

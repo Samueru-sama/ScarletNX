@@ -104,6 +104,8 @@ typedef struct {
     GuiRgb splash_page;
     bool editing; /* the editor's screen (form says which) instead of the menu's */
     GuiEditor editor;
+    /* a press the colour picker took, until it lifts: its bar's channel + 1, or GUI_PICK_ROWS + 1 off the bars */
+    int pick_press;
     int form;            /* GUI_FORM_* */
     int group;           /* the group open, or the one the Settings come back to */
     int first, page;     /* a group's: the settings' row of its first, and of the page's row it opened (-1 none) */
@@ -159,7 +161,8 @@ typedef struct {
 #define SAY_NO_GAMES   "No games in games/: put a game's .nro, .xci or .nsp there."
 #define SAY_COUNT      "game(s)"
 #define SAY_LOG_FAILED "The log could not be saved: allow the app access to files."
-#define SAY_EDITOR     "Tap a key to change it or type it. Back: go back."
+#define SAY_EDITOR     "Tap a key to change, type or pick it. Back: go back."
+#define SAY_PICKER     "Drag a bar, or tap #RRGGBB to type it. Tap outside: keep. Back: put back."
 #define SAY_SETTINGS   SAY_EDITOR
 #define SAY_GROUPS     "Tap a group to open it. Back: go back."
 #define SAY_APP        "Tap a row to change or open it. Back: go back."
@@ -181,7 +184,8 @@ typedef struct {
 #define SAY_NO_GAMES   "No games in games/ or the folders of Settings > App."
 #define SAY_COUNT      "game(s)"
 #define SAY_LOG_FAILED "The log could not be saved: check the folder's permissions."
-#define SAY_EDITOR     "Up/Down: key. Left/Right: change. Enter: type. Ctrl+S: save. ESC: back."
+#define SAY_EDITOR     "Up/Down: key. Left/Right: change. Enter: edit. Ctrl+S: save. ESC: back."
+#define SAY_PICKER     "Up/Down: row. Left/Right: 1. PgUp/PgDn: 16. Enter: keep. ESC: put back."
 #define SAY_SETTINGS   "Up/Down: setting. Left/Right: change. Enter: type. Del: default. ESC: back."
 #define SAY_GROUPS     "Up/Down: group. Enter: open. ESC: back."
 #define SAY_APP        "Up/Down: row. Left/Right: change. Enter: change or open. ESC: back."
@@ -371,6 +375,13 @@ void gui_app_run_console(App* app, const GuiPlace* p, int* cols, int* rows);
 void gui_app_draw_run_boxed(App* app);
 void gui_app_draw_form_boxed(App* app);
 void gui_app_form_boxed_pointer(App* app, float x, float y, bool touch);
+/* the colour picker's box, its rows and the bars of the first three, in pixels */
+typedef struct {
+    GuiRect box, rows[GUI_PICK_ROWS], bars[3];
+} GuiPicker;
+void gui_app_picker_place(App* app, GuiPicker* p);
+void gui_app_draw_picker(App* app);
+void gui_app_picker_pointer(App* app, float x, float y, bool press);
 void gui_app_ask_boxed_pointer(App* app, float x, float y, bool click);
 void gui_app_boxed_pointer(App* app, float x, float y, bool click, bool touch);
 bool gui_app_menu_scrolls(App* app);

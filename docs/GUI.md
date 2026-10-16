@@ -96,7 +96,10 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   left out; a file that cannot be written is named in App's note.
 - Settings > App's **Theme editor** edits the current theme: a row per `theme.ini` key, and beside them a
   preview of the menu or a run (Ctrl+P, or a click on it, switches). Left/Right change a word, a switch or a
-  number, Enter types a colour, a text or a number.
+  number, Enter types a text or a number and opens a colour's picker. The picker sits over the keys, so the preview
+  shows the colour as it changes: a bar per channel, R, G and B, which Left/Right step by 1 and PgUp/PgDn by 16, or
+  a click, a drag or a finger sets, then the colour as `#RRGGBB`, which Enter there types. Enter keeps the colour, as
+  does a click or a tap off the picker; ESC (Back on Android) puts back the one it had.
   Save (Ctrl+S) writes `themes/<folder>/theme.ini` in the data folder and switches to it;
   a built-in is saved as a new theme, `mytheme` until renamed. ESC leaves, asking first if
   there are unsaved changes.

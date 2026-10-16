@@ -28,7 +28,13 @@ typedef struct {
     char note[160];      /* what the last key did, when it did not do what it was asked */
     bool flat;           /* no section column: the form's rows are all of one */
     int step;            /* the last GUI_EDITOR_ACTION's key: 0 Select, -1 Left, 1 Right */
+    bool picking;        /* the colour picker over the focused colour row, which Select opened */
+    int channel;         /* the picker's focused row, GUI_PICK_* */
+    GuiRgb was;          /* the colour as the picker opened, which Cancel puts back */
+    bool was_dirty;      /* and whether there were changes then */
 } GuiEditor;
+/* the colour picker's rows: a channel each, then the colour typed as #RRGGBB */
+enum { GUI_PICK_RED, GUI_PICK_GREEN, GUI_PICK_BLUE, GUI_PICK_HEX, GUI_PICK_ROWS };
 #define GUI_EDITOR_FOLDER 0 /* the theme editor's first row */
 int gui_editor_rows(const GuiEditor* editor);
 /* the key of a row, NULL for the folder and Save, or a form's action */
@@ -42,10 +48,18 @@ void gui_editor_stop(GuiEditor* editor);
 /* what a key asks of the screen: nothing more, to leave it, to save (a form: to do its action), or the focused
    GUI_KEY_ACTION row's (step says which key) */
 typedef enum { GUI_EDITOR_STAY, GUI_EDITOR_LEAVE, GUI_EDITOR_SAVE, GUI_EDITOR_ACTION } GuiEditorDo;
-/* Up/Down and the pages move; Left/Right change a word, a flag or a number; Select changes a word or a flag, starts
-   typing the others and takes what was typed; Cancel stops typing, or leaves (asking once over changes). On an action
-   row Select, Left and Right are the caller's */
+/* Up/Down and the pages move; Left/Right change a word, a flag or a number; Select changes a word or a flag, opens the
+   colour picker on a colour, starts typing the others and takes what was typed; Cancel stops typing, or leaves (asking
+   once over changes). On an action row Select, Left and Right are the caller's. In the picker Up/Down go between its
+   rows, Left/Right change a channel by 1 and the pages by 16, Select keeps the colour (on #RRGGBB, types it) and Cancel
+   puts it back */
 GuiEditorDo gui_editor_key(GuiEditor* editor, GuiKey key);
+/* the focused row's colour, NULL on a row that holds none */
+GuiRgb* gui_editor_colour(GuiEditor* editor);
+/* the picker's channel set to value, held in 0 to 255, its row focused: what a click or a drag on its bar does */
+void gui_editor_pick(GuiEditor* editor, int channel, int value);
+/* the picker closed, the colour kept or put back as it opened */
+void gui_editor_pick_end(GuiEditor* editor, bool keep);
 /* while typing: text added, or the last character taken off */
 void gui_editor_type(GuiEditor* editor, const char* text);
 void gui_editor_erase(GuiEditor* editor);

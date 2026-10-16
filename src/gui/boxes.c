@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The screens in boxes, the Panels layout ([body] layout, and Settings > App's): place.c puts each box, and nothing goes over
    another. The menu, Games, the screen a file is picked on, a run, the Settings and the theme editor, the boxes over
-   them, and the pointer on each */
+   them, and the pointer on each; and the theme editor's colour picker, which the lines down the page draw too */
 #include "app.h"
 #ifdef SDL_PLATFORM_ANDROID
 #define SAY_MENU_KEYS SAY_MENU
@@ -830,7 +830,8 @@ static const char* form_title(const App* app, char* out, size_t size) {
 }
 static const char* form_keys(const App* app, char* out, size_t size) {
     return gui_app_screen_keys(app,
-                               app->form == GUI_FORM_THEME      ? SAY_EDITOR
+                               app->editor.picking              ? SAY_PICKER
+                               : app->form == GUI_FORM_THEME    ? SAY_EDITOR
                                : app->form == GUI_FORM_SETTINGS ? SAY_GROUPS
                                : app->form == GUI_FORM_APP      ? SAY_APP
                                : app->form == GUI_FORM_FOLDERS  ? SAY_FOLDERS
@@ -993,9 +994,134 @@ void gui_app_draw_form_boxed(App* app) {
         if (form_note(app))
             wrap_in(app, inner(app, f.info), f.info.x + cell_w(app), f.info.y, form_note(app), 0, rgb(app->theme.soft));
     }
+    gui_app_draw_picker(app);
     gui_app_vignette(app);
     about = form_about(app, &color);
     gui_app_bar(app, f.place.bar, about, color, form_keys(app, keys, sizeof keys));
+}
+/* ---- the colour picker, in both layouts: over the theme editor's keys, so the preview shows the colour as it changes;
+   a bar per channel, then the colour typed beside it and the one it had ---- */
+void gui_app_picker_place(App* app, GuiPicker* p) {
+    int s = app->scale, cw = cell_w(app), item = cell_h(app) + 6 * s, x0, x1, top, width, height, w, h, i;
+    area(app, &width, &height);
+    if (boxed(app)) {
+        GuiFormBoxes f;
+        form_boxes(app, &f);
+        x0 = f.place.list.x;
+        x1 = f.place.list.x + f.place.list.w;
+        top = head_h(app) + 2 * s; /* under the pane's head */
+    } else {
+        int col, row, cols, rows;
+        gui_app_preview_box(app, &col, &row, &cols, &rows);
+        x0 = cw / 2; /* the rows' margin, half of it */
+        x1 = (col - 1) * cw;
+        top = cell_h(app) + 4 * s; /* under its title */
+    }
+    w = SDL_min(x1 - x0, 46 * cw);
+    h = top + GUI_PICK_ROWS * item + 4 * s;
+    p->box = box_rect(x0 + (x1 - x0 - w) / 2, SDL_max(0, (height - h) / 2), w, h);
+    for (i = 0; i < GUI_PICK_ROWS; ++i)
+        p->rows[i] = box_rect(p->box.x + cw, p->box.y + top + i * item, p->box.w - 2 * cw, item);
+    for (i = 0; i < 3; ++i) /* the channel's letter before it, its value after it */
+        p->bars[i] = box_rect(p->rows[i].x + 3 * cw, p->rows[i].y + 3 * s, p->rows[i].w - 8 * cw, item - 6 * s);
+}
+/* the value of a bar's strip x pixels in: a strip is a pixel at 1x, the first 0 and the last 255 (a bar is whole
+   half cells, so its inside is whole strips) */
+static int strip_value(const App* app, GuiRect b, int x) {
+    int s = app->scale, w = b.w - 2 * s;
+    x = x < 0 ? 0 : x >= w ? w - 1 : x;
+    return w > s ? x / s * s * 255 / (w - s) : 0;
+}
+/* a colour swatch framed in soft, so a page-coloured one shows */
+static void swatch(App* app, GuiRect r, GuiRgb c) {
+    fill_rect(app, r, app->theme.soft);
+    fill_rect(app, box_rect(r.x + app->scale, r.y + app->scale, r.w - 2 * app->scale, r.h - 2 * app->scale), c);
+}
+static uint8_t* channel(GuiRgb* c, int i) { return i == GUI_PICK_RED ? &c->r : i == GUI_PICK_GREEN ? &c->g : &c->b; }
+void gui_app_draw_picker(App* app) {
+    static const char* const names[3] = {"R", "G", "B"};
+    GuiEditor* e = &app->editor;
+    const GuiTheme* t = &app->theme;
+    const GuiThemeKey* k = gui_editor_key_of(e, e->row);
+    GuiRgb *c = gui_editor_colour(e), shade;
+    GuiPicker p;
+    char line[96];
+    int i, x, s = app->scale, cw = cell_w(app);
+    if (!e->picking || !c) return;
+    gui_app_picker_place(app, &p);
+    snprintf(line, sizeof line, "[%s] %s", k->section, k->key);
+    if (boxed(app))
+        over_box(app, p.box, line);
+    else { /* framed in soft, as the question over a run */
+        swatch(app, p.box, t->page);
+        text_in(app, inner(app, p.box), p.box.x + cw, p.box.y + 2 * s, line, rgb(t->ink));
+    }
+    for (i = 0; i < GUI_PICK_ROWS; ++i) {
+        GuiRect r = p.rows[i];
+        int focused = e->channel == i, band = focused && t->focus_bar, y = r.y + 3 * s;
+        SDL_Color ink = rgb(band ? t->page : focused ? t->focus : t->ink);
+        if (band) fill_rect(app, r, t->focus);
+        if (i == GUI_PICK_HEX) { /* the colour as typed, the one it is now and the one it had */
+            if (e->typing)
+                snprintf(line, sizeof line, "%s_", e->text);
+            else
+                gui_editor_value(e, e->row, line, sizeof line);
+            text_in(app, r, r.x + cw / 2, y, line, ink);
+            x = r.x + cw / 2 + 10 * cw;
+            if (x + 4 * cw <= r.x + r.w) swatch(app, box_rect(x, y, 4 * cw, cell_h(app)), *c);
+            if (x + 13 * cw <= r.x + r.w) {
+                text_in(app, r, x + 5 * cw, y, "was", band ? ink : rgb(t->soft));
+                swatch(app, box_rect(x + 9 * cw, y, 4 * cw, cell_h(app)), e->was);
+            }
+            continue;
+        }
+        text_in(app, r, r.x + cw / 2, y, names[i], ink);
+        snprintf(line, sizeof line, "%3d", *channel(c, i));
+        text_in(app, r, p.bars[i].x + p.bars[i].w + cw, y, line, ink);
+        { /* the colour the channel's every value would give, framed, and a mark where it stands */
+            GuiRect b = p.bars[i];
+            int w = b.w - 2 * s, at;
+            if (w <= s) continue;
+            fill_rect(app, b, t->soft);
+            shade = *c;
+            for (x = 0; x < w; x += s) {
+                *channel(&shade, i) = (uint8_t)strip_value(app, b, x);
+                fill_rect(app, box_rect(b.x + s + x, b.y + s, s, b.h - 2 * s), shade);
+            }
+            at = b.x + s + *channel(c, i) * (w - s) / 255 / s * s + s / 2;
+            fill_rect(app, box_rect(at - s, b.y - 2 * s, 3 * s, b.h + 4 * s), band ? t->page : t->ink);
+            fill_rect(app, box_rect(at, b.y - s, s, b.h + 2 * s), band ? t->focus : t->page);
+        }
+    }
+}
+static void picker_set(App* app, const GuiPicker* p, int i, float x) {
+    gui_editor_pick(&app->editor, i, strip_value(app, p->bars[i], (int)SDL_floorf(x) - (p->bars[i].x + app->scale)));
+}
+/* the pointer on the picker, at pixel x, y. A press on a bar's row sets its channel there and holds it, the pointer's
+   moves dragging it until the press lifts; on #RRGGBB it types it; off the box it keeps the colour */
+void gui_app_picker_pointer(App* app, float x, float y, bool press) {
+    GuiEditor* e = &app->editor;
+    GuiPicker p;
+    int i;
+    gui_app_picker_place(app, &p);
+    if (!press) {
+        if (app->pick_press > 0 && app->pick_press <= 3) picker_set(app, &p, app->pick_press - 1, x);
+        return;
+    }
+    for (i = 0; i < GUI_PICK_ROWS; ++i)
+        if (x >= (float)p.box.x && x < (float)(p.box.x + p.box.w) && y >= (float)p.rows[i].y &&
+            y < (float)(p.rows[i].y + p.rows[i].h))
+            break;
+    app->pick_press = i < 3 ? i + 1 : GUI_PICK_ROWS + 1;
+    if (e->typing && i != GUI_PICK_HEX) gui_app_editor_key(app, GUI_CANCEL);
+    if (i < 3)
+        picker_set(app, &p, i, x);
+    else if (i == GUI_PICK_HEX && !e->typing) {
+        e->channel = GUI_PICK_HEX;
+        gui_app_editor_key(app, GUI_SELECT);
+    } else if (i == GUI_PICK_ROWS && (x < (float)p.box.x || x >= (float)(p.box.x + p.box.w) || y < (float)p.box.y ||
+                                      y >= (float)(p.box.y + p.box.h)))
+        gui_editor_pick_end(e, true);
 }
 /* a row of a form under the pointer: focused, or on the focused one Select, as a key would */
 static void form_row_pointer(App* app, int r) {

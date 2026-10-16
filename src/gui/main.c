@@ -1489,6 +1489,10 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         if (click) gui_app_pad_did(app, snx_pad_screen_tap(&app->pad, snx_pad_screen_hit(&app->pad_drawing, x, y)));
         return;
     }
+    if (app->editing && app->editor.picking) {
+        gui_app_picker_pointer(app, x, y, click);
+        return;
+    }
     if (boxed(app) && app->editing) {
         if (click) gui_app_form_boxed_pointer(app, x, y, touch);
         return;
@@ -1764,13 +1768,29 @@ static void event(App* app, const SDL_Event* e) {
         return;
     }
     if (e->type == SDL_EVENT_FINGER_DOWN && !app->finger) {
+        int w, h;
         app->finger = finger_id(&e->tfinger);
         app->finger_x = e->tfinger.x;
         app->finger_y = app->finger_mark = e->tfinger.y;
+        SDL_GetWindowSize(app->window, &w, &h);
+        app->pick_press = 0;                     /* the finger's own, not a mouse's whose lift was missed */
+        if (app->editing && app->editor.picking) /* the picker's bars take a finger as it goes down, to drag */
+            pointer(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, true, true);
         return;
     }
     if (e->type == SDL_EVENT_FINGER_MOTION && finger_id(&e->tfinger) == app->finger) {
-        if (drags(app, e->tfinger.x, e->tfinger.y)) drag(app, e->tfinger.y);
+        int w, h;
+        SDL_GetWindowSize(app->window, &w, &h);
+        if (app->pick_press)
+            pointer(app, e->tfinger.x * (float)w, e->tfinger.y * (float)h, false, true);
+        else if (drags(app, e->tfinger.x, e->tfinger.y))
+            drag(app, e->tfinger.y);
+        return;
+    }
+    if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
+        finger_id(&e->tfinger) == app->finger && app->pick_press) { /* the picker had it: no tap */
+        app->finger = 0;
+        app->pick_press = 0;
         return;
     }
     if ((e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) &&
@@ -1791,7 +1811,9 @@ static void event(App* app, const SDL_Event* e) {
     /* a notch of the wheel is a row, as a finger's drag, the way the system turns it; not under a box */
     if (e->type == SDL_EVENT_MOUSE_WHEEL) {
         int rows = e->wheel.integer_y;
-        if (app->splash || app->menu.running || app->finished || app->confirm.shown || app->left_shown) return;
+        if (app->splash || app->menu.running || app->finished || app->confirm.shown || app->left_shown ||
+            (app->editing && app->editor.picking))
+            return;
         for (; rows > 0; --rows) scroll(app, GUI_UP);
         for (; rows < 0; ++rows) scroll(app, GUI_DOWN);
         return;
@@ -1816,6 +1838,10 @@ static void event(App* app, const SDL_Event* e) {
     }
     if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN && e->button.button == SDL_BUTTON_LEFT) {
         pointer(app, e->button.x, e->button.y, true, false);
+        return;
+    }
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_UP && e->button.button == SDL_BUTTON_LEFT) {
+        app->pick_press = 0; /* a drag on the picker's bar ends */
         return;
     }
     if (e->type != SDL_EVENT_KEY_DOWN) return;
