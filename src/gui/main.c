@@ -3509,15 +3509,24 @@ static void open_recent(App* app, int index) {
     launch(app, snx_strdup(game.path), game.prepared);
     app->menu.selected = item;
 }
-static void install_keys(App* app, const char* source) {
-    const char* name = source;
-    if (source)
-        for (const char* p = source; *p; ++p)
-            if (*p == '/' || *p == '\\') name = p + 1;
-    if (!source || strcmp(name, "prod.keys") || !snx_is_file(source)) {
-        snprintf(app->message, sizeof(app->message), "Please drop a readable file named prod.keys.");
-        return;
+#define SNX_GUI_KEYS_MAX (1 << 20) /* a prod.keys is a few kilobytes: past this it is not one */
+/* the bytes of file (a path, or on Android a document's URI, which SDL opens through its app), up to SNX_GUI_KEYS_MAX;
+   NULL when it cannot be read or is bigger */
+static char* keys_read(const char* file, size_t* size) {
+    SDL_IOStream* io = SDL_IOFromFile(file, "rb");
+    char* data = io ? (char*)malloc(SNX_GUI_KEYS_MAX + 1) : NULL;
+    size_t n = 0, got = 1;
+    while (data && n <= SNX_GUI_KEYS_MAX && got) n += got = SDL_ReadIO(io, data + n, SNX_GUI_KEYS_MAX + 1 - n);
+    if (data && (n > SNX_GUI_KEYS_MAX || SDL_GetIOStatus(io) == SDL_IO_STATUS_ERROR)) {
+        free(data);
+        data = NULL;
     }
+    if (io) SDL_CloseIO(io);
+    *size = n;
+    return data;
+}
+/* the keys read into keys_path */
+static void keys_write(App* app, const char* data, size_t size) {
     if (!app->keys_path) {
         snprintf(app->message, sizeof(app->message), "Cannot locate your home directory. Keys were not installed.");
         return;
@@ -3527,7 +3536,7 @@ static void install_keys(App* app, const char* source) {
     char* directory = snx_dirname(app->keys_path);
     char* temporary = directory && !snx_mkdirs(directory) ? snx_temp_dir(directory) : NULL;
     char* staged = temporary ? snx_path_join(temporary, "prod.keys") : NULL;
-    bool ok = staged && !snx_copy_file(source, staged);
+    bool ok = staged && !snx_write_file(staged, data, size);
 #ifndef _WIN32
     if (ok) ok = chmod(staged, 0600) == 0;
 #endif
@@ -3540,6 +3549,45 @@ static void install_keys(App* app, const char* source) {
              ok ? "Device keys installed successfully."
                 : "Cannot install prod.keys. Check file and folder permissions, then try again.");
     if (ok) app->menu.view = GUI_LOAD_NONE;
+}
+static void install_keys(App* app, const char* source) {
+    const char* name = source;
+    char* data = NULL;
+    size_t size = 0;
+    if (source)
+        for (const char* p = source; *p; ++p)
+            if (*p == '/' || *p == '\\') name = p + 1;
+    if (source && !strcmp(name, "prod.keys") && snx_is_file(source)) data = keys_read(source, &size);
+    if (!data)
+        snprintf(app->message, sizeof(app->message), "Please drop a readable file named prod.keys.");
+    else
+        keys_write(app, data, size);
+    free(data);
+}
+/* what a picked file that cannot be used says, for the platform's picker: Android's documents, a desktop's files */
+#ifdef SDL_PLATFORM_ANDROID
+#define SAY_KEYS_UNREAD "This file could not be read. Pick prod.keys again, from the device's storage (%s)."
+#define SAY_KEYS_NOT    "This file is not a prod.keys. Pick the prod.keys file (%s)."
+#define SAY_PICK_UNREAD                                                                                                \
+    "Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's settings, "    \
+    "then pick it from the device's storage (%s)."
+#else
+#define SAY_KEYS_UNREAD "The picked file could not be read as prod.keys (%s)."
+#define SAY_KEYS_NOT    "The picked file is not a prod.keys (%s)."
+#define SAY_PICK_UNREAD "Pick the file from this computer's storage (%s)."
+#endif
+/* keys the picker gave as a document of an app's (Android's), read through it: a path to it may be one this app cannot
+   read, or there is none (Downloads by number, #280). With no name to go by, its text has to be a prod.keys' */
+static void install_keys_document(App* app, const char* uri) {
+    size_t size = 0;
+    char* data = keys_read(uri, &size);
+    if (!data)
+        snprintf(app->message, sizeof(app->message), SAY_KEYS_UNREAD, uri);
+    else if (!gui_keys_text(data, size))
+        snprintf(app->message, sizeof(app->message), SAY_KEYS_NOT, uri);
+    else
+        keys_write(app, data, size);
+    free(data);
 }
 static void drop(App* app, const char* value, bool text_drop) {
     if ((app->menu.view != GUI_LOAD_DROP && app->menu.view != GUI_LOAD_KEYS) || app->menu.running || app->finished)
@@ -3901,15 +3949,19 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
 }
 /* the file the system's picker chose, as a dropped one; none (cancelled) stays on the screen and says so */
 static void picked(App* app, const char* uri) {
-    char* path = uri ? gui_document_path(uri) : NULL;
+    char* path;
+    if (uri && app->menu.view == GUI_LOAD_KEYS && strstr(uri, "://") && strncmp(uri, "file://", 7)) {
+        install_keys_document(app, uri);
+        return;
+    }
+    path = uri ? gui_document_path(uri) : NULL;
 #ifdef SDL_PLATFORM_ANDROID
     if (uri && !path) path = gui_android_document_file(uri);
 #endif
     if (!uri)
         snprintf(app->message, sizeof(app->message), "No file was picked.");
     else if (!path)
-        snprintf(app->message, sizeof(app->message), "Pick the file from the device's storage, not from an app (%s).",
-                 uri);
+        snprintf(app->message, sizeof(app->message), SAY_PICK_UNREAD, uri);
     else
         drop(app, path, false);
     free(path);

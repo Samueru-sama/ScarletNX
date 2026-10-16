@@ -48,9 +48,17 @@ Invalid option versions/enums are refused without modifying the LLVM module.
 
 The ARM11 profile implements a **conservative ARMv6K integer subset**, rejecting
 MOVW/MOVT, MLS, divide, RBIT, bitfields, ARMv7 barrier encodings, acquire/release,
-NEON, VFPv3/v4 and D16..D31. It recognizes the ARM11 CP15 barrier forms. VFPv2
-recognition currently exits with `BACKEND_UNSUPPORTED`: VFPv2 short vectors are
-not implemented by the A57 FP helpers. This is not a complete ARM11 ISA model.
+NEON, VFPv3/v4 and D16..D31. It recognizes the ARM11 CP15 barrier forms.
+Scalar VFPv2 F32/F64 arithmetic, non-fused multiply/accumulate, compares,
+conversions, register/status transfers and up-to-64-byte memory transfers are
+implemented. Arithmetic uses the shared raw-bit integer FP primitives, not host
+floating point or ARMv8 fused replacements. LEN/STRIDE and exception enables must
+be zero for arithmetic. FPSCR writes outside NZCV, rounding mode, DN/FZ and
+cumulative exceptions stop before mutation; short vectors, traps, legacy
+FLDMX/FSTMX format words and larger transfers remain explicitly unsupported.
+Checked VFP memory operations are aligned to four bytes and staged as one
+RAM-only transaction before register/base writeback. This is not complete VFPv2
+or a complete ARM11 ISA model; A57 checked vector operations remain unsupported.
 
 ARM11 ALU writes to PC remain in ARM state. Its Thumb BL prefix and BL/BLX suffix
 are **separately executable 16-bit instructions**, with the original signed
@@ -72,16 +80,23 @@ A fault reports `PREFETCH_ABORT`; a mismatch reports `CODE_CHANGED` before the
 stale instruction executes. These exits must return to the dispatcher. There
 is no automatic recompilation, block discovery or executable-module loader.
 
-Integer transfers use bounded little-endian transaction buffers. Reads complete
+Integer and supported ARM11 VFP transfers use bounded little-endian transaction buffers. Reads complete
 before register updates; stores commit before base/SP writeback. Paired and
 multiword accesses are whole-range RAM transactions and carry `ACCESS_MULTI`,
 which callbacks must reject on MMIO. This intentionally preflights all bytes,
 not hardware partial-transfer behavior on abort. Ordinary aligned single MMIO
 accesses remain one callback, not byte-split accesses. Callers serialize CPU,
 permissions, mappings, callbacks and device/memory writes; concurrent code
-mutation and multicore reservation semantics are not supported. Exclusives,
-acquire/release, vectors and Thumb table branches explicitly stop as unsupported
-on checked memory rather than touching a flat pointer.
+mutation and a concurrent multicore scheduler are not supported. ARM11 checked
+exclusives now use optional ABI-1 `READ|EXCLUSIVE` and `WRITE|EXCLUSIVE` RAM
+transactions. The callback owns reservation metadata without modifying CPU
+state. A serialized, saturating board-wide write/mapping epoch rejects aliases,
+other-space/kernel writes and ABA changes. Unrelated writes may cause spurious
+failure. B/H/word/double, CLREX and natural alignment have native tests. MMIO
+exclusives are rejected. Legacy callbacks reject unknown operations and fail
+closed. ABI layouts and existing operations are unchanged. A57 checked exclusives,
+acquire/release, vectors and Thumb table branches remain explicitly unsupported.
+The A57 flat path, including its existing atomic operations, is unchanged.
 
 Asset-free native tests (LLVM SDK required; no NX/SDL dependencies):
 
@@ -99,8 +114,15 @@ for both profiles at both optimization levels (55,068 comparisons). With
 `SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the isolated build also runs
 independent ARM11 MPCore integer comparisons and the existing A57 integer,
 VFP/NEON and Thumb regression suites. ARM11 Thumb BL halves have C golden tests,
-not a claimed independent differential oracle. Production dispatch, process
-setup, cache identity and full CIA-to-native integration remain separate work.
+not a claimed independent differential oracle. The optional CTR pipeline
+supplies process setup, offline conservative CFG discovery/chunking and native
+module loading/dispatch under `src/3ds/`; see `docs/3DS.md`. The pinned external
+SuperTux bootstrap retains the first-SVC CPU-only gate and continues through
+real kernel initialization to ConnectToPort. Differential tests compare GPRs,
+CPSR and RAM at both boundaries. The second CPU reference uses a test-scripted
+HLE transcript, not independent hardware validation of kernel policy. Neither
+reference is an execution fallback. Broader target coverage, full ARM11 semantics and
+cache/resume still need work; none of these are shared A57 defaults.
 
 ## Implemented instructions (default A57/flat configuration)
 

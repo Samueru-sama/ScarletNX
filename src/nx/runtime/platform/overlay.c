@@ -270,8 +270,116 @@ void overlay_place(int sw, int sh, int* x, int* y, int* scale) {
     if (s > sw * 3 / 4 / w) s = sw * 3 / 4 / w;
     if (s > sh * 3 / 4 / h) s = sh * 3 / 4 / h;
     *scale = s < 1 ? 1 : s;
-    *x = (sw - w * *scale) / 2;
+    *x = (sw - overlay_cols(sw, *scale) * 8 * *scale) / 2;
     *y = (sh - rows() * 16 * *scale) / 2;
+}
+int overlay_cols(int sw, int scale) {
+    int cols = sw * 3 / 4 / (8 * (scale < 1 ? 1 : scale));
+    return cols < OVERLAY_COLS ? OVERLAY_COLS : cols > OVERLAY_COLS_MAX ? OVERLAY_COLS_MAX : cols;
+}
+/* ---- a dialog over the game: the menu's pages and a stopped game's panel, laid out and drawn as one ---- */
+enum { DIALOG_PARAS = 6, DIALOG_LINES = 12 };
+typedef struct {
+    const char* text; /* UTF-8, wrapped to the box; NULL for none */
+    u32 rgba;
+    int link; /* underlined: its rows are a target (DialogDrawn's link) */
+    int on;   /* right under the paragraph before it, no blank row between */
+    int cut;  /* on a short picture the lowest gives up its rows first; 0 never does */
+} DialogPara;
+typedef struct {
+    const char* title;
+    DialogPara para[DIALOG_PARAS];
+    int paras;
+    const char* label[VISIBLE];   /* the items showing, from top on */
+    const char* value[VISIBLE];   /* at their right; NULL for none */
+    int items, top, shown, focus; /* all the items, the first showing, how many show, the one in focus */
+} Dialog;
+typedef struct {
+    SnxOverlayRect box, link, item[VISIBLE];
+    int cols, scale;
+} DialogDrawn;
+/* the rows paragraphs wrap into: each thread that lays a dialog out has its own */
+typedef char DialogRows[DIALOG_PARAS][DIALOG_LINES][FATAL_ROW];
+/* d on a picture sw x sh, into l (NULL: only where it all goes, in out): the head, each paragraph after a blank row,
+   a blank row, the items and a blank row; overlay_cols wide, in the middle */
+static void dialog_draw(SnxUiList* l, int sw, int sh, const Dialog* d, DialogRows rows_of, DialogDrawn* out) {
+    char line[OVERLAY_COLS_MAX + 4];
+    int px, py, s, cols, n[DIALOG_PARAS], k, i, total, room, row, last;
+    float cw, ch, x, y, w;
+    memset(out, 0, sizeof *out);
+    overlay_place(sw, sh, &px, &py, &s);
+    cols = overlay_cols(sw, s);
+    cw = 8.0f * (float)s;
+    ch = 16.0f * (float)s;
+    w = cw * (float)cols;
+    for (k = 0; k < d->paras; ++k) {
+        n[k] = d->para[k].text ? fatal_wrap(d->para[k].text, cols - 2, rows_of[k], DIALOG_LINES) : 0;
+        if (n[k] > DIALOG_LINES) n[k] = DIALOG_LINES;
+    }
+    room = sh / (int)ch;
+    for (;;) {
+        int pick = -1;
+        total = 1 + 1 + d->shown + 1;
+        for (k = 0, last = -1; k < d->paras; ++k) {
+            if (!n[k]) continue;
+            total += n[k] + (last >= 0 && !(d->para[k].on && last == k - 1));
+            last = k;
+            if (d->para[k].cut && (pick < 0 || d->para[k].cut < d->para[pick].cut)) pick = k;
+        }
+        if (total <= room || pick < 0) break;
+        --n[pick];
+    }
+    x = (float)((sw - cols * 8 * s) / 2);
+    y = (float)((sh - total * (int)ch) / 2);
+    out->box.x = x;
+    out->box.y = y;
+    out->box.w = w;
+    out->box.h = ch * (float)total;
+    out->cols = cols;
+    out->scale = s;
+    if (l) {
+        ui_fill(l, x, y, w, ch * (float)total, PAGE_RGBA);
+        ui_fill(l, x, y, w, ch, INK);
+        ui_text(l, x + cw, y, s, d->title, LIGHT);
+    }
+    row = 1;
+    for (k = 0, last = -1; k < d->paras; ++k) {
+        if (!n[k]) continue;
+        if (last >= 0 && !(d->para[k].on && last == k - 1)) ++row;
+        last = k;
+        for (i = 0; i < n[k]; ++i, ++row) {
+            float width, at = y + ch * (float)row;
+            fatal_cp437(rows_of[k][i], line, sizeof line);
+            width = (float)strlen(line) * cw;
+            if (l) ui_text(l, x + cw, at, s, line, d->para[k].rgba);
+            if (!d->para[k].link || width <= 0) continue;
+            if (l) ui_fill(l, x + cw, at + ch - (float)s, width, (float)s, d->para[k].rgba);
+            if (!out->link.h) {
+                out->link.x = x + cw;
+                out->link.y = at;
+            }
+            if (width > out->link.w) out->link.w = width;
+            out->link.h += ch;
+        }
+    }
+    for (i = 0; i < d->shown; ++i) {
+        SnxOverlayRect* at = &out->item[i];
+        int on = d->top + i == d->focus;
+        at->x = x;
+        at->y = y + ch * (float)(total - 1 - d->shown + i);
+        at->w = w;
+        at->h = ch;
+        if (!l) continue;
+        if (on) ui_fill(l, x, at->y, w, ch, INK);
+        snprintf(line, sizeof line, "\xFE %s", d->label[i]);
+        ui_text(l, x + cw, at->y, s, line, on ? LIGHT : INK);
+        if (d->value[i])
+            ui_text(l, x + cw * (float)(cols - 1 - (int)strlen(d->value[i])), at->y, s, d->value[i], on ? LIGHT : INK);
+    }
+    /* more above or under: the font's arrows at the edge */
+    if (l && d->shown && d->top) ui_text(l, x + cw * (float)(cols - 1), out->item[0].y, s, "\x18", SOFT);
+    if (l && d->shown && d->top + d->shown < d->items)
+        ui_text(l, x + cw * (float)(cols - 1), out->item[d->shown - 1].y, s, "\x19", SOFT);
 }
 int overlay_select(void) { return page == PAGE_MAP ? map_key(SNX_PAD_KEY_SELECT) : act(focus, 0); }
 void overlay_move(int rows) {
@@ -350,20 +458,47 @@ int overlay_back(void) {
     keep_in_view();
     return OVERLAY_NONE;
 }
+static const char* pads_hint(char* out, size_t size);
+/* the page showing as a dialog: its title, its hint, the items in view, their texts in text and value */
+static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*value)[OVERLAY_COLS_MAX + 1], char* pads,
+                        size_t size) {
+    static const char* const titles[] = {"SCARLETNX  /  MENU", "SCARLETNX  /  CONTROLS", "SCARLETNX  /  BUTTONS",
+                                         "SCARLETNX  /  CONTROLLERS"};
+    static const char* const hints[] = {"Back or Home: back to the game.", "Back: the menu.",
+                                        "Tap one to show or hide it."};
+    int r, n = items();
+    memset(d, 0, sizeof *d);
+    d->title = titles[page];
+    d->para[0].text = page == PAGE_PADS ? pads_hint(pads, size) : hints[page];
+    d->para[0].rgba = SOFT;
+    d->paras = 1;
+    d->items = n;
+    d->top = top;
+    d->focus = focus;
+    d->shown = n - top < VISIBLE ? n - top : VISIBLE;
+    for (r = 0; r < d->shown; ++r) {
+        label(top + r, text[r], sizeof *text, value[r], sizeof *value);
+        d->label[r] = text[r];
+        d->value[r] = value[r];
+    }
+}
 int overlay_tap(float x, float y, int sw, int sh) {
-    int px, py, s, row, col, i;
+    static DialogRows rows_of; /* the event thread's */
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[OVERLAY_COLS_MAX];
+    Dialog d;
+    DialogDrawn at;
+    int r, col;
     if (page == PAGE_MAP) return map_did(snx_pad_screen_tap(&map, snx_pad_screen_hit(&map_drawing, x, y)));
-    overlay_place(sw, sh, &px, &py, &s);
-    if (x < (float)px || y < (float)py || x >= (float)(px + OVERLAY_COLS * 8 * s) || y >= (float)(py + rows() * 16 * s))
-        return OVERLAY_CLOSE;
-    row = (int)(y - (float)py) / (16 * s) - FIRST;
-    col = (int)(x - (float)px) / (8 * s);
-    i = top + row;
-    if (row < 0 || row >= VISIBLE || i >= items()) return OVERLAY_NONE;
-    focus = i;
+    menu_dialog(&d, text, value, pads, sizeof pads);
+    dialog_draw(NULL, sw, sh, &d, rows_of, &at);
+    if (!overlay_error_hit(&at.box, x, y)) return OVERLAY_CLOSE;
+    for (r = 0; r < d.shown && !overlay_error_hit(&at.item[r], x, y); ++r) {}
+    if (r == d.shown) return OVERLAY_NONE;
+    focus = d.top + r;
+    col = (int)((x - at.box.x) / (8.0f * (float)at.scale));
     /* a value's arrows: the left half of its last ten columns steps it down */
-    if (arrows(setting(i))) return act(i, col < OVERLAY_COLS - 5 ? -1 : 1);
-    return act(i, 0);
+    if (arrows(setting(focus))) return act(focus, col < at.cols - 5 ? -1 : 1);
+    return act(focus, 0);
 }
 static u64 tap_id;   /* what went down off the on-screen controls, */
 static int tap_down; /* whose lift taps the menu */
@@ -394,76 +529,39 @@ static const char* pads_hint(char* out, size_t size) {
     return out;
 }
 void overlay_draw(SnxUiList* l, int sw, int sh) {
-    static const char* const titles[] = {"SCARLETNX  /  MENU", "SCARLETNX  /  CONTROLS", "SCARLETNX  /  BUTTONS",
-                                         "SCARLETNX  /  CONTROLLERS"};
-    static const char* const hints[] = {"Back or Home: back to the game.", "Back: the menu.",
-                                        "Tap one to show or hide it."};
-    char text[OVERLAY_COLS + 1], value[OVERLAY_COLS + 1], pads[OVERLAY_COLS - 1];
-    int px, py, s, row, n = items();
-    float cw, ch;
+    static DialogRows rows_of; /* the renderer's */
+    char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[OVERLAY_COLS_MAX];
+    Dialog d;
+    DialogDrawn at;
     if (!shown) return;
     if (page == PAGE_MAP) {
         map_draw(l, sw, sh);
         return;
     }
-    overlay_place(sw, sh, &px, &py, &s);
-    cw = 8.0f * (float)s;
-    ch = 16.0f * (float)s;
-    ui_fill(l, (float)px, (float)py, cw * OVERLAY_COLS, ch * (float)rows(), PAGE_RGBA);
-    ui_fill(l, (float)px, (float)py, cw * OVERLAY_COLS, ch, INK);
-    ui_text(l, (float)px + cw, (float)py, s, titles[page], LIGHT);
-    ui_text(l, (float)px + cw, (float)py + ch, s, page == PAGE_PADS ? pads_hint(pads, sizeof pads) : hints[page], SOFT);
-    for (row = 0; row < VISIBLE && top + row < n; ++row) {
-        int i = top + row, on = i == focus;
-        float y = (float)py + ch * (float)(FIRST + row);
-        char line[OVERLAY_COLS + 4];
-        label(i, text, sizeof text, value, sizeof value);
-        if (on) ui_fill(l, (float)px, y, cw * OVERLAY_COLS, ch, INK);
-        snprintf(line, sizeof line, "\xFE %s", text);
-        ui_text(l, (float)px + cw, y, s, line, on ? LIGHT : INK);
-        ui_text(l, (float)px + cw * (float)(OVERLAY_COLS - 1 - (int)strlen(value)), y, s, value, on ? LIGHT : INK);
-    }
-    /* more above or under: the font's arrows at the edge */
-    if (top) ui_text(l, (float)px + cw * (OVERLAY_COLS - 1), (float)py + ch * FIRST, s, "\x18", SOFT);
-    if (top + VISIBLE < n)
-        ui_text(l, (float)px + cw * (OVERLAY_COLS - 1), (float)py + ch * (FIRST + VISIBLE - 1), s, "\x19", SOFT);
+    menu_dialog(&d, text, value, pads, sizeof pads);
+    dialog_draw(l, sw, sh, &d, rows_of, &at);
 }
-void overlay_error_draw(SnxUiList* l, int sw, int sh, const char* name, const char* msg, const char* how) {
-    enum { PARAS = 4, LINES = 12 };
-    static char rows_of[PARAS][LINES][FATAL_ROW];
-    const char* text[PARAS] = {name, msg, fatal_hint(msg), how};
-    const u32 color[PARAS] = {SOFT, FAILURE, INK, SOFT};
-    char line[OVERLAY_COLS + 4];
-    int px, py, s, n[PARAS], k, i, total, room, row;
-    float cw, ch, x, y;
-    overlay_place(sw, sh, &px, &py, &s);
-    cw = 8.0f * (float)s;
-    ch = 16.0f * (float)s;
-    for (k = 0; k < PARAS; ++k) n[k] = text[k] ? fatal_wrap(text[k], OVERLAY_COLS - 2, rows_of[k], LINES) : 0;
-    /* the head, the name, then each paragraph after a blank row; a blank, Close and a blank. On a short picture the
-       last paragraphs lose rows first */
-    room = sh / (int)ch;
-    for (;;) {
-        total = 1 + 4;
-        for (k = 0; k < PARAS; ++k) total += (n[k] > LINES ? LINES : n[k]) + (k > 0 && n[k] ? 1 : 0);
-        for (k = PARAS - 1; k > 1 && !n[k]; --k) {}
-        if (total <= room || k < 1 || !n[k]) break;
-        n[k] = (n[k] > LINES ? LINES : n[k]) - 1;
-    }
-    x = (float)px;
-    y = (float)((sh - total * (int)ch) / 2);
-    ui_fill(l, x, y, cw * OVERLAY_COLS, ch * (float)total, PAGE_RGBA);
-    ui_fill(l, x, y, cw * OVERLAY_COLS, ch, INK);
-    ui_text(l, x + cw, y, s, "SCARLETNX  /  STOPPED", LIGHT);
-    row = 1;
-    for (k = 0; k < PARAS; ++k) {
-        if (k > 0 && n[k]) ++row;
-        for (i = 0; i < n[k] && i < LINES; ++i, ++row) {
-            fatal_cp437(rows_of[k][i], line, sizeof line);
-            ui_text(l, x + cw, y + ch * (float)row, s, line, color[k]);
-        }
-    }
-    row = total - 2;
-    ui_fill(l, x, y + ch * (float)row, cw * OVERLAY_COLS, ch, INK);
-    ui_text(l, x + cw, y + ch * (float)row, s, "\xFE Close", LIGHT);
+int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
+    return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;
+}
+void overlay_error_draw(SnxUiList* l, int sw, int sh, SnxOverlayError* e) {
+    static DialogRows rows_of; /* the thread that shows the panel's */
+    static const char* const labels[SNX_OVERLAY_ERROR_ITEMS] = {"Share log", "Copy path", "Close"};
+    /* on a short picture the log's label gives up rows first, then the hint, the log and the error; never the game's
+       name or what Share log or Copy path did. The log goes right under its label */
+    const DialogPara para[] = {{e->name, SOFT, 0, 0, 0}, {e->msg, FAILURE, 0, 0, 4}, {fatal_hint(e->msg), INK, 0, 0, 2},
+                               {e->how, SOFT, 0, 0, 1},  {e->log, INK, 1, 1, 3},     {e->said, SOFT, 0, 0, 0}};
+    Dialog d;
+    DialogDrawn at;
+    int i;
+    memset(&d, 0, sizeof d);
+    d.title = "SCARLETNX  /  STOPPED";
+    memcpy(d.para, para, sizeof para);
+    d.paras = (int)(sizeof para / sizeof *para);
+    d.items = d.shown = SNX_OVERLAY_ERROR_ITEMS;
+    d.focus = e->focus;
+    for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i) d.label[i] = labels[i];
+    dialog_draw(l, sw, sh, &d, rows_of, &at);
+    e->link = at.link;
+    for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i) e->items[i] = at.item[i];
 }

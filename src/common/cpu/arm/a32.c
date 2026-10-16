@@ -103,8 +103,11 @@ SnxA32Kind snx_a32_decode(uint32_t w) {
         return SNX_A32_SINGLE;
     }
     if ((w & 0x0e000000) == 0x08000000) {
-        if (!((uint16_t)w) || n == 15 || (w & (1u << 22)) || ((w & (1u << 21)) && (w & (1u << n))))
-            return SNX_A32_UNDEFINED;
+        /* Base-in-list with writeback is UNPREDICTABLE in the original ARMv6
+           text, but ARM11 MPCore executes it (and guest code relies on it):
+           STM stores the old base, LDM's loaded base wins over writeback.
+           Both semantics are checked against Unicorn's ARM11 MPCore model. */
+        if (!((uint16_t)w) || n == 15 || (w & (1u << 22))) return SNX_A32_UNDEFINED;
         return SNX_A32_MULTIPLE;
     }
     if ((w & 0x0c000000) == 0) {

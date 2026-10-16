@@ -24,6 +24,7 @@ typedef struct SnxCtrAddressSpace SnxCtrAddressSpace;
 typedef bool (*SnxCtrMmioRead)(void* context, uint32_t physical, void* bytes, size_t size);
 typedef bool (*SnxCtrMmioWrite)(void* context, uint32_t physical, const void* bytes, size_t size);
 SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model);
+const SnxCtrProfile* snx_ctr_memory_profile(const SnxCtrMemory* memory);
 /* Address spaces must be destroyed first. No internal locking: caller serializes
    mappings/accesses/devices. Physical RAM is shared by all spaces on this board. */
 void snx_ctr_memory_free(SnxCtrMemory* memory);
@@ -37,6 +38,10 @@ SnxCtrMemResult snx_ctr_map(SnxCtrAddressSpace* space, uint32_t va, uint32_t pa,
 SnxCtrMemResult snx_ctr_protect(SnxCtrAddressSpace* space, uint32_t va, uint32_t size, unsigned permissions);
 SnxCtrMemResult snx_ctr_unmap(SnxCtrAddressSpace* space, uint32_t va, uint32_t size);
 SnxCtrMemResult snx_ctr_query(const SnxCtrAddressSpace* space, uint32_t va, uint32_t* pa, unsigned* permissions);
+/* Serialized board-wide reservation generation, not a RAM value comparison.
+   Every successful write or mapping/protection change advances it. Saturates
+   at UINT64_MAX, after which exclusive stores must fail conservatively. */
+uint64_t snx_ctr_memory_epoch(const SnxCtrAddressSpace* space);
 /* RAM transfers may be unaligned and span pages, after preflighting the ENTIRE
    range. MMIO transfers may not span pages or mix with RAM. No flat host pointer
    is exported. The CPU adapter owns instruction-specific alignment rules. */
@@ -45,6 +50,14 @@ SnxCtrMemResult snx_ctr_write(SnxCtrAddressSpace* space, uint32_t va, const void
 SnxCtrMemResult snx_ctr_fetch(SnxCtrAddressSpace* space, uint32_t va, void* output, size_t size);
 /* Whole-instruction multiword transfers: reject any MMIO before side effects,
    rather than collapsing LDM/STM or paired accesses into one device access. */
+/* No-copy full-range RAM preflight, including all requested permissions. */
+SnxCtrMemResult snx_ctr_check_ram(SnxCtrAddressSpace* space, uint32_t va, size_t size, unsigned permissions);
 SnxCtrMemResult snx_ctr_read_ram(SnxCtrAddressSpace* space, uint32_t va, void* output, size_t size);
 SnxCtrMemResult snx_ctr_write_ram(SnxCtrAddressSpace* space, uint32_t va, const void* input, size_t size);
+/* Bus-master (GPU, DMA) access by physical address: the whole nonempty range inside one RAM, VRAM or DSP RAM
+   region of the board. No address space or page permission applies, as the CPU's mappings do not govern the other
+   masters (an application maps VRAM read-only and the GPU still renders into it). Writes advance the reservation
+   epoch like CPU stores. MMIO is refused (SNX_CTR_MEM_DEVICE). */
+SnxCtrMemResult snx_ctr_phys_read(SnxCtrMemory* memory, uint32_t pa, void* output, size_t size);
+SnxCtrMemResult snx_ctr_phys_write(SnxCtrMemory* memory, uint32_t pa, const void* input, size_t size);
 #endif

@@ -9,11 +9,10 @@ recompiles on the phone, then the game opens.
   drive it (see [GUI](GUI.md)). Its working folder is `/sdcard/ScarletNX`, which the user sees: `games/`, `work/`
   and the logs go there. `HOME` stays the app's own files (`/data/data/org.scarletnx/files`), for
   `.switch/prod.keys`.
-- **Loading** (a *Load* item, *Setup device keys*) opens the system's file picker. A file is read by its path,
+- **Loading** (a *Load* item, *Setup device keys*) opens the system's file picker. A game's file is read by its path,
   so the app asks for access to the files when it starts (all files from Android 11): the picker's path, or for a
-  document without one (Downloads' own list, Recent) the file its descriptor opens. A cloud's document has none
-  and is refused, its URI in the message. *Games* lists the games there and the dumps put there, to be
-  prepared.
+  document without one the file its descriptor opens. A cloud's document has none and is refused, its URI in the
+  message. *Games* lists the games there and the dumps put there, to be prepared.
 - **The driver** runs as a child of the menu, as on a desktop, from `libscarletnx-run.so`: an executable named so
   that Android installs it with the libraries, the only files of its own an app may execute. It loads the runtime,
   `libscarletnx.so`, beside it. It cannot open a window there, so it ends at `Ready <game>` and the menu opens it.
@@ -37,6 +36,18 @@ it (Android 5.0 and 6.0 have no Vulkan at all) the menu still prepares games, an
 fingers reach a game's touch screen (*Touch screen*, in the game's menu or the Settings, turns them off or adds a
 mouse). The buttons and sticks are on the screen, over the game ([USAGE](USAGE.md#on-screen-controls)), and a gamepad
 works beside them; the menu's *On-screen controls* item hides them.
+
+## Keys
+
+*Setup device keys* copies `prod.keys` into the app's own files, as `.switch/prod.keys` in its `HOME`, and its screen
+names that path. Pick it from the device's storage: it is read through the picker, so it needs no access to the
+device's files. The picker gives no name to go by, so the file has to read as a prod.keys (`name = hex` lines),
+whatever it is called; any other is refused. The menu installs no `title.keys`. It is optional, as an NSP's tickets
+give the title keys too.
+
+The keys may also be copied by hand to `/sdcard/ScarletNX/`: `prod.keys`, and `title.keys` if you have one. That is
+the data folder once the app has *All files access* (it asks when it starts), and the driver reads both there before
+the app's own files. The *Setup device keys* screen shows only the keys it installed, so it does not name these.
 
 ## Building
 

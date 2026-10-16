@@ -5,6 +5,7 @@
 /* threads: creating, starting, the thread a host thread runs, exiting */
 #include "nx/hle/kernel/kernel_int.h"
 #include "nx/gpu/renderer.h"
+#include "nx/runtime/loader.h"
 /* ============================================================ threads */
 KThread* g_threads[256];
 int g_nthreads;

@@ -87,4 +87,7 @@ char* gui_drop_path(const char* text, bool text_drop);
    download it names by path, NULL for any other (an app's, a cloud's); elsewhere the path or file:// URI it gave.
    Owned. */
 char* gui_document_path(const char* uri);
+/* 1 for text as a prod.keys has it: no NUL byte, and a line "name = hex" at least (a key's name of letters, digits and
+   _, its value hexadecimal), what tells it from any other file where it has no name to go by */
+int gui_keys_text(const char* data, size_t size);
 #endif

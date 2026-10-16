@@ -348,6 +348,13 @@ the pace `fps_limit` sets.
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and
 B do the same, the on-screen controls' too, and a direction held goes on after a moment.
 
+A game that stops on an error shows a panel with **Share log**, **Copy path** and **Close**. Share log saves
+`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does, and on Android
+sends it to the app you pick; Copy path copies that file's path once it is saved, else the game's log's. The panel says
+what each did. Up and Down move between the items, Enter or A does the one in focus, and any other key or button
+closes it. On a desktop the game's log path is
+underlined once the log exists: a click opens it in the system's viewer, the panel staying open.
+
 ### On-screen controls
 
 A pad drawn over the game, with rEden's buttons and sizes, laid out as the console's two controllers hold them:

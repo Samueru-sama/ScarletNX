@@ -3,6 +3,7 @@
 package org.scarletnx;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
@@ -136,10 +137,16 @@ public class MainActivity extends SDLActivity {
 
     /** src/gui/android.c: the saved log, as a file, to the app the user picks */
     public void share(String path) {
-        MediaScannerConnection.scanFile(this, new String[] {path}, new String[] {"text/plain"}, (file, uri) -> {
+        share(this, path);
+    }
+
+    /** the menu's Share log and a stopped game's (GameActivity), from the activity that shows them */
+    static void share(Activity activity, String path) {
+        MediaScannerConnection.scanFile(activity, new String[] {path}, new String[] {"text/plain"}, (file, uri) -> {
             if (uri == null) return;
             Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, uri);
-            startActivity(Intent.createChooser(send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "ScarletNX log"));
+            activity.startActivity(
+                Intent.createChooser(send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "ScarletNX log"));
         });
     }
 

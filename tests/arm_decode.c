@@ -48,7 +48,9 @@ int main(void) {
         {0xe1b0f00e, SNX_A32_UNDEFINED}, /* MOVS PC,LR exception return */
         {0xe8fd8000, SNX_A32_UNDEFINED}, /* privileged LDM^ */
         {0xe5b44004, SNX_A32_UNDEFINED}, /* writeback/load base overlap */
-        {0xe8b40010, SNX_A32_UNDEFINED}, /* LDM base in list with writeback */
+        {0xe8b40010, SNX_A32_MULTIPLE},  /* LDM base in list with writeback: loaded base wins (ARM11 MPCore/Unicorn) */
+        {0xe8a40010,
+         SNX_A32_MULTIPLE}, /* STM base in list with writeback: stores the old base (ARM11 MPCore/Unicorn) */
         {0xe8940000, SNX_A32_UNDEFINED}, /* empty register list */
         {0xe1c410d8, SNX_A32_UNDEFINED}, /* odd doubleword register pair */
         {0xe1840f90, SNX_A32_UNDEFINED}, /* STREX status/data overlap */

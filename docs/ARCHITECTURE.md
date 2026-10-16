@@ -14,13 +14,27 @@ Source map: [CLAUDE.md](../CLAUDE.md).
 
 The experimental `src/3ds/` / `scarletnx-3ds` target supplies board profiles,
 decrypted CIA/NCCH/ExeFS/RomFS extraction and an independent checked page-memory
-controller, not CIA application execution. `snx_ctr_cpu` connects the page
-controller to a separate opt-in checked A32 ABI, with static native-object
-witnesses. The common A32 backend's A57/flat defaults and CPU ABI 2 are unchanged;
-ARM11 ISA and callback memory are explicit codegen options, never global 3DS
-defines. The CPU adapter links neither LLVM/MCJIT nor NX/GNU ABI runtimes.
-See [3DS port](3DS.md) for unsupported instructions and production process,
-module/discovery/dispatch and cache work still needed.
+controller. `SNX_3DS_AOT=ON` adds a native Linux static-AOT pipeline: fresh
+extraction -> separate offline `scarletnx-3ds-aot` LLVM compiler/host linker ->
+native ELF -> checked process/ARM/Thumb dispatch. `snx_ctr_process` maps raw
+ExHeader segments/BSS/stack/TLS; `snx_ctr_native` validates/loads module ABI 1.
+Only the offline compiler links LLVM. The runtime uses neither MCJIT nor NX/GNU
+ABI code. `common/filesystem/` / `scarletnx-filesystem` owns NX and CTR's shared
+indexed host tree, immutable file mappings and on-demand opens. CTR uses its own
+level-3 RomFS serializer/file objects and wire protocol, not Switch FS IPC.
+Host staging/process utilities are also reused.
+
+The shared A32 backend's A57/flat defaults and CPU ABI 2 are unchanged. ARM11 ISA
+and callback memory are explicit codegen options, never global 3DS defines. The
+shared backend CMake target is initialized once when several runtimes request it.
+The compiler exhaustively emits one-instruction entries for images up to 4 KiB.
+Larger images use bounded offline CFG discovery, code-pointer candidates and a
+bounded PC-relative ADD jump window, with blocks of at most 32 instructions.
+It emits 128 entries per LLVM chunk and links all PIC objects with a separate
+ABI-1 full-geometry index object; unproven targets remain NULL. There is no
+runtime discovery or compilation. SuperTux reaches its first SVC through this
+path, not gameplay. See [3DS port](3DS.md) for coverage limits, absent HLE/devices
+and remaining cache/ISA work.
 
 The common target has no runtime-specific imports. NX and GNU ABI each link
 common and have no dependency on each other. The GNU executable target is

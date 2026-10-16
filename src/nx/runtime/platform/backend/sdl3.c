@@ -14,6 +14,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
@@ -27,9 +28,13 @@
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL.h>
 #include <time.h>
+#include "common/utilities/common.h"
 #include "common/utilities/window_icon.h"
 #include "nx/runtime/platform/controls_png.h"
 #include "common/utilities/build_info.h"
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 
 static SDL_Window* g_win;
 /* the window's size in pixels, width | height << 32: the renderer reads it on its own thread, and one atomic keeps
@@ -402,19 +407,77 @@ static void ui_draw_sdl(SDL_Renderer* r, SDL_Texture* atlas, int aw, int ah, con
     }
 }
 /* 0 when no box could be shown (no window, the renderer didn't let go, no renderer or atlas here) */
+#ifdef __ANDROID__
+/* the activity's share(path) (GameActivity.java): the file, to the app the player picks */
+static int android_share(const char* path) {
+    JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass type;
+    jmethodID share;
+    jstring text;
+    int ok;
+    if (!env || !activity) return 0;
+    type = (*env)->GetObjectClass(env, activity);
+    share = (*env)->GetMethodID(env, type, "share", "(Ljava/lang/String;)V");
+    text = share ? (*env)->NewStringUTF(env, path) : NULL;
+    if (text) (*env)->CallVoidMethod(env, activity, share, text);
+    ok = text && !(*env)->ExceptionCheck(env);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (text) (*env)->DeleteLocalRef(env, text);
+    (*env)->DeleteLocalRef(env, type);
+    (*env)->DeleteLocalRef(env, activity);
+    return ok;
+}
+#endif
+/* Share log, as the launcher's: scarletnx.log beside the game's log, sent to the app the player picks on Android; its
+   path in saved once written (else left as it was), what it did in said */
+static void fatal_share(const char* msg, const char* game_log, char* saved, size_t saved_size, char* said,
+                        size_t size) {
+    char made[1300], *folder = snx_dirname(game_log);
+    int ok = folder && !fatal_share_log(folder, snx_build_info(), msg, game_log, made, sizeof made);
+    if (!ok) snprintf(said, size, "The log could not be saved: %s", folder ? made : game_log);
+#ifdef __ANDROID__
+    else if (!android_share(made))
+        snprintf(said, size, "Log saved to %s, but nothing took it to share.", made);
+#endif
+    else
+        snprintf(said, size, "Log saved to %s.", made);
+    if (ok) snprintf(saved, saved_size, "%s", made);
+    free(folder);
+}
+/* Copy path: the log Share log saved, else the game's own, to paste where it is asked for */
+static void fatal_copy(const char* path, char* said, size_t size) {
+    if (SDL_SetClipboardText(path))
+        snprintf(said, size, "Path copied: %s", path);
+    else
+        snprintf(said, size, "The path could not be copied: %s", SDL_GetError());
+}
+enum { FATAL_LINK = SNX_OVERLAY_ERROR_ITEMS, FATAL_OUT }; /* past the items: the log's link, and the rest */
+/* what a press at x, y is on: an item, the link or the rest */
+static int fatal_at(const SnxOverlayError* panel, float x, float y) {
+    int i;
+    if (overlay_error_hit(&panel->link, x, y)) return FATAL_LINK;
+    for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i)
+        if (overlay_error_hit(&panel->items[i], x, y)) return i;
+    return FATAL_OUT;
+}
 static int fatal_screen(const char* msg) {
 #ifdef __ANDROID__
-    static const char* const how = "The menu's Share log sends the game's log, which has what ran last.";
+    static const char* const how = "Share log sends the game's log, which has what ran last.";
 #else
     static const char* const how = "The game's log has what ran last: ";
+    char log_url[3608];
 #endif
     static SnxUiQuad quads[1024];
     SnxUiList l = {quads, 0, 1024};
-    char name[256], what[1400];
+    char name[256], what[1400], log_path[1200], said[1400], saved[1300] = "", *full;
+    SnxOverlayError panel;
+    SDL_FingerID finger = 0;
+    int pointer = 0, pressed = FATAL_OUT, button = -1; /* pointer: 1 the left button, 2 a finger, 3 another button */
     SDL_Renderer* r;
     SDL_Texture* atlas = NULL;
     const u32* px;
-    int aw = 0, ah = 0, pressed = 0, done = 0, i;
+    int aw = 0, ah = 0, done = 0, i;
     u32 version;
     Uint64 since;
     if (!g_win) return 0;
@@ -446,34 +509,123 @@ static int fatal_screen(const char* msg) {
     for (i = 0; g_title[i] && i < (int)sizeof name - 1; ++i)
         name[i] = g_title[i] >= 'a' && g_title[i] <= 'z' ? (char)(g_title[i] - 32) : g_title[i];
     name[i] = 0;
+    memset(&panel, 0, sizeof panel);
+    panel.name = name;
+    panel.msg = msg;
+    panel.how = what;
+    panel.focus = SNX_OVERLAY_ERROR_CLOSE;
+    /* the log plat.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
+       for ./Catherine): Share log and a file URI need an absolute path */
+    snprintf(log_path, sizeof log_path, "%s%s.log", g_statedir, g_exename);
+    full = snx_absolute(log_path);
+    if (full && strlen(full) < sizeof log_path) memcpy(log_path, full, strlen(full) + 1);
+    free(full);
 #ifdef __ANDROID__
     snprintf(what, sizeof what, "%s", how);
 #else
-    snprintf(what, sizeof what, "%s%s%s.log", how, g_exedir, g_exename);
+    /* a link only to a log that is there: plat.c makes it once the game's code has loaded, so an error before that has
+       none, and the path stays plain text */
+    if (snx_is_file(log_path) && fatal_log_url(log_path, log_url, sizeof log_url)) {
+        snprintf(what, sizeof what, "%s", how);
+        panel.log = log_path;
+    } else
+        snprintf(what, sizeof what, "%s%s", how, log_path);
 #endif
     since = SDL_GetTicks();
     while (!done) {
         SDL_Event e;
-        int w = 0, h = 0;
-        while (SDL_PollEvent(&e)) switch (e.type) {
-                case SDL_EVENT_QUIT:
-                case SDL_EVENT_WINDOW_CLOSE_REQUESTED: done = 1; break;
-                /* a press made on this box: not a key held from the game, nor one that came as the error did */
-                case SDL_EVENT_KEY_DOWN:
-                    if (!e.key.repeat && SDL_GetTicks() - since > 500) done = 1;
-                    break;
-                case SDL_EVENT_FINGER_DOWN:
-                case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                case SDL_EVENT_GAMEPAD_BUTTON_DOWN: pressed = 1; break;
-                case SDL_EVENT_FINGER_UP:
-                case SDL_EVENT_MOUSE_BUTTON_UP:
-                case SDL_EVENT_GAMEPAD_BUTTON_UP:
-                    if (pressed) done = 1;
-                    break;
-            }
+        int w = 0, h = 0, item = -1, at;
+        float x, y;
         SDL_GetRenderOutputSize(r, &w, &h);
         l.n = 0;
-        overlay_error_draw(&l, w, h, name, msg, what);
+        overlay_error_draw(&l, w, h, &panel);
+        while (SDL_PollEvent(&e)) {
+            switch (e.type) {
+                case SDL_EVENT_QUIT:
+                case SDL_EVENT_WINDOW_CLOSE_REQUESTED: done = 1; break;
+                /* a press made on this box: not a key held from the game, nor one that came as the error did. Up and
+                   Down move between the items, Enter and Space do the one in focus, any other key closes */
+                case SDL_EVENT_KEY_DOWN:
+                    if (e.key.repeat || SDL_GetTicks() - since <= 500) break;
+                    if (e.key.key == SDLK_UP)
+                        panel.focus = (panel.focus + SNX_OVERLAY_ERROR_ITEMS - 1) % SNX_OVERLAY_ERROR_ITEMS;
+                    else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_TAB)
+                        panel.focus = (panel.focus + 1) % SNX_OVERLAY_ERROR_ITEMS;
+                    else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE)
+                        item = panel.focus;
+                    else
+                        done = 1;
+                    break;
+                /* a gamepad's the same: the D-pad moves, A does the item in focus, any other button closes */
+                case SDL_EVENT_GAMEPAD_BUTTON_DOWN: button = e.gbutton.button; break;
+                case SDL_EVENT_GAMEPAD_BUTTON_UP:
+                    if (e.gbutton.button != button) break;
+                    button = -1;
+                    if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP)
+                        panel.focus = (panel.focus + SNX_OVERLAY_ERROR_ITEMS - 1) % SNX_OVERLAY_ERROR_ITEMS;
+                    else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN)
+                        panel.focus = (panel.focus + 1) % SNX_OVERLAY_ERROR_ITEMS;
+                    else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH)
+                        item = panel.focus;
+                    else
+                        done = 1;
+                    break;
+                /* a click or a tap does what it is let go on, if it went down there: an item, the log's link (which
+                   opens it), anywhere else closes. Any other mouse button closes, as before there were items */
+                case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                    if (e.button.which == SDL_TOUCH_MOUSEID || pointer) break;
+                    pointer = e.button.button == SDL_BUTTON_LEFT ? 1 : 3;
+                    pressed = SDL_RenderCoordinatesFromWindow(r, e.button.x, e.button.y, &x, &y)
+                                  ? fatal_at(&panel, x, y)
+                                  : FATAL_OUT;
+                    break;
+                case SDL_EVENT_FINGER_DOWN:
+                    if (pointer) break;
+                    pointer = 2;
+                    finger = e.tfinger.fingerID;
+                    pressed = fatal_at(&panel, e.tfinger.x * (float)w, e.tfinger.y * (float)h);
+                    break;
+                case SDL_EVENT_MOUSE_BUTTON_UP:
+                case SDL_EVENT_FINGER_UP:
+                    if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                        if ((pointer != 1 && pointer != 3) || e.button.which == SDL_TOUCH_MOUSEID) break;
+                        at = pointer == 3 ? FATAL_OUT
+                             : SDL_RenderCoordinatesFromWindow(r, e.button.x, e.button.y, &x, &y)
+                                 ? fatal_at(&panel, x, y)
+                                 : FATAL_OUT;
+                    } else {
+                        if (pointer != 2 || e.tfinger.fingerID != finger) break;
+                        at = fatal_at(&panel, e.tfinger.x * (float)w, e.tfinger.y * (float)h);
+                    }
+                    if (pointer == 3 || (at == pressed && at == FATAL_OUT))
+                        done = 1;
+                    else if (at == pressed && at == FATAL_LINK) {
+#ifndef __ANDROID__
+                        if (!SDL_OpenURL(log_url)) LOG("video: could not open the log: %s\n", SDL_GetError());
+#endif
+                    } else if (at == pressed)
+                        item = at;
+                    pointer = 0;
+                    pressed = FATAL_OUT;
+                    break;
+                case SDL_EVENT_FINGER_CANCELED:
+                    if (pointer == 2 && e.tfinger.fingerID == finger) {
+                        pointer = 0;
+                        pressed = FATAL_OUT;
+                    }
+                    break;
+            }
+            if (item == SNX_OVERLAY_ERROR_CLOSE) done = 1;
+            if (item == SNX_OVERLAY_ERROR_SHARE || item == SNX_OVERLAY_ERROR_COPY) {
+                panel.focus = item;
+                if (item == SNX_OVERLAY_ERROR_SHARE)
+                    fatal_share(msg, log_path, saved, sizeof saved, said, sizeof said);
+                else
+                    fatal_copy(saved[0] ? saved : log_path, said, sizeof said);
+                panel.said = said;
+            }
+            item = -1;
+        }
         /* where the game's picture was: the device that drew it may be gone */
         SDL_SetRenderDrawColor(r, 0x14, 0x14, 0x16, 255);
         SDL_RenderClear(r);

@@ -37,10 +37,16 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   keys': a click on its blinking **[ Pick or drop a file ]**, or Enter, opens the system's file
   picker (on Linux the desktop's, else zenity's). Dropping a file on the window and Ctrl+V with
   a path work too. ESC returns to the menu. On Android the picker opens at once.
-- **Load 3DS CIA** uses `scarletnx-3ds`. The driver extracts supported decrypted application CIAs,
-  then returns an explicit error because ARM11 AOT/execution is still pending.
-  Existing extraction directories are refused rather than treated as cache hits.
-  See [3DS port](3DS.md) for limits and extract-only usage.
+- **Load 3DS CIA** uses `scarletnx-3ds`. Its `games/` browser lists CIA inputs,
+  not host executables. The driver extracts supported decrypted application CIAs.
+  A native Linux build with `SNX_3DS_AOT=ON` then performs static ARM11 integer
+  compilation/execution; the default build reports missing AOT support. Larger
+  images use bounded conservative discovery (16 MiB text cap). SuperTux now
+  connects/registers `srv:`, then waits for absent `APT:S`, before main,
+  graphics or audio. No service/session success is invented to bypass that wait.
+  Full HLE/devices remain incomplete. Install the
+  adjacent `scarletnx-3ds-aot` compiler too. Existing extraction directories are
+  refused rather than treated as cache hits. See [3DS port](3DS.md) for limits.
 - **Setup device keys**, immediately after the three load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no `prod.keys` is in use. It prompts you to
   pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of

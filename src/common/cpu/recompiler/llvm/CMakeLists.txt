@@ -59,15 +59,38 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_object.c"
 string(REGEX MATCH "^[0-9]+" snx_clang_major "${CMAKE_C_COMPILER_VERSION}")
 string(REGEX MATCH "^[0-9]+" snx_llvm_major "${SNX_LLVM_VERSION}")
 if(snx_clang_major GREATER snx_llvm_major)
-    message(FATAL_ERROR "Clang ${CMAKE_C_COMPILER_VERSION} writes the runtime library's bitcode, which LLVM "
-                        "${SNX_LLVM_VERSION} (SNX_LLVM_CONFIG) cannot read. Use a Clang no newer than LLVM "
-                        "${snx_llvm_major}, or an LLVM as new as this Clang.")
+    # A newer Clang writes bitcode the target LLVM cannot read. Its textual IR,
+    # emitted without debug metadata (whose field set moves faster than the
+    # assembler), still assembles into the target's bitcode with that LLVM's
+    # llvm-as.
+    snx_llvm_query(SNX_LLVM_BINDIR --bindir)
+    find_program(SNX_LLVM_AS NAMES llvm-as llvm-as-${snx_llvm_major} HINTS "${SNX_LLVM_BINDIR}" NO_DEFAULT_PATH)
+    if(NOT SNX_LLVM_AS)
+        message(FATAL_ERROR "Clang ${CMAKE_C_COMPILER_VERSION} writes the runtime library's bitcode, which LLVM "
+                            "${SNX_LLVM_VERSION} (SNX_LLVM_CONFIG) cannot read, and that LLVM ships no llvm-as to "
+                            "translate. Use a Clang no newer than LLVM ${snx_llvm_major}, or an LLVM as new as this "
+                            "Clang.")
+    endif()
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll"
+        COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -g0 -emit-llvm -S -I "${CMAKE_CURRENT_BINARY_DIR}"
+            -I "${PROJECT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll"
+        DEPENDS rtlib.c "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc" ${snx_rtlib_sources} VERBATIM)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir.ll"
+        COMMAND "${CMAKE_COMMAND}" -DINPUT=${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll
+            -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir.ll
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/rtlib_ir_compat.cmake"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir_raw.ll" rtlib_ir_compat.cmake VERBATIM)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
+        COMMAND "${SNX_LLVM_AS}" "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir.ll" -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/rtlib_ir.ll" VERBATIM)
+else()
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
+        COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -emit-llvm -I "${CMAKE_CURRENT_BINARY_DIR}"
+            -I "${PROJECT_SOURCE_DIR}/src" -c "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
+        DEPENDS rtlib.c "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc" ${snx_rtlib_sources} VERBATIM)
 endif()
-add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
-    COMMAND "${CMAKE_C_COMPILER}" ${snx_rtlib_flags} -emit-llvm -I "${CMAKE_CURRENT_BINARY_DIR}"
-        -I "${PROJECT_SOURCE_DIR}/src" -c "${CMAKE_CURRENT_SOURCE_DIR}/rtlib.c"
-        -o "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
-    DEPENDS rtlib.c "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc" ${snx_rtlib_sources} VERBATIM)
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     COMMAND "${snx_rtlib_gen}" embed "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc"
         "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c" snx_rtlib_bitcode

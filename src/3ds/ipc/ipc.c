@@ -1,0 +1,214 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors
+   CTR header/PID/handle descriptor facts referenced against Citra/Azahar
+   ipc.h and kernel/hle_ipc.cpp, GPL-2.0-or-later, revision in docs/3DS.md. */
+#include "3ds/ipc/ctr_ipc.h"
+#include "3ds/runtime/internal.h"
+#include "services/srv.swipc.h"
+#include "3ds/services/fs.h"
+#include "3ds/services/file.h"
+#include "3ds/services/apt.h"
+#include "services/ptm.swipc.h"
+#include "services/hid.swipc.h"
+#include "3ds/services/gsp.h"
+#include <string.h>
+
+static uint32_t load32(const unsigned char* b) {
+    return (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+}
+static void store32(unsigned char* b, uint32_t value) {
+    for (unsigned i = 0; i < 4; ++i) b[i] = (unsigned char)(value >> (i * 8));
+}
+void snx_ctr_ipc_bad(SnxCtrIpc* c) { c->transport_result = SNX_CTR_IPC_BAD_DESCRIPTOR; }
+int snx_ctr_ipc_expect(SnxCtrIpc* c, uint32_t normal, uint32_t translated) {
+    if (((c->in[0] >> 6) & 63) != normal || (c->in[0] & 63) != translated) {
+        snx_ctr_ipc_bad(c);
+        return 0;
+    }
+    return 1;
+}
+void snx_ctr_ipc_get_bytes(SnxCtrIpc* c, uint32_t first, uint8_t* bytes, uint32_t size) {
+    if (first >= SNX_CTR_IPC_WORDS || size > (SNX_CTR_IPC_WORDS - first) * 4) {
+        snx_ctr_ipc_bad(c);
+        return;
+    }
+    for (uint32_t i = 0; i < size; ++i) bytes[i] = (uint8_t)(c->in[first + i / 4] >> ((i & 3) * 8));
+}
+void snx_ctr_ipc_put_bytes(SnxCtrIpc* c, uint32_t first, const uint8_t* bytes, uint32_t size) {
+    if (first >= SNX_CTR_IPC_WORDS || size > (SNX_CTR_IPC_WORDS - first) * 4) {
+        c->state = SNX_CTR_IPC_FAULT;
+        return;
+    }
+    for (uint32_t i = 0; i < size; ++i) c->out[first + i / 4] |= (uint32_t)bytes[i] << ((i & 3) * 8);
+}
+void snx_ctr_ipc_error_reply(SnxCtrIpc* c, uint32_t result) {
+    if (c->transport_result || c->state != SNX_CTR_IPC_RETURN) return;
+    memset(c->out, 0, sizeof c->out);
+    c->out[0] = (c->in[0] & 0xffff0000u) | 0x40;
+    c->out[1] = result;
+}
+void snx_ctr_ipc_drop_handle(SnxCtrIpc* c, uint32_t handle) {
+    if (handle) (void)snx_ctr_handle_close(c->process, handle);
+}
+void snx_ctr_ipc_output_handle(SnxCtrIpc* c, uint32_t word, uint32_t handle) {
+    if (word < 3 || word >= SNX_CTR_IPC_WORDS || !handle || handle == CTR_PROCESS_HANDLE ||
+        handle == CTR_THREAD_HANDLE || !snx_ctr_handle_object(c->process, handle)) {
+        c->state = SNX_CTR_IPC_FAULT;
+        return;
+    }
+    c->out[word] = handle;
+}
+uint32_t snx_ctr_session_create(SnxCtrProcess* p, uint32_t service, uint32_t* out) {
+    *out = 0;
+    if (service != SNX_CTR_SERVICE_SRV && service != SNX_CTR_SERVICE_FS && service != SNX_CTR_SERVICE_APT &&
+        service != SNX_CTR_SERVICE_PTM && service != SNX_CTR_SERVICE_HID && service != SNX_CTR_SERVICE_GSP)
+        return 0xe0e01bf4u;
+    unsigned count = 0;
+    for (unsigned i = 1; i < CTR_OBJECTS; ++i)
+        if (p->objects[i].type == CTR_OBJ_SESSION && p->objects[i].data.session.service == service) ++count;
+    if (count >= (service == SNX_CTR_SERVICE_SRV   ? 64u
+                  : service == SNX_CTR_SERVICE_FS  ? 32u
+                  : service == SNX_CTR_SERVICE_GSP ? 2u
+                                                   : 2u))
+        return 0xd0401834u;
+    uint32_t result = snx_ctr_object_create(p, CTR_OBJ_SESSION, out);
+    if (!result) {
+        CtrObject* object = &p->objects[snx_ctr_handle_object(p, *out)];
+        object->data.session.service = service;
+        object->data.session.gsp_thread = UINT32_MAX;
+    }
+    return result;
+}
+uint32_t snx_ctr_named_connect(SnxCtrProcess* p, uint32_t address, uint32_t* out) {
+    char name[12];
+    *out = 0;
+    for (unsigned i = 0; i < sizeof name; ++i) {
+        if ((uint64_t)address + i > UINT32_MAX ||
+            snx_ctr_read_ram(p->space, address + i, &name[i], 1) != SNX_CTR_MEM_OK)
+            return 0xe0e01bf5u;
+        if (!name[i]) return !strcmp(name, "srv:") ? snx_ctr_session_create(p, SNX_CTR_SERVICE_SRV, out) : 0xd88007fau;
+    }
+    return 0xe0e0181eu;
+}
+enum { WIRE_OK, WIRE_BAD, WIRE_UNSUPPORTED };
+static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) {
+    uint32_t position = 1 + normal, end = position + translated;
+    bool unsupported = false;
+    while (position < end) {
+        uint32_t d = c->in[position++], payload;
+        /* Buffer forms must be classified before copy/move handle forms. */
+        if (d & 8) {
+            if ((d & 15) != 10 && (d & 15) != 12 && (d & 15) != 14) return WIRE_BAD;
+            payload = 1;
+            /* Only the checked mapped buffers below are supported: FSFILE
+               Read's writable result buffer and ControlArchive GET_TIMESTAMP's
+               path input and datetime output. Handlers validate exact sizes. */
+            uint32_t mapped_service = c->process->objects[c->object].type == CTR_OBJ_SESSION
+                                          ? c->process->objects[c->object].data.session.service
+                                          : SNX_CTR_SERVICE_FILE;
+            bool mapped_supported =
+                (mapped_service == SNX_CTR_SERVICE_FILE && c->in[0] == 0x080200c2 && (d & 15) == 12) ||
+                (mapped_service == SNX_CTR_SERVICE_FILE && c->in[0] == 0x08030102 && (d & 15) == 10) ||
+                (mapped_service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080d0144 && ((d & 15) == 10 || (d & 15) == 12));
+            unsupported = unsupported || !mapped_supported;
+        } else if ((d & 1023) == 2 || (d & 15) == 4 || (d & 15) == 6) {
+            payload = 1;
+            /* Only the explicitly checked APT utility / narrow FS commands
+               accept incoming static buffers. Handlers preflight ID, length
+               and whole RAM ranges. Other static/PXI/mapped transfers stop. */
+            uint32_t service = c->process->objects[c->object].type == CTR_OBJ_SESSION
+                                   ? c->process->objects[c->object].data.session.service
+                                   : SNX_CTR_SERVICE_FILE;
+            bool supported = (service == SNX_CTR_SERVICE_APT && c->in[0] == 0x004b00c2 && (d & 0x3fff) == 0x402) ||
+                             (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080c00c2 && d == 0x4002) ||
+                             (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080201c2 &&
+                              ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802)) ||
+                             (service == SNX_CTR_SERVICE_FS &&
+                              (c->in[0] == 0x08040142 || c->in[0] == 0x08050244 || c->in[0] == 0x08060142 ||
+                               c->in[0] == 0x08080202 || c->in[0] == 0x08090182 || c->in[0] == 0x080a0244 ||
+                               c->in[0] == 0x080b0102) &&
+                              ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802)) ||
+                             (service == SNX_CTR_SERVICE_GSP && (c->in[0] == 0x00010082 || c->in[0] == 0x00020084)) ||
+                             (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x08030204 &&
+                              ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802));
+            unsupported = unsupported || !supported;
+        } else if (d == 0x20) {
+            payload = 1;
+        } else if (!(d & 0x03ffffffu) || (d & 0x03ffffffu) == 0x10) {
+            payload = (d >> 26) + 1;
+            /* Incoming handles: only the checked GSP forms (one shared-handle
+               descriptor) are captured. The handler resolves and type-checks
+               every word; other services stop. */
+            uint32_t service = c->process->objects[c->object].type == CTR_OBJ_SESSION
+                                   ? c->process->objects[c->object].data.session.service
+                                   : SNX_CTR_SERVICE_FILE;
+            bool supported = service == SNX_CTR_SERVICE_GSP && !(d & 0x03ffffffu) && payload == 1 &&
+                             (c->in[0] == 0x00130042 || c->in[0] == 0x00150042 || c->in[0] == 0x00160042 ||
+                              c->in[0] == 0x00080082 || c->in[0] == 0x00090082);
+            if (supported && c->in[position] && !c->handle_in[0])
+                c->handle_in[0] = c->in[position];
+            else if (supported && c->in[position])
+                supported = false;
+            unsupported = unsupported || !supported;
+        } else
+            return WIRE_BAD;
+        if (payload > end - position) return WIRE_BAD;
+        position += payload;
+    }
+    return unsupported ? WIRE_UNSUPPORTED : WIRE_OK;
+}
+SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* result) {
+    *result = 0;
+    uint32_t id = snx_ctr_handle_object(p, handle);
+    if (!id || (p->objects[id].type != CTR_OBJ_SESSION && p->objects[id].type != CTR_OBJ_FILE)) {
+        *result = 0xd8e007f7u;
+        return SNX_CTR_SVC_RETURN;
+    }
+    uint32_t tls = p->cpu.state.cpu.tpidruro;
+    uint32_t address = tls + 0x80;
+    unsigned permissions;
+    unsigned char bytes[SNX_CTR_IPC_WORDS * 4];
+    /* A 0x200-aligned TLS slot contains the entire 0x100-byte command buffer.
+       Preflight RAM read AND write before a handler can change state/handles.
+       All mappings, handlers and writes are serialized by the runtime. */
+    if ((tls & 511) || (uint64_t)tls + 0x180 > UINT64_C(0x100000000) ||
+        snx_ctr_query(p->space, address, NULL, &permissions) != SNX_CTR_MEM_OK || (permissions & 3) != 3 ||
+        snx_ctr_read_ram(p->space, address, bytes, sizeof bytes) != SNX_CTR_MEM_OK) {
+        *result = 0xe0e01bf5u;
+        return SNX_CTR_SVC_RETURN;
+    }
+    SnxCtrIpc c = {.process = p, .object = id, .caller_pid = CTR_PROCESS_ID};
+    for (unsigned i = 0; i < SNX_CTR_IPC_WORDS; ++i) c.in[i] = load32(bytes + i * 4);
+    p->last_ipc_header = c.in[0];
+    p->last_ipc_service =
+        p->objects[id].type == CTR_OBJ_FILE ? SNX_CTR_SERVICE_FILE : p->objects[id].data.session.service;
+    uint32_t normal = (c.in[0] >> 6) & 63, translated = c.in[0] & 63;
+    if ((c.in[0] & 0xf000) || 1 + normal + translated > SNX_CTR_IPC_WORDS) {
+        *result = SNX_CTR_IPC_BAD_DESCRIPTOR;
+        return SNX_CTR_SVC_RETURN;
+    }
+    unsigned wire = translation(&c, normal, translated);
+    if (wire == WIRE_UNSUPPORTED) return SNX_CTR_SVC_UNSUPPORTED;
+    if (wire == WIRE_BAD) {
+        *result = SNX_CTR_IPC_BAD_DESCRIPTOR;
+        return SNX_CTR_SVC_RETURN;
+    }
+    switch (p->last_ipc_service) {
+        case SNX_CTR_SERVICE_SRV: snx_ctr_srv_dispatch(&c); break;
+        case SNX_CTR_SERVICE_FS: snx_ctr_fs_dispatch(&c); break;
+        case SNX_CTR_SERVICE_FILE: snx_ctr_file_dispatch(&c); break;
+        case SNX_CTR_SERVICE_APT: snx_ctr_apt_dispatch(&c); break;
+        case SNX_CTR_SERVICE_PTM: snx_ctr_ptm_dispatch(&c); break;
+        case SNX_CTR_SERVICE_HID: snx_ctr_hid_dispatch(&c); break;
+        case SNX_CTR_SERVICE_GSP: snx_ctr_gsp_dispatch(&c); break;
+        default: return SNX_CTR_SVC_UNSUPPORTED;
+    }
+    if (c.state == SNX_CTR_IPC_UNSUPPORTED) return SNX_CTR_SVC_UNSUPPORTED;
+    if (c.state == SNX_CTR_IPC_BLOCKED) return SNX_CTR_SVC_BLOCKED;
+    if (c.state == SNX_CTR_IPC_FAULT) return SNX_CTR_SVC_UNSUPPORTED;
+    *result = c.transport_result;
+    if (*result) return SNX_CTR_SVC_RETURN;
+    for (unsigned i = 0; i < SNX_CTR_IPC_WORDS; ++i) store32(bytes + i * 4, c.out[i]);
+    if (snx_ctr_write_ram(p->space, address, bytes, sizeof bytes) != SNX_CTR_MEM_OK) return SNX_CTR_SVC_UNSUPPORTED;
+    return SNX_CTR_SVC_RETURN;
+}

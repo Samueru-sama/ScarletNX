@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What a fatal error's box says (runtime/platform/fatal_screen.c): the hint for each known error, the text cut into
-   the box's rows at spaces, a long word cut, UTF-8 counted as characters, and those in the font's bytes */
+   the box's rows at spaces, a long word cut, UTF-8 counted as characters, those in the font's bytes, and Share log's
+   file */
 #include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static char rows[8][FATAL_ROW];
@@ -55,6 +58,46 @@ int main(void) {
         fatal_cp437("abcdef", out, 4);
         assert(!strcmp(out, "abc"));
     }
-    puts("fatal screen: hints, rows and the font's bytes");
+    /* Share log's file, as the launcher's: the build, the error and the game's log, its last 4 MiB of a bigger one; a
+       log not there yet says so, and a folder that cannot take it fails with the path it tried */
+    {
+        enum { BIG = (4 << 20) + 100 };
+        char *root = snx_temp_dir(NULL), *log = snx_path_join(root, "0100DA801624E000.log"), saved[1024], *big;
+        char* text;
+        size_t n = 0;
+        assert(root && log && !snx_write_file(log, "[  0.10] svc: hello\n", 20));
+        assert(!fatal_share_log(root, "ScarletNX main abc1234 (clang 23, Linux x86_64)",
+                                "Unsupported instruction e78f1000", log, saved, sizeof saved));
+        text = (char*)snx_read_file(saved, &n);
+        assert(text && strstr(saved, "scarletnx.log") && !strncmp(text, "ScarletNX main abc1234", 22));
+        assert(strstr(text, "\nMessage: Unsupported instruction e78f1000\n") && strstr(text, log) &&
+               strstr(text, "svc: hello"));
+        free(text);
+        assert(!snx_remove_tree(log));
+        assert(!fatal_share_log(root, "build", "message", log, saved, sizeof saved));
+        text = (char*)snx_read_file(saved, &n);
+        assert(text && strstr(text, "(not written yet)"));
+        free(text);
+        big = (char*)malloc(BIG);
+        assert(big);
+        memset(big, 'a', BIG);
+        memcpy(big + BIG - 4, "end\n", 4);
+        big[99] = 'b'; /* the head that goes */
+        assert(!snx_write_file(log, big, BIG));
+        assert(!fatal_share_log(root, "build", "message", log, saved, sizeof saved));
+        text = (char*)snx_read_file(saved, &n);
+        assert(text && n < (size_t)(4 << 20) + 1000 && n >= (size_t)(4 << 20) && strstr(text, "end\n") &&
+               !strchr(text + 40, 'b'));
+        free(text);
+        free(big);
+        free(log);
+        log = snx_path_join(root, "no/such/folder");
+        assert(fatal_share_log(log, "build", "message", NULL, saved, sizeof saved) && strstr(saved, "no/such/folder"));
+        assert(fatal_share_log(NULL, "build", "message", NULL, saved, sizeof saved));
+        free(log);
+        assert(!snx_remove_tree(root));
+        free(root);
+    }
+    puts("fatal screen: hints, rows, the font's bytes and Share log's file");
     return 0;
 }

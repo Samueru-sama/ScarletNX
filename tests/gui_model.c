@@ -205,6 +205,17 @@ int main(void) {
     assert(path && !strcmp(path, "/storage/emulated/0/Download/prod.keys"));
     free(path);
     assert(!gui_document_path("content://com.android.providers.downloads.documents/document/msf%3A1234"));
+    /* what a prod.keys is when it comes with no name: "name = hex" lines, the others let be; never binary */
+    {
+        static const char keys[] = "header_key = 00112233\nkey_area_key_application_00 = AABBCCDD  \n";
+        static const char crlf[] = "; Lockpick\r\n\r\nmaster_key_00 = 0011\r\n";
+        static const char nul[] = "header_key = 0011\n\0";
+        assert(gui_keys_text(keys, sizeof keys - 1) && gui_keys_text(crlf, sizeof crlf - 1));
+        assert(gui_keys_text("header_key=0011", 15));
+        assert(!gui_keys_text(nul, sizeof nul - 1) && !gui_keys_text("", 0) && !gui_keys_text(NULL, 0));
+        assert(!gui_keys_text("a game, not keys\n", 17) && !gui_keys_text("header_key = 0\n", 15));
+        assert(!gui_keys_text("header_key = 00zz\n", 18) && !gui_keys_text(" = 0011\n", 8));
+    }
     assert(!gui_document_path("content://com.android.providers.media.documents/document/document%3A12"));
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%zz"));
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%00.xci"));

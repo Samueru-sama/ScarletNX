@@ -6,7 +6,7 @@
 #ifndef SNX_KERNEL_INT_H
 #define SNX_KERNEL_INT_H
 #include "nx/hle/kernel/kernel.h"
-#include "nx/runtime/loader.h"
+#include "nx/loader/loader.h"
 #include "nx/hle/kernel/ipc.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"

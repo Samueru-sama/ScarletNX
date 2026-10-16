@@ -5,6 +5,7 @@
 /* debugging output: guest symbols, backtraces, unresolved calls, register and thread dumps. These run from the crash
    handler too, where a fault while reading guest memory would end the report: every read is checked first */
 #include "nx/hle/kernel/kernel_int.h"
+#include "nx/runtime/loader.h"
 /* [a, a+n) is mapped game memory, safe to read */
 static int mapped(u64 a, u64 n) {
     if (a < AS_BASE || a >= AS_SIZE || n > AS_SIZE - a) return 0;

@@ -15,6 +15,7 @@ struct SnxCtrMemory {
     void* mmio_context;
     SnxCtrMmioRead read;
     SnxCtrMmioWrite write;
+    uint64_t epoch;
 };
 struct SnxCtrAddressSpace {
     SnxCtrMemory* memory;
@@ -27,6 +28,7 @@ SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model) {
     SnxCtrMemory* m = calloc(1, sizeof *m);
     if (!m) return NULL;
     m->profile = p;
+    m->epoch = 1;
     for (size_t i = 0; i < p->region_count; ++i) {
         if (p->regions[i].kind == SNX_CTR_MMIO) continue;
         m->backing[i] = calloc(1, p->regions[i].size);
@@ -37,6 +39,7 @@ SnxCtrMemory* snx_ctr_memory_new(SnxCtrModel model) {
     }
     return m;
 }
+const SnxCtrProfile* snx_ctr_memory_profile(const SnxCtrMemory* m) { return m ? m->profile : NULL; }
 void snx_ctr_memory_free(SnxCtrMemory* m) {
     if (!m) return;
     for (size_t i = 0; i < 8; ++i) free(m->backing[i]);
@@ -63,6 +66,13 @@ static Page* page(const SnxCtrAddressSpace* s, uint32_t address) {
     Page* table = s->tables[address >> 22];
     return table ? &table[(address >> 12) & 1023] : NULL;
 }
+/* A board-wide epoch conservatively invalidates every reservation on any
+   successful store or mapping change, including aliases and other spaces.
+   Saturation disables exclusive success rather than permitting an ABA wrap. */
+static void changed(SnxCtrMemory* m) {
+    if (m->epoch != UINT64_MAX) ++m->epoch;
+}
+uint64_t snx_ctr_memory_epoch(const SnxCtrAddressSpace* s) { return s ? s->memory->epoch : 0; }
 static bool valid_range(uint32_t va, uint32_t size) {
     return size && !((va | size) & 4095) && (uint64_t)va + size <= UINT64_C(0x100000000);
 }
@@ -84,6 +94,7 @@ SnxCtrMemResult snx_ctr_map(SnxCtrAddressSpace* s, uint32_t va, uint32_t pa, uin
     }
     for (uint64_t offset = 0; offset < size; offset += 4096)
         *page(s, va + (uint32_t)offset) = (Page){pa + (uint32_t)offset, (unsigned char)permissions, 1};
+    changed(s->memory);
     return SNX_CTR_MEM_OK;
 }
 static SnxCtrMemResult change(SnxCtrAddressSpace* s, uint32_t va, uint32_t size, unsigned permissions, bool unmap) {
@@ -101,6 +112,7 @@ static SnxCtrMemResult change(SnxCtrAddressSpace* s, uint32_t va, uint32_t size,
         else
             p->permissions = (unsigned char)permissions;
     }
+    changed(s->memory);
     return SNX_CTR_MEM_OK;
 }
 SnxCtrMemResult snx_ctr_protect(SnxCtrAddressSpace* s, uint32_t va, uint32_t size, unsigned permissions) {
@@ -128,6 +140,22 @@ static unsigned char* physical(SnxCtrMemory* m, uint32_t pa, bool* mmio) {
     *mmio = true; /* only reachable for an internally corrupted PTE */
     return NULL;
 }
+SnxCtrMemResult snx_ctr_check_ram(SnxCtrAddressSpace* s, uint32_t va, size_t size, unsigned access) {
+    if (!s || !access || !permissions_valid(access) || size > UINT64_C(0x100000000) - va) return SNX_CTR_MEM_INVALID;
+    for (size_t off = 0; off < size;) {
+        uint32_t at = va + (uint32_t)off;
+        Page* p = page(s, at);
+        if (!p || !p->present) return SNX_CTR_MEM_UNMAPPED;
+        if ((p->permissions & access) != access) return SNX_CTR_MEM_PERMISSION;
+        bool mmio;
+        (void)physical(s->memory, p->pa, &mmio);
+        if (mmio) return SNX_CTR_MEM_DEVICE;
+        size_t n = 4096 - (at & 4095);
+        if (n > size - off) n = size - off;
+        off += n;
+    }
+    return SNX_CTR_MEM_OK;
+}
 static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer, size_t size, unsigned access,
                                 bool ram_only) {
     if (!s || !buffer || !size || size > UINT64_C(0x100000000) - va) return SNX_CTR_MEM_INVALID;
@@ -148,6 +176,7 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
             uint32_t pa = p->pa + (at & 4095);
             bool ok = access == SNX_CTR_WRITE ? m->write && m->write(m->mmio_context, pa, buffer, size)
                                               : m->read && m->read(m->mmio_context, pa, buffer, size);
+            if (ok && access == SNX_CTR_WRITE) changed(m);
             return ok ? SNX_CTR_MEM_OK : SNX_CTR_MEM_DEVICE;
         }
         if (n > size - offset) n = size - offset;
@@ -166,6 +195,7 @@ static SnxCtrMemResult transfer(SnxCtrAddressSpace* s, uint32_t va, void* buffer
             memcpy((unsigned char*)buffer + offset, host, n);
         offset += n;
     }
+    if (access == SNX_CTR_WRITE) changed(s->memory);
     return SNX_CTR_MEM_OK;
 }
 SnxCtrMemResult snx_ctr_read(SnxCtrAddressSpace* s, uint32_t va, void* output, size_t size) {
@@ -182,4 +212,23 @@ SnxCtrMemResult snx_ctr_read_ram(SnxCtrAddressSpace* s, uint32_t va, void* outpu
 }
 SnxCtrMemResult snx_ctr_write_ram(SnxCtrAddressSpace* s, uint32_t va, const void* input, size_t size) {
     return transfer(s, va, (void*)input, size, SNX_CTR_WRITE, true);
+}
+static SnxCtrMemResult device(SnxCtrMemory* m, uint32_t pa, void* buffer, size_t size, bool write) {
+    if (!m || !buffer || !size || size > UINT32_MAX) return SNX_CTR_MEM_INVALID;
+    const SnxCtrRegion* r = snx_ctr_physical_region(m->profile, pa, (uint32_t)size);
+    if (!r) return SNX_CTR_MEM_INVALID;
+    if (r->kind == SNX_CTR_MMIO) return SNX_CTR_MEM_DEVICE;
+    unsigned char* host = m->backing[r - m->profile->regions] + (pa - r->base);
+    if (write) {
+        memcpy(host, buffer, size);
+        changed(m);
+    } else
+        memcpy(buffer, host, size);
+    return SNX_CTR_MEM_OK;
+}
+SnxCtrMemResult snx_ctr_phys_read(SnxCtrMemory* m, uint32_t pa, void* output, size_t size) {
+    return device(m, pa, output, size, false);
+}
+SnxCtrMemResult snx_ctr_phys_write(SnxCtrMemory* m, uint32_t pa, const void* input, size_t size) {
+    return device(m, pa, (void*)input, size, true);
 }

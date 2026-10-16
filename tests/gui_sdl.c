@@ -802,6 +802,43 @@ int main(int argc, char** argv) {
     assert(!snx_remove_tree(app.keys_path));
     drop(&app, source_keys, false);
     assert(app.menu.view == GUI_LOAD_NONE && snx_is_file(app.keys_path));
+    /* a document of an app's (Android's picker): read through it, as a path to it may not be readable or there is none
+       (Downloads by number, #280), and installed when its text is a prod.keys', whatever its name; refused when it is
+       not one or is too big. The picker's message for a document with no path stays on the other screens */
+    {
+        static const char keys_text[] = "; dumped\r\nheader_key = 00112233aabbccdd\r\n";
+        char *document = snx_path_join(temporary, "msf 12"), *big = (char*)calloc(1, SNX_GUI_KEYS_MAX + 2);
+        assert(big && !snx_write_file(document, keys_text, sizeof keys_text - 1));
+        app.menu.view = GUI_LOAD_KEYS;
+        install_keys_document(&app, document);
+        keys_data = snx_read_file(app.keys_path, &keys_size);
+        assert(app.menu.view == GUI_LOAD_NONE && keys_data && keys_size == sizeof keys_text - 1 &&
+               !memcmp(keys_data, keys_text, keys_size));
+        free(keys_data);
+        assert(!snx_write_file(document, "a game, not keys", 16));
+        app.menu.view = GUI_LOAD_KEYS;
+        install_keys_document(&app, document);
+        assert(app.menu.view == GUI_LOAD_KEYS && strstr(app.message, "is not a prod.keys"));
+        memset(big, 'a', SNX_GUI_KEYS_MAX + 1);
+        memcpy(big, "header_key = 00\n", 16);
+        assert(!snx_write_file(document, big, SNX_GUI_KEYS_MAX + 1));
+        install_keys_document(&app, document);
+        assert(app.menu.view == GUI_LOAD_KEYS && strstr(app.message, "could not be read as prod.keys"));
+        assert(snx_file_size(app.keys_path) == sizeof keys_text - 1);
+        picked(&app, "content://com.android.providers.downloads.documents/document/msf%3A12");
+        assert(app.menu.view == GUI_LOAD_KEYS && strstr(app.message, "could not be read as prod.keys"));
+        /* one of the storage's too, as its path may not be this app's to read */
+        app.message[0] = 0;
+        picked(&app, "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fprod.keys");
+        assert(app.menu.view == GUI_LOAD_KEYS && strstr(app.message, "could not be read as prod.keys"));
+        app.menu.view = GUI_LOAD_DROP;
+        picked(&app, "content://com.android.providers.downloads.documents/document/msf%3A12");
+        assert(app.menu.view == GUI_LOAD_DROP && strstr(app.message, "from this computer's storage"));
+        app.menu.view = GUI_LOAD_NONE;
+        app.message[0] = 0;
+        free(big);
+        free(document);
+    }
     free(switch_dir);
     free(source_keys);
 #ifdef SNX_XDG

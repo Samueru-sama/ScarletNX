@@ -1,8 +1,68 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/common.h"
 #include "common/utilities/font.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+int fatal_share_log(const char* folder, const char* build, const char* msg, const char* game_log, char* saved,
+                    size_t size) {
+    enum { TAIL = 4 << 20 };
+    size_t n = 0;
+    char *log = game_log ? (char*)snx_read_file(game_log, &n) : NULL, *path, *text;
+    const char* from = log && n > TAIL ? log + n - TAIL : log;
+    int failed;
+    if (size) saved[0] = 0;
+    path = folder ? snx_path_join(folder, "scarletnx.log") : NULL;
+    text = snx_format("%s\nMessage: %s\n\n== %s ==\n%s\n", build ? build : "", msg ? msg : "",
+                      game_log ? game_log : "no game log", log ? from : "(not written yet)");
+    failed = !path || !text || snx_write_file(path, text, strlen(text));
+    if (path && size) snprintf(saved, size, "%s", path);
+    free(text);
+    free(path);
+    free(log);
+    return failed;
+}
+
+int fatal_log_url(const char* path, char* out, size_t size) {
+    static const char hex[] = "0123456789ABCDEF";
+    const char* prefix;
+    size_t n, i;
+    int drive, unc;
+    if (!size) return 0;
+    out[0] = 0;
+    if (!path || !*path) return 0;
+    drive = ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' &&
+            (path[2] == '/' || path[2] == '\\');
+    unc = path[0] == '\\' && path[1] == '\\';
+    if (!drive && !unc && path[0] != '/') return 0;
+    prefix = drive ? "file:///" : unc ? "file:" : "file://";
+    n = strlen(prefix);
+    if (n >= size) return 0;
+    memcpy(out, prefix, n);
+    for (i = 0; path[i]; ++i) {
+        unsigned char c = (unsigned char)path[i];
+        int plain;
+        if ((drive || unc) && c == '\\') c = '/';
+        plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr("-._~/", c) ||
+                (drive && i == 1 && c == ':');
+        if (size - n <= (plain ? 1u : 3u)) {
+            out[0] = 0;
+            return 0;
+        }
+        if (plain)
+            out[n++] = (char)c;
+        else {
+            out[n++] = '%';
+            out[n++] = hex[c >> 4];
+            out[n++] = hex[c & 15];
+        }
+    }
+    out[n] = 0;
+    return 1;
+}
 
 const char* fatal_hint(const char* msg) {
     if (strstr(msg, "GPU device was lost"))

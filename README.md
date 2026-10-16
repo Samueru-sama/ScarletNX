@@ -85,10 +85,20 @@ output and combined CPU/RAM usage. See [GUI launcher](docs/GUI.md).
 
 The experimental `scarletnx-3ds` driver and **Load 3DS CIA** menu entry support
 decrypted application CIA extraction (`scarletnx-3ds -x game.cia`) and an independent
-page-based memory controller. An opt-in ARM11 integer profile and checked-memory
-adapter now have static AOT witnesses, without changing shared A57 defaults.
-**CIA-to-native execution, HLE and devices remain incomplete**; a normal CIA launch
-extracts, then stops explicitly before execution.
+page-based memory controller. `SNX_3DS_AOT=ON` additionally enables an experimental
+**extract -> offline AOT -> native run** pipeline on native 64-bit Linux, using an
+explicit ARM11/checked-memory profile without changing shared A57 defaults.
+Larger images now use bounded chunked static CFG compilation (16 MiB text cap).
+SuperTux now completes minimal APT startup with real synchronization/thread
+resources, initializes HID handles and **reaches and executes main**. It then
+opens its reconstructed RomFS using NX's shared filesystem backing, executes
+scalar VFP in `gettimeofday`, opens its SelfNCCH archive and stopped at FS's
+archive timestamp request — real timestamp semantics and a minimal Vulkan-only
+GSP/GPU display path (live SDL3 window + PPM frames) now exist.
+**No first frame, audio or gameplay is claimed.**
+Checked CTR IPC uses a separate SwIPC mode; ARM11 exclusives and serialized
+native thread scheduling work. Full VFPv2, cache/resume, HLE and devices remain incomplete. The default
+build still stops after extraction.
 See the [staged 3DS port](docs/3DS.md) for limits, build instructions and remaining work.
 
 For more detailed information please see: [Build + run](./docs/BUILD.md). For the Android app (arm64 and x86_64),
