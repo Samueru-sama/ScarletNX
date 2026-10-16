@@ -24,7 +24,11 @@ typedef double f64;
 #define RESTRICT    __restrict__
 #define LIKELY(x)   __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
-#define SNX_INLINE  static inline __attribute__((always_inline))
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define SNX_INLINE static inline __attribute__((always_inline))
+#else
+#define SNX_INLINE static __attribute__((always_inline))
+#endif
 
 /* the version of the contract between a game module and the runtime (this header, cpu_helpers.c, RtAPI and the
    module descriptor). The recompiler stamps it into each module, the runtime refuses a module with another one */
@@ -225,13 +229,15 @@ SNX_INLINE u64 bswap64(u64 x) { return __builtin_bswap64(x); }
 SNX_INLINE u32 cls64(u64 x) { return clz64(x ^ ((u64)((i64)x >> 1))) - 1; }
 SNX_INLINE u32 cls32(u32 x) { return clz32(x ^ ((u32)((i32)x >> 1))) - 1; }
 SNX_INLINE u64 rbit64(u64 x) {
-    x = ((x >> 1) & 0x5555555555555555ull) | ((x & 0x5555555555555555ull) << 1);
-    x = ((x >> 2) & 0x3333333333333333ull) | ((x & 0x3333333333333333ull) << 2);
-    x = ((x >> 4) & 0x0F0F0F0F0F0F0F0Full) | ((x & 0x0F0F0F0F0F0F0F0Full) << 4);
+    x = ((x >> 1) & ((u64)0x55555555u << 32 | 0x55555555u)) | ((x & ((u64)0x55555555u << 32 | 0x55555555u)) << 1);
+    x = ((x >> 2) & ((u64)0x33333333u << 32 | 0x33333333u)) | ((x & ((u64)0x33333333u << 32 | 0x33333333u)) << 2);
+    x = ((x >> 4) & ((u64)0x0F0F0F0Fu << 32 | 0x0F0F0F0Fu)) | ((x & ((u64)0x0F0F0F0Fu << 32 | 0x0F0F0F0Fu)) << 4);
     return bswap64(x);
 }
 SNX_INLINE u32 rbit32(u32 x) { return (u32)(rbit64(x) >> 32); }
-SNX_INLINE u64 rev16_64(u64 x) { return ((x >> 8) & 0x00FF00FF00FF00FFull) | ((x & 0x00FF00FF00FF00FFull) << 8); }
+SNX_INLINE u64 rev16_64(u64 x) {
+    return ((x >> 8) & ((u64)0x00FF00FFu << 32 | 0x00FF00FFu)) | ((x & ((u64)0x00FF00FFu << 32 | 0x00FF00FFu)) << 8);
+}
 SNX_INLINE u64 rev32_64(u64 x) {
     u64 y = bswap64(x);
     return (y >> 32) | (y << 32);
@@ -261,7 +267,7 @@ SNX_INLINE i64 smulh64(i64 a, i64 b) {
 }
 
 /* ---- SBFM/UBFM/BFM, interpreter only ---- */
-SNX_INLINE u64 bmask(u32 n) { return n >= 64 ? ~0ull : ((1ull << n) - 1); }
+SNX_INLINE u64 bmask(u32 n) { return n >= 64 ? ~(u64)0 : (((u64)1 << n) - 1); }
 SNX_INLINE u64 ubfm_(u64 src, u32 immr, u32 imms, u32 ds) {
     if (imms >= immr) return (src >> immr) & bmask(imms - immr + 1);
     return (src & bmask(imms + 1)) << (ds - immr);
@@ -329,11 +335,11 @@ u32 ursqrte32(u32 x);
 
 /* ---- saturation ---- */
 SNX_INLINE i64 sat_s(i64 v, int bits) {
-    i64 mx = (bits == 64) ? 0x7FFFFFFFFFFFFFFFll : ((1ll << (bits - 1)) - 1), mn = -mx - 1;
+    i64 mx = (bits == 64) ? (i64)((u64)0x7FFFFFFFu << 32 | 0xFFFFFFFFu) : (i64)((u64)1 << (bits - 1)) - 1, mn = -mx - 1;
     return v > mx ? mx : v < mn ? mn : v;
 }
 SNX_INLINE u64 sat_u(i64 v, int bits) {
-    u64 mx = bits == 64 ? ~0ull : ((1ull << bits) - 1);
+    u64 mx = bits == 64 ? ~(u64)0 : (((u64)1 << bits) - 1);
     return v < 0 ? 0 : (u64)v > mx ? mx : (u64)v;
 }
 
@@ -346,7 +352,7 @@ void v_sha256(CPU* c, u32 op, u32 d, u32 n, u32 m);
 void v_pmull(V128* d, const V128* a, const V128* b, int hi);
 u64 v_expand_imm(u32 op, u32 cmode, u32 imm8);
 
-SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~63ull), 0, 64); }
+SNX_INLINE void dc_zva(u8* M, u64 a) { memset(MP(a & ~(u64)63), 0, 64); }
 
 /* ---- LDXR/STXR: value-based monitor using CAS ----
    Exclusive and acquire loads and release stores are seq_cst atomics (LDACQ, STREL below), so later accesses stay after
@@ -496,7 +502,7 @@ SNX_INLINE u32 vfp_imm32(u32 i) {
 }
 SNX_INLINE u64 vfp_imm64(u32 i) {
     u64 b6 = (i >> 6) & 1;
-    u64 e = ((b6 ^ 1) << 10) | ((b6 ? 0xFFull : 0) << 2) | ((i >> 4) & 3);
+    u64 e = ((b6 ^ 1) << 10) | ((b6 ? (u64)0xFFu : 0) << 2) | ((i >> 4) & 3);
     return ((u64)(i >> 7) << 63) | (e << 52) | ((u64)(i & 15) << 48);
 }
 int snx_simd(CPU* c, u8* M, u32 w);

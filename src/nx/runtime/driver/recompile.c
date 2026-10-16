@@ -11,6 +11,7 @@
 #include "nx/loader/module_llvm.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/driver/toolchain.h"
+#include "common/cpu/recompiler/backend.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
