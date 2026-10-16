@@ -260,21 +260,37 @@ folder and where it goes now, and an older game runs where it is, its run saying
 
 `Game.ini`: help rewritten at startup, most settings hot-reload. `--key=value` overrides one run.
 Restart for `docked`, `fullscreen`, `language`, `resolution`, `anisotropy`, `memory_gb`, `heap_max_mb`, `profile`.
-`fullscreen=1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets
-it for one run.
+`scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
+type, range and help, tab-separated.
 
-| Setting | Effect |
-| --- | --- |
-| `docked=1` | TV mode |
-| `resolution=1` | Native scale; range 0.25–4 |
-| `fps_limit=game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
-| `vsync=1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
-| `anisotropy=0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
-| `shadows=0` | Skip shadow maps |
-| `language=1` | English (US); other IDs in INI |
-| `network=1` | Online through the computer's connection (bsd, sfdnsres, nifm); `0` offline, loopback only |
-| `log=2` | Verbose, adds runtime overhead |
-| `auto_stub_ipc=1` | A service command the runtime doesn't know answers success, logged as `[undeclared]`, and a service it doesn't have answers every command that way. `0` answers them with the console's UnknownCommandId instead, which shows the gap where the game makes the call |
+| Key | Default | Effect |
+| --- | --- | --- |
+| `docked` | `0` | `1` is TV mode, `0` handheld mode (1280x720) |
+| `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
+| `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
+| `resolution` | `1` | Internal 3D scale, `0.25` to `4`: `1` native, `2` double, `0.75` and `0.5` faster |
+| `shadows` | `1` | `0` skips shadow maps |
+| `vsync` | `1` | Images are shown only on the display's refresh, so nothing tears. `0` doesn't wait for it: the newest image is shown on the next refresh where the display can do that, else at once (which may tear). A display that can do neither waits for the refresh as `1` does |
+| `anisotropy` | `0` | Texture filtering as the game asks. `2` to `16` sharpens surfaces seen at an angle |
+| `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
+| `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB, like Tears of the Kingdom, need `6` |
+| `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
+| `network` | `0` | `0` reports offline and lets the game reach only loopback, which is not a network sandbox. `1` uses the computer's connection, and the resolver blocks known Nintendo service domains |
+| `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
+| `controls` | `1` on Android, else `0` | The [on-screen controls](#on-screen-controls) shown |
+| `controls_snap`, `controls_scale`, `controls_opacity`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `100`, `1`, `1`, `1` | As [On-screen controls](#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
+| `gamepad_buttons` | `1` | A gamepad's A, B, X and Y as their labels say. `0` and `2` are below |
+| `gamepad_map` | none | The map `gamepad_buttons=2` uses, below |
+| `gamepad_deadzone` | `20` | The sticks' dead zone, in percent of their travel (`0` to `90`) |
+| `gamepad_rumble` | `100` | How strongly gamepads vibrate when the game asks, in percent. `0` is never |
+| `gamepad_background` | `0` | `1` keeps gamepads playing while the window is not focused |
+| `gamepad_joycon_pair` | `1` | `1` plays a left and right Joy-Con together, `0` separately. Restart the game after changing it |
+| `log` | `1` | Log detail. `2` logs everything, which adds runtime overhead |
+| `auto_stub_ipc` | `1` | A service command the runtime doesn't know answers success, logged as `[undeclared]`, and a service it doesn't have answers every command that way. `0` answers them with the console's UnknownCommandId instead, which shows the gap where the game makes the call |
+| `diag` | `0` | `1` saves the data of each new compute shader to `captures/compute`, and each new shader's snx-shaderc corpus entry to `captures/shaders`, for debugging |
+| `profile` | `0` | `1` writes `profile.txt` every 10 seconds. The CPU profiler is Windows only |
+
+A gamepad's motion sensors, a Joy-Con's among them, go to the game when SDL exposes them. No setting turns them off.
 
 `audout` PCM playback and the audio renderer's device sink (`audren`) use SDL3's system-default output on
 Windows, Linux and supported Unix systems. Choose the output in your operating system's sound settings. The
