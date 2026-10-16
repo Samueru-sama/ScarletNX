@@ -3,8 +3,8 @@
    Initial FS session wire shapes referenced against Azahar service/fs/fs_user.cpp
    and libctru services/fs.c. The extracted title directory is the NX-style
    shared tree: romfs/exefs read-only and always open, sdmc read-write. */
-#include "runtime/internal.h"
-#include "fs.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/services/fs.h"
 #include "services/fs.swipc.inc"
 
 /* 3DS FS result codes: 0xc8804400 | the Azahar ErrCodes value. */

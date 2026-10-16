@@ -6,10 +6,10 @@
    This fork's changes are under GPL-3.0-or-later (LICENSE). */
 #define _POSIX_C_SOURCE 200809L
 #include "nx/runtime/driver/recompile.h"
-#include "nx/loader/loader.h"
+#include "nx/runtime/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
-#include "common/cpu/recompiler/backend.h"
+#include "nx/runtime/platform/backend.h"
 #include "nx/runtime/driver/toolchain.h"
 #include <ctype.h>
 #include <errno.h>

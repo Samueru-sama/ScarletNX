@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "3ds/ctr_module.h"
-#include "3ds/common/utilities/common.h"
+#include "3ds/aot/ctr_module.h"
+#include "common/utilities/common.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/gpu/present.h"
 #include "common/filesystem/host.h"

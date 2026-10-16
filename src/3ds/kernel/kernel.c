@@ -4,10 +4,10 @@
    (GPL-2.0-or-later), src/core/hle/kernel/{svc,handle_table,address_arbiter}.cpp
    and errors.h at 68202bc4ff7edf9d7280ec0dcd6572b7cd1ae26e.
    Independent serialized implementation; no reference runtime dependency. */
-#include "ctr_kernel.h"
-#include "runtime/internal.h"
+#include "3ds/kernel/ctr_kernel.h"
+#include "3ds/runtime/internal.h"
 #include <stdlib.h>
-#include "services/gsp.h"
+#include "3ds/services/gsp.h"
 #include <string.h>
 #include <stdio.h>
 #if defined(_WIN32)

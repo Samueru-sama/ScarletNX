@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors
    Initial HID shared memory/events only. No fabricated samples or completed
    input waits; periodic sampling/host input are not implemented here. */
-#include "runtime/internal.h"
+#include "3ds/runtime/internal.h"
 #include "services/hid.swipc.inc"
 static uint32_t snx_ctr_hid_GetIPCHandles(SnxCtrIpc* c, uint32_t* memory, uint32_t* pad1, uint32_t* pad2,
                                           uint32_t* accelerometer, uint32_t* gyroscope, uint32_t* debug_pad) {

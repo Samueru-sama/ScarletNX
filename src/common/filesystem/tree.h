@@ -3,7 +3,7 @@
 #ifndef SNX_FS_TREE_H
 #define SNX_FS_TREE_H
 
-#include "filesystem/host.h"
+#include "common/filesystem/host.h"
 #include <stdio.h>
 
 #define FS_TREE_PATH_MAX 4096

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "ctr_image.h"
+#include "3ds/loader/ctr_image.h"
 #include "common/utilities/common.h"
 #include <openssl/evp.h>
 #include <stdio.h>

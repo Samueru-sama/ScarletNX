@@ -5,9 +5,9 @@
    shared GX/interrupt block per process, four relay threads, a checked GX/LCD
    register file and host-paced 60 Hz display timing. PICA command lists
    (SubmitCmdList), format-converting transfers and save-VRAM paths stop. */
-#include "runtime/internal.h"
-#include "services/gsp.h"
-#include "gpu/present.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/services/gsp.h"
+#include "3ds/gpu/present.h"
 #include "common/utilities/common.h"
 #include <stdlib.h>
 #include <string.h>

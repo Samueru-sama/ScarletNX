@@ -2,15 +2,15 @@
    Copyright 2026 the ScarletNX contributors
    CTR header/PID/handle descriptor facts referenced against Citra/Azahar
    ipc.h and kernel/hle_ipc.cpp, GPL-2.0-or-later, revision in docs/3DS.md. */
-#include "ctr_ipc.h"
-#include "runtime/internal.h"
+#include "3ds/ipc/ctr_ipc.h"
+#include "3ds/runtime/internal.h"
 #include "services/srv.swipc.h"
-#include "services/fs.h"
-#include "services/file.h"
-#include "services/apt.h"
+#include "3ds/services/fs.h"
+#include "3ds/services/file.h"
+#include "3ds/services/apt.h"
 #include "services/ptm.swipc.h"
 #include "services/hid.swipc.h"
-#include "services/gsp.h"
+#include "3ds/services/gsp.h"
 #include <string.h>
 
 static uint32_t load32(const unsigned char* b) {

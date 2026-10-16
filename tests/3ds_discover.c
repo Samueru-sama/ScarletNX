@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "aot/ctr_discover.h"
-#include "aot/ctr_module.h"
+#include "3ds/aot/ctr_discover.h"
+#include "3ds/aot/ctr_module.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

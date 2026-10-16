@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "internal.h"
+#include "3ds/runtime/internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -97,8 +97,7 @@ SnxCtrProcess* snx_ctr_process_new(const SnxCtrImage* image, SnxCtrModel model) 
 #else
         !timespec_get(&now, TIME_UTC)
 #endif
-        || now.tv_sec < 0 ||
-        (uint64_t)now.tv_sec > (UINT64_MAX - 999) / 1000 - UINT64_C(2208988800))
+        || now.tv_sec < 0 || (uint64_t)now.tv_sec > (UINT64_MAX - 999) / 1000 - UINT64_C(2208988800))
         goto fail;
     p->clock_origin = snx_seconds();
     uint64_t rtc = ((uint64_t)now.tv_sec + UINT64_C(2208988800)) * 1000 + (uint64_t)now.tv_nsec / 1000000;

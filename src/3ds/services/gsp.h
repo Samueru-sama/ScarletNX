@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_CTR_GSP_H
 #define SNX_CTR_GSP_H
-#include "ipc/ctr_ipc.h"
+#include "3ds/ipc/ctr_ipc.h"
 #include <stdbool.h>
 #include <stdint.h>
 void snx_ctr_gsp_dispatch(SnxCtrIpc* c);

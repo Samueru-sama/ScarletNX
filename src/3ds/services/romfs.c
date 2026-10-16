@@ -3,8 +3,8 @@
    CTR level-3 layout/hash facts: Azahar core/hle/romfs.cpp and libctru
    romfs_dev.c. Independent serializer over NX's shared host FsTree, not NX
    IPC or Switch RomFS metadata. No original CIA/container reads at runtime. */
-#include "romfs.h"
-#include "filesystem/tree.h"
+#include "3ds/services/romfs.h"
+#include "common/filesystem/tree.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

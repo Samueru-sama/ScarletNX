@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_CTR_PROCESS_INTERNAL_H
 #define SNX_CTR_PROCESS_INTERNAL_H
-#include "ctr_process.h"
-#include "kernel/ctr_kernel.h"
-#include "services/romfs.h"
+#include "3ds/runtime/ctr_process.h"
+#include "3ds/kernel/ctr_kernel.h"
+#include "3ds/services/romfs.h"
 #define CTR_HANDLES        256u
 #define CTR_OBJECTS        256u
 #define CTR_GSP_THREADS    4u

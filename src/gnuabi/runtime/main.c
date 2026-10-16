@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gnuabi/process/process.h"
-#include "common/cpu/execution/execution.h"
+#include "gnuabi/runtime/execution.h"
 #include "gnuabi/runtime/execution.h"
 #include "gnuabi/runtime/arm_exec.h"
 #include <stdio.h>

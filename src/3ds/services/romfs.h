@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include "filesystem/tree.h"
+#include "common/filesystem/tree.h"
 typedef struct SnxCtrRomfs SnxCtrRomfs;
 /* Builds the CTR level-3 view over the tree's "romfs" child, shared read-only
    and always open like NX's romfs/exefs. The tree is owned by the process and

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "aot/ctr_module.h"
-#include "runtime/internal.h"
-#include "ipc/ctr_ipc.h"
+#include "3ds/aot/ctr_module.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/ipc/ctr_ipc.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

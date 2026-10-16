@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors
    SRV wire commands/results referenced against Azahar service/sm/{srv.cpp,sm.h}. */
-#include "runtime/internal.h"
+#include "3ds/runtime/internal.h"
 #include "services/srv.swipc.inc"
 #include <string.h>
 static uint32_t snx_ctr_srv_RegisterClient(SnxCtrIpc* c, uint32_t process) {

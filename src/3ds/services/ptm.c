@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "runtime/internal.h"
+#include "3ds/runtime/internal.h"
 #include "services/ptm.swipc.inc"
 static uint32_t snx_ctr_ptm_CheckNew3DS(SnxCtrIpc* c, uint32_t* is_new) {
     *is_new = snx_ctr_memory_profile(c->process->memory)->model == SNX_CTR_NEW;

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "runtime/internal.h"
+#include "3ds/runtime/internal.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#include "aot/ctr_module.h"
+#include "3ds/aot/ctr_module.h"
 static uint32_t event(SnxCtrProcess* p, uint32_t reset) {
     uint32_t* r = p->cpu.state.cpu.r;
     r[1] = reset;

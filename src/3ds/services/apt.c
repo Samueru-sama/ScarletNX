@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors
    APT GetLockHandle facts: Azahar service/apt/{apt,applet_manager}.cpp,
    GPL-2.0-or-later, revision recorded in docs/3DS.md. */
-#include "runtime/internal.h"
-#include "apt.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/services/apt.h"
 #include "services/apt.swipc.inc"
 static uint32_t snx_ctr_apt_wire_GetLockHandle(SnxCtrIpc* c, uint32_t attributes, uint32_t* corrected, uint32_t* state,
                                                uint32_t* lock) {

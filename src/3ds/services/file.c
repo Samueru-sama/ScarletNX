@@ -3,8 +3,8 @@
    CTR FSFILE wire facts: libctru services/fs.c and Azahar service/fs/file.cpp.
    Two real file kinds: the immutable shared RomFS view and read-write host
    files in the sdmc tree. Directory objects share close state only. */
-#include "runtime/internal.h"
-#include "file.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/services/file.h"
 #include "services/file.swipc.inc"
 #include <stdlib.h>
 static uint32_t snx_ctr_file_wire_GetSize(SnxCtrIpc* c, uint64_t* size) {

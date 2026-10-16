@@ -4,11 +4,11 @@
    checked register writes, memory fills and a real Vulkan presentation of a
    guest framebuffer to a PPM snapshot. No GPU emulation is faked; when no
    Vulkan device exists the presentation half stops (checked here explicitly). */
-#include "runtime/internal.h"
-#include "ipc/ctr_ipc.h"
-#include "services/gsp.h"
-#include "gpu/present.h"
-#include "filesystem/host.h"
+#include "3ds/runtime/internal.h"
+#include "3ds/ipc/ctr_ipc.h"
+#include "3ds/services/gsp.h"
+#include "3ds/gpu/present.h"
+#include "common/filesystem/host.h"
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>

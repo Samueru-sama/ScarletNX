@@ -7,7 +7,7 @@
    bounded PPM snapshots in frame_dir. The 3DS framebuffer is 240x400/320
    portrait; both the window and the snapshots show it rotated 90 degrees
    clockwise, like the console's landscape top screen. */
-#include "gpu/present.h"
+#include "3ds/gpu/present.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors
    Serialized, bounded single-core thread contexts; no host threads or JIT.
    SVC register layout from Azahar kernel/svc_wrapper.h (revision in 3DS.md). */
-#include "runtime/internal.h"
+#include "3ds/runtime/internal.h"
 #include <string.h>
 #define THREAD_LIMIT 16u
 CtrThread* snx_ctr_thread(SnxCtrProcess* p) { return &p->objects[p->current_thread].data.thread; }

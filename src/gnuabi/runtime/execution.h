@@ -3,7 +3,7 @@
 #ifndef SNX_GNU_EXECUTION_H
 #define SNX_GNU_EXECUTION_H
 #include "gnuabi/process/process.h"
-#include "common/cpu/execution/execution.h"
+#include "gnuabi/runtime/execution.h"
 /* Single guest thread. Protected arena faults terminate the guest and allow
    compiler-module cleanup; guest signal-frame delivery is not implemented. */
 int gnu_runtime_run(GnuProcess* process, SnxExecution* execution);
