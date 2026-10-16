@@ -2184,6 +2184,66 @@ int main(int argc, char** argv) {
         assert(app.menu.view == GUI_LOAD_KEYS);
         key(&app, SDLK_ESCAPE);
         assert(app.menu.view == GUI_LOAD_NONE && app.menu.selected == GUI_KEYS);
+        /* Games: Back, then as many of a page's games as the list's box holds, the focused one's path beside them
+           and in the bar; Right turns the page, a click on Back goes back */
+        {
+            GuiGamesBoxes g;
+            size_t page;
+            app.menu.selected = GUI_GAMES;
+            assert(app.menu.games && app.games_total > 12);
+            key(&app, SDLK_RETURN);
+            assert(app.menu.view == GUI_LOAD_GAMES && !app.browser.selected);
+            key(&app, SDLK_DOWN);
+            render(&app);
+            games_boxes(&app, &g);
+            page = games_page(&app);
+            assert(app.browser.page_size == page && g.list.count == (int)page + 1 && g.list.shown == g.list.count);
+            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, list_box(&g.list, 0).y + 2 * s, "Back [ESC]", normal,
+                       black);
+            b = list_box(&g.list, 1);
+            text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "- ", yellow, black);
+            text_px_is(&app, b.x + cw / 2 + 2 * cw, b.y + 2 * s, app.games.names[0], yellow, black);
+            text_px_is(&app, g.place.side.x + cw, g.place.side.y + 2 * s, app.games.names[0], normal, black);
+            text_px_is(&app, g.place.bar.x + 3 * cw, g.place.bar.y + 2 * s, "/", normal, black); /* its path */
+            key(&app, SDLK_RIGHT);
+            assert(app.browser.page == 1);
+            render(&app);
+            games_boxes(&app, &g);
+            assert(g.start == page);
+            b = list_box(&g.list, 0);
+            mouse_px(&app, b.x + 4, b.y + 4, true);
+            assert(app.menu.view == GUI_LOAD_NONE && app.menu.selected == GUI_GAMES);
+        }
+        /* the keys' screen: one box with where they go, the line that waits in its middle and Back at its foot; a click
+           in the box opens the picker, whose answer (none here) the bar says; a click on Back goes back */
+        {
+            GuiPickBoxes k;
+            SDL_Event answer;
+            Uint64 until;
+            const char* waiting = "[ Pick or drop prod.keys ]";
+            app.menu.selected = GUI_KEYS;
+            key(&app, SDLK_RETURN);
+            assert(app.menu.view == GUI_LOAD_KEYS);
+            app.clock = 1000 * app.theme.blink_ms * 2; /* the line shown, not blinked away */
+            render(&app);
+            pick_boxes(&app, &k);
+            r = inner(&app, k.place.list);
+            text_px_is(&app, r.x, k.place.list.y + 2 * s, "Setup device keys", normal, black);
+            text_px_is(&app, r.x + (r.w - (int)strlen(waiting) * cw) / 2, k.prompt, waiting, yellow, black);
+            text_px_is(&app, k.place.bar.x + 3 * cw, k.place.bar.y + 2 * s, "Setup device keys: click the box", normal,
+                       black);
+            app.clock = 0;
+            mouse_px(&app, r.x + 10, k.prompt + 4, true);
+            for (until = SDL_GetTicks() + 2000; !app.message[0] && SDL_GetTicks() < until;)
+                while (SDL_PollEvent(&answer)) event(&app, &answer);
+            assert(app.menu.view == GUI_LOAD_KEYS && !strcmp(app.message, "No file was picked."));
+            render(&app);
+            text_px_is(&app, k.place.bar.x + 3 * cw, k.place.bar.y + 2 * s, "No file was picked.", yellow, black);
+            b = list_box(&k.back, 0);
+            mouse_px(&app, b.x + 4, b.y + 4, true);
+            assert(app.menu.view == GUI_LOAD_NONE);
+            app.message[0] = 0;
+        }
         /* YoRHa: the boxes on its dim colour, the focused one on its focus colour with the cursor in the margin, the
            side box's name on a band of its ink */
         app.theme = *gui_theme_builtin("yorha");

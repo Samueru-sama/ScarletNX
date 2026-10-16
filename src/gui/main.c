@@ -167,6 +167,7 @@ static const char* const items[] = {"Games",
 #define SAY_KEYS_HOW   "Back: go back."
 #define SAY_KEYS_WAIT  "Pick prod.keys"
 #define SAY_PICK       "tap below to open the file picker" /* these two not shown: the menu keeps the load options */
+#define SAY_PICK_BOX   "tap the box to open the file picker"
 #define SAY_FILE_WAIT  SAY_KEYS_WAIT
 #define SAY_DONE       "Tap to return to menu"
 #define SAY_ABORT      "Tap here to abort and return to menu"
@@ -183,10 +184,11 @@ static const char* const items[] = {"Games",
 #define SAY_MENU       "Arrows/mouse: move. Space/Enter/click: select."
 #define SAY_LOAD       "Choose a game or what to load. ESC: exit."
 #define SAY_DROP       SAY_LOAD /* not shown: the file is picked on a screen of its own */
-#define SAY_GAMES      "Up/Down: select. Enter/Space: open. Left/Right or PgUp/PgDown: page."
+#define SAY_GAMES      "Up/Down: select. Enter/Space: open. Left/Right/PgUp/PgDown: page."
 #define SAY_PICK       "click below (or Enter) to open the file picker"
+#define SAY_PICK_BOX   "click the box (or Enter) to open the file picker"
 #define SAY_KEYS       "Setup device keys: " SAY_PICK
-#define SAY_KEYS_HOW   "Drop it on this window, or Ctrl+V: paste a path. ESC: back."
+#define SAY_KEYS_HOW   "Ctrl+V: paste a path, or drop the file on the window. ESC: back."
 #define SAY_KEYS_WAIT  "Pick or drop prod.keys"
 #define SAY_FILE_WAIT  "Pick or drop a file"
 #define SAY_DONE       "Press [ESC] to return to menu"
@@ -499,6 +501,8 @@ static int pick_auto_scale(float display_scale, int height, int rows) {
     while (scale > 1 && height / (16 * scale) < rows) --scale;
     return scale;
 }
+static int boxed(const App* app);
+static size_t games_page(App* app);
 static void layout(App* app) {
     int run;
     int width, height, whole_width, whole_height;
@@ -520,7 +524,9 @@ static void layout(App* app) {
     app->rows = SDL_min(height / (16 * app->scale), GUI_MAX_ROWS);
     run = (app->menu.running || app->finished) && !entering(app);
     app->log_top = run ? 4 : menu_row(app, GUI_EXIT) + 6;
-    gui_browser_resize(&app->browser, (size_t)SDL_max(1, app->rows - 10));
+    gui_browser_resize(&app->browser, boxed(app) && app->menu.view == GUI_LOAD_GAMES
+                                          ? games_page(app)
+                                          : (size_t)SDL_max(1, app->rows - 10));
     int log_rows = SDL_max(1, app->rows - app->log_top - 4);
     gui_console_resize(&app->console, SDL_max(1, app->cols - 2), log_rows);
 }
@@ -1174,6 +1180,42 @@ static int status_rows(App* app, int width, GuiRect r, int y, int draw) {
     return rows;
 }
 
+/* a screen's boxes: its title, the bar for its keys, a list asking for list_cols columns (0: one box, the whole
+   width), and with status the status box, when the theme has a footer */
+static void place_screen(App* app, GuiPlace* p, const char* title, const char* keys, int list_cols, int status) {
+    GuiPlaceIn in;
+    int width, height;
+    area(app, &width, &height);
+    memset(&in, 0, sizeof in);
+    in.width = width;
+    in.height = height;
+    in.cw = cell_w(app);
+    in.ch = cell_h(app);
+    in.title = title[0] ? cell_h(app) : 0;
+    in.bar = bar_h(app, width - 2 * cell_w(app), keys);
+    in.list_cols = list_cols ? SDL_min(SDL_max(list_cols, 20), SDL_max(20, (width / cell_w(app) - 2) / 2)) : 0;
+    gui_place(&in, p);
+    if (status && in.list_cols && app->theme.footer != GUI_STYLE_NONE) { /* its rows at the side box's width */
+        GuiRect none = {0, 0, 0, 0};
+        in.status = head_h(app) + 4 * app->scale +
+                    status_rows(app, inner(app, p->side).w / cell_w(app), none, 0, 0) * cell_h(app);
+        gui_place(&in, p);
+    }
+}
+static void status_box(App* app, GuiRect r) {
+    GuiRect text = inner(app, r);
+    int y;
+    if (!r.h) return;
+    y = pane(app, r, "Status");
+    status_rows(app, text.w / cell_w(app), box_rect(text.x, y, text.w, r.y + r.h - y), y, 1);
+}
+/* the bar's first row: the screen's message while there is one, a failure's in its colour; else about */
+static void bar_for(App* app, GuiRect r, const char* about, const char* keys) {
+    const GuiTheme* t = &app->theme;
+    bar(app, r, app->message[0] ? app->message : about,
+        rgb(app->message[0] ? (app->abnormal_exit ? t->failure : t->focus) : t->ink), keys);
+}
+
 /* the menu's list in boxes: "Recent games" over the recent rows, then the items */
 enum { GUI_ENTRY_LABEL, GUI_ENTRY_RECENT, GUI_ENTRY_ITEM };
 typedef struct {
@@ -1210,10 +1252,8 @@ static const char* entry_about(const App* app, GuiEntry e) {
     }
 }
 static void menu_boxes(App* app, GuiMenuBoxes* m) {
-    GuiPlaceIn in;
-    int width, height, count = 0, focus = 0, i, longest = 0, cols;
+    int count = 0, focus = 0, i, longest = 0;
     char label[160];
-    area(app, &width, &height);
     if (app->recent.count) m->entry[count++] = (GuiEntry){GUI_ENTRY_LABEL, 0};
     for (i = 0; i < app->menu.recent; ++i) {
         if (app->menu.recent_focus == i + 1) focus = count;
@@ -1228,22 +1268,8 @@ static void menu_boxes(App* app, GuiMenuBoxes* m) {
         entry_label(app, m->entry[i], label, sizeof label);
         longest = SDL_max(longest, (int)SDL_utf8strlen(label));
     }
-    memset(&in, 0, sizeof in);
-    in.width = width;
-    in.height = height;
-    in.cw = cell_w(app);
-    in.ch = cell_h(app);
-    in.title = boxed_title(app, menu_screen(app))[0] ? cell_h(app) : 0;
-    in.bar = bar_h(app, width - 2 * cell_w(app), SAY_MENU_KEYS);
-    cols = width / cell_w(app) - 2;
-    in.list_cols = SDL_min(SDL_max(longest + 2 + (int)SDL_utf8strlen(app->theme.cursor), 20), SDL_max(20, cols / 2));
-    gui_place(&in, &m->place);
-    if (app->theme.footer != GUI_STYLE_NONE) { /* the status box's rows, at the side box's width */
-        GuiRect none = {0, 0, 0, 0};
-        in.status = head_h(app) + 4 * app->scale +
-                    status_rows(app, inner(app, m->place.side).w / cell_w(app), none, 0, 0) * cell_h(app);
-        gui_place(&in, &m->place);
-    }
+    place_screen(app, &m->place, boxed_title(app, menu_screen(app)), SAY_MENU_KEYS,
+                 longest + 2 + (int)SDL_utf8strlen(app->theme.cursor), 1);
     list_place(app, &m->list, m->place.list, count, focus);
 }
 static GuiEntry menu_focus(const GuiMenuBoxes* m) { return m->entry[m->list.focus]; }
@@ -1304,17 +1330,148 @@ static void draw_menu_boxed(App* app) {
     }
     list_marks(app, &m.list);
     menu_side(app, &m);
-    if (m.place.status.h) {
-        GuiRect r = inner(app, m.place.status);
-        int y = pane(app, m.place.status, "Status");
-        status_rows(app, r.w / cell_w(app), box_rect(r.x, y, r.w, m.place.status.y + m.place.status.h - y), y, 1);
-    }
-    bar(app, m.place.bar, app->message[0] ? app->message : entry_about(app, focus),
-        rgb(app->message[0] ? (app->abnormal_exit ? app->theme.failure : app->theme.focus) : app->theme.ink),
-        SAY_MENU_KEYS);
+    status_box(app, m.place.status);
+    bar_for(app, m.place.bar, entry_about(app, focus), SAY_MENU_KEYS);
 }
-/* the pointer at pixel x, y of the boxed menu: the entry under it takes the focus, a click selects it */
-static void menu_boxed_pointer(App* app, float x, float y, bool click, bool touch);
+/* the games' screen in boxes: Back, then a page of the games, as many as the list's box holds */
+typedef struct {
+    GuiPlace place;
+    GuiList list;
+    size_t start; /* the page's first game */
+} GuiGamesBoxes;
+static void games_place(App* app, GuiPlace* p) {
+    size_t i;
+    int longest = 10;
+    for (i = 0; i < app->games.count; ++i) longest = SDL_max(longest, (int)SDL_utf8strlen(app->games.names[i]));
+    place_screen(app, p, boxed_title(app, GUI_SCREEN_GAMES), SAY_GAMES,
+                 longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor), 1);
+}
+/* the games a page of the boxed list holds: those that fit under Back */
+static size_t games_page(App* app) {
+    GuiPlace p;
+    GuiList l;
+    games_place(app, &p);
+    list_place(app, &l, p.list, 1 << 16, -1);
+    return (size_t)SDL_max(1, l.shown - 1);
+}
+static void games_boxes(App* app, GuiGamesBoxes* g) {
+    games_place(app, &g->place);
+    g->start = app->browser.page * app->browser.page_size;
+    list_place(app, &g->list, g->place.list, 1 + (int)gui_browser_items(&app->browser), (int)app->browser.selected);
+}
+static void draw_games_boxed(App* app) {
+    GuiGamesBoxes g;
+    GuiRect r;
+    char label[400], line[1100];
+    const char* about;
+    size_t i, items = gui_browser_items(&app->browser);
+    SDL_Color soft = rgb(app->theme.soft), ink = rgb(app->theme.ink);
+    int y;
+    games_boxes(app, &g);
+    title_box(app, g.place.title, boxed_title(app, GUI_SCREEN_GAMES));
+    list_item(app, &g.list, 0, "Back [ESC]", false, app->browser.selected == 0);
+    for (i = 0; i < items; ++i) {
+        snprintf(label, sizeof label, "%s%s", app->theme.marker, app->games.names[g.start + i]);
+        list_item(app, &g.list, 1 + (int)i, label, app->browser.selected == i + 1,
+                  app->browser.activated && app->browser.active == g.start + i);
+    }
+    /* beside it the focused game: where it is and what runs it; the page, and where the games are looked for */
+    r = inner(app, g.place.side);
+    if (g.place.side.h) {
+        const char* name = app->browser.selected ? app->games.names[g.start + app->browser.selected - 1] : "Back";
+        y = pane(app, g.place.side, name);
+        r = box_rect(r.x, y, r.w, g.place.side.y + g.place.side.h - y);
+        if (app->browser.selected) {
+            y += wrap_in(app, r, r.x, y, app->games.paths[g.start + app->browser.selected - 1], 1, ink) * cell_h(app);
+            y += wrap_in(app, r, r.x, y,
+                         gui_is_cia(name)    ? "3DS CIA, opened with scarletnx-3ds"
+                         : gui_is_dump(name) ? "A dump, prepared when it runs"
+                                             : "Ready to run",
+                         0, soft) *
+                 cell_h(app);
+        } else
+            y += wrap_in(app, r, r.x, y, "Back to the menu", 0, ink) * cell_h(app);
+        y += cell_h(app);
+        if (!app->games.count)
+            y += wrap_in(app, r, r.x, y, SAY_NO_GAMES, 0, soft) * cell_h(app);
+        else {
+            snprintf(line, sizeof line, "Page %zu/%zu, %zu " SAY_COUNT, app->browser.page + 1,
+                     gui_browser_pages(&app->browser), app->games.count);
+            y += wrap_in(app, r, r.x, y, line, 0, soft) * cell_h(app);
+        }
+        y += wrap_in(app, r, r.x, y, app->games_dir ? app->games_dir : "games/", 1, soft) * cell_h(app);
+        for (i = 0; i < (size_t)app->folder_count; ++i)
+            y += wrap_in(app, r, r.x, y, app->folders[i], 1, soft) * cell_h(app);
+    }
+    list_marks(app, &g.list);
+    status_box(app, g.place.status);
+    about = app->browser.selected ? app->games.paths[g.start + app->browser.selected - 1] : "Back to the menu";
+    bar_for(app, g.place.bar, about, SAY_GAMES);
+}
+/* a line that waits on the user, at pixel row y of r: plain at its left, or framed, placed and blinking as the theme's
+   prompt says */
+static void prompt_in(App* app, GuiRect r, int y, GuiPromptLine line, const char* value, SDL_Color color) {
+    char framed[160];
+    const GuiPrompt* p = &app->theme.prompt;
+    int x = r.x, w;
+    if (p->lines[line]) {
+        if (p->blink && app->theme.blink_ms && (now_ms(app) / app->theme.blink_ms) % 2) return;
+        snprintf(framed, sizeof framed, "%s%s%s", p->open, value, p->close);
+        value = framed;
+        w = (int)SDL_utf8strlen(framed) * cell_w(app);
+        if (p->align == GUI_ALIGN_CENTER) x = r.x + (r.w - w) / 2;
+        if (p->align == GUI_ALIGN_RIGHT) x = r.x + r.w - w;
+    }
+    text_in(app, r, SDL_max(r.x, x), y, value, color);
+}
+/* the screen a file is picked or dropped on in boxes: one box with where the keys go and the ones in use, the line that
+   waits in its middle, Back at its foot */
+typedef struct {
+    GuiPlace place;
+    GuiList back;
+    int prompt; /* the waiting line's pixel row */
+} GuiPickBoxes;
+static void pick_boxes(App* app, GuiPickBoxes* k) {
+    GuiRect r;
+    int item = cell_h(app) + 4 * app->scale;
+    place_screen(app, &k->place, boxed_title(app, menu_screen(app)), SAY_KEYS_HOW, 0, 0);
+    r = inner(app, k->place.list);
+    list_place(
+        app, &k->back,
+        box_rect(r.x, k->place.list.y + k->place.list.h - item - 4 * app->scale, SDL_min(r.w, 24 * cell_w(app)), item),
+        1, -1);
+    k->prompt = k->place.list.y + k->place.list.h / 2;
+}
+static void draw_pick_boxed(App* app) {
+    GuiPickBoxes k;
+    GuiRect r;
+    bool keys = app->menu.view == GUI_LOAD_KEYS;
+    char line[1100], *in_use = keys ? keys_in_use(app) : NULL;
+    int y;
+    pick_boxes(app, &k);
+    title_box(app, k.place.title, boxed_title(app, menu_screen(app)));
+    y = pane(app, k.place.list, items[keys ? GUI_KEYS : app->menu.active]);
+    r = inner(app, k.place.list);
+    r = box_rect(r.x, y, r.w, k.back.at.y - y);
+    if (keys) {
+        snprintf(line, sizeof line, "Installs to: %s", app->keys_path ? app->keys_path : "Home directory unavailable.");
+        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.ink)) * cell_h(app);
+    }
+    if (in_use && app->keys_path && !strcmp(in_use, app->keys_path))
+        y += wrap_in(app, r, r.x, y, "Keys already setup. This will overwrite the previous ones", 0,
+                     rgb(app->theme.failure)) *
+             cell_h(app);
+    else if (in_use) {
+        snprintf(line, sizeof line, "Keys in use: %s. Keys dropped here are read before them", in_use);
+        y += wrap_in(app, r, r.x, y, line, 1, rgb(app->theme.soft)) * cell_h(app);
+    }
+    free(in_use);
+    prompt_in(app, r, SDL_max(y, k.prompt), GUI_PROMPT_KEYS, keys ? SAY_KEYS_WAIT : SAY_FILE_WAIT,
+              rgb(app->theme.focus));
+    list_item(app, &k.back, 0, "Back [ESC]", false, false); /* nothing to move to: ESC's */
+    snprintf(line, sizeof line, "%s: " SAY_PICK_BOX, items[keys ? GUI_KEYS : app->menu.active]);
+    bar_for(app, k.place.bar, line, SAY_KEYS_HOW);
+}
 /* the menu's screen or a run's, in app->theme, on the render target as it is */
 static void draw_screen(App* app) {
     SDL_Color ink, soft, focus, paper, active, failure;
@@ -1342,8 +1499,13 @@ static void draw_screen(App* app) {
         overlay(app);
         return;
     }
-    if (boxed(app) && idle && !pick_screen(app) && app->menu.view != GUI_LOAD_GAMES) {
-        draw_menu_boxed(app);
+    if (boxed(app) && idle) {
+        if (app->menu.view == GUI_LOAD_GAMES)
+            draw_games_boxed(app);
+        else if (pick_screen(app))
+            draw_pick_boxed(app);
+        else
+            draw_menu_boxed(app);
         render_ask(app);
         render_left(app);
         overlay(app);
@@ -3086,9 +3248,29 @@ static void ask_pointer(App* app, float x, float y, bool click) {
     } else if (click && (x < (float)col || x >= (float)(col + cols) || y < (float)row || y >= (float)(row + 6)))
         gui_confirm_key(&app->confirm, GUI_CANCEL);
 }
-static void menu_boxed_pointer(App* app, float x, float y, bool click, bool touch) {
+/* the pointer on a screen in boxes, at pixel x, y: the box under it takes the focus, and a click selects it; on the
+   screen a file is picked on, a click on the box the waiting line is in opens the picker */
+static void boxed_pointer(App* app, float x, float y, bool click, bool touch) {
     GuiMenuBoxes m;
     int i;
+    if (app->menu.view == GUI_LOAD_GAMES) {
+        GuiGamesBoxes g;
+        games_boxes(app, &g);
+        if ((i = list_hit(&g.list, x, y, touch)) < 0) return;
+        app->browser.selected = (size_t)i;
+        if (click) menu_key(app, GUI_SELECT);
+        return;
+    }
+    if (pick_screen(app)) {
+        GuiPickBoxes k;
+        pick_boxes(app, &k);
+        if (click && list_hit(&k.back, x, y, touch) == 0)
+            menu_key(app, GUI_CANCEL);
+        else if (click && y >= (float)k.place.list.y && y < (float)k.back.at.y && x >= (float)k.place.list.x &&
+                 x < (float)(k.place.list.x + k.place.list.w))
+            menu_key(app, GUI_SELECT); /* the box the waiting line is in */
+        return;
+    }
     menu_boxes(app, &m);
     i = list_hit(&m.list, x, y, touch);
     if (i < 0 || m.entry[i].kind == GUI_ENTRY_LABEL) return;
@@ -3109,8 +3291,8 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         if (click) pad_did(app, snx_pad_screen_tap(&app->pad, snx_pad_screen_hit(&app->pad_drawing, x, y)));
         return;
     }
-    if (boxed(app) && !app->editing && !app->confirm.shown && !pick_screen(app) && app->menu.view != GUI_LOAD_GAMES) {
-        menu_boxed_pointer(app, x, y, click, touch);
+    if (boxed(app) && !app->editing && !app->confirm.shown) {
+        boxed_pointer(app, x, y, click, touch);
         return;
     }
     x /= 8 * app->scale;
