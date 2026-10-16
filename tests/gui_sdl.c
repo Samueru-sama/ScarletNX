@@ -120,7 +120,6 @@ static void marks(App* app, int first, int last, bool up, bool down) {
     colored_text_on(app, 0, first, up ? "\x1e" : " ", soft, page);
     colored_text_on(app, 0, last, down ? "\x1f" : " ", soft, page);
 }
-#ifdef SNX_XDG /* the old-files box's check: only an XDG system has older files to move */
 /* text drawn from pixel x, y in the font's own bytes: its glyphs in color, around them back but on the font's last row,
    empty, which a box's frame may cover */
 static void text_px_is(App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
@@ -176,6 +175,7 @@ static int item_entry(const GuiMenuBoxes* m, int item) {
         if (m->entry[i].kind == GUI_ENTRY_ITEM && m->entry[i].index == item) return i;
     return -1;
 }
+#ifdef SNX_XDG /* the old-files box's check: only an XDG system has older files to move */
 /* the rows a path takes wrapped at width */
 static int path_rows(const char* path, int width) {
     int n = 0;
