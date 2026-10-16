@@ -503,6 +503,8 @@ static int pick_auto_scale(float display_scale, int height, int rows) {
 }
 static int boxed(const App* app);
 static size_t games_page(App* app);
+static void run_place(App* app, GuiPlace* p);
+static void run_console(App* app, const GuiPlace* p, int* cols, int* rows);
 static void layout(App* app) {
     int run;
     int width, height, whole_width, whole_height;
@@ -528,7 +530,14 @@ static void layout(App* app) {
                                           ? games_page(app)
                                           : (size_t)SDL_max(1, app->rows - 10));
     int log_rows = SDL_max(1, app->rows - app->log_top - 4);
-    gui_console_resize(&app->console, SDL_max(1, app->cols - 2), log_rows);
+    if (boxed(app) && run && app->theme.run != GUI_RUN_STEPS) { /* the run's output box */
+        GuiPlace p;
+        int cols, rows;
+        run_place(app, &p);
+        run_console(app, &p, &cols, &rows);
+        gui_console_resize(&app->console, cols, rows);
+    } else if (!boxed(app))
+        gui_console_resize(&app->console, SDL_max(1, app->cols - 2), log_rows);
 }
 /* an arc of a circle, from and sweep in degrees, thickness pixels inward */
 static void arc(App* app, float cx, float cy, float r, float from, float sweep, float thickness, GuiRgb c) {
@@ -1232,10 +1241,12 @@ static const char* screen_keys(const App* app, const char* keys, char* out, size
     return out;
 #endif
 }
-/* a screen's boxes: the tabs when the theme shows them, its title, the bar for its keys, a list asking for list_cols
-   columns, three fifths of the width at most (0: one box, the whole width), and with status the status box, when the
-   theme has a footer */
-static void place_screen(App* app, GuiPlace* p, const char* title, const char* keys, int list_cols, int status) {
+/* what a screen has besides its title, list and bar: the status box when the theme has a footer, the tabs when it
+   shows them */
+enum { GUI_SHOWS_STATUS = 1, GUI_SHOWS_TABS = 2 };
+/* a screen's boxes: the tabs, its title, the bar for its keys, a list asking for list_cols columns, three fifths of the
+   width at most (0: one box, the whole width), and the status box, as shows says */
+static void place_screen(App* app, GuiPlace* p, const char* title, const char* keys, int list_cols, int shows) {
     GuiPlaceIn in;
     int width, height;
     area(app, &width, &height);
@@ -1244,12 +1255,12 @@ static void place_screen(App* app, GuiPlace* p, const char* title, const char* k
     in.height = height;
     in.cw = cell_w(app);
     in.ch = cell_h(app);
-    in.tabs = app->theme.tabs ? cell_h(app) + 4 * app->scale : 0;
+    in.tabs = shows & GUI_SHOWS_TABS && app->theme.tabs ? cell_h(app) + 4 * app->scale : 0;
     in.title = title[0] ? cell_h(app) : 0;
     in.bar = bar_h(app, width - 2 * cell_w(app), keys);
     in.list_cols = list_cols ? SDL_min(SDL_max(list_cols, 20), SDL_max(20, (width / cell_w(app) - 2) * 3 / 5)) : 0;
     gui_place(&in, p);
-    if (status && in.list_cols && app->theme.footer != GUI_STYLE_NONE) { /* its rows at the side box's width */
+    if (shows & GUI_SHOWS_STATUS && in.list_cols && app->theme.footer != GUI_STYLE_NONE) { /* at the side's width */
         GuiRect none = {0, 0, 0, 0};
         in.status = head_h(app) + 4 * app->scale +
                     status_rows(app, inner(app, p->side).w / cell_w(app), none, 0, 0) * cell_h(app);
@@ -1323,7 +1334,7 @@ static void menu_boxes(App* app, GuiMenuBoxes* m) {
         longest = SDL_max(longest, (int)SDL_utf8strlen(label));
     }
     place_screen(app, &m->place, boxed_title(app, menu_screen(app)), screen_keys(app, SAY_MENU_KEYS, keys, sizeof keys),
-                 longest + 2 + (int)SDL_utf8strlen(app->theme.cursor), 1);
+                 longest + 2 + (int)SDL_utf8strlen(app->theme.cursor), GUI_SHOWS_STATUS | GUI_SHOWS_TABS);
     list_place(app, &m->list, m->place.list, count, focus);
 }
 static GuiEntry menu_focus(const GuiMenuBoxes* m) { return m->entry[m->list.focus]; }
@@ -1484,7 +1495,8 @@ static void games_place(App* app, GuiPlace* p) {
     char keys[256];
     for (i = 0; i < app->games.count; ++i) longest = SDL_max(longest, (int)SDL_utf8strlen(app->games.names[i]));
     place_screen(app, p, boxed_title(app, GUI_SCREEN_GAMES), screen_keys(app, SAY_GAMES, keys, sizeof keys),
-                 longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor), 1);
+                 longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor),
+                 GUI_SHOWS_STATUS | GUI_SHOWS_TABS);
 }
 /* the games a page of the boxed list holds: those that fit under Back */
 static size_t games_page(App* app) {
@@ -1577,7 +1589,7 @@ static void pick_boxes(App* app, GuiPickBoxes* k) {
     int item = cell_h(app) + 2 * app->scale;
     char keys[256];
     place_screen(app, &k->place, boxed_title(app, menu_screen(app)), screen_keys(app, SAY_KEYS_HOW, keys, sizeof keys),
-                 0, 0);
+                 0, GUI_SHOWS_TABS);
     r = inner(app, k->place.list);
     list_place(
         app, &k->back,
@@ -1616,6 +1628,55 @@ static void draw_pick_boxed(App* app) {
     snprintf(line, sizeof line, "%s: " SAY_PICK_BOX, items[keys ? GUI_KEYS : app->menu.active]);
     bar_for(app, k.place.bar, line, screen_keys(app, SAY_KEYS_HOW, hints_line, sizeof hints_line));
 }
+/* a run of the console layout in boxes: the driver's output in the wide box, beside it what runs, its file and how it
+   ended, the status under them; the ESC line in the bar, as the theme's prompt frames it */
+static void run_place(App* app, GuiPlace* p) {
+    int width, height;
+    area(app, &width, &height);
+    place_screen(app, p, boxed_title(app, screen(app)), "", width / cell_w(app), GUI_SHOWS_STATUS);
+}
+/* the output box's cells under its head */
+static void run_console(App* app, const GuiPlace* p, int* cols, int* rows) {
+    GuiRect r = inner(app, p->list);
+    *cols = SDL_max(1, r.w / cell_w(app));
+    *rows = SDL_max(1, (p->list.h - head_h(app) - 4 * app->scale) / cell_h(app));
+}
+static void draw_run_boxed(App* app) {
+    GuiPlace p;
+    GuiRect r, text;
+    const GuiTheme* t = &app->theme;
+    int y, x, i, s = app->scale, cols, rows;
+    GuiPromptLine line =
+        app->finished ? (app->abnormal_exit ? GUI_PROMPT_FAILED : GUI_PROMPT_DONE) : GUI_PROMPT_ABORTING;
+    run_place(app, &p);
+    title_box(app, p.title, boxed_title(app, screen(app)));
+    y = pane(app, p.list, "Output");
+    r = inner(app, p.list);
+    run_console(app, &p, &cols, &rows);
+    SDL_SetTextureColorMod(app->font, t->ink.r, t->ink.g, t->ink.b);
+    for (i = 0; i < SDL_min(rows, app->console.rows); ++i)
+        for (x = 0; x < SDL_min(cols, app->console.cols); ++x)
+            if (app->console.cells[i][x] != ' ')
+                glyph(app, (float)(r.x + x * cell_w(app)), (float)(y + i * cell_h(app)), app->console.cells[i][x]);
+    y = pane(app, p.side, items[app->menu.selected]);
+    text = inner(app, p.side);
+    text = box_rect(text.x, y, text.w, p.side.y + p.side.h - y);
+    y += wrap_in(app, text, text.x, y, app->file ? app->file : "", 1, rgb(t->ink)) * cell_h(app);
+    if (app->finished)
+        wrap_in(app, text, text.x, y + cell_h(app) / 2, app->message, 0,
+                rgb(app->abnormal_exit ? t->failure : t->focus));
+    else if (app->aborting)
+        wrap_in(app, text, text.x, y + cell_h(app) / 2, "Aborting process tree...", 0, rgb(t->failure));
+    status_box(app, p.status);
+    bar(app, p.bar, app->file ? app->file : "", rgb(t->soft), "");
+    text = box_rect(p.bar.x + 3 * cell_w(app), p.bar.y, p.bar.w - 4 * cell_w(app), p.bar.h);
+    if (app->finished || app->aborting)
+        prompt_in(app, text, p.bar.y + 2 * s + cell_h(app), line, app->finished ? SAY_DONE : "Aborting process tree...",
+                  rgb(t->failure));
+    else
+        text_in(app, text, text.x + text.w - (int)strlen(SAY_ABORT) * cell_w(app), p.bar.y + 2 * s + cell_h(app),
+                SAY_ABORT, rgb(t->failure));
+}
 /* the menu's screen or a run's, in app->theme, on the render target as it is */
 static void draw_screen(App* app) {
     SDL_Color ink, soft, focus, paper, active, failure;
@@ -1639,6 +1700,12 @@ static void draw_screen(App* app) {
         SDL_SetRenderDrawColor(app->renderer, page.r, page.g, page.b, 255);
         SDL_RenderClear(app->renderer);
         render_steps(app);
+        render_ask(app);
+        overlay(app);
+        return;
+    }
+    if (boxed(app) && !idle) {
+        draw_run_boxed(app);
         render_ask(app);
         overlay(app);
         return;
@@ -2823,7 +2890,7 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     area(app, &width, &height);
     for (g = 0; g < app->groups; ++g) longest = SDL_max(longest, (int)strlen(app->group_keys[g].key));
     place_screen(app, &f->place, form_title(app, title, sizeof title), form_keys(app, keys, sizeof keys),
-                 theme ? width / cell_w(app) : longest + 2 + (int)SDL_utf8strlen(app->theme.marker), 0);
+                 theme ? width / cell_w(app) : longest + 2 + (int)SDL_utf8strlen(app->theme.marker), GUI_SHOWS_TABS);
     f->rows = &app->editor;
     if (app->form == GUI_FORM_SETTINGS) { /* the focused group's rows, to see before opening it */
         int g = app->editor.row;
@@ -3674,7 +3741,7 @@ static int tab_hit(App* app, float x, float y) {
     GuiPlace p;
     int i;
     if (!app->theme.tabs) return -1;
-    place_screen(app, &p, "", "", 0, 0);
+    place_screen(app, &p, "", "", 0, GUI_SHOWS_TABS);
     for (i = 0; i < GUI_TABS; ++i) {
         GuiRect r = tab_rect(app, p.tabs, i);
         if (x >= (float)r.x && x < (float)(r.x + r.w) && y >= (float)r.y && y < (float)(r.y + r.h)) return i;
@@ -3902,9 +3969,13 @@ static void touch(App* app, float x, float y) {
         return;
     }
     if (app->menu.running) {
+        GuiPlace p;
         layout(app);
-        if (SDL_RenderCoordinatesFromWindow(app->renderer, x * (float)w, y * (float)h, &rx, &ry) &&
-            (int)(ry / (float)(16 * app->scale)) == escape_row(app))
+        if (!SDL_RenderCoordinatesFromWindow(app->renderer, x * (float)w, y * (float)h, &rx, &ry)) return;
+        if (boxed(app) && app->theme.run != GUI_RUN_STEPS) { /* the bar the ESC line is in */
+            run_place(app, &p);
+            if (ry >= (float)p.bar.y && ry < (float)(p.bar.y + p.bar.h)) cancel(app);
+        } else if ((int)(ry / (float)(16 * app->scale)) == escape_row(app))
             cancel(app);
         return;
     }

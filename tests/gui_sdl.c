@@ -150,6 +150,22 @@ static void mouse_px(App* app, int x, int y, bool click) {
     }
     event(app, &e);
 }
+/* a finger tapping pixel x, y of the render */
+static void tap_px(App* app, int x, int y) {
+    SDL_Event e = {0};
+    float wx, wy;
+    int w, h;
+    layout(app);
+    SDL_GetWindowSize(app->window, &w, &h);
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (float)x + 0.5f, (float)y + 0.5f, &wx, &wy));
+    e.tfinger.fingerID = 9;
+    e.tfinger.x = wx / (float)w;
+    e.tfinger.y = wy / (float)h;
+    e.type = SDL_EVENT_FINGER_DOWN;
+    event(app, &e);
+    e.type = SDL_EVENT_FINGER_UP;
+    event(app, &e);
+}
 /* the boxed menu's entry for an item, -1 when it has none */
 static int item_entry(const GuiMenuBoxes* m, int item) {
     for (int i = 0; i < m->list.count; ++i)
@@ -2401,6 +2417,57 @@ int main(int argc, char** argv) {
             app.left = NULL;
             app.lefts = 0;
             app.menu.selected = GUI_KEYS;
+        }
+        /* a run of the console layout: the driver's output in its box, sized to it, beside it what runs and how it
+           ended, the ESC line in the bar, where a finger's tap aborts a run */
+        {
+            GuiPlace p;
+            Uint64 until;
+            int cols, rows;
+            char* hung = snx_path_join(temporary, "hang in join boxed.elf");
+            bool ready = false;
+            assert(!snx_write_file(hung, "", 0));
+            app.menu.selected = GUI_LINUX;
+            launch(&app, snx_strdup(hung), false);
+            for (until = SDL_GetTicks() + 5000; !ready && SDL_GetTicks() < until; SDL_Delay(5)) {
+                size_t got = 0;
+                unsigned char* data = snx_read_file(hung, &got);
+                ready = data && got == 5 && !memcmp(data, "ready", 5);
+                free(data);
+                pump(&app);
+            }
+            assert(ready && app.menu.running);
+            render(&app);
+            run_place(&app, &p);
+            run_console(&app, &p, &cols, &rows);
+            assert(app.console.cols == cols && app.console.rows == rows && !p.tabs.h);
+            text_px_is(&app, p.list.x + cw, p.list.y + 2 * s, "Output", normal, black);
+            text_px_is(&app, p.side.x + cw, p.side.y + 2 * s, "Load Linux ARM ELF", normal, black);
+            r = box_rect(p.bar.x + 3 * cw, p.bar.y, p.bar.w - 4 * cw, p.bar.h);
+            text_px_is(&app, r.x + r.w - (int)strlen(SAY_ABORT) * cw, p.bar.y + 2 * s + 16 * s, SAY_ABORT, red, black);
+            tap_px(&app, p.bar.x + p.bar.w / 2, p.bar.y + p.bar.h / 2);
+            assert(app.aborting);
+            for (until = SDL_GetTicks() + 3000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5)) pump(&app);
+            assert(!app.menu.running && !app.finished);
+            free(hung);
+            /* one that ends: its message beside the output, the ESC line to go back */
+            app.menu.selected = GUI_SWITCH;
+            launch(&app, snx_strdup(input), false);
+            for (until = SDL_GetTicks() + 5000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5)) pump(&app);
+            assert(app.finished && !app.abnormal_exit);
+            render(&app);
+            run_place(&app, &p);
+            text_px_is(&app, p.list.x + cw, p.list.y + head_h(&app) + 2 * s, "driver std", normal, black);
+            text_px_is(&app, p.side.x + cw,
+                       p.side.y + head_h(&app) + 2 * s + wrap_rows(app.file, (p.side.w - 2 * cw) / cw, 1) * 16 * s +
+                           8 * s,
+                       "Driver exited with status 0.", yellow, black);
+            text_px_is(&app, p.bar.x + 3 * cw, p.bar.y + 2 * s + 16 * s, SAY_DONE, red, black);
+            key(&app, SDLK_ESCAPE);
+            assert(!app.finished && app.menu.view == GUI_LOAD_NONE);
+            pump(&app);
+            app.menu.selected = GUI_KEYS;
+            app.menu.recent_focus = 0;
         }
         /* YoRHa: the boxes on its dim colour, the focused one on its focus colour with the cursor in the margin, the
            side box's name on a band of its ink */
