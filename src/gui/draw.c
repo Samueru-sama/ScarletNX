@@ -417,10 +417,46 @@ void gui_app_left_paths(const char* line, char* old, char* now, size_t size) {
     by += strlen(SAY_LEFT_BY);
     snprintf(now, size, "%.*s", (int)strcspn(by, "\n"), by);
 }
+/* the box of an older version's files in rows: its first row, its rows, and the files that fit in it */
+static void left_place(App* app, int* row, int* rows, int* shown) {
+    int width = SDL_max(8, app->cols - 7), title, room, used = 0;
+    const char* at;
+    char old[4200], now[4200];
+    /* a blank row, the title, a blank row, the files, a blank row or how many more, the two choices and a blank row */
+    title = wrapped(app, 0, 0, "", SAY_LEFT_TITLE, width, NULL);
+    room = app->rows - 2 - (title + 6);
+    for (*shown = 0, at = app->left; *shown < app->lefts; ++*shown, at = strchr(at, '\n') + 1) {
+        int need;
+        gui_app_left_paths(at, old, now, sizeof old);
+        need = wrapped(app, 0, 0, "- ", old, width, NULL) + wrapped(app, 0, 0, "-> ", now, width, NULL);
+        if (*shown && used + need > room) break;
+        used += need;
+    }
+    *rows = title + used + 6;
+    *row = SDL_max(0, (app->rows - *rows) / 2);
+}
+/* a box's choice, at row y in the box from column 2 to the screen's last but one: focused on a band (the theme's
+   focus bar) or in the focus colour */
+static void box_choice(App* app, int y, const char* label, int focused) {
+    const GuiTheme* t = &app->theme;
+    float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale, line = (float)app->scale;
+    char shown[128];
+    snprintf(shown, sizeof shown, "%s%s", t->marker, label);
+    if (focused && t->focus_bar)
+        fill(app, 2 * cw + line, (float)y * ch, (float)(app->cols - 3) * cw - 2 * line, ch, t->focus, 255);
+    text(app, 4, y, shown, rgb(focused && t->focus_bar ? t->page : focused ? t->focus : t->ink));
+}
+int gui_app_left_choice(App* app, float x, float y) {
+    int row, rows, shown, r = (int)(y / (16.0f * (float)app->scale)), c = (int)(x / (8.0f * (float)app->scale));
+    if (boxed(app)) return gui_app_left_boxed_choice(app, x, y);
+    left_place(app, &row, &rows, &shown);
+    if (c < 2 || c >= app->cols - 1) return -1;
+    return r == row + rows - 3 ? 0 : r == row + rows - 2 ? 1 : -1;
+}
 static void render_left(App* app) {
     const GuiTheme* t = &app->theme;
     SDL_Color warning = rgb(t->warning), failure = rgb(t->failure), ink = rgb(t->ink), soft = rgb(t->soft);
-    int width = SDL_max(8, app->cols - 7), title, room, used = 0, shown, rows, row, y;
+    int width = SDL_max(8, app->cols - 7), shown, rows, row, y;
     float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale, line = (float)app->scale;
     const char* at;
     char old[4200], now[4200], label[64];
@@ -429,18 +465,7 @@ static void render_left(App* app) {
         gui_app_left_boxed(app);
         return;
     }
-    /* a blank row, the title, a blank row, the files, a blank row or how many more, OK and a blank row */
-    title = wrapped(app, 0, 0, "", SAY_LEFT_TITLE, width, NULL);
-    room = app->rows - 2 - (title + 5);
-    for (shown = 0, at = app->left; shown < app->lefts; ++shown, at = strchr(at, '\n') + 1) {
-        int need;
-        gui_app_left_paths(at, old, now, sizeof old);
-        need = wrapped(app, 0, 0, "- ", old, width, NULL) + wrapped(app, 0, 0, "-> ", now, width, NULL);
-        if (shown && used + need > room) break;
-        used += need;
-    }
-    rows = title + used + 5;
-    row = SDL_max(0, (app->rows - rows) / 2);
+    left_place(app, &row, &rows, &shown);
     fill(app, 2 * cw, (float)row * ch, (float)(app->cols - 3) * cw, (float)rows * ch, t->soft, 255); /* framed */
     fill(app, 2 * cw + line, (float)row * ch + line, (float)(app->cols - 3) * cw - 2 * line,
          (float)rows * ch - 2 * line, t->page, 255);
@@ -455,8 +480,60 @@ static void render_left(App* app) {
         snprintf(label, sizeof label, "and %d more, which Share log lists", app->lefts - shown);
         text(app, 4, y, label, soft);
     }
-    snprintf(label, sizeof label, "%sOK, nothing is moved", t->marker);
-    text(app, 4, row + rows - 2, label, rgb(t->focus));
+    box_choice(app, row + rows - 3, SAY_LEFT_OK, app->left_focus == 0);
+    box_choice(app, row + rows - 2, SAY_LEFT_CLEAN, app->left_focus == 1);
+}
+/* what Clean old settings did, over the screen: each file, and what was done to it or why not (in the failure colour),
+   as many as fit, how many more, and OK */
+/* its box in rows: its first row, its rows, and the files that fit */
+static void cleaned_place(App* app, int* row, int* rows, int* shown) {
+    int width = SDL_max(8, app->cols - 7), used = 0, room, title;
+    const char* at;
+    char file[4400], what[4400], head[96];
+    bool ok;
+    /* a blank row, the title, a blank row, the files, a blank row or how many more, OK and a blank row */
+    gui_app_cleaned_title(app, head, sizeof head);
+    title = wrapped(app, 0, 0, "", head, width, NULL);
+    room = app->rows - 2 - (title + 5);
+    for (*shown = 0, at = app->cleaned.text; at && *shown < app->cleaned.count; ++*shown) {
+        int need;
+        at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
+        need = wrapped(app, 0, 0, "- ", file, width, NULL) + wrapped(app, 0, 0, "  ", what, width, NULL);
+        if (*shown && used + need > room) break;
+        used += need;
+    }
+    *rows = title + used + 5;
+    *row = SDL_max(0, (app->rows - *rows) / 2);
+}
+static void render_cleaned(App* app) {
+    const GuiTheme* t = &app->theme;
+    SDL_Color warning = rgb(t->warning), failure = rgb(t->failure), ink = rgb(t->ink), soft = rgb(t->soft);
+    int width = SDL_max(8, app->cols - 7), shown, rows, row, y, i;
+    float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale, line = (float)app->scale;
+    const char* at;
+    char file[4400], what[4400], head[96], label[64];
+    bool ok;
+    if (!app->cleaned_shown) return;
+    if (boxed(app)) {
+        gui_app_cleaned_boxed(app);
+        return;
+    }
+    gui_app_cleaned_title(app, head, sizeof head);
+    cleaned_place(app, &row, &rows, &shown);
+    fill(app, 2 * cw, (float)row * ch, (float)(app->cols - 3) * cw, (float)rows * ch, t->soft, 255); /* framed */
+    fill(app, 2 * cw + line, (float)row * ch + line, (float)(app->cols - 3) * cw - 2 * line,
+         (float)rows * ch - 2 * line, t->page, 255);
+    y = row + 1 + wrapped(app, 4, row + 1, "", head, width, &warning) + 1;
+    for (i = 0, at = app->cleaned.text; at && i < shown; ++i) {
+        at = gui_cleaned_entry(at, &ok, file, what, sizeof file);
+        y += wrapped(app, 4, y, "- ", file, width, ok ? &ink : &failure);
+        y += wrapped(app, 4, y, "  ", what, width, ok ? &soft : &failure);
+    }
+    if (shown < app->cleaned.count) {
+        snprintf(label, sizeof label, "and %d more, which Share log lists", app->cleaned.count - shown);
+        text(app, 4, y, label, soft);
+    }
+    box_choice(app, row + rows - 2, "OK", 1);
 }
 static void render_ask(App* app) {
     static const char* const choices[2][2] = {{"Keep going", "Abort"}, {"Stay", "Exit"}}; /* by exit, GUI_CONFIRM_* */
@@ -858,5 +935,14 @@ void gui_app_render(App* app) {
         render_editor(app);
     else
         draw_screen(app);
+    render_cleaned(app);
     SDL_RenderPresent(app->renderer);
+}
+/* the box's title of what Clean old settings did: how many files it did, and how many it could not */
+void gui_app_cleaned_title(const App* app, char* out, size_t size) {
+    int not_done = app->cleaned.count - app->cleaned.done;
+    if (not_done)
+        snprintf(out, size, "Clean old settings: %d done, %d not", app->cleaned.done, not_done);
+    else
+        snprintf(out, size, "Clean old settings: %d done", app->cleaned.done);
 }

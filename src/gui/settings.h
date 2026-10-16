@@ -48,6 +48,9 @@ void gui_settings_mark(GuiSettings* settings);
 void gui_settings_load(GuiSettings* settings, const char* path);
 /* the rows that are not at their start in path, by section; 0, else nonzero */
 int gui_settings_save(const GuiSettings* settings, const char* path);
+/* what the file of picks at path holds that no row takes, which the next save leaves out: a key no row has, or a value
+   its row does not take, as key=value, ", " between. How many */
+int gui_settings_unread(GuiSettings* settings, const char* path, char* out, size_t size);
 /* row back to its start (a page's or an All's: their rows), every row for -1 */
 void gui_settings_reset(GuiSettings* settings, int row);
 /* an All's row stepped (-1 or 1, 0 for a select) with every row it steps: 1, else 0 */

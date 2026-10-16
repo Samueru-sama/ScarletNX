@@ -200,6 +200,29 @@ int gui_settings_set(GuiSettings* s, const char* key, const char* value) {
     int i = find(s, key);
     return i < s->count && set(s, i, value);
 }
+int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size) {
+    size_t n = 0, bytes;
+    char *text = path ? (char*)snx_read_file(path, &bytes) : NULL, *key, *value;
+    int count = 0, i;
+    SnxIni ini;
+    if (size) out[0] = 0;
+    if (!text) return 0;
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value)) {
+        GuiSetting was;
+        int taken;
+        if ((i = find(s, key)) < s->count) { /* tried on the row, which is then put back as it was */
+            was = s->values[i];
+            taken = set(s, i, value);
+            s->values[i] = was;
+            if (taken) continue;
+        }
+        if (n < size) n += (size_t)snprintf(out + n, size - n, "%s%s=%s", count ? ", " : "", key, value);
+        ++count;
+    }
+    free(text);
+    return count;
+}
 int gui_settings_step_all(GuiSettings* s, int row, int step) {
     const GuiSetting* all = row >= 0 && row < s->count ? &s->values[row] : NULL;
     char value[64];

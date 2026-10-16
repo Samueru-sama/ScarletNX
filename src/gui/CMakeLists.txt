@@ -8,7 +8,7 @@ else()
     message(FATAL_ERROR "scarletnx-gui currently supports Linux, FreeBSD and Windows")
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
-add_library(snx_gui_support STATIC model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c
+add_library(snx_gui_support STATIC model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
             ${gui_process}
             "${CMAKE_BINARY_DIR}/generated/gui_themes.c")
 target_link_libraries(snx_gui_support PUBLIC scarletnx-common)
@@ -110,6 +110,9 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-editor "${PROJECT_SOURCE_DIR}/tests/gui_editor.c")
     target_link_libraries(snx-test-gui-editor PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_editor COMMAND snx-test-gui-editor)
+    add_executable(snx-test-gui-clean "${PROJECT_SOURCE_DIR}/tests/gui_clean.c")
+    target_link_libraries(snx-test-gui-clean PRIVATE snx_gui_support scarletnx-common)
+    add_test(NAME gui_clean COMMAND snx-test-gui-clean)
     add_executable(snx-test-gui-settings "${PROJECT_SOURCE_DIR}/tests/gui_settings.c")
     target_link_libraries(snx-test-gui-settings PRIVATE snx_gui_support scarletnx-common)
     if(SNX_BUILD_NX) # and the runtime's own list

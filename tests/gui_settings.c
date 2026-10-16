@@ -221,6 +221,26 @@ int main(int argc, char** argv) {
         gui_settings_load(&s, path);                        /* and the file's picks again */
         gui_settings_load(&s, "/nonexistent/settings.ini"); /* none: nothing changes */
         assert(!strcmp(gui_settings_value(&s, "language"), "3"));
+        /* what the file holds that no row takes, a key gone from the runtime or a value its row does not have, named
+           without changing the rows; the next save leaves it out */
+        {
+            char unread[256];
+            assert(!gui_settings_unread(&s, path, unread, sizeof unread) && !unread[0]);
+            assert(!gui_settings_unread(&s, NULL, unread, sizeof unread) && !unread[0]);
+            text = (char*)snx_read_file(path, &size);
+            assert(text);
+            {
+                char* more = snx_format("%s[Display]\nrenderer=opengl\ntouch=9\nlanguage=4\n", text);
+                assert(!snx_write_file(path, more, strlen(more)));
+                free(more);
+            }
+            free(text);
+            assert(gui_settings_unread(&s, path, unread, sizeof unread) == 2);
+            assert(!strcmp(unread, "renderer=opengl, touch=9"));
+            assert(!strcmp(gui_settings_value(&s, "language"), "3") && !strcmp(gui_settings_value(&s, "touch"), "2"));
+            assert(gui_settings_unread(&s, path, unread, 10) == 2 && !strcmp(unread, "renderer="));
+            assert(!gui_settings_save(&s, path) && !gui_settings_unread(&s, path, unread, sizeof unread));
+        }
         {
             char *plain = snx_path_join(dir, "a file"), *under = snx_path_join(plain, "settings.ini");
             assert(!snx_write_file(plain, "", 0) && gui_settings_save(&s, under)); /* a folder it cannot make */

@@ -574,43 +574,98 @@ void gui_app_ask_boxed(App* app) {
         list_item(app, &l, i, label, app->confirm.selected == i, false);
     }
 }
-/* the files an older version left, over the menu: each where it is (-) and where this one would keep it (->), as many
-   as fit, how many more, and OK, focused: any key closes it */
-void gui_app_left_boxed(App* app) {
-    char old[4200], now[4200], label[64];
-    const char* at;
-    int width, height, cols, room, used = 0, shown, i, y, s = app->scale, item = item_h(app), more;
-    GuiRect r, text;
-    GuiList ok;
-    SDL_Color failure = rgb(app->theme.failure), ink = rgb(app->theme.ink);
+/* a box of files over the screen, two lines each, as many as fit, how many more, then its choices: the files an older
+   version left (report 0), each where it is (-) and where this one keeps it (->), with OK and Clean old settings; or
+   what Clean old settings did (1), each file and what was done to it or why not, with OK */
+typedef struct {
+    GuiRect r;
+    GuiList choices;
+    int shown; /* the files that fit */
+} GuiFilesBox;
+/* the file at: its two lines, their marks and colours, whether the second is a path; the next file, NULL after the
+   last */
+static const char* files_entry(App* app, int report, const char* at, char* a, char* b, size_t size, const char** mark,
+                               SDL_Color* ca, SDL_Color* cb, int* path) {
+    SDL_Color failure = rgb(app->theme.failure), ink = rgb(app->theme.ink), soft = rgb(app->theme.soft);
+    bool ok;
+    const char* next;
+    if (!report) {
+        gui_app_left_paths(at, a, b, size);
+        *mark = "->";
+        *ca = failure;
+        *cb = ink;
+        *path = 1;
+        next = strchr(at, '\n') + 1;
+        return *next ? next : NULL;
+    }
+    next = gui_cleaned_entry(at, &ok, a, b, size);
+    *mark = "";
+    *ca = ok ? ink : failure;
+    *cb = ok ? soft : failure;
+    *path = 0;
+    return next;
+}
+static void files_place(App* app, int report, GuiFilesBox* f) {
+    char a[4400], b[4400];
+    const char *at = report ? app->cleaned.text : app->left, *mark;
+    int width, height, cols, room, used = 0, s = app->scale, item = item_h(app), more, path;
+    int count = report ? app->cleaned.count : app->lefts, choices = report ? 1 : 2;
+    int chooser = choices * (item + 6 * s) - 6 * s;
+    SDL_Color ca, cb;
+    GuiRect text;
     area(app, &width, &height);
     cols = width / cell_w(app) - 6;
-    room = (height - head_h(app) - item - 24 * s) / cell_h(app) - 2; /* the files' rows, and one for how many more */
-    for (shown = 0, at = app->left; shown < app->lefts; ++shown, at = strchr(at, '\n') + 1) {
+    room = (height - head_h(app) - chooser - 24 * s) / cell_h(app) - 2; /* the files' rows, and one for how many more */
+    for (f->shown = 0; at && f->shown < count; ++f->shown) {
         int need;
-        gui_app_left_paths(at, old, now, sizeof old);
-        need = wrap_rows(old, cols - 2, 1) + wrap_rows(now, cols - 3, 1);
-        if (shown && used + need > room) break;
+        at = files_entry(app, report, at, a, b, sizeof a, &mark, &ca, &cb, &path);
+        need = wrap_rows(a, cols - 2, 1) + wrap_rows(b, cols - 3, path);
+        if (f->shown && used + need > room) break;
         used += need;
     }
-    more = app->lefts - shown;
-    r = over_rect(app, cols, head_h(app) + (used + (more > 0)) * cell_h(app) + item + 16 * s);
-    y = over_box(app, r, "An older version left these files: move each from - to ->") + 2 * s;
-    text = inner(app, r);
-    for (i = 0, at = app->left; i < shown; ++i, at = strchr(at, '\n') + 1) {
-        gui_app_left_paths(at, old, now, sizeof old);
-        text_in(app, text, text.x, y, "-", failure);
-        y += wrap_in(app, text, text.x + 2 * cell_w(app), y, old, 1, failure) * cell_h(app);
-        text_in(app, text, text.x, y, "->", ink);
-        y += wrap_in(app, text, text.x + 3 * cell_w(app), y, now, 1, ink) * cell_h(app);
+    more = count - f->shown;
+    f->r = over_rect(app, cols, head_h(app) + (used + (more > 0)) * cell_h(app) + chooser + 16 * s);
+    text = inner(app, f->r);
+    list_place(app, &f->choices,
+               box_rect(text.x, f->r.y + f->r.h - chooser - 6 * s, SDL_min(text.w, 40 * cell_w(app)), chooser), choices,
+               report ? 0 : app->left_focus);
+}
+static void files_boxed(App* app, int report) {
+    char a[4400], b[4400], label[96];
+    const char *at = report ? app->cleaned.text : app->left, *mark;
+    int i, y, path, count = report ? app->cleaned.count : app->lefts;
+    SDL_Color ca, cb;
+    GuiFilesBox f;
+    GuiRect text;
+    files_place(app, report, &f);
+    if (report)
+        gui_app_cleaned_title(app, label, sizeof label);
+    else
+        snprintf(label, sizeof label, "%s", SAY_LEFT_TITLE);
+    y = over_box(app, f.r, label) + 2 * app->scale;
+    text = inner(app, f.r);
+    for (i = 0; at && i < f.shown; ++i) {
+        at = files_entry(app, report, at, a, b, sizeof a, &mark, &ca, &cb, &path);
+        text_in(app, text, text.x, y, "-", ca);
+        y += wrap_in(app, text, text.x + 2 * cell_w(app), y, a, 1, ca) * cell_h(app);
+        text_in(app, text, text.x, y, mark, cb);
+        y += wrap_in(app, text, text.x + (mark[0] ? 3 : 2) * cell_w(app), y, b, path, cb) * cell_h(app);
     }
-    if (more > 0) {
-        snprintf(label, sizeof label, "and %d more, which Share log lists", more);
+    if (f.shown < count) {
+        snprintf(label, sizeof label, "and %d more, which Share log lists", count - f.shown);
         text_in(app, text, text.x, y, label, rgb(app->theme.soft));
     }
-    list_place(app, &ok, box_rect(text.x, r.y + r.h - item - 6 * s, SDL_min(text.w, 26 * cell_w(app)), item), 1, 0);
-    snprintf(label, sizeof label, "%sOK, nothing is moved", app->theme.marker);
-    list_item(app, &ok, 0, label, true, false);
+    for (i = 0; i < f.choices.count; ++i) {
+        snprintf(label, sizeof label, "%s%s", app->theme.marker, report ? "OK" : i ? SAY_LEFT_CLEAN : SAY_LEFT_OK);
+        list_item(app, &f.choices, i, label, i == f.choices.focus, false);
+    }
+}
+void gui_app_left_boxed(App* app) { files_boxed(app, 0); }
+void gui_app_cleaned_boxed(App* app) { files_boxed(app, 1); }
+int gui_app_left_boxed_choice(App* app, float x, float y) {
+    GuiFilesBox f;
+    files_place(app, 0, &f);
+    return list_hit(&f.choices, x, y, true);
 }
 /* the games' screen in boxes: Back, then a page of the games, as many as the list's box holds */
 typedef struct {

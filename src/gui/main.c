@@ -93,11 +93,11 @@ static void next_theme(App* app, int step) {
     theme_note(app);
 }
 /* Settings > App's picks, kept at once in app_file for the next start. The App's note, or the menu's message, says when
-   they could not be */
-static void app_save(App* app) {
+   they could not be; 0, else nonzero */
+static int app_save(App* app) {
     char text[256], *dir, *staged;
     int n, failed;
-    if (!app->app_file) return;
+    if (!app->app_file) return 0;
     n = snprintf(text, sizeof text, "; Settings > App in the launcher, as they were left\n[app]\ntheme = %s\n",
                  app->theme.id);
     if (app->menu.text_size)
@@ -119,17 +119,18 @@ static void app_save(App* app) {
                  app->app_file);
     free(dir);
     free(staged);
+    return failed;
 }
-/* what app_save kept, as the menu opens. A value it does not know, or a theme no longer there, leaves what the menu has
-   and the message names it */
-static void app_load(App* app) {
-    size_t size = 0, i;
-    char *text = app->app_file ? (char*)snx_read_file(app->app_file, &size) : NULL, *key, *value, bad[384];
+/* what app_save kept, read: applied as the menu opens (apply), else only looked at. A value the menu does not know, or a
+   theme no longer there, leaves what the menu has, named in bad as key = value; how many */
+static int app_read(App* app, bool apply, char* bad, size_t size) {
+    size_t bytes = 0, i;
+    char *text = app->app_file ? (char*)snx_read_file(app->app_file, &bytes) : NULL, *key, *value;
     const char* const* dirs = (const char* const*)app->themes_dirs;
-    int scale = app->menu.text_size, n = 0;
+    int scale = app->menu.text_size, n = 0, count = 0;
     SnxIni ini;
-    if (!text) return;
-    bad[0] = 0;
+    if (size) bad[0] = 0;
+    if (!text) return 0;
     snx_ini_start(&ini, text);
     while (snx_ini_next(&ini, &key, &value)) {
         char* end = NULL;
@@ -138,7 +139,7 @@ static void app_load(App* app) {
             gui_themes_scan(&app->themes, dirs, 2);
             for (i = 0; i < app->themes.count && strcmp(app->themes.ids[i], value); ++i) {}
             if (i < app->themes.count) {
-                gui_theme_load(&app->theme, dirs, 2, value);
+                if (apply) gui_theme_load(&app->theme, dirs, 2, value);
                 continue;
             }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "text_size")) {
@@ -152,21 +153,28 @@ static void app_load(App* app) {
             }
         } else if (!strcmp(ini.section, "app") && !strcmp(key, "layout")) {
             if (!strcmp(value, "classic") || !strcmp(value, "panels")) {
-                app->menu.panels = !strcmp(value, "panels");
+                if (apply) app->menu.panels = !strcmp(value, "panels");
                 continue;
             }
         }
-        if (n) n += snprintf(bad + n, sizeof bad - (size_t)n, ", ");
-        if (n < (int)sizeof bad && strcmp(ini.section, "app")) /* a key outside [app] says where it is */
-            n += snprintf(bad + n, sizeof bad - (size_t)n, "[%s] ", ini.section);
-        if (n < (int)sizeof bad) n += snprintf(bad + n, sizeof bad - (size_t)n, "%s = %s", key, value);
-        if (n >= (int)sizeof bad) n = (int)sizeof bad - 1;
+        ++count;
+        if (n) n += snprintf(bad + n, size - (size_t)n, ", ");
+        if (n < (int)size && strcmp(ini.section, "app")) /* a key outside [app] says where it is */
+            n += snprintf(bad + n, size - (size_t)n, "[%s] ", ini.section);
+        if (n < (int)size) n += snprintf(bad + n, size - (size_t)n, "%s = %s", key, value);
+        if (n >= (int)size) n = (int)size - 1;
     }
     free(text);
-    if (scale != app->menu.text_size) {
+    if (apply && scale != app->menu.text_size) {
         app->menu.text_size = scale;
         gui_app_layout(app);
     }
+    return count;
+}
+/* app.ini as the menu opens, what it does not take named in the message */
+static void app_load(App* app) {
+    char bad[384];
+    app_read(app, true, bad, sizeof bad);
     theme_note(app);
     if (bad[0]) {
         size_t m = strlen(app->message);
@@ -424,7 +432,9 @@ const GuiThemeKey gui_app_form_keys[] = {
     {"", "Theme editor", GUI_KEY_ACTION, 0, 0, NULL, 0,
      "This theme's keys with a preview, saved as themes/<name>/theme.ini"},
     {"", "Game folders", GUI_KEY_ACTION, offsetof(GuiAppForm, folders), sizeof(((GuiAppForm*)0)->folders), NULL, 0,
-     "Folders of games listed with games/"}};
+     "Folders of games listed with games/"},
+    {"", "Clean old settings", GUI_KEY_ACTION, 0, 0, NULL, 0,
+     "What the runtime no longer reads, and the files an older version left: Enter twice"}};
 void gui_app_values(App* app) {
     GuiAppForm* f = &app->app_form;
     snprintf(f->theme, sizeof f->theme, "%s", app->theme.name);
@@ -672,6 +682,7 @@ void gui_app_leave_form(App* app) {
         open_app(app, GUI_APP_EDITOR);
     }
 }
+static void clean_row(App* app);
 /* the App's rows: the theme and the letters go round, either way, and the editor opens */
 static void app_action(App* app, int row, int step) {
     if (row == GUI_APP_THEME)
@@ -686,6 +697,9 @@ static void app_action(App* app, int row, int step) {
         return;
     } else if (row == GUI_APP_FOLDERS && !step) {
         open_folders(app, 0);
+        return;
+    } else if (row == GUI_APP_CLEAN) {
+        if (!step) clean_row(app);
         return;
     }
     if (row == GUI_APP_THEME || row == GUI_APP_LAYOUT || row == GUI_APP_TEXT) app_save(app);
@@ -725,6 +739,9 @@ void gui_app_editor_key(App* app, GuiKey key) {
         }
         return;
     }
+    if (app->form == GUI_FORM_APP &&
+        !(what == GUI_EDITOR_ACTION && app->editor.row == GUI_APP_CLEAN && !app->editor.step))
+        app->clean_armed = false; /* another key between the two Enters */
     if (what == GUI_EDITOR_ACTION && app->form == GUI_FORM_APP) {
         app_action(app, app->editor.row, app->editor.step);
         return;
@@ -973,6 +990,118 @@ static void left_behind(App* app) {
     free(folder);
     free(data);
 #endif
+}
+/* ---- Clean old settings (clean.c): [Deprecated] out of each game's .ini the menu reaches, what an older version left
+   moved or deleted, and the keys the menu's own files hold that nothing reads ---- */
+/* the folders a game's .ini can be in: the config folder's games/ (an installed build's), games/, the player's; each
+   once. How many, each in out to free */
+static int ini_folders(const App* app, char** out) {
+    int n = 0, i, k;
+    char* config = app->games_dir ? snx_user_path(app->games_dir, SNX_USER_CONFIG) : NULL;
+    const char* listed[GUI_FOLDERS_MAX + 2];
+    listed[n++] = config;
+    listed[n++] = app->games_dir;
+    for (i = 0; i < app->folder_count; ++i) listed[n++] = app->folders[i];
+    for (i = 0, k = 0; i < n; ++i) {
+        int seen = !listed[i];
+        for (int j = 0; j < k && !seen; ++j) seen = !strcmp(out[j], listed[i]);
+        if (!seen) out[k++] = snx_strdup(listed[i]);
+    }
+    free(config);
+    return k;
+}
+/* settings.ini's keys no row takes, while the runtime has listed its settings: without them every key of the
+   runtime's would look old */
+static int settings_unread(App* app, char* out, size_t size) {
+    GuiSettings* s;
+    if (size) out[0] = 0;
+    if (!app->settings_file || !snx_is_file(app->settings_file)) return 0;
+    s = settings_of(app);
+    return s->count > GUI_SETTINGS_OWN ? gui_settings_unread(s, app->settings_file, out, size) : 0;
+}
+/* what cleaning would do: the .ini files with a [Deprecated] section, the files an older version left, the keys of
+   settings.ini and app.ini nothing reads */
+static void clean_count(App* app, int* inis, int* lefts, int* keys) {
+    char* folders[GUI_FOLDERS_MAX + 2];
+    char unread[16];
+    int n = ini_folders(app, folders), i;
+    for (*inis = 0, i = 0; i < n; ++i) {
+        *inis += gui_clean_inis(NULL, folders[i]);
+        free(folders[i]);
+    }
+    left_behind(app);
+    *lefts = app->lefts;
+    *keys = settings_unread(app, unread, sizeof unread) + app_read(app, false, unread, sizeof unread);
+}
+/* it done, each file an entry of app->cleaned, which shows over the screen */
+static void clean_old(App* app) {
+    char* folders[GUI_FOLDERS_MAX + 2];
+    char unread[1024], what[1100];
+    int n = ini_folders(app, folders), i;
+    gui_cleaned_free(&app->cleaned);
+#ifdef SNX_XDG /* first, so a game's .ini moved is cleaned where it went */
+    {
+        char old[4200], now[4200], *data = snx_user_data_dir(), *gui = data ? snx_path_join(data, "gui") : NULL;
+        char* shader = snx_path_join(app->games_dir, "shader_cache");
+        const char* at;
+        int from_gui = 0, from_shader = 0;
+        left_behind(app);
+        for (at = app->left, i = 0; at && i < app->lefts; ++i, at = strchr(at, '\n') + 1) {
+            gui_app_left_paths(at, old, now, sizeof old);
+            from_gui |= gui && snx_path_within(old, gui); /* while it is there to be resolved */
+            from_shader |= snx_path_within(old, shader);
+            gui_clean_left(&app->cleaned, old, now);
+        }
+        /* the folders they were taken from, left empty: one with anything else in it stays */
+        if (from_gui) remove(gui);
+        if (from_shader) remove(shader);
+        free(shader);
+        free(gui);
+        free(data);
+        left_behind(app);
+        app->left_shown = false;
+    }
+#endif
+    for (i = 0; i < n; ++i) {
+        gui_clean_inis(&app->cleaned, folders[i]);
+        free(folders[i]);
+    }
+    if (settings_unread(app, unread, sizeof unread)) {
+        int failed = gui_settings_save(&app->settings, app->settings_file);
+        snprintf(what, sizeof what, "%s %s", failed ? "Not written without" : "Took out", unread);
+        gui_cleaned_add(&app->cleaned, !failed, app->settings_file, what);
+    }
+    if (app_read(app, false, unread, sizeof unread)) { /* the picks as the menu has them, nothing else */
+        int failed = app_save(app);
+        snprintf(what, sizeof what, "%s %s", failed ? "Not written without" : "Took out", unread);
+        gui_cleaned_add(&app->cleaned, !failed, app->app_file, what);
+    }
+    app->cleaned_shown = app->cleaned.count > 0;
+}
+/* App's row: the first Enter says what it would do, the second does it */
+static void clean_row(App* app) {
+    int inis, lefts, keys, n;
+    char* note = app->editor.note;
+    size_t size = sizeof app->editor.note;
+    if (app->clean_armed) {
+        app->clean_armed = false;
+        clean_old(app);
+        snprintf(note, size, "Cleaned: %d done, %d not", app->cleaned.done, app->cleaned.count - app->cleaned.done);
+        return;
+    }
+    clean_count(app, &inis, &lefts, &keys);
+    if (!inis && !lefts && !keys) {
+        snprintf(note, size,
+                 "Nothing to clean: no [Deprecated] in a game's .ini, no older version's files, no old keys");
+        return;
+    }
+    app->clean_armed = true;
+    n = snprintf(note, size, "Enter again to clean:");
+    if (inis) n += snprintf(note + n, size - (size_t)n, " [Deprecated] in %d .ini%s", inis, lefts || keys ? "," : "");
+    if (lefts && n < (int)size)
+        n += snprintf(note + n, size - (size_t)n, " %d older version's file%s%s", lefts, lefts > 1 ? "s" : "",
+                      keys ? "," : "");
+    if (keys && n < (int)size) snprintf(note + n, size - (size_t)n, " %d old key%s", keys, keys > 1 ? "s" : "");
 }
 static void pump(App* app) {
     if (app->menu.running) {
@@ -1278,8 +1407,9 @@ static void share_log(App* app) {
     game = newest_log(app);
     run = log_tail(app->run_log, 1 << 20);
     played = log_tail(game, 4 << 20);
-    text = snx_format("%s\nMessage: %s\n%s\n== the last run: %s ==\n%s\n\n== %s ==\n%s\n", snx_build_info(),
-                      app->message, app->left ? app->left : "", app->run_log ? app->run_log : "", run,
+    text = snx_format("%s\nMessage: %s\n%s%s%s\n== the last run: %s ==\n%s\n\n== %s ==\n%s\n", snx_build_info(),
+                      app->message, app->left ? app->left : "", app->cleaned.count ? "Clean old settings:\n" : "",
+                      app->cleaned.text ? app->cleaned.text : "", app->run_log ? app->run_log : "", run,
                       game ? game : "no game log", played);
     saved = folder ? snx_path_join(folder, "scarletnx.log") : NULL;
     if (!saved || snx_write_file(saved, text, strlen(text)))
@@ -1705,16 +1835,51 @@ bool gui_app_menu_key_of(const SDL_KeyboardEvent* k, GuiKey* key) {
         default: return false;
     }
 }
+/* the box of an older version's files: the arrows and Tab go between OK and Clean old settings, Enter takes the
+   focused one, a click or a tap the one under it; any other key, or a click off them, is OK. Clean old settings shows
+   what it did */
+static void left_input(App* app, const SDL_Event* e) {
+    GuiKey key;
+    int choice = 0;
+    if (e->type == SDL_EVENT_KEY_DOWN) {
+        int known = gui_app_menu_key_of(&e->key, &key);
+        if (e->key.repeat) return;
+        if (e->key.key == SDLK_TAB || (known && key <= GUI_RIGHT)) {
+            app->left_focus = !app->left_focus;
+            return;
+        }
+        choice = known && key == GUI_SELECT ? app->left_focus : 0;
+    } else {
+        float x = e->button.x, y = e->button.y, rx, ry;
+        int w, h;
+        if (e->type == SDL_EVENT_FINGER_DOWN) {
+            SDL_GetWindowSize(app->window, &w, &h);
+            x = e->tfinger.x * (float)w;
+            y = e->tfinger.y * (float)h;
+        }
+        gui_app_layout(app);
+        if (SDL_RenderCoordinatesFromWindow(app->renderer, x, y, &rx, &ry)) choice = gui_app_left_choice(app, rx, ry);
+    }
+    app->left_shown = false;
+    app->left_focus = 0;
+    if (choice == 1) clean_old(app);
+}
 static void event(App* app, const SDL_Event* e) {
     GuiKey key;
     if (e->type == SDL_EVENT_QUIT || e->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         app->menu.quit = true;
         return;
     }
-    /* the box of an older version's files takes the first key, button or finger, which closes it */
+    /* what Clean old settings did takes the first key, button or finger, which closes it */
+    if (app->cleaned_shown &&
+        (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN)) {
+        app->cleaned_shown = false;
+        return;
+    }
+    /* the box of an older version's files takes the keys, buttons and fingers until one closes it */
     if (app->left_shown && !app->splash &&
         (e->type == SDL_EVENT_KEY_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN)) {
-        app->left_shown = false;
+        left_input(app, e);
         return;
     }
     /* the splash takes the input it gets: a key, a button or a finger ends it, and does nothing else */
@@ -1952,6 +2117,7 @@ static void cleanup(App* app) {
     for (int i = 0; i < app->folder_count; ++i) free(app->folders[i]);
     free(app->folders_file);
     free(app->app_file);
+    gui_cleaned_free(&app->cleaned);
     free(app->left);
     free(app->self);
     free(app->drivers);

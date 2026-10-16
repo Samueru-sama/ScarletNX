@@ -71,7 +71,15 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   `games/`'s. **Add a folder** opens the system's folder picker; a folder dropped on the window
   or a path pasted with Ctrl+V is added too. Del, or Enter twice, takes one off the list (the
   folder stays). They are kept in `folders.txt` beside `settings.ini`; one that cannot be read
-  is named when the games are listed. A group of settings shows
+  is named when the games are listed. **Clean old settings**, Enter twice (the first says what it
+  would do), takes out what nothing reads any more and puts away what an older version left: the
+  `[Deprecated]` section the runtime gives a game's `.ini` for the keys it no longer uses (in the
+  config folder's `games/`, in `games/` and in the player's folders), the keys of `settings.ini`
+  that no setting of the runtime's takes (only while the runtime lists its settings) and those of
+  `app.ini` the menu does not know, and on Linux the files of the box below, each moved where this
+  version keeps it, or deleted when that place already holds this version's own, so nothing in use
+  is lost. A box over the screen then lists each file and what was done to it, or why not, until
+  a key closes it; Share log lists them too. A group of settings shows
   a row each, its help above, Left/Right going round its values, Enter typing one. A setting not picked shows the runtime's default and `[default]` (*By label [default]*):
   the run takes the game's `.ini`'s, which starts as that; one picked goes to every
   Switch run as `--key=value`, over the `.ini` ([USAGE](USAGE.md)), and is kept for every game:
@@ -116,8 +124,10 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   longer looks: each file where it is (`- `, in the failure colour) and where to move it (`-> `),
   a path too long for a row going on in the next. They are the menu's
   `recent.txt` and `last-run.log`, `work/`, and each game's settings, log, `threads.txt` and
-  pipeline cache. Any key, click or tap closes it;
-  nothing is moved, and it shows again at the next start for as long as they are there.
+  pipeline cache. Its choices are **OK, nothing is moved**, focused, and **Move them now (Clean
+  old settings)**, which does what Settings > App's Clean old settings does; the arrows and Tab go
+  between them, Enter or a click takes one, and any other key, or a click or tap off them, is OK.
+  Left as they are, they show again at the next start for as long as they are there.
   **Share log** lists them all.
 - **Recent games**, above the items, lists the last five games run, newest first, by
   the name their run gave (the runner's `ScarletNX - <name>` line), else their file's.

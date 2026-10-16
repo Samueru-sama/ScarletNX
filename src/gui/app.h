@@ -18,6 +18,7 @@
 #include "window_icon.h"
 #include "build_info.h"
 #include "recent.h"
+#include "clean.h"
 #include "settings.h"
 #include "pad_sdl.h"
 #include "pad_screen.h"
@@ -71,6 +72,7 @@ typedef struct {
     char* left;          /* what older builds left where this one no longer looks, a line each, lefts of them */
     int lefts;
     bool left_shown;   /* in a box as the menu opens, until a key, a button or a finger closes it */
+    int left_focus;    /* its choice: OK, nothing is moved (0), or Clean old settings (1) */
     Uint64 left_at;    /* when they were looked for */
     char* recent_file; /* where the recent games are kept; NULL keeps none */
     char* run_log;     /* where a run's output goes as it comes, the last run's; NULL keeps none */
@@ -120,6 +122,9 @@ typedef struct {
     GuiThemeKey group_keys[GUI_GROUPS_MAX];
     char group_about[GUI_GROUPS_MAX][128];
     GuiAppForm app_form;
+    bool clean_armed;   /* App's Clean old settings selected once, saying what it would do: again does it */
+    GuiCleaned cleaned; /* what it did, in a box over the screen while cleaned_shown, until a key closes it */
+    bool cleaned_shown;
     char* folders[GUI_FOLDERS_MAX]; /* the player's game folders, listed after games/ */
     int folder_count;
     char* folders_file; /* where they are kept; NULL keeps none */
@@ -194,12 +199,14 @@ typedef struct {
 #endif
 #define SAY_LEFT_BY    " was left by an older version: this one keeps it in "
 #define SAY_LEFT_TITLE "An older version left these files: move each from - to ->"
+#define SAY_LEFT_OK    "OK, nothing is moved"
+#define SAY_LEFT_CLEAN "Move them now (Clean old settings)"
 /* the screens the tabs go round, Tab and Shift+Tab or a click on one: the menu, Games and the Settings */
 enum { GUI_TAB_MENU, GUI_TAB_GAMES, GUI_TAB_SETTINGS, GUI_TABS };
 /* what a screen has besides its title, list and bar: the status box when the theme has a footer, the tabs when it
    shows them */
 enum { GUI_SHOWS_STATUS = 1, GUI_SHOWS_TABS = 2 };
-enum { GUI_APP_THEME, GUI_APP_TEXT, GUI_APP_LAYOUT, GUI_APP_EDITOR, GUI_APP_FOLDERS, GUI_APP_ROWS };
+enum { GUI_APP_THEME, GUI_APP_TEXT, GUI_APP_LAYOUT, GUI_APP_EDITOR, GUI_APP_FOLDERS, GUI_APP_CLEAN, GUI_APP_ROWS };
 extern const char* const gui_items[];         /* the menu's items, by GUI_GAMES and the others */
 extern const GuiThemeKey gui_app_form_keys[]; /* Settings > App's rows */
 static inline SDL_Color rgb(GuiRgb c) {
@@ -367,6 +374,11 @@ void gui_app_place_screen(App* app, GuiPlace* p, const char* title, const char* 
 void gui_app_draw_menu_boxed(App* app);
 void gui_app_ask_boxed(App* app);
 void gui_app_left_boxed(App* app);
+/* the older files' box's choice under pixel x, y: 0 OK, 1 Clean old settings, -1 none */
+int gui_app_left_choice(App* app, float x, float y);
+int gui_app_left_boxed_choice(App* app, float x, float y);
+void gui_app_cleaned_title(const App* app, char* out, size_t size);
+void gui_app_cleaned_boxed(App* app);
 size_t gui_app_games_page(App* app);
 void gui_app_draw_games_boxed(App* app);
 void gui_app_draw_pick_boxed(App* app);
