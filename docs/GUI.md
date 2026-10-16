@@ -126,7 +126,8 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   an older version's in `~/.local/share/scarletnx/gui/` stay where they are), or in
   `%APPDATA%\scarletnx\gui\` on Windows, a line per
   game: `switch`, `linux` or `3ds`, `file` or `games` (a program from games/, run as it is),
-  the path and the name, separated by tabs.
+  the path and the name, separated by tabs. A list that cannot be written there is named in the
+  message, after a run's end too, until it can be.
 
 The launcher runs Switch inputs with the `scarletnx` it is part of, and looks beside it, then on
 PATH, for `scarletnx-gnuabi` or `scarletnx-3ds`. Files are passed directly

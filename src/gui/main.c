@@ -173,11 +173,30 @@ static void app_load(App* app) {
         snprintf(app->message + m, sizeof app->message - m, "%sNot used from %s: %s", m ? " " : "", app->app_file, bad);
     }
 }
+/* a list that could not be kept: the message says so, after what it says already, until it is */
+static void recent_note(App* app) {
+    char note[sizeof app->message], *at;
+    size_t n = strlen(app->message);
+    if (!app->recent_file) return;
+    snprintf(note, sizeof note, "Recent games not kept: %s could not be written.", app->recent_file);
+    at = strstr(app->message, note);
+    if (app->recent_unsaved && !at)
+        snprintf(app->message + n, sizeof app->message - n, "%s%s", n ? " " : "", note);
+    else if (!app->recent_unsaved && at) { /* with the space that set it apart */
+        size_t cut = strlen(note);
+        if (at > app->message)
+            --at, ++cut;
+        else if (at[cut] == ' ')
+            ++cut;
+        memmove(at, at + cut, strlen(at + cut) + 1);
+    }
+}
 /* the list as the menu and the file have it */
 static void recent_changed(App* app) {
     app->menu.recent = recent_shown(app) + recent_more(app);
     if (app->menu.recent_focus > app->menu.recent) app->menu.recent_focus = app->menu.recent;
-    if (app->recent_file) gui_recent_save(&app->recent, app->recent_file);
+    if (app->recent_file) app->recent_unsaved = gui_recent_save(&app->recent, app->recent_file) != 0;
+    recent_note(app);
 }
 static void recent_open(App* app, char* file) {
     free(app->recent_file);
@@ -830,6 +849,7 @@ static void leave_run(App* app) {
     space_start(app);
     if (app->menu.active == GUI_GAMES && app->menu.games) app->menu.selected = GUI_GAMES;
     app->message[0] = 0;
+    recent_note(app);
     app->leaving_ms = 0;
     app->fade_ms = app->theme.fade_in_ms ? SDL_max(now_ms(app), 1) : 0;
     gui_app_layout(app);
@@ -993,6 +1013,7 @@ static void pump(App* app) {
                 snprintf(app->message, sizeof(app->message), "Program ended abnormally (status %d).", status);
             else
                 snprintf(app->message, sizeof(app->message), "Driver exited with status %d.", status);
+            recent_note(app);
             app->aborting = false;
             app->confirm.shown = false; /* a run that ended while asking has nothing left to abort */
             gui_app_layout(app);

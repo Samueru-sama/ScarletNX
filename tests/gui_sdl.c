@@ -1340,6 +1340,41 @@ int main(int argc, char** argv) {
             recent_changed(&app);
             app.menu.recent_focus = 0;
         }
+        /* a list that cannot be written: the run's end says so, and the menu after it, until the list is kept */
+        {
+            char* blocker = snx_path_join(temporary, "not a folder");
+            char* unsaved = snx_path_join(blocker, "recent.txt");
+            char* game = snx_path_join(temporary, "option flags unsaved.nro");
+            char note[512], expected[600];
+            assert(!snx_write_file(blocker, "file", 4) && !snx_write_file(game, "fixture", 7));
+            recent_open(&app, snx_strdup(unsaved));
+            app.menu.selected = GUI_SWITCH;
+            launcher(&app, true);
+            launch(&app, game, false);
+            for (Uint64 until = SDL_GetTicks() + 10000; app.menu.running && SDL_GetTicks() < until; SDL_Delay(5))
+                pump(&app);
+            assert(app.finished && !app.abnormal_exit);
+            snprintf(note, sizeof note, "Recent games not kept: %s could not be written.", unsaved);
+            snprintf(expected, sizeof expected, "Driver exited with status 0. %s", note);
+            assert(app.recent_unsaved && app.recent.count == 1 && !strcmp(app.message, expected));
+            gui_app_render(&app);
+            colored_text(&app, 1, "Driver exited with status 0. Recent games not kept:", yellow);
+            leave_run(&app);
+            assert(!strcmp(app.message, note));
+            /* written at last: the note goes, what the message said before it stays */
+            assert(!remove(blocker));
+            snprintf(app.message + strlen(app.message), sizeof app.message - strlen(app.message), " After.");
+            recent_changed(&app);
+            assert(!app.recent_unsaved && !strcmp(app.message, "After.") && snx_is_file(unsaved));
+            snprintf(app.message, sizeof app.message, "Before. %s", note);
+            recent_changed(&app);
+            assert(!strcmp(app.message, "Before."));
+            assert(!snx_remove_tree(blocker));
+            free(unsaved);
+            free(blocker);
+            app.recent = (GuiRecent){0};
+            app.menu.recent_focus = 0;
+        }
         /* the rest runs with no list */
         free(app.recent_file);
         app.recent_file = NULL;
