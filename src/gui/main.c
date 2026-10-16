@@ -2782,23 +2782,34 @@ static void pad_disc(App* app, const SnxPadShape* p, GuiRgb c) {
 static void render_pad(App* app) {
     const GuiTheme* theme = &app->theme;
     float cw = 8.0f * (float)app->scale, ch = 16.0f * (float)app->scale;
-    char title[160], *c;
+    char title[160], keys[256], *c;
+    GuiPlace place;
     int i;
     SDL_SetRenderDrawColor(app->renderer, theme->page.r, theme->page.g, theme->page.b, 255);
     SDL_RenderClear(app->renderer);
     snprintf(title, sizeof title, "SETTINGS  /  %s  /  %s", app->group_keys[app->group].key,
              app->settings.keys[app->page].key);
     for (c = title; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
-    if (theme->head == GUI_STYLE_BAR) band(app, 0, 1, theme->ink);
-    text(app, 1, 0, title, rgb(theme->head == GUI_STYLE_BAR ? theme->page : theme->ink));
-    text(app, 1, 1, SAY_PAD, rgb(theme->ink));
-    if (app->editor.note[0])
-        text(app, 1, 2, app->editor.note, rgb(theme->failure));
-    else if (!app->pads_read)
-        text(app, 1, 2, "Looking for controllers...", rgb(theme->soft));
-    pad_sync(app);
-    snx_pad_screen_lay(&app->pad, cw, 3 * ch, (float)(app->cols - 2) * cw, (float)SDL_max(1, app->rows - 4) * ch, cw,
-                       ch, &app->pad_drawing);
+    if (boxed(app)) { /* the theme's boxes round it: the pad drawn in the box between the title and the bar */
+        GuiRect r;
+        place_screen(app, &place, title, screen_keys(app, SAY_PAD, keys, sizeof keys), 0, GUI_SHOWS_TABS);
+        chrome(app, &place);
+        title_box(app, place.title, theme->head == GUI_STYLE_NONE ? "" : title);
+        r = inner(app, place.list);
+        pad_sync(app);
+        snx_pad_screen_lay(&app->pad, (float)r.x, (float)r.y, (float)r.w, (float)r.h, cw, ch, &app->pad_drawing);
+    } else {
+        if (theme->head == GUI_STYLE_BAR) band(app, 0, 1, theme->ink);
+        text(app, 1, 0, title, rgb(theme->head == GUI_STYLE_BAR ? theme->page : theme->ink));
+        text(app, 1, 1, SAY_PAD, rgb(theme->ink));
+        if (app->editor.note[0])
+            text(app, 1, 2, app->editor.note, rgb(theme->failure));
+        else if (!app->pads_read)
+            text(app, 1, 2, "Looking for controllers...", rgb(theme->soft));
+        pad_sync(app);
+        snx_pad_screen_lay(&app->pad, cw, 3 * ch, (float)(app->cols - 2) * cw, (float)SDL_max(1, app->rows - 4) * ch,
+                           cw, ch, &app->pad_drawing);
+    }
     for (i = 0; i < app->pad_drawing.n; ++i) {
         const SnxPadShape* p = &app->pad_drawing.shape[i];
         GuiRgb on = p->style == SNX_PAD_STYLE_FOCUS ? theme->focus : theme->active;
@@ -2812,6 +2823,13 @@ static void render_pad(App* app) {
         else
             fill(app, p->x, p->y, p->w, p->h, theme->soft, p->kind == SNX_PAD_SHAPE_BAR ? 255 : 0x40);
     }
+    if (!boxed(app)) return;
+    vignette(app);
+    bar(app, place.bar,
+        app->editor.note[0] ? app->editor.note
+        : !app->pads_read   ? "Looking for controllers..."
+                            : "",
+        rgb(app->editor.note[0] ? theme->failure : theme->soft), keys);
 }
 static void editor_key(App* app, GuiKey key) {
     GuiEditorDo what = gui_editor_key(&app->editor, key);

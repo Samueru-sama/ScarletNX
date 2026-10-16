@@ -203,7 +203,7 @@ the picker) and Back at its foot. The Settings list their groups, and beside the
 click on a row, opens the group, its rows taking the focus, and a click on another group opens that one. The theme editor
 lists its keys, the preview beside them. A window too narrow for both puts the side box under the list. A run of the
 console layout shows the driver's output in a box sized to it, beside it what runs and how it ended over the status,
-the ESC line in the bar, which a tap aborts. A question, or the files an older version left, comes in a box over the
+the ESC line in the bar, which a tap aborts. The button map keeps its own boxes, between the title and the bar. A question, or the files an older version left, comes in a box over the
 screen darkened. `boxes = none` keeps the lines down the page described above.
 
 The built-ins are `default`, the look above, and `yorha`: paper and ink, a title twice the text's size over its

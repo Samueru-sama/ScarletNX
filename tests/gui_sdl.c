@@ -2874,6 +2874,41 @@ int main(int argc, char** argv) {
     assert(app.menu.running && app.menu.selected == GUI_SWITCH);
     finish(&app, 0);
     button_map(&app);
+    /* the button map in the theme's boxes: the tabs, the title big, the pad drawn in the box between it and the bar,
+       which says the note a map it cannot read leaves */
+    {
+        GuiPlace p;
+        GuiRect r;
+        char keys[256];
+        const SnxPadShape* first;
+        int s = app.scale, cw = 8 * s, page = -1;
+        app.theme = *gui_theme_builtin("default");
+        for (int i = 0; i < app.settings.count; ++i)
+            if (app.settings.values[i].kind == GUI_SETTING_PAGE) page = i;
+        open_settings(&app);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_RETURN);
+        app.editor.row = page - app.first;
+        key(&app, SDLK_RETURN);
+        assert(app.form == GUI_FORM_PAD && app.editor.note[0]); /* the map it cannot read, still set */
+        render(&app);
+        place_screen(&app, &p, "SETTINGS  /  CONTROLLERS  /  BUTTON MAP", screen_keys(&app, SAY_PAD, keys, sizeof keys),
+                     0, GUI_SHOWS_TABS);
+        r = inner(&app, p.list);
+        first = drawn(&app, 0, SNX_PAD_SHAPE_BOX, -1);
+        assert(first && first->x >= (float)r.x && first->y >= (float)r.y && first->y < (float)(r.y + r.h));
+        text_px_is(&app, tab_rect(&app, p.tabs, GUI_TAB_SETTINGS).x + cw, p.tabs.y + 2 * s, "Settings", yellow, black);
+        {
+            char start[24];
+            snprintf(start, sizeof start, "%s", app.editor.note); /* as far as the bar shows it at once */
+            text_px_is(&app, p.bar.x + 3 * cw, p.bar.y + 2 * s, start, red, black);
+        }
+        key(&app, SDLK_ESCAPE);
+        assert(app.form == GUI_FORM_GROUP);
+        leave_editor(&app);
+        lines(&app, "default");
+    }
     step_line();
     /* YoRHa's Settings: its groups' column wide enough for the last row with its cursor; a page of a group open, its
        name over its rows */
