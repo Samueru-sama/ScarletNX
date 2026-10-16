@@ -2935,6 +2935,17 @@ int main(int argc, char** argv) {
         app.editor.row = row;
         key(&app, SDLK_RETURN);
         assert(app.form == GUI_FORM_GROUP && app.editor.row == 0);
+        /* a setting not picked: its default and [default], as the lines show it */
+        {
+            char shown[96], line[200];
+            render(&app);
+            form_boxes(&app, &f);
+            gui_settings_shown(&app.settings, app.first, shown, sizeof shown);
+            assert(!strcmp(shown, "Off [default]"));
+            snprintf(line, sizeof line, "\xfe %-*s %s", form_labels(f.rows), "Fullscreen", shown);
+            b = list_box(&f.right, 0);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), line, rgb(app.theme.page), rgb(app.theme.focus));
+        }
         key(&app, SDLK_DOWN);
         key(&app, SDLK_RETURN);
         assert(app.page >= 0);

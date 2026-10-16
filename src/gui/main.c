@@ -3042,9 +3042,10 @@ static void form_row(App* app, const GuiList* l, const GuiEditor* e, int r, int 
     gui_editor_label(e, r, label, sizeof label);
     if (typing)
         snprintf(value, sizeof value, "%s_", e->text);
+    else if (k && e->object == (char*)app->settings.values) /* a setting: a pick, else its default and [default] */
+        gui_settings_shown(&app->settings, (int)(k - app->settings.keys), value, sizeof value);
     else
         gui_editor_value(e, r, value, sizeof value);
-    if (app->form == GUI_FORM_GROUP && e == &app->editor && k && !value[0]) snprintf(value, sizeof value, ".ini");
     snprintf(line, sizeof line, "%s%-*s %s", app->theme.marker, labels, label, value);
     n = SDL_utf8strlen(line);
     if (typing && room > 4 && n > (size_t)room) { /* the typed end in view */
@@ -3126,7 +3127,7 @@ static void draw_form_boxed(App* app) {
         list_marks(app, &f.right);
         if (app->form == GUI_FORM_SETTINGS || app->form == GUI_FORM_GROUP)
             text_in(app, inner(app, f.info), f.info.x + cell_w(app), f.info.y,
-                    app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. .ini: as the game's .ini says"
+                    app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. [default]: as the game's .ini says"
                                                            : "The runtime listed no settings",
                     rgb(app->theme.soft));
     }
