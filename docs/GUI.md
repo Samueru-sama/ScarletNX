@@ -20,7 +20,8 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
 - Tab and Shift+Tab go round the menu, Games and the Settings, which a theme in boxes shows as tabs over
   the title (`[head] tabs`); a click on a tab opens it. A theme edited and not saved keeps its screen.
 - A list with rows out of sight (the menu with big letters, `games/`'s pages, the Settings, the theme
-  editor) shows an arrow in its left margin, up on its first row and down on its last, in the soft colour.
+  editor) shows an arrow beside it, up on its first row and down on its last, in the soft colour: in the
+  left margin of the lines down the page, past the right edge of boxes.
 - Moving the mouse over an item focuses it in yellow without activating it.
 - The menu, top to bottom: **Recent games**, **Games**, the three loads, **Setup device keys**,
   **Settings**, **Share log** and **Exit**.
@@ -111,8 +112,8 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   **Share log** lists them all.
 - **Recent games**, above the items, lists the last five games run, newest first, by
   the name their run gave (the runner's `ScarletNX - <name>` line), else their file's.
-  The focus moves between them and the items in one ring, and the line under the menu
-  shows the focused game's path. Choosing one runs it again with the driver it was
+  The focus moves between them and the items in one ring, and the bar at the foot (in the
+  lines down the page, the line under the menu) shows the focused game's path. Choosing one runs it again with the driver it was
   loaded with and the options the menu has now; a game whose file is gone leaves the
   list instead. The list is kept in `recent.txt`, beside `last-run.log`, in the user's state
   folder on Linux (`$XDG_STATE_HOME/scarletnx/gui/`, by default `~/.local/state/scarletnx/gui/`;
@@ -367,8 +368,9 @@ ErET needs `[theme] layout`, so the built-in files carry one: `debug` and `menu`
   that each, written again, reads to the same theme.
   They are never changed: a field added to themes later is simply not in an older one's JSON.
 - A new key, or a new word for a key, keeps N: an older GUI leaves what it does not know, and
-  the base's value stays. A new key's value in the built-ins must keep an older file looking
-  as it did.
+  a file that does not name it takes its base's value, so an older theme gets the new look of
+  the built-in it starts from (the boxes, the tabs: `boxes = none` keeps the lines).
+  `gui_theme_formats` checks that each fixture reads its base's value of every key added since.
 - N goes up only when a key that exists has to mean something else. The GUI then reads the
   older format's files with the older meaning, their fixtures stay, and the new format's go
   in `tests/gui_themes/<N+1>/`.
