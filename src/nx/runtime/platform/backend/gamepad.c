@@ -7,6 +7,26 @@
 #include <SDL3/SDL.h>
 
 static SDL_Gamepad* g_pads[SNX_GAMEPADS];
+static struct {
+    int background;
+} g_cfg;
+
+/* SDL drops a gamepad's presses while no window of the program has the focus, unless told otherwise; set before it
+   starts its gamepads (the .ini is read first), and at once on a change */
+static void background_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, g_cfg.background ? "1" : "0");
+}
+const IniOpt g_gamepad_ini[] = {{"gamepad_background", "0",
+                                 "1 = the controllers still play the game while its window is not focused", INI_INT, 0,
+                                 &g_cfg.background, 0, 1, background_set},
+                                {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL}};
+int gamepad_ini(const char* key, const char* value) {
+    const IniOpt* o = ini_find(g_gamepad_ini, key);
+    if (o) ini_read(o, value);
+    return o != NULL;
+}
 
 static int is_open(SDL_JoystickID id) {
     int i;

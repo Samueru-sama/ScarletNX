@@ -15,6 +15,7 @@
 #include "runtime/platform/log.h"
 #include "runtime/platform/plat.h"
 #include "runtime/platform/vpad.h"
+#include "runtime/platform/gamepad.h"
 #include "hle/services/services.h"
 #include <errno.h>
 #include <limits.h>
@@ -212,18 +213,19 @@ typedef struct {
     const IniOpt* opts;
     int (*apply)(const char* k, const char* v);
 } IniTable;
-#define INI_SEC_TABLES 2
+#define INI_SEC_TABLES 3
 typedef struct {
     const char* title;
     IniTable t[INI_SEC_TABLES];
 } IniSec;
-static const IniSec INI_SECS[] = {{"Display", {{INI_DISPLAY, NULL}}},
-                                  {"Graphics", {{INI_GRAPHICS, NULL}}},
-                                  {"Performance", {{INI_PERF, NULL}}},
-                                  {"Input", {{g_backend_ini, backend_ini}, {g_vpad_ini, backend_ini}}},
-                                  {"Network", {{INI_NETWORK, NULL}}},
-                                  {"Debug", {{INI_DBG, NULL}}},
-                                  {NULL, {{NULL, NULL}}}};
+static const IniSec INI_SECS[] = {
+    {"Display", {{INI_DISPLAY, NULL}}},
+    {"Graphics", {{INI_GRAPHICS, NULL}}},
+    {"Performance", {{INI_PERF, NULL}}},
+    {"Input", {{g_backend_ini, backend_ini}, {g_vpad_ini, backend_ini}, {g_gamepad_ini, backend_ini}}},
+    {"Network", {{INI_NETWORK, NULL}}},
+    {"Debug", {{INI_DBG, NULL}}},
+    {NULL, {{NULL, NULL}}}};
 /* k's row in the file's sections, and its table */
 static const IniOpt* ini_known(const char* k, const IniTable** table) {
     for (int s = 0; INI_SECS[s].title; s++)

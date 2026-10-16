@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The gamepads (runtime/platform/backend/gamepad.c) on SDL's virtual ones, under its dummy video driver: what a press,
-   a trigger or a stick gives the game, and a fifth pad taking the place of one that goes */
+   a trigger or a stick gives the game, with the window's focus or without, and a fifth pad taking the place of one
+   that goes */
 #include "runtime/platform/gamepad.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -110,6 +111,19 @@ int main(void) {
     SDL_SetJoystickVirtualAxis(xbox, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
     SDL_SetJoystickVirtualAxis(xbox, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, SDL_JOYSTICK_AXIS_MIN);
     CHECK(buttons() == 0);
+    /* the window without the focus (the dummy driver's hidden one has none): SDL drops the pad's presses, unless
+       gamepad_background=1 */
+    SDL_HideWindow(w);
+    CHECK(SDL_GetKeyboardFocus() == NULL);
+    CHECK(with(xbox, SDL_GAMEPAD_BUTTON_EAST) == 0);
+    CHECK(gamepad_ini("gamepad_background", "1"));
+    CHECK(with(xbox, SDL_GAMEPAD_BUTTON_EAST) == A);
+    sticks(xbox, SDL_JOYSTICK_AXIS_MAX, 0, s);
+    CHECK(s[0] == 32767);
+    sticks(xbox, 0, 0, s);
+    CHECK(gamepad_ini("gamepad_background", "0") && !gamepad_ini("gamepad", "0"));
+    CHECK(with(xbox, SDL_GAMEPAD_BUTTON_EAST) == 0);
+    SDL_ShowWindow(w);
 
     /* the sticks: up is up, and a stick inside the dead zone is still */
     sticks(xbox, SDL_JOYSTICK_AXIS_MAX, SDL_JOYSTICK_AXIS_MIN, s);

@@ -5,6 +5,7 @@
 #ifndef SNX_GAMEPAD_H
 #define SNX_GAMEPAD_H
 #include "cpu/aarch64/cpu.h"
+#include "runtime/ini.h"
 
 #define SNX_GAMEPADS 4 /* read at once; one more takes the place of one that goes */
 /* a gamepad the system added or removed (its SDL joystick id): opened, closed */
@@ -13,5 +14,7 @@ void gamepad_close(u32 id);
 /* the open gamepads together: their HidNpadButton bits, and the first stick past the dead zone of each side (lx, ly,
    rx, ry; right and up) */
 void gamepad_state(u64* buttons, i32 sticks[4]);
+extern const IniOpt g_gamepad_ini[];                 /* the settings, keys gamepad_* */
+int gamepad_ini(const char* key, const char* value); /* a key of the game's .ini: applied, 1; not one of these, 0 */
 
 #endif
