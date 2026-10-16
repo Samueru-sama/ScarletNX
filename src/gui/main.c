@@ -2985,7 +2985,9 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     area(app, &width, &height);
     for (g = 0; g < app->groups; ++g) longest = SDL_max(longest, (int)strlen(app->group_keys[g].key));
     place_screen(app, &f->place, form_title(app, title, sizeof title), form_keys(app, keys, sizeof keys),
-                 theme ? width / cell_w(app) : longest + 2 + (int)SDL_utf8strlen(app->theme.marker), GUI_SHOWS_TABS);
+                 theme ? width / cell_w(app)
+                       : longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor),
+                 GUI_SHOWS_TABS);
     f->rows = &app->editor;
     if (app->form == GUI_FORM_SETTINGS) { /* the focused group's rows, to see before opening it */
         int g = app->editor.row;
@@ -3095,9 +3097,10 @@ static void draw_form_boxed(App* app) {
     } else {
         int g = app->form == GUI_FORM_SETTINGS ? app->editor.row : app->group;
         pane(app, f.place.side,
-             app->form == GUI_FORM_FOLDERS ? "Game folders"
-             : g < app->groups             ? app->group_keys[g].key
-                                           : "Reset all to the defaults");
+             app->form == GUI_FORM_FOLDERS                   ? "Game folders"
+             : app->form == GUI_FORM_GROUP && app->page >= 0 ? app->settings.keys[app->page].key
+             : g < app->groups                               ? app->group_keys[g].key
+                                                             : "Reset all to the defaults");
         labels = form_labels(f.rows);
         for (r = f.right.first; r < f.right.first + f.right.shown; ++r)
             form_row(app, &f.right, f.rows, r, labels, f.rows == &app->editor && r == app->editor.row,

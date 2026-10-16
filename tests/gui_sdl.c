@@ -2875,6 +2875,41 @@ int main(int argc, char** argv) {
     finish(&app, 0);
     button_map(&app);
     step_line();
+    /* YoRHa's Settings: its groups' column wide enough for the last row with its cursor; a page of a group open, its
+       name over its rows */
+    {
+        static const char list[] = "Display\tfullscreen\t0\tint\t0\t1\tStart in fullscreen\tFullscreen\t0=Off|1=On\n"
+                                   "Display/Window\tscale\t1\tint\t1\t4\tThe window's scale\tScale\t\n";
+        GuiFormBoxes f;
+        GuiRect b;
+        int s = app.scale, cw = 8 * s, row;
+        gui_settings_free(&app.settings);
+        memset(&app.settings, 0, sizeof app.settings);
+        assert(!gui_settings_read(&app.settings, list));
+        gui_settings_mark(&app.settings);
+        app.theme = *gui_theme_builtin("yorha");
+        app.theme.corners = app.theme.grid = app.theme.diagonals = false;
+        open_settings(&app);
+        app.editor.row = app.groups; /* the last row */
+        render(&app);
+        form_boxes(&app, &f);
+        b = list_box(&f.left, app.groups);
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe Reset all to the defaults", rgb(app.theme.page),
+                   rgb(app.theme.focus));
+        for (row = 0; row < app.groups && strcmp(app.group_keys[row].key, "Display"); ++row) {}
+        app.editor.row = row;
+        key(&app, SDLK_RETURN);
+        assert(app.form == GUI_FORM_GROUP && app.editor.row == 0);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_RETURN);
+        assert(app.page >= 0);
+        render(&app);
+        form_boxes(&app, &f);
+        text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, app.settings.keys[app.page].key,
+                   rgb(app.theme.page), rgb(app.theme.ink));
+        leave_editor(&app);
+        lines(&app, "default");
+    }
     e.type = SDL_EVENT_QUIT;
     event(&app, &e);
     assert(app.menu.quit);
