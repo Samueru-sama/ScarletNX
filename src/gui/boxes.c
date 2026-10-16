@@ -852,8 +852,16 @@ static int form_labels(const GuiEditor* e) {
     }
     return labels;
 }
+/* the line at the foot of a group's rows, about what they hold, NULL on the screens with none */
+static const char* form_note(const App* app) {
+    if (app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_GROUP) return NULL;
+    return app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. [default]: as the game's .ini says"
+                                                  : "The runtime listed no settings";
+}
 static void form_boxes(App* app, GuiFormBoxes* f) {
+    const char* note = form_note(app);
     char title[96], keys[256];
+    int rows;
     int theme = app->form == GUI_FORM_THEME, width, height, g, longest = (int)strlen("Reset all to the defaults");
     area(app, &width, &height);
     for (g = 0; g < app->groups; ++g) longest = SDL_max(longest, (int)strlen(app->group_keys[g].key));
@@ -881,8 +889,9 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     else
         list_place(app, &f->left, f->place.list, app->groups + 1,
                    app->form == GUI_FORM_SETTINGS ? app->editor.row : -1);
-    f->info = box_rect(f->place.side.x, f->place.side.y + f->place.side.h - cell_h(app) - 4 * app->scale,
-                       f->place.side.w, cell_h(app) + 2 * app->scale);
+    rows = note ? wrap_rows(note, inner(app, f->place.side).w / cell_w(app), 0) : 1; /* the note whole */
+    f->info = box_rect(f->place.side.x, f->place.side.y + f->place.side.h - rows * cell_h(app) - 4 * app->scale,
+                       f->place.side.w, rows * cell_h(app) + 2 * app->scale);
     list_place(app, &f->right,
                box_rect(f->place.side.x + cell_w(app), f->place.side.y + head_h(app) + 4 * app->scale,
                         f->place.side.w - 2 * cell_w(app), f->info.y - f->place.side.y - head_h(app) - 6 * app->scale),
@@ -981,11 +990,8 @@ void gui_app_draw_form_boxed(App* app) {
             form_row(app, &f.right, f.rows, r, labels, f.rows == &app->editor && r == app->editor.row,
                      app->form == GUI_FORM_FOLDERS && r == app->folder_armed && r);
         list_marks(app, &f.right);
-        if (app->form == GUI_FORM_SETTINGS || app->form == GUI_FORM_GROUP)
-            text_in(app, inner(app, f.info), f.info.x + cell_w(app), f.info.y,
-                    app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. [default]: as the game's .ini says"
-                                                           : "The runtime listed no settings",
-                    rgb(app->theme.soft));
+        if (form_note(app))
+            wrap_in(app, inner(app, f.info), f.info.x + cell_w(app), f.info.y, form_note(app), 0, rgb(app->theme.soft));
     }
     gui_app_vignette(app);
     about = form_about(app, &color);

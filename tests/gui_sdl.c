@@ -2313,6 +2313,28 @@ int main(int argc, char** argv) {
             b = list_box(&f.left, app.groups); /* the last row, whole */
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Reset all to the defaults", normal, black);
             text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "App", normal, black);
+            /* the note at the foot of the rows whole, wrapped to the box: at 2x and at 1x */
+            for (int size = 2; size >= 1; --size) {
+                const char* note = form_note(&app);
+                int y, room;
+                app.menu.text_size = size == 1 ? 1 : 0; /* Auto is 2x here */
+                gui_app_render(&app);
+                form_boxes(&app, &f);
+                assert(app.scale == size && note);
+                room = inner(&app, f.place.side).w / (8 * app.scale);
+                assert(size == 1 || (int)strlen(note) > room); /* two rows at 2x */
+                for (y = f.info.y; *note; y += 16 * app.scale) {
+                    char row[96];
+                    size_t n = wrap_at(note, room, 0);
+                    snprintf(row, sizeof row, "%.*s", (int)n, note);
+                    text_px_is(&app, f.info.x + 8 * app.scale, y, row, rgb(app.theme.soft), black);
+                    for (note += n; *note == ' ';) ++note;
+                }
+                assert(y <= f.info.y + f.info.h && f.info.y >= list_box(&f.right, f.right.first + f.right.shown - 1).y);
+            }
+            app.menu.text_size = 0;
+            gui_app_render(&app);
+            form_boxes(&app, &f);
             b = list_box(&f.right, GUI_APP_THEME);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Theme", normal,
                        black); /* no focus on the right yet */
