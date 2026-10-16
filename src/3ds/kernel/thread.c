@@ -83,11 +83,13 @@ static bool ready(SnxCtrProcess* p, uint32_t id, uint32_t thread) {
     CtrObject* o = &p->objects[id];
     if (o->type == CTR_OBJ_EVENT) return !!o->data.event.signaled;
     if (o->type == CTR_OBJ_THREAD) return !!o->data.thread.dead;
+    if (o->type == CTR_OBJ_SEMAPHORE) return !!o->data.semaphore.count;
     return o->type == CTR_OBJ_MUTEX && (!o->data.mutex.depth || o->data.mutex.owner == thread);
 }
 static void acquire(SnxCtrProcess* p, uint32_t id, uint32_t thread) {
     CtrObject* o = &p->objects[id];
     if (o->type == CTR_OBJ_EVENT && !o->data.event.reset_type) o->data.event.signaled = 0;
+    if (o->type == CTR_OBJ_SEMAPHORE && o->data.semaphore.count) --o->data.semaphore.count;
     if (o->type == CTR_OBJ_MUTEX) {
         o->data.mutex.owner = thread;
         ++o->data.mutex.depth;

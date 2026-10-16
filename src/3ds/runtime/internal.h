@@ -28,7 +28,8 @@ enum {
     CTR_OBJ_MUTEX,
     CTR_OBJ_EVENT,
     CTR_OBJ_SHARED,
-    CTR_OBJ_FILE
+    CTR_OBJ_FILE,
+    CTR_OBJ_SEMAPHORE
 };
 /* file.kind */
 enum { CTR_FILE_VIEW, CTR_FILE_HOST, CTR_FILE_DIR };
@@ -66,6 +67,9 @@ typedef struct {
         struct {
             uint32_t signaled, reset_type;
         } event; /* one-shot or sticky */
+        struct {
+            uint32_t count, max;
+        } semaphore;
     } data;
 } CtrObject;
 typedef struct {

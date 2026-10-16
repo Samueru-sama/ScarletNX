@@ -106,10 +106,14 @@ def main():
         # claimed.
         name = f'{TITLE:016x}-{hashlib.sha256(plain).hexdigest()}'
         data = root / 'data'
+        # With the AOT pipeline the same launch also compiles and runs the tiny
+        # witness; without it, extraction succeeds and execution is not claimed.
+        run_status = 0 if aot_enabled else 3
+        run_message = 'Guest ExitProcess' if aot_enabled else 'static compilation/execution is not implemented'
         _, text = run(
             plain,
-            3,
-            'static compilation/execution is not implemented',
+            run_status,
+            run_message,
             extra=('--repo', str(data)),
             explicit=False,
         )
@@ -120,8 +124,8 @@ def main():
             env = {**os.environ, 'XDG_DATA_HOME': str(root / 'xdg-data'), 'XDG_CACHE_HOME': str(root / 'xdg-cache')}
             _, text = run(
                 plain,
-                3,
-                'static compilation/execution is not implemented',
+                run_status,
+                run_message,
                 extra=('--repo', str(root / 'xdg-data/scarletnx')),
                 explicit=False,
                 env=env,

@@ -24,7 +24,7 @@ def main():
     assert 'static compilation/execution and encrypted content are not implemented' not in help_text
     run(['--output'], 2, 'requires a directory')
     run(['--repo'], 2, 'requires a directory')
-    run(['--board-info', '--repo', '.'], 2, 'Usage:')
+    run(['--board-info', '--repo', '.'], 0, 'Old 3DS')  # --repo is a global data-directory option
     run(['--board-info', '-x'], 2, 'Usage:')
     run([], 2, 'Usage:')
     run(['--model'], 2, 'requires old or new')

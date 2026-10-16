@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #define INVALID_HANDLE 0xd8e007f7u
+#define INVALID_ENUM   0xd8e093edu
 #define TIMEOUT        0x09401bfeu
 static uint32_t word(SnxCtrProcess* p, uint32_t va) {
     unsigned char b[4];
@@ -204,6 +205,60 @@ int main(void) {
         assert(count == CTR_OBJECTS - 3 && !r[1] && object_count(p) == CTR_OBJECTS - 1);
         for (unsigned i = 0; i < count; ++i) close_handle(p, handles[i], 0);
         assert(object_count(p) == 2);
+        /* thread priorities and mutexes over the real object model */
+        r[0] = 1;
+        assert(snx_ctr_svc(p, 0x13) == SNX_CTR_SVC_RETURN && !r[0]);
+        uint32_t mutex = r[1];
+        assert(mutex && object_count(p) == 3);
+        r[0] = mutex;
+        assert(snx_ctr_svc(p, 0x14) == SNX_CTR_SVC_RETURN && !r[0]); /* the creator owns it */
+        r[0] = mutex;
+        assert(snx_ctr_svc(p, 0x14) == SNX_CTR_SVC_RETURN && r[0] == 0xd8e0041fu);
+        close_handle(p, mutex, 0);
+        r[0] = 2;
+        assert(snx_ctr_svc(p, 0x13) == SNX_CTR_SVC_RETURN && r[0] == INVALID_ENUM && !r[1]);
+        r[0] = 0x30;
+        r[1] = 0x100004;
+        r[2] = 0;
+        r[3] = SNX_CTR_STACK_TOP - 0x1000;
+        r[4] = 0xfffffffeu;
+        assert(snx_ctr_svc(p, 0x08) == SNX_CTR_SVC_RETURN && !r[0]);
+        uint32_t worker = r[1];
+        r[1] = worker;
+        assert(snx_ctr_svc(p, 0x0b) == SNX_CTR_SVC_RETURN && !r[0] && r[1] == 0x30);
+        r[0] = worker;
+        r[1] = 0x28;
+        assert(snx_ctr_svc(p, 0x0c) == SNX_CTR_SVC_RETURN && !r[0]);
+        r[1] = worker;
+        assert(snx_ctr_svc(p, 0x0b) == SNX_CTR_SVC_RETURN && r[1] == 0x28);
+        r[0] = worker;
+        r[1] = 0x80;
+        assert(snx_ctr_svc(p, 0x0c) == SNX_CTR_SVC_RETURN && r[0] == INVALID_ENUM);
+        p->objects[snx_ctr_handle_object(p, worker)].data.thread.dead = 1; /* this test never runs it */
+        close_handle(p, worker, 0);
+        /* semaphores: consume, timed-out empty wait, release, bounded counts */
+        r[0] = 1;
+        r[1] = 2;
+        assert(snx_ctr_svc(p, 0x15) == SNX_CTR_SVC_RETURN && !r[0]);
+        uint32_t sem = r[1];
+        r[0] = sem;
+        r[2] = 0;
+        r[3] = 0;
+        assert(snx_ctr_svc(p, 0x24) == SNX_CTR_SVC_RETURN && !r[0]); /* consumes the one count */
+        r[0] = sem;
+        r[2] = 0;
+        r[3] = 0;
+        assert(snx_ctr_svc(p, 0x24) == SNX_CTR_SVC_RETURN && r[0] == TIMEOUT); /* empty: immediate wait times out */
+        r[0] = sem;
+        r[1] = 2;
+        assert(snx_ctr_svc(p, 0x16) == SNX_CTR_SVC_RETURN && !r[0] && r[1] == 0);
+        r[0] = sem;
+        r[1] = 1;
+        assert(snx_ctr_svc(p, 0x16) == SNX_CTR_SVC_RETURN && r[0] == INVALID_ENUM && r[1] == 0); /* would exceed max */
+        r[0] = sem;
+        r[1] = 0;
+        assert(snx_ctr_svc(p, 0x16) == SNX_CTR_SVC_RETURN && r[0] == INVALID_ENUM);
+        close_handle(p, sem, 0);
         r[0] = 0xdeadbeef;
         assert(snx_ctr_svc(p, 0x7f) == SNX_CTR_SVC_UNSUPPORTED && r[0] == 0xdeadbeef);
         handle = create(p);

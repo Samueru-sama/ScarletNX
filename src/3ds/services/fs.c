@@ -77,10 +77,12 @@ static bool new_object(SnxCtrIpc* c, uint32_t kind, uint32_t writable, void* hos
     }
     return true;
 }
-/* Bounded path decode shared by every path-carrying command. */
-static bool read_path(SnxCtrIpc* c, uint32_t size_word, uint32_t ptr_word, char out[768], const char** relative) {
-    uint32_t size = c->in[size_word];
-    if (size < 2 || size > 256 || (size & 1)) {
+/* Bounded path decode shared by every path-carrying command. PATH_BINARY and
+   PATH_UTF16 carry UTF-16LE; PATH_ASCII carries ASCII bytes. */
+static bool read_path(SnxCtrIpc* c, uint32_t type_word, uint32_t size_word, uint32_t ptr_word, char out[768],
+                      const char** relative) {
+    uint32_t type = c->in[type_word], size = c->in[size_word];
+    if (!size || size > 256) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return false;
     }
@@ -89,13 +91,58 @@ static bool read_path(SnxCtrIpc* c, uint32_t size_word, uint32_t ptr_word, char 
         c->transport_result = 0xe0e01bf5u;
         return false;
     }
-    if (!snx_ctr_utf16_path(raw, size, out, 768)) {
+    if (type == 3) { /* PATH_ASCII */
+        unsigned n = 0;
+        bool terminated = false;
+        for (; n < size; ++n) {
+            if (!raw[n]) {
+                terminated = true;
+                break;
+            }
+            if (raw[n] > 0x7f) {
+                c->state = SNX_CTR_IPC_UNSUPPORTED;
+                return false;
+            }
+            out[n] = (char)raw[n];
+        }
+        if (!terminated) {
+            c->state = SNX_CTR_IPC_UNSUPPORTED;
+            return false;
+        }
+        out[n] = 0;
+    } else if (type == 2 || type == 4) {
+        if (size < 2 || (size & 1) || !snx_ctr_utf16_path(raw, size, out, 768)) {
+            c->state = SNX_CTR_IPC_UNSUPPORTED;
+            return false;
+        }
+    } else {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return false;
     }
     *relative = out;
     while (**relative == '/') ++*relative;
     return true;
+}
+/* The read-write sdmc area: resolve an indexed host file and open it. */
+static void open_host(SnxCtrIpc* c, uint32_t flags, const char* relative) {
+    SnxCtrProcess* p = c->process;
+    FsNode* node = NULL;
+    FILE* host = NULL;
+    pm_lock(&p->tree->lock);
+    FsTreeResult rc = fs_tree_lookup(p->tree, p->sd, relative, &node);
+    if (rc == FS_TREE_NOTFOUND && (flags & 4)) rc = fs_tree_create(p->tree, p->sd, relative, 0, 0, &node);
+    if (!rc && (node->is_dir || node->is_virtual)) rc = FS_TREE_INVALID;
+    if (!rc) {
+        host = fs_tree_open(p->tree, node, (flags & 2) ? "r+b" : "rb");
+        if (!host) rc = FS_TREE_IO;
+    }
+    pm_unlock(&p->tree->lock);
+    if (rc) {
+        if (host) fclose(host);
+        snx_ctr_ipc_error_reply(c, tree_result(rc));
+        return;
+    }
+    if (!new_object(c, CTR_FILE_HOST, !!(flags & 2), host, node)) fclose(host);
 }
 /* SelfNCCH, empty archive path, binary selector for this process' RomFS. */
 static void open_romfs(SnxCtrIpc* c, const unsigned char path[12]) {
@@ -111,8 +158,8 @@ static void open_romfs(SnxCtrIpc* c, const unsigned char path[12]) {
     }
     new_object(c, CTR_FILE_VIEW, 0, NULL, NULL);
 }
-/* FSUSER OpenFileDirectly: SelfNCCH, empty archive path and the 12-byte
-   binary selector for this process' RomFS. */
+/* FSUSER OpenFileDirectly: SelfNCCH with the 12-byte binary selector for the
+   read-only RomFS view, or a direct read(-write) open on the sdmc area. */
 static void open_direct(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 8, 4)) return;
     SnxCtrProcess* p = c->process;
@@ -120,18 +167,44 @@ static void open_direct(SnxCtrIpc* c) {
         snx_ctr_ipc_error_reply(c, SNX_CTR_IPC_INVALID_STATE);
         return;
     }
-    if (c->in[1] || c->in[2] != 3 || c->in[3] != 1 || c->in[4] != 1 || c->in[5] != 2 || c->in[6] != 12 ||
-        c->in[7] != 1 || c->in[8]) {
+    if (c->in[1]) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
-    if (c->in[9] != 0x4802 || c->in[11] != 0x30002) {
-        snx_ctr_ipc_bad(c);
+    if (c->in[2] == 3) {
+        if (c->in[3] != 1 || c->in[4] != 1 || c->in[5] != 2 || c->in[6] != 12 || c->in[7] != 1 || c->in[8]) {
+            c->state = SNX_CTR_IPC_UNSUPPORTED;
+            return;
+        }
+        if (c->in[9] != 0x4802 || c->in[11] != 0x30002) {
+            snx_ctr_ipc_bad(c);
+            return;
+        }
+        unsigned char path[12], empty;
+        if (snx_ctr_read_ram(p->space, c->in[10], &empty, 1) != SNX_CTR_MEM_OK ||
+            snx_ctr_read_ram(p->space, c->in[12], path, sizeof path) != SNX_CTR_MEM_OK) {
+            c->transport_result = 0xe0e01bf5u;
+            return;
+        }
+        if (empty) {
+            c->state = SNX_CTR_IPC_UNSUPPORTED;
+            return;
+        }
+        open_romfs(c, path);
         return;
     }
-    unsigned char path[12], empty;
-    if (snx_ctr_read_ram(p->space, c->in[10], &empty, 1) != SNX_CTR_MEM_OK ||
-        snx_ctr_read_ram(p->space, c->in[12], path, sizeof path) != SNX_CTR_MEM_OK) {
+    /* SDMC direct open: empty archive path plus an indexed area path. */
+    if (c->in[2] != 9 || c->in[3] != 1 || c->in[4] != 1 || c->in[9] != 0x4802 || c->in[11] != ((c->in[6] << 14) | 2)) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
+    }
+    uint32_t flags = c->in[7];
+    if (c->in[8] || (flags & ~7u) || !(flags & 3)) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
+    }
+    unsigned char empty;
+    if (snx_ctr_read_ram(p->space, c->in[10], &empty, 1) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
         return;
     }
@@ -139,7 +212,14 @@ static void open_direct(SnxCtrIpc* c) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
-    open_romfs(c, path);
+    if (!p->sd) {
+        snx_ctr_ipc_error_reply(c, 0xc8804478u);
+        return;
+    }
+    char path[768];
+    const char* relative = NULL;
+    if (!read_path(c, 5, 6, 12, path, &relative)) return;
+    open_host(c, flags, relative);
 }
 static void open_file(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 7, 2)) return;
@@ -148,22 +228,21 @@ static void open_file(SnxCtrIpc* c) {
         snx_ctr_ipc_error_reply(c, SNX_CTR_IPC_INVALID_STATE);
         return;
     }
-    /* PATH_BINARY (2) and PATH_UTF16 (4) both carry UTF-16LE archive paths. */
-    if (c->in[1] || (c->in[4] != 2 && c->in[4] != 4) || c->in[7]) {
+    if (c->in[1] || c->in[7] || c->in[8] != ((c->in[5] << 14) | 2)) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }
     uint32_t size = c->in[5], flags = c->in[6];
-    if (size < 2 || size > 256 || (size & 1) || c->in[8] != ((size << 14) | 2)) {
-        c->state = SNX_CTR_IPC_UNSUPPORTED;
-        return;
-    }
     CtrSelfArchive* a = archive(p, (uint64_t)c->in[2] | (uint64_t)c->in[3] << 32);
     if (!a) {
         snx_ctr_ipc_error_reply(c, 0xc8804465u);
         return;
     }
     unsigned char raw[256];
+    if (size > sizeof raw) {
+        c->state = SNX_CTR_IPC_UNSUPPORTED;
+        return;
+    }
     if (snx_ctr_read_ram(p->space, c->in[9], raw, size) != SNX_CTR_MEM_OK) {
         c->transport_result = 0xe0e01bf5u;
         return;
@@ -183,24 +262,8 @@ static void open_file(SnxCtrIpc* c) {
     }
     char path[768];
     const char* relative = NULL;
-    if (!read_path(c, 5, 9, path, &relative)) return;
-    FsNode* node = NULL;
-    FILE* host = NULL;
-    pm_lock(&p->tree->lock);
-    FsTreeResult rc = fs_tree_lookup(p->tree, p->sd, relative, &node);
-    if (rc == FS_TREE_NOTFOUND && (flags & 4)) rc = fs_tree_create(p->tree, p->sd, relative, 0, 0, &node);
-    if (!rc && (node->is_dir || node->is_virtual)) rc = FS_TREE_INVALID;
-    if (!rc) {
-        host = fs_tree_open(p->tree, node, (flags & 2) ? "r+b" : "rb");
-        if (!host) rc = FS_TREE_IO;
-    }
-    pm_unlock(&p->tree->lock);
-    if (rc) {
-        if (host) fclose(host);
-        snx_ctr_ipc_error_reply(c, tree_result(rc));
-        return;
-    }
-    if (!new_object(c, CTR_FILE_HOST, !!(flags & 2), host, node)) fclose(host);
+    if (!read_path(c, 4, 5, 9, path, &relative)) return;
+    open_host(c, flags, relative);
 }
 static void open_directory(SnxCtrIpc* c) {
     if (!snx_ctr_ipc_expect(c, 4, 2)) return;
@@ -220,7 +283,7 @@ static void open_directory(SnxCtrIpc* c) {
     }
     char path[768];
     const char* relative = NULL;
-    if (!read_path(c, 4, 6, path, &relative)) return;
+    if (!read_path(c, 3, 4, 6, path, &relative)) return;
     if (a->kind != 1) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
@@ -255,7 +318,7 @@ static void create_entry(SnxCtrIpc* c, int is_dir) {
     uint64_t file_size = is_dir ? 0 : (uint64_t)c->in[7] | (uint64_t)c->in[8] << 32;
     char path[768];
     const char* relative = NULL;
-    if (!read_path(c, 5, is_dir ? 8 : 10, path, &relative)) return;
+    if (!read_path(c, 4, 5, is_dir ? 8 : 10, path, &relative)) return;
     pm_lock(&p->tree->lock);
     FsTreeResult rc = fs_tree_create(p->tree, p->sd, relative, is_dir, file_size, NULL);
     pm_unlock(&p->tree->lock);
@@ -279,7 +342,7 @@ static void remove_entry(SnxCtrIpc* c, int is_dir) {
     }
     char path[768];
     const char* relative = NULL;
-    if (!read_path(c, 5, 7, path, &relative)) return;
+    if (!read_path(c, 4, 5, 7, path, &relative)) return;
     pm_lock(&p->tree->lock);
     FsTreeResult rc = fs_tree_remove(p->tree, p->sd, relative, is_dir, 0, 0);
     pm_unlock(&p->tree->lock);
@@ -308,8 +371,8 @@ static void rename_entry(SnxCtrIpc* c, int is_dir) {
     }
     char from[768], to[768];
     const char *a_path = NULL, *b_path = NULL;
-    if (!read_path(c, 5, 11, from, &a_path)) return;
-    if (!read_path(c, 9, 13, to, &b_path)) return;
+    if (!read_path(c, 4, 5, 11, from, &a_path)) return;
+    if (!read_path(c, 8, 9, 13, to, &b_path)) return;
     pm_lock(&p->tree->lock);
     FsTreeResult rc = fs_tree_rename(p->tree, p->sd, a_path, b_path, is_dir);
     pm_unlock(&p->tree->lock);

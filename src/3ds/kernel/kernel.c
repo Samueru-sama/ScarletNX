@@ -319,9 +319,15 @@ static SnxCtrSvcResult wait_one(SnxCtrProcess* p, uint32_t* r) {
         r[0] = OK;
         return SNX_CTR_SVC_RETURN;
     }
-    if (o->type != CTR_OBJ_MUTEX && o->type != CTR_OBJ_EVENT && o->type != CTR_OBJ_THREAD)
+    if (o->type == CTR_OBJ_SEMAPHORE && o->data.semaphore.count) {
+        --o->data.semaphore.count;
+        r[0] = OK;
+        return SNX_CTR_SVC_RETURN;
+    }
+    if (o->type != CTR_OBJ_MUTEX && o->type != CTR_OBJ_EVENT && o->type != CTR_OBJ_THREAD &&
+        o->type != CTR_OBJ_SEMAPHORE)
         return SNX_CTR_SVC_UNSUPPORTED;
-    if (o->type == CTR_OBJ_EVENT || o->type == CTR_OBJ_THREAD ||
+    if (o->type == CTR_OBJ_EVENT || o->type == CTR_OBJ_THREAD || o->type == CTR_OBJ_SEMAPHORE ||
         (o->data.mutex.depth && o->data.mutex.owner != p->current_thread)) {
         if (!r[2] && !r[3]) {
             r[0] = TIMED_OUT;
@@ -396,11 +402,82 @@ SnxCtrSvcResult snx_ctr_svc(SnxCtrProcess* p, uint32_t number) {
             return SNX_CTR_SVC_RETURN;
         }
         case 0x03: return SNX_CTR_SVC_EXIT;
+        case 0x0b: { /* GetThreadPriority */
+            uint32_t id = snx_ctr_handle_object(p, r[1]);
+            if (!id || p->objects[id].type != CTR_OBJ_THREAD)
+                r[0] = INVALID_HANDLE;
+            else {
+                r[0] = OK;
+                r[1] = p->objects[id].data.thread.priority;
+            }
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x0c: { /* SetThreadPriority: the user-mode priority range */
+            uint32_t id = snx_ctr_handle_object(p, r[0]);
+            if (!id || p->objects[id].type != CTR_OBJ_THREAD)
+                r[0] = INVALID_HANDLE;
+            else if (r[1] > 0x3f)
+                r[0] = INVALID_ENUM;
+            else
+                p->objects[id].data.thread.priority = r[1], r[0] = OK;
+            return SNX_CTR_SVC_RETURN;
+        }
         case 0x08: {
             if (r[4] != 0xfffffffeu && r[4] != 0) return SNX_CTR_SVC_UNSUPPORTED;
             uint32_t out = 0, result = snx_ctr_thread_create(p, r, &out);
             r[0] = result;
             r[1] = out;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x13: { /* CreateMutex */
+            if (r[0] > 1) {
+                r[0] = INVALID_ENUM;
+                r[1] = 0;
+                return SNX_CTR_SVC_RETURN;
+            }
+            uint32_t out = 0, result = snx_ctr_object_create(p, CTR_OBJ_MUTEX, &out);
+            if (!result && r[0]) {
+                uint32_t id = snx_ctr_handle_object(p, out);
+                p->objects[id].data.mutex.owner = p->current_thread;
+                p->objects[id].data.mutex.depth = 1;
+            }
+            r[0] = result;
+            r[1] = out;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x15: { /* CreateSemaphore: r0 initial count, r1 maximum */
+            uint32_t initial = r[0], max = r[1];
+            if (!max || initial > max) {
+                r[0] = INVALID_ENUM;
+                return SNX_CTR_SVC_RETURN;
+            }
+            uint32_t out = 0, result = snx_ctr_object_create(p, CTR_OBJ_SEMAPHORE, &out);
+            if (!result) {
+                uint32_t id = snx_ctr_handle_object(p, out);
+                p->objects[id].data.semaphore.count = initial;
+                p->objects[id].data.semaphore.max = max;
+            }
+            r[0] = result;
+            r[1] = out;
+            return SNX_CTR_SVC_RETURN;
+        }
+        case 0x16: { /* ReleaseSemaphore */
+            uint32_t id = snx_ctr_handle_object(p, r[0]);
+            if (!id || p->objects[id].type != CTR_OBJ_SEMAPHORE) {
+                r[0] = INVALID_HANDLE;
+                return SNX_CTR_SVC_RETURN;
+            }
+            CtrObject* o = &p->objects[id];
+            uint32_t previous = o->data.semaphore.count;
+            if (!r[1] || r[1] > o->data.semaphore.max - previous) {
+                r[0] = INVALID_ENUM;
+                r[1] = 0;
+                return SNX_CTR_SVC_RETURN;
+            }
+            o->data.semaphore.count = previous + r[1];
+            snx_ctr_wake_waiters(p, id);
+            r[0] = OK;
+            r[1] = previous;
             return SNX_CTR_SVC_RETURN;
         }
         case 0x14: {
