@@ -1885,6 +1885,15 @@ static void event(App* app, const SDL_Event* e) {
         pointer(app, e->motion.x, e->motion.y, false, false);
         return;
     }
+    /* a notch of the wheel is a row, as a finger's drag, the way the system turns it */
+    if (e->type == SDL_EVENT_MOUSE_WHEEL) {
+        void (*key)(App*, GuiKey) = app->editing ? editor_key : menu_key;
+        int rows = e->wheel.integer_y;
+        if (app->splash || app->menu.running || app->finished || app->confirm.shown) return;
+        for (; rows > 0; --rows) key(app, GUI_UP);
+        for (; rows < 0; ++rows) key(app, GUI_DOWN);
+        return;
+    }
     /* a hovering pen highlights as the mouse does (it sends no mouse motion). Touching, it is a finger, and once it
        lifts its hover waits until it has moved away as far as a tap may: the focus a drag moved would otherwise jump
        to the row under the hover at the lift, which SDL sends right after it */

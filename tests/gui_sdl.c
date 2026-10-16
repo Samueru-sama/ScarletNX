@@ -978,6 +978,17 @@ int main(int argc, char** argv) {
             app.menu.selected = GUI_SWITCH;
             render(&app);
         }
+        /* the wheel too: a notch is a row, down three and back up */
+        {
+            SDL_Event e = {0};
+            e.type = SDL_EVENT_MOUSE_WHEEL;
+            e.wheel.integer_y = -3;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_KEYS);
+            e.wheel.integer_y = 3;
+            event(&app, &e);
+            assert(app.menu.selected == GUI_SWITCH);
+        }
         assert(SDL_SetWindowSize(app.window, 800, 480)); /* 800x512 at least: 4x would leave 8 rows */
         SDL_SyncWindow(app.window);
         render(&app);
