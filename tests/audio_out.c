@@ -554,6 +554,53 @@ static int open_opus(SvcObj* manager, u32 rate, u32 channels, SvcObj** decoder) 
     *decoder = rc ? NULL : c.out_objs[0];
     return rc;
 }
+#ifndef SNX_NO_H264
+/* a 440 Hz tone libopus (1.5, 6 kbit/s) encoded as 20 ms packets: three SILK narrowband, then hybrid fullband and
+   CELT. FFmpeg's resampler holds back samples of the first and gives them back with the hybrid one, where its SILK
+   rate changes: every reply still has to be the packet's 20 ms, in a buffer sized for that */
+static const u8 opus_tone[] = {
+    0x00, 0x00, 0x00, 0x0B, 0, 0, 0, 0, 0x08, 0x83, 0xF9, 0x5E, 0xDD, 0x07, 0x1D, 0x4F, 0x23, 0x57, 0x20,
+    0x00, 0x00, 0x00, 0x1C, 0, 0, 0, 0, 0x08, 0xAC, 0x3F, 0x74, 0x00, 0xE7, 0x95, 0x5C, 0x81, 0xA4, 0x83, 0xEA, 0x83,
+    0x32, 0x06, 0x21, 0xF8, 0xF5, 0x7E, 0x77, 0xE7, 0x4A, 0x2B, 0x8D, 0x72, 0x2E, 0xCF, 0x60,
+    0x00, 0x00, 0x00, 0x10, 0, 0, 0, 0, 0x08, 0xA8, 0x5F, 0xCD, 0xAD, 0xF0, 0xDB, 0x1D, 0x7C, 0xE3, 0x69, 0xA5, 0x64,
+    0xFD, 0xD7, 0x60,
+    0x00, 0x00, 0x00, 0x22, 0, 0, 0, 0, 0x78, 0x85, 0xE6, 0x29, 0xC2, 0x60, 0x33, 0x08, 0xDA, 0x6D, 0x3C, 0x99, 0xC5,
+    0xF2, 0x66, 0x1A, 0x42, 0x46, 0x50, 0x16, 0x63, 0x03, 0x84, 0x78, 0xCF, 0xFF, 0x16, 0x8D, 0x7C, 0xCF, 0xA8, 0xBD,
+    0xFA, 0x33,
+    0x00, 0x00, 0x00, 0x10, 0, 0, 0, 0, 0xF8, 0x63, 0xAE, 0xAD, 0xD6, 0x7A, 0x46, 0x26, 0x4F, 0x24, 0x1D, 0x9A, 0x2C,
+    0x1F, 0x02, 0xD7,
+};
+static void test_opus_decode(void) {
+    static const u8 toc[][2] = {{0x08, 0}, {0x19, 0}, {0x62, 0}, {0xFB, 0x03}, {0x0B, 0x07}, {0x83, 0}};
+    static const u32 toc_48k[] = {960, 5760, 960, 2880, 0, 0}; /* code 3 with 7 x 20 ms is above 120 ms */
+    for (u32 i = 0; i < 6; i++) CHECK(opus_packet_48k(toc[i], (toc[i][0] & 3) == 3 ? 2 : 1) == toc_48k[i]);
+    CHECK(opus_packet_48k(toc[3], 1) == 0); /* code 3 without its frame count */
+    HwOpus h;
+    memset(&h, 0, sizeof h);
+    CHECK(hwopus_open(&h, 16000, 1, 1, 0, NULL));
+    i16 out[320];
+    u32 consumed, samples;
+    for (int pass = 0; pass < 2; pass++) {
+        u32 off = 0;
+        for (u32 i = 0; off < sizeof opus_tone; i++) {
+            const u8* p = opus_tone + off;
+            u32 len = 8 + p[3];
+            if (i == 1) /* one sample short: refused before FFmpeg decodes it, so the stream goes on unchanged */
+                CHECK(hwopus_decode(&h, p, len, out, sizeof out - 2, 0, &consumed, &samples) == RC(111, 17));
+            consumed = samples = 0;
+            CHECK(hwopus_decode(&h, p, len, out, sizeof out, pass && !i, &consumed, &samples) == 0);
+            CHECK(consumed == len && samples == 320);
+            off += len;
+        }
+        int loud = 0;
+        for (u32 i = 0; i < 320; i++) loud |= out[i] > 2000 || out[i] < -2000;
+        CHECK(loud); /* the tone, still there after the switch to CELT */
+    }
+    CHECK(hwopus_decode(&h, opus_tone, 8, out, sizeof out, 0, &consumed, &samples) == RC(111, 17)); /* no payload */
+    SvcObj o = {.data = &h};
+    hwopus_destroy(&o);
+}
+#endif
 static void test_hwopus(void) {
     SvcObj* manager = new_hwopus();
     u32 params[2] = {48000, 2};
@@ -570,6 +617,7 @@ static void test_hwopus(void) {
     CHECK(open_opus(manager, 24000, 1, &decoder) == 0 && ((HwOpus*)decoder->data)->step == 2);
     svcobj_unref(decoder);
     CHECK(open_opus(manager, 44100, 2, &decoder) == RC(111, 385)); /* not a rate Opus decodes at */
+    test_opus_decode();
 #else
     CHECK(open_opus(manager, 48000, 2, &decoder) == RC(111, 385)); /* this build has no Opus decoder */
 #endif

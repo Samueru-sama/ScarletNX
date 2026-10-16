@@ -85,6 +85,17 @@ static SDL_Color pixel(App* app, float x, float y) {
     return out;
 }
 static int same_colour(SDL_Color a, SDL_Color b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+/* Setup device keys' box in the failure colour, at the clock given (a blink's half): inside it, past its label */
+static int keys_red(App* app, Uint64 clock) {
+    GuiMenuBoxes m;
+    GuiRect b;
+    app->clock = clock;
+    render(app);
+    menu_boxes(app, &m);
+    b = list_box(&m.list, GUI_KEYS);
+    return same_colour(pixel(app, (float)(b.x + b.w - 3 * app->scale - 1), (float)(b.y + b.h / 2)),
+                       rgb(app->theme.failure));
+}
 /* text in color anywhere on the render, glyph by glyph in the font's own bytes: its ink pixels in color, the others
    not (a box's frame may cross the font's last row, which is empty); 1 and where it starts, else 0 */
 static int find_text(App* app, const char* text, SDL_Color color, int size, int* at_x, int* at_y) {
@@ -683,6 +694,30 @@ int main(int argc, char** argv) {
     app.keys_path = snx_path_join(switch_dir, "prod.keys");
     char* source_keys = snx_path_join(temporary, "prod.keys");
     assert(!snx_write_file(source_keys, "first keys", 10));
+    /* no prod.keys in use: Setup device keys blinks red, focused or not, its label on the page colour; steady with
+       blink_ms 0. A home without keys, as an installed build also takes ~/.switch's */
+    {
+        Uint64 on = 1000 * app.theme.blink_ms * 2, off = on + app.theme.blink_ms;
+        char *bare = snx_path_join(temporary, "bare-home"),
+             *saved_home = getenv("HOME") ? SDL_strdup(getenv("HOME")) : NULL;
+        assert(!snx_mkdirs(bare));
+        SDL_setenv_unsafe("HOME", bare, 1);
+        assert(!keys_red(&app, off) && keys_red(&app, on));
+        shows(&app, "- Setup device keys", rgb(app.theme.page));
+        key(&app, SDLK_DOWN);
+        assert(app.menu.selected != GUI_KEYS && keys_red(&app, on) && !keys_red(&app, off));
+        key(&app, SDLK_UP);
+        app.theme.blink_ms = 0;
+        assert(keys_red(&app, on) && keys_red(&app, off));
+        app.theme.blink_ms = gui_theme_builtin(app.theme.id)->blink_ms;
+        app.clock = 0;
+        if (saved_home)
+            SDL_setenv_unsafe("HOME", saved_home, 1);
+        else
+            SDL_unsetenv_unsafe("HOME");
+        SDL_free(saved_home);
+        free(bare);
+    }
     key(&app, SDLK_RETURN);
     assert(app.menu.view == GUI_LOAD_KEYS);
     render(&app);
@@ -729,6 +764,8 @@ int main(int argc, char** argv) {
     unsigned char* keys_data = snx_read_file(app.keys_path, &keys_size);
     assert(keys_data && keys_size == 10 && !memcmp(keys_data, "first keys", 10));
     free(keys_data);
+    assert(!keys_red(&app, 1000 * app.theme.blink_ms * 2)); /* the keys in: as the other entries */
+    app.clock = 0;
 #ifndef _WIN32
     struct stat keys_stat;
     assert(!stat(app.keys_path, &keys_stat) && (keys_stat.st_mode & 0777) == 0600);
@@ -2545,8 +2582,12 @@ int main(int argc, char** argv) {
         GuiRect b, r;
         int s, cw, focus, exit_entry;
         SDL_Color dim, page, ink;
+        char* keys_folder = snx_dirname(app.keys_path);
         app.theme = *gui_theme_builtin("default");
         assert(app.theme.panels == GUI_PANELS_OUTLINE && !app.theme.cursor[0] && !app.theme.tips_box);
+        /* keys in use, so Setup device keys has its usual look, not the red of a start without them */
+        assert(keys_folder && !snx_mkdirs(keys_folder) && !snx_write_file(app.keys_path, "header_key = 00\n", 16));
+        free(keys_folder);
         app.menu.selected = GUI_KEYS;
         app.message[0] = 0;
         app.abnormal_exit = false;

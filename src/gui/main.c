@@ -1542,6 +1542,21 @@ static void menu_side(App* app, const GuiMenuBoxes* m) {
     }
     last_output(app, r, y);
 }
+/* Setup device keys while no prod.keys is in use: its box in the failure colour every other blink_ms (steady with 0),
+   over its usual look, so a first start shows what to do first */
+static void keys_wanted(App* app, const GuiList* l, const char* label) {
+    const GuiTheme* t = &app->theme;
+    GuiRect b = list_box(l, GUI_KEYS);
+    char* in_use;
+    if (t->blink_ms && (now_ms(app) / t->blink_ms) % 2) return;
+    in_use = keys_in_use(app);
+    if (in_use) {
+        free(in_use);
+        return;
+    }
+    fill_rect(app, b, t->failure);
+    text_in(app, inner(app, b), b.x + cell_w(app) / 2, item_text_y(app, b), label, rgb(t->page));
+}
 static void draw_menu(App* app) {
     GuiMenuBoxes m;
     char label[160], keys[256];
@@ -1551,6 +1566,7 @@ static void draw_menu(App* app) {
     for (i = m.list.first; i < m.list.first + m.list.shown; ++i) {
         menu_label(app, i, label, sizeof label);
         list_item(app, &m.list, i, label, i == m.list.focus, app->menu.activated && app->menu.active == i);
+        if (i == GUI_KEYS) keys_wanted(app, &m.list, label);
     }
     list_marks(app, &m.list);
     menu_side(app, &m);

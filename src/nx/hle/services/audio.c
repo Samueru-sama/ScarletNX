@@ -524,10 +524,26 @@ SvcObj* new_audout(void) { return nn_audio_detail_IAudioOutManager_new(0); }
    FFmpeg doesn't give its own). The reply is the bytes consumed, the samples per channel (interleaved s16 at the
    decoder's rate) and, from the decoder's command 4 on, the time the decode took in microseconds.
    Results: module 111 description 17 is the one the SDK reports as an invalid packet, 385 the one it reports as a
-   failed open. It treats any other result as fatal */
+   failed open. It treats any other result as fatal.
+   The console decodes with libopus (opus_decode at the decoder's rate), which gives each packet exactly its duration
+   in samples, or fails before touching its state when the output buffer is too small. FFmpeg's decoder differs, and
+   what is between it and the reply makes up for that:
+   - it decodes at 48 kHz only, to planar float. Lower rates go through a low-pass FIR that keeps every step-th
+     sample, and the samples are clipped to s16 and interleaved.
+   - its frames aren't one packet's duration: SILK goes through libswresample (opus/dec.c), which holds back a few
+     samples when it starts (OPUS_DELAY_48K at most) and gives them back, on top of the packet's own, when the
+     mode or the SILK rate changes. Its frames go into a FIFO that starts with OPUS_DELAY_48K samples of silence, and
+     each reply takes exactly the packet's duration from it (read from the packet's TOC, RFC 6716 3.1).
+   - it conceals a frame it can't decode with silence instead of failing (without AV_EF_EXPLODE), which is kept:
+     libopus decodes about anything that parses, and what doesn't parse FFmpeg still refuses */
 #define OPUS_BAD_PACKET  RC(111, 17)
 #define OPUS_OPEN_FAILED RC(111, 385)
 #define OPUS_MAX_48K     5760 /* samples per channel in the longest packet, 120 ms at 48 kHz */
+/* the FIFO's silence: the most libswresample holds back. It keeps 8 input samples of its 16 taps and FFmpeg primes
+   it with 4 (narrowband, 8 kHz: 4 short, 24 at 48 kHz), 8 or 11 (medium and wide band, none short) */
+#define OPUS_DELAY_48K 24
+/* the FIFO's room per channel: what is left after a reply, and a packet with the samples a resampler flush adds */
+#define OPUS_FIFO_48K (OPUS_MAX_48K + 960)
 typedef struct {
     u32 rate, channels;
     PMutex lk;
@@ -537,12 +553,11 @@ typedef struct {
     AVFrame* frame;
     u8* in; /* the payload, with the padding FFmpeg reads past its end */
     u32 incap;
-    /* FFmpeg's decoder gives 48 kHz. Lower rates go through a low-pass FIR and keep every step-th sample: hist holds
-       each channel's last taps - 1 input samples, x is the filter's input (those, then a packet's samples) */
-    u32 step, taps;
+    /* the FIR's taps (step > 1), then each channel's samples at 48 kHz, OPUS_FIFO_48K + taps - 1 apart: the FIR's
+       last taps - 1 inputs, then the fifo samples FFmpeg gave that no reply has taken yet */
+    u32 step, taps, fifo;
     float* fir;
-    float* hist;
-    float* x;
+    float* pcm;
 #endif
 } HwOpus;
 #ifndef SNX_NO_H264
@@ -560,6 +575,22 @@ static void opus_fir(float* h, u32 n, u32 step) {
 static i16 opus_s16(float v) {
     v *= 32768.0f;
     return v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (i16)lrintf(v);
+}
+/* the samples per channel at 48 kHz in the packet p (the first stream's, in a multistream one: its TOC comes first
+   too), from its TOC byte and, for code 3, its frame count byte. 0 when it isn't a packet libopus decodes */
+static u32 opus_packet_48k(const u8* p, u32 len) {
+    static const u16 silk[4] = {480, 960, 1920, 2880}, celt[4] = {120, 240, 480, 960};
+    if (!len) return 0;
+    u32 config = p[0] >> 3, frames = (p[0] & 3) == 0 ? 1 : (p[0] & 3) < 3 ? 2 : len > 1 ? p[1] & 63 : 0;
+    u32 n = frames * (config < 12 ? silk[config & 3] : config < 16 ? silk[config & 1] : celt[config & 3]);
+    return n <= OPUS_MAX_48K ? n : 0;
+}
+static float* opus_channel(HwOpus* h, u32 c) { return h->pcm + (size_t)c * (OPUS_FIFO_48K + h->taps - 1); }
+/* back to the state of a new decoder: FFmpeg's, no FIR history, the FIFO's silence */
+static void hwopus_reset(HwOpus* h) {
+    avcodec_flush_buffers(h->dec);
+    for (u32 c = 0; c < h->channels; c++) memset(opus_channel(h, c), 0, (h->taps - 1 + OPUS_DELAY_48K) * sizeof(float));
+    h->fifo = OPUS_DELAY_48K;
 }
 #endif
 static void hwopus_destroy(SvcObj* o) {
@@ -597,11 +628,11 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     h->frame = av_frame_alloc();
     h->step = 48000 / rate;
     h->taps = h->step > 1 ? 24 * h->step + 1 : 1;
-    /* one block: the filter, each channel's history, the work buffer */
-    h->fir = calloc((size_t)(channels + 2) * h->taps + OPUS_MAX_48K, sizeof(float));
+    /* one block: the filter, then each channel's history and FIFO */
+    h->fir = calloc(h->taps + (size_t)channels * (OPUS_FIFO_48K + h->taps - 1), sizeof(float));
     if (!h->dec || !h->pkt || !h->frame || !h->fir) return 0;
-    h->hist = h->fir + h->taps;
-    h->x = h->hist + (size_t)channels * h->taps;
+    h->pcm = h->fir + h->taps;
+    h->fifo = OPUS_DELAY_48K;
     if (h->step > 1) opus_fir(h->fir, h->taps, h->step);
     /* the OpusHead FFmpeg takes the layout from (RFC 7845): no pre-skip, the game trims that itself. Mapping family 0
        is one mono or stereo stream, 255 any number of streams with the mapping as given */
@@ -627,6 +658,51 @@ static int hwopus_open(HwOpus* h, u32 rate, u32 channels, u32 streams, u32 stere
     return 1;
 #endif
 }
+#ifndef SNX_NO_H264
+/* the frames FFmpeg has for the packet just sent, onto the FIFO. 0 when one doesn't fit or isn't FFmpeg's format */
+static int hwopus_queue(HwOpus* h) {
+    int ok = 1;
+    while (avcodec_receive_frame(h->dec, h->frame) == 0) {
+        u32 n = (u32)h->frame->nb_samples;
+        if (h->frame->format != AV_SAMPLE_FMT_FLTP || n > OPUS_FIFO_48K - h->fifo) ok = 0;
+        for (u32 c = 0; ok && c < h->channels; c++)
+            memcpy(opus_channel(h, c) + h->taps - 1 + h->fifo, h->frame->extended_data[c], n * sizeof(float));
+        if (ok) h->fifo += n;
+        av_frame_unref(h->frame);
+    }
+    return ok;
+}
+/* n 48 kHz samples off the FIFO into out, interleaved s16 at the decoder's rate (n / step of them) */
+static void hwopus_render(HwOpus* h, u32 n, i16* out) {
+    u32 ch = h->channels, step = h->step, keep = h->taps - 1;
+    if (h->fifo < n) {
+        /* FFmpeg held back more than the FIFO's silence covers: silence in front keeps the reply's length */
+        LOG_LIMIT(4, "hwopus: %u samples short of the packet, silence put in front\n", n - h->fifo);
+        for (u32 c = 0; c < ch; c++) {
+            float* x = opus_channel(h, c) + keep;
+            memmove(x + n - h->fifo, x, h->fifo * sizeof(float));
+            memset(x, 0, (n - h->fifo) * sizeof(float));
+        }
+        h->fifo = n;
+    }
+    for (u32 c = 0; c < ch; c++) {
+        float* x = opus_channel(h, c);
+        i16* d = out + c;
+        if (step == 1)
+            for (u32 i = 0; i < n; i++) d[(u64)i * ch] = opus_s16(x[i]);
+        else
+            for (u32 k = 0; k < n / step; k++) {
+                const float* xp = x + (u64)k * step;
+                float acc = 0;
+                for (u32 j = 0; j < h->taps; j++) acc += h->fir[j] * xp[j];
+                d[(u64)k * ch] = opus_s16(acc);
+            }
+        /* the last keep samples taken are the next reply's history, the ones after them its FIFO */
+        memmove(x, x + n, (keep + h->fifo - n) * sizeof(float));
+    }
+    h->fifo -= n;
+}
+#endif
 /* one packet (header and payload) into out, interleaved s16 */
 static u32 hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples) {
@@ -641,13 +717,13 @@ static u32 hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
     (void)samples;
     return OPUS_BAD_PACKET;
 #else
-    if (reset) {
-        avcodec_flush_buffers(h->dec);
-        memset(h->hist, 0, (size_t)h->channels * h->taps * sizeof(float));
-    }
+    if (reset) hwopus_reset(h);
     if (in_size < 8) return OPUS_BAD_PACKET;
     u32 len = ((u32)in[0] << 24) | ((u32)in[1] << 16) | ((u32)in[2] << 8) | in[3];
     if (!len || len > in_size - 8) return OPUS_BAD_PACKET;
+    /* refused before FFmpeg sees it, like libopus refuses a buffer too small before decoding */
+    u32 n = opus_packet_48k(in + 8, len);
+    if (!n || (u64)(n / h->step) * h->channels * sizeof(i16) > out_size) return OPUS_BAD_PACKET;
     if (h->incap < len) {
         u8* nb = realloc(h->in, (size_t)len + AV_INPUT_BUFFER_PADDING_SIZE);
         if (!nb) return OPUS_BAD_PACKET;
@@ -658,41 +734,10 @@ static u32 hwopus_decode(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out
     memset(h->in + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     h->pkt->data = h->in;
     h->pkt->size = (int)len;
-    if (avcodec_send_packet(h->dec, h->pkt) < 0) return OPUS_BAD_PACKET;
-    u32 ch = h->channels, step = h->step, keep = h->taps - 1, got = 0;
-    int bad = 0;
-    while (avcodec_receive_frame(h->dec, h->frame) == 0) {
-        u32 n = (u32)h->frame->nb_samples, m = n / step;
-        if (n > OPUS_MAX_48K || h->frame->format != AV_SAMPLE_FMT_FLTP ||
-            (u64)(got + m) * ch * sizeof(i16) > out_size) {
-            bad = 1;
-            av_frame_unref(h->frame);
-            continue;
-        }
-        for (u32 c = 0; c < ch; c++) {
-            const float* s = (const float*)h->frame->extended_data[c];
-            i16* d = out + (u64)got * ch + c;
-            if (step == 1) {
-                for (u32 i = 0; i < n; i++) d[(u64)i * ch] = opus_s16(s[i]);
-                continue;
-            }
-            float* hist = h->hist + (u64)c * h->taps;
-            memcpy(h->x, hist, keep * sizeof(float));
-            memcpy(h->x + keep, s, n * sizeof(float));
-            for (u32 k = 0; k < m; k++) {
-                const float* xp = h->x + (u64)k * step;
-                float acc = 0;
-                for (u32 j = 0; j < h->taps; j++) acc += h->fir[j] * xp[j];
-                d[(u64)k * ch] = opus_s16(acc);
-            }
-            memcpy(hist, h->x + n, keep * sizeof(float));
-        }
-        got += m;
-        av_frame_unref(h->frame);
-    }
-    if (bad) return OPUS_BAD_PACKET;
+    if (avcodec_send_packet(h->dec, h->pkt) < 0 || !hwopus_queue(h)) return OPUS_BAD_PACKET;
+    hwopus_render(h, n, out);
     *consumed = len + 8;
-    *samples = got;
+    *samples = n / h->step;
     return 0;
 #endif
 }

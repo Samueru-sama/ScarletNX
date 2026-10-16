@@ -13,12 +13,13 @@ Pass a single XCI, NSP, DXCI or DNSP to extract, recompile and play:
 ./build/scarletnx "Game.xci"
 ```
 
-The driver runs each step as a child process and starts the game with `games/` as its working directory.
-The name comes from the dump stem, retaining letters, digits, UTF-8, spaces, hyphens and underscores.
+The driver runs each step as a child process and starts the game with its folder, `games/<id>/`, as its working
+directory. The game is named by its title ID, an NRO by its name ([Folders](#folders)). Its extraction in `work/`
+is named after the dump stem, retaining letters, digits, UTF-8, spaces, hyphens and underscores.
 `--repo DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
 `-H` (`--headless`) can precede or follow the dump and is passed to the game only.
 Omitting it starts the game with a window, unless the build has no window backend.
-`-x` means `--extract`, and `-r` means `--recomp` (the old `--recomp` spelling was removed).
+`-x` means `--extract`, and `-r` means `--recomp` (the old `--recompile` spelling was removed).
 On UNIX, short flags can be combined. Windows accepts separate short flags only.
 
 To prepare a dump without playing, use `./build/scarletnx -r "Game.xci"`.
@@ -56,15 +57,15 @@ replaces the bundled update and must match the base title. DLC-only and update-o
 be used as a base game.
 
 ```powershell
-.\build\windows-native\scarletnx.exe "C:\Games\Game.dxci"
-.\build\windows-native\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
+.\build\scarletnx.exe "C:\Games\Game.dxci"
+.\build\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
 ```
 
 Run the same command again to retry after a failure or interruption:
 
 - `work/Game/` skips extraction. Automatic extraction publishes this directory only after success,
   using `work/Game.extracting/` while running. An incomplete staging directory is discarded on retry.
-- A complete `games/Game/Game` (`Game.exe` on Windows), code module and matching `Game.abi` stamp
+- A complete `games/<id>/<id>` (`<id>.exe` on Windows), code module and matching `<id>.abi` stamp
   skip recompilation. An ABI change or missing/invalid stamp triggers recompilation automatically.
   Older unstamped games rebuild once. Failed builds never publish a valid ABI checkpoint.
 - Changing directory and running the game happen on every launch. A game failure never invalidates the build.
@@ -101,7 +102,7 @@ games/Game/Game
 ```powershell
 .\build\scarletnx.exe -x "Game.xci" --name Game
 .\build\scarletnx.exe -r work/Game Game
-.\games\Game.exe
+.\games\Game\Game.exe
 ```
 
 Remaining examples: POSIX.
@@ -133,16 +134,18 @@ Remaining examples: POSIX.
 - **Codegen:** `--no-build` stages data/INI only; `--interp-only` omits AOT functions.
   `--chunk N` sets instructions per code unit. Nothing is cached between runs.
   `--keep-ir` saves the generated code (LLVM IR, libgccjit dumps) in `<outdir>/<NAME>/<NAME>_build/`.
-- **Data updates:** ExeFS refreshes; `Game_data/romfs` is reused.
-  Replace cached RomFS after asset changes; preserve `Game_data/save/`.
+- **Data updates:** ExeFS refreshes; `<id>_data/romfs` is reused.
+  Replace cached RomFS after asset changes; preserve `<id>_data/save/`.
+
+In a checkout (elsewhere, see [Folders](#folders)):
 
 | Output | Contents |
 | --- | --- |
 | `work/Game/{exefs,romfs}` | Extracted input |
-| `games/Game/Game[.exe]`, `Game_code.so/.dll` | Runtime + AOT module |
-| `games/Game/Game_data/`, `Game.ini` | Data/saves (and `control.nacp`) + settings |
-| `games/Game/Game_build/` | Generated code, only with `--keep-ir` |
-| `games/Game/shader_cache/vk_pipelines.bin` | Vulkan pipeline cache |
+| `games/<id>/<id>[.exe]`, `<id>_code.so/.dll` | Runtime + AOT module |
+| `games/<id>/<id>_data/`, `<id>.ini` | Data/saves (and `control.nacp`) + settings |
+| `games/<id>/<id>_build/` | Generated code, only with `--keep-ir` |
+| `games/<id>/shader_cache/vk_pipelines.bin` | Vulkan pipeline cache |
 
 ## GDB (UNIX only)
 
@@ -152,7 +155,7 @@ Install `gdbserver` on PATH. `-S` enables the native-code stub on loopback port 
 
 ```sh
 ./build/scarletnx -s "Game.xci"
-# Or: games/Game/Game -Hs
+# Or: games/<id>/<id> -Hs
 ```
 
 In GDB, load the deployed executable's symbols and connect:
