@@ -86,8 +86,10 @@ int main(void) {
         assert(!snx_write_file(log, big, BIG));
         assert(!fatal_share_log(root, "build", "message", log, saved, sizeof saved));
         text = (char*)snx_read_file(saved, &n);
+        /* Inspect only the copied log: the header contains the word "build" and the path may contain 'b'. */
+        char* tail = text ? strstr(text, " ==\n") : NULL;
         assert(text && n < (size_t)(4 << 20) + 1000 && n >= (size_t)(4 << 20) && strstr(text, "end\n") &&
-               !strchr(text + 40, 'b'));
+               tail && !memchr(tail + 4, 'b', 4 << 20));
         free(text);
         free(big);
         free(log);

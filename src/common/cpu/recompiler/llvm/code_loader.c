@@ -16,8 +16,10 @@
 #include <unistd.h>
 #include "elf_object.h"
 #endif
-#if defined(__linux__) && defined(__aarch64__)
+#if defined(__linux__)
 #include <sys/syscall.h>
+#endif
+#if defined(__linux__) && defined(__aarch64__)
 /* <linux/membarrier.h>'s commands (Linux 4.16), by number for C libraries whose headers predate them */
 #define MEMBARRIER_SYNC_CORE          (1 << 5) /* MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE */
 #define MEMBARRIER_REGISTER_SYNC_CORE (1 << 6) /* MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE */
@@ -63,7 +65,16 @@ static unsigned char* map_views(unsigned char* at, size_t size, int executable, 
     void *view, *write = MAP_FAILED;
     int fd;
 #if defined(__linux__)
+#if defined(__ANDROID__) && __ANDROID_API__ < 30
+    /* Bionic only exports memfd_create from API 30; older targets can call the kernel directly. */
+#if defined(__NR_memfd_create)
+    fd = (int)syscall(__NR_memfd_create, "snx-jit-code", MFD_CLOEXEC);
+#else
+    fd = -1;
+#endif
+#else
     fd = memfd_create("snx-jit-code", MFD_CLOEXEC);
+#endif
 #elif defined(SHM_ANON)
     fd = shm_open(SHM_ANON, O_RDWR | O_CLOEXEC, 0600);
 #else
