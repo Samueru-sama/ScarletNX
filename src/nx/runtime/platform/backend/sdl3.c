@@ -317,7 +317,8 @@ int backend_vk_surface(VkInstance instance, VkSurfaceKHR* surface) {
     LOG("video: no Vulkan surface: %s\n", SDL_GetError());
     return 0;
 }
-static const char* HELP = "Controller: like a Switch controller, buttons by position. Home: the game's menu.\n\n"
+static const char* HELP = "Controller: A, B, X and Y as their labels say (gamepad_buttons=0: by position). Home: "
+                          "the game's menu.\n\n"
                           "Keyboard (keys by position, as on a US layout):\n"
                           "  Arrows = D-Pad     W A S D = left stick    I J K L = right stick\n"
                           "  X / Space = A    Z = B    C = X    V = Y\n"
@@ -604,14 +605,14 @@ static int menu_event(const SDL_Event* e) {
                 break;
             default: break;
         }
-    } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) { /* by position, as the game's pad: A right, B bottom */
-        switch (e->gbutton.button) {
-            case SDL_GAMEPAD_BUTTON_DPAD_UP: overlay_move(-1); break;
-            case SDL_GAMEPAD_BUTTON_DPAD_DOWN: overlay_move(1); break;
-            case SDL_GAMEPAD_BUTTON_DPAD_LEFT: overlay_side(-1); break;
-            case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: overlay_side(1); break;
-            case SDL_GAMEPAD_BUTTON_EAST: overlay_do(overlay_select()); break;
-            case SDL_GAMEPAD_BUTTON_SOUTH: overlay_do(overlay_back()); break;
+    } else if (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) { /* as the game reads the pad: A selects, B goes back */
+        switch (gamepad_button(e->gbutton.which, e->gbutton.button)) {
+            case 1ull << 13: overlay_move(-1); break; /* Up */
+            case 1ull << 15: overlay_move(1); break;  /* Down */
+            case 1ull << 12: overlay_side(-1); break; /* Left */
+            case 1ull << 14: overlay_side(1); break;  /* Right */
+            case 1ull << 0: overlay_do(overlay_select()); break;
+            case 1ull << 1: overlay_do(overlay_back()); break;
             default: break;
         }
     } else if (e->type == SDL_EVENT_FINGER_DOWN) {
