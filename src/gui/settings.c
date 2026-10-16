@@ -55,7 +55,8 @@ int gui_settings_read(GuiSettings* s, const char* list) {
     const char* c;
     const char** free_words;
     char *line, *next, *text, *page = NULL;
-    GuiSetting *link = NULL, *all = NULL;
+    GuiSetting *link = NULL, *all = NULL, *v;
+    int w;
     gui_settings_free(s);
     for (c = list; *c; ++c) { /* a row a line, a page's own two before its first; and the words */
         n += *c == '\n' ? 3 : 0;
@@ -101,7 +102,11 @@ int gui_settings_read(GuiSettings* s, const char* list) {
             all->first = s->count;
         }
         if (*field[8]) words = words_of(field[8], &free_words, &values);
-        row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT)->values = values;
+        v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
+        v->values = values;
+        v->fallback = field[2];
+        for (w = 1; words && words[w]; ++w) /* the word of the default's value */
+            if (!strcmp(values ? values[w] : words[w], field[2])) v->fallback = words[w];
         if (page) {
             link->count = s->count - link->first;
             all->count = s->count - all->first;
@@ -221,6 +226,15 @@ void gui_settings_sync(GuiSettings* s) {
         }
         snprintf(all->text, sizeof all->text, "%s", i < all->first + all->count ? "Mixed" : first);
     }
+}
+void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
+    const GuiSetting* v = &s->values[row];
+    if (v->kind == GUI_SETTING_ALL)
+        snprintf(out, size, "%s", strcmp(v->text, ".ini") ? v->text : "[default]");
+    else if (!v->fallback || picked(s, row))
+        gui_theme_get(s->values, &s->keys[row], out, size);
+    else
+        snprintf(out, size, "%s%s[default]", v->fallback, v->fallback[0] ? " " : "");
 }
 const char* gui_settings_value(const GuiSettings* s, const char* key) {
     int i = find(s, key);

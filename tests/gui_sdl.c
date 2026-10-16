@@ -811,7 +811,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     /* a number typed, and nothing typed for the .ini's again */
     render(&app);
-    colored_text(&app, 4, "- resolution               .ini", yellow);
+    colored_text(&app, 4, "- resolution               1 [default]", yellow); /* not picked: the default */
     key(&app, SDLK_RETURN);
     typed(&app, "0.5");
     key(&app, SDLK_RETURN);
@@ -839,9 +839,9 @@ int main(int argc, char** argv) {
         assert(app.form == GUI_FORM_GROUP && app.page >= 0 && app.editor.count == 3);
         render(&app);
         colored_text(&app, 0, "SETTINGS  /  ON-SCREEN CONTROLS  /  BUTTONS", normal);
-        snprintf(line, sizeof line, "- %-24s %s", "All", ".ini");
+        snprintf(line, sizeof line, "- %-24s %s", "All", "[default]");
         colored_text(&app, 4, line, yellow);
-        snprintf(line, sizeof line, "- %-24s %s", "B", ".ini");
+        snprintf(line, sizeof line, "- %-24s %s", "B", "[default]"); /* an empty default */
         colored_text(&app, 6, line, normal);
         key(&app, SDLK_RIGHT);
         assert(setting_is(&app, "controls_a_shown", "0") && setting_is(&app, "controls_b_shown", "0"));

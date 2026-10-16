@@ -26,8 +26,9 @@ typedef struct {
     char option[GUI_SETTING_TEXT + 72]; /* a run's --key=value; a page's row: the section it is in */
     const char* key;                    /* the .ini's, the row's key being its name in the menus */
     const char** values;                /* a word row's values by word, NULL where the words are the values */
-    int kind;                           /* 0, GUI_SETTING_PAGE or GUI_SETTING_ALL */
-    int first, count;                   /* the rows a page opens, an All steps */
+    const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
+    int kind;             /* 0, GUI_SETTING_PAGE or GUI_SETTING_ALL */
+    int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
     GuiThemeKey* keys;  /* the rows: the launcher's, then the runtime's by section */
@@ -53,6 +54,9 @@ void gui_settings_reset(GuiSettings* settings, int row);
 int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */
 void gui_settings_sync(GuiSettings* settings);
+/* row's value as the Settings show it: a pick as it is, a row not picked its default and [default] ("By label
+   [default]", "[default]" for an empty one), an All's [default] while none of its rows is picked */
+void gui_settings_shown(const GuiSettings* settings, int row, char* out, size_t size);
 /* the value picked for key, NULL for the .ini's or no such row */
 const char* gui_settings_value(const GuiSettings* settings, const char* key);
 /* argv's options for a run: --key=value for each setting picked; with launch the launcher's too, -S -s for the stub

@@ -1269,9 +1269,10 @@ static void render_editor(App* app) {
         gui_editor_label(e, r, label, sizeof label);
         if (r == e->row && e->typing)
             snprintf(value, sizeof value, "%s_", e->text);
+        else if (app->form == GUI_FORM_GROUP && k)
+            gui_settings_shown(&app->settings, app->first + r, value, sizeof value);
         else
             gui_editor_value(e, r, value, sizeof value);
-        if (app->form == GUI_FORM_GROUP && k && !value[0]) snprintf(value, sizeof value, ".ini"); /* not typed */
         snprintf(line, sizeof line, "%s%-*s %s", theme->marker, labels, label, value);
         {
             int n = 0; /* what fits left of the preview, a character at a time */
@@ -1297,7 +1298,7 @@ static void render_editor(App* app) {
     if (app->form != GUI_FORM_THEME) {
         if (app->form != GUI_FORM_APP && app->form != GUI_FORM_FOLDERS)
             text(app, 1, app->rows - 2,
-                 app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. .ini: as the game's .ini says"
+                 app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. [default]: as the game's .ini says"
                                                         : "The runtime listed no settings",
                  rgb(theme->soft));
         return;

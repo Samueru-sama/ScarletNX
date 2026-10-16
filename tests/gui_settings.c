@@ -50,6 +50,12 @@ static const char* shown(const GuiSettings* s, const char* name) {
     gui_theme_get(s->values, key(s, name), value, sizeof value);
     return value;
 }
+/* as the Settings screen shows it */
+static const char* on_screen(const GuiSettings* s, const char* name) {
+    static char value[96];
+    gui_settings_shown(s, at(s, name), value, sizeof value);
+    return value;
+}
 
 int main(int argc, char** argv) {
     GuiSettings s = {0};
@@ -95,6 +101,14 @@ int main(int argc, char** argv) {
     assert(!strcmp(shown(&s, "touch"), "Fingers"));
     assert(!gui_settings_set(&s, "touch", "3") && !gui_settings_set(&s, "touch", "Mouse too"));
     assert(!strcmp(gui_settings_value(&s, "touch"), "1") && !gui_settings_set(&s, "Touch screen", "2"));
+    /* on the screen: a pick as it is; a row not picked the runtime's default in its words, a text as it is, an empty
+       one bare, then [default]; an All while none of its rows is; the launcher's own and a page's as they are */
+    assert(!strcmp(on_screen(&s, "touch"), "Fingers") && !strcmp(on_screen(&s, "controls"), "Off [default]"));
+    assert(!strcmp(on_screen(&s, "gamepad_rumble"), "100% [default]") && !strcmp(on_screen(&s, "log"), "1 [default]"));
+    assert(!strcmp(on_screen(&s, "resolution"), "1 [default]") &&
+           !strcmp(on_screen(&s, "controls_a_shown"), "[default]"));
+    assert(!strcmp(on_screen(&s, "All"), "[default]") && !strcmp(on_screen(&s, "gdbstub"), "off"));
+    assert(!strcmp(on_screen(&s, "Buttons"), ">"));
     assert(gui_settings_set(&s, "language", "3") && !strcmp(gui_settings_value(&s, "language"), "3"));
     assert(gui_settings_set(&s, "old", "0.5 0.5 100 1") && gui_settings_set(&s, "language", ""));
     assert(!gui_settings_value(&s, "language") && !gui_settings_set(&s, "nothing", "1"));
@@ -110,7 +124,7 @@ int main(int argc, char** argv) {
            !strcmp(gui_settings_value(&s, "controls_b_shown"), "0"));
     assert(gui_settings_set(&s, "controls_b_shown", "1"));
     gui_settings_sync(&s);
-    assert(!strcmp(shown(&s, "All"), "Mixed"));
+    assert(!strcmp(shown(&s, "All"), "Mixed") && !strcmp(on_screen(&s, "All"), "Mixed"));
     assert(gui_settings_step_all(&s, all, -1) && !strcmp(shown(&s, "All"), ".ini"));
     assert(gui_settings_step_all(&s, all, 0) && gui_settings_step_all(&s, all, 0) &&
            !strcmp(shown(&s, "All"), "Shown"));
