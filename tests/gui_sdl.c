@@ -2543,7 +2543,11 @@ int main(int argc, char** argv) {
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- ", yellow, black);
             text_px_is(&app, b.x + cw / 2 + 2 * cw, item_text_y(&app, b), app.games.names[0], yellow, black);
             text_px_is(&app, g.place.side.x + cw, g.place.side.y + 2 * s, app.games.names[0], normal, black);
-            text_px_is(&app, g.place.bar.x + 3 * cw, g.place.bar.y + 2 * s, "/", normal, black); /* its path */
+            {
+                char start[9]; /* its path, from a drive's letter on Windows */
+                snprintf(start, sizeof start, "%s", app.games.paths[0]);
+                text_px_is(&app, g.place.bar.x + 3 * cw, g.place.bar.y + 2 * s, start, normal, black);
+            }
             key(&app, SDLK_RIGHT);
             assert(app.browser.page == 1);
             gui_app_render(&app);
