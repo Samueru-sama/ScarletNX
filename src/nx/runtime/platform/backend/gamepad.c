@@ -5,11 +5,12 @@
 #include "runtime/platform/gamepad.h"
 #include "runtime/platform/log.h"
 #include <SDL3/SDL.h>
+#include <math.h>
 
 static SDL_Gamepad* g_pads[SNX_GAMEPADS];
 static struct {
-    int labels, background;
-} g_cfg = {1, 0};
+    int labels, deadzone, background;
+} g_cfg = {1, 20, 0};
 
 /* SDL drops a gamepad's presses while no window of the program has the focus, unless told otherwise; set before it
    starts its gamepads (the .ini is read first), and at once on a change */
@@ -22,6 +23,8 @@ const IniOpt g_gamepad_ini[] = {
     {"gamepad_buttons", "1",
      "A controller's A, B, X and Y: 1 = as their labels say, 0 = by position, as on the console's", INI_INT, 0,
      &g_cfg.labels, 0, 1, NULL},
+    {"gamepad_deadzone", "20", "The sticks' dead zone, in percent of their travel", INI_INT, 0, &g_cfg.deadzone, 0, 90,
+     NULL},
     {"gamepad_background", "0", "1 = the controllers still play the game while its window is not focused", INI_INT, 0,
      &g_cfg.background, 0, 1, background_set},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL}};
@@ -64,9 +67,18 @@ void gamepad_close(u32 id) {
     SDL_free(ids);
 }
 
-/* the dead zone as a circle, so a stick pushed along one axis keeps the small part of the other */
+/* the dead zone as a circle, so a stick pushed along one axis keeps the small part of the other, and the travel past
+   it spread over the whole range, so the stick starts from nothing and still reaches the edge (a square gate's corner
+   is past it) */
 static void dz(i32* x, i32* y) {
-    if ((i64)*x * *x + (i64)*y * *y < 7000ll * 7000) *x = *y = 0;
+    double r = sqrt((double)*x * *x + (double)*y * *y), z = g_cfg.deadzone * 32767.0 / 100, k;
+    if (r <= z) {
+        *x = *y = 0;
+        return;
+    }
+    k = ((r < 32767 ? r : 32767) - z) / (32767 - z) * 32767 / r;
+    *x = (i32)(*x * k);
+    *y = (i32)(*y * k);
 }
 /* SDL's Y axes point down, the Switch's up */
 static i32 up(i32 v) { return v == -32768 ? 32767 : -v; }

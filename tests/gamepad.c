@@ -126,11 +126,26 @@ int main(void) {
     CHECK(with(xbox, SDL_GAMEPAD_BUTTON_EAST) == 0);
     SDL_ShowWindow(w);
 
-    /* the sticks: up is up, and a stick inside the dead zone is still */
-    sticks(xbox, SDL_JOYSTICK_AXIS_MAX, SDL_JOYSTICK_AXIS_MIN, s);
-    CHECK(s[0] == 32767 && s[1] == 32767 && s[2] == 0 && s[3] == 0);
+    /* the sticks: up is up, a stick inside the dead zone (20%) is still, and the travel past it spans the range */
+    sticks(xbox, SDL_JOYSTICK_AXIS_MAX, 0, s);
+    CHECK(s[0] == 32767 && s[1] == 0 && s[2] == 0 && s[3] == 0);
+    sticks(xbox, 0, SDL_JOYSTICK_AXIS_MIN, s);
+    CHECK(s[0] == 0 && s[1] == 32767);
+    sticks(xbox, SDL_JOYSTICK_AXIS_MAX, SDL_JOYSTICK_AXIS_MIN, s); /* a square gate's corner, on the edge */
+    CHECK(s[0] == s[1] && s[0] > 23160 && s[0] < 23180);
     sticks(xbox, 3000, -3000, s);
     CHECK(s[0] == 0 && s[1] == 0);
+    sticks(xbox, 16384, 0, s);
+    CHECK(s[0] > 12280 && s[0] < 12295 && s[1] == 0); /* (50% - 20%) / 80% */
+    CHECK(gamepad_ini("gamepad_deadzone", "0"));
+    sticks(xbox, 3000, -3000, s);
+    CHECK(s[0] == 3000 && s[1] == 3000);
+    CHECK(gamepad_ini("gamepad_deadzone", "50"));
+    sticks(xbox, 16000, 0, s);
+    CHECK(s[0] == 0);
+    sticks(xbox, SDL_JOYSTICK_AXIS_MAX, 0, s);
+    CHECK(s[0] == 32767);
+    CHECK(gamepad_ini("gamepad_deadzone", "20"));
     sticks(xbox, 0, 0, s);
 
     /* the console's own layout, A on the right; the symbols as the letters where they sit on the common one, and the
@@ -174,7 +189,7 @@ int main(void) {
     SDL_SetJoystickVirtualButton(xbox, SDL_GAMEPAD_BUTTON_SOUTH, false);
     SDL_SetJoystickVirtualButton(pro, SDL_GAMEPAD_BUTTON_SOUTH, false);
     sticks(pro, SDL_JOYSTICK_AXIS_MIN, 0, s);
-    CHECK(s[0] == -32768 && s[1] == 0);
+    CHECK(s[0] <= -32767 && s[1] == 0);
     sticks(pro, 0, 0, s);
 
     /* four are read; a fifth takes the place of one that goes */
