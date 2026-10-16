@@ -239,9 +239,9 @@ cmake --build build
 Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `games/Game/Game[.exe]` beside
 matching `Game_code.so/.dll`; no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](DEVELOPMENT.md).
 
-CPM: [SHA-256-pinned sources](../cmake/dependencies.cmake), shared `.cache/cpm` cache, offline configure when populated.
-The cache holds each package as released, so one filled by hand (a Flatpak manifest's sources, a distribution's
-offline build) works: hactool's patches go on a copy in the build tree.
+CPM uses [pinned sources](../cmake/dependencies.cmake) and a shared `.cache/cpm` cache. Archive downloads are
+checked by SHA-256, and FFmpeg is pinned to a Git commit. Offline configuration needs the matching sources
+already in the cache. Cached sources stay unmodified: hactool's patches go on a copy in the build tree.
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 

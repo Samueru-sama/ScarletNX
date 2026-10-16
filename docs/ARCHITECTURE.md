@@ -1,7 +1,7 @@
 # Architecture
 
-ScarletNX AOT: AArch64 -> C -> native module, shared by Horizon HLE/Maxwell
-and CPU-only Linux AArch64 ABI runtimes.
+ScarletNX compiles AArch64 code into native modules through LLVM IR (or libgccjit).
+The CPU implementation is shared by Horizon HLE/Maxwell and CPU-only Linux AArch64 ABI runtimes.
 Source map: [CLAUDE.md](../CLAUDE.md).
 
 ## Runtime boundaries
@@ -43,9 +43,11 @@ syscalls, ELF execution, filesystem scope, and differential testing.
 
 ## Recompiler + module ABI
 
-The module ABI is now 8: `RtAPI.miss` handles addresses absent from the dispatch table, whose slots are read
-atomically. Existing game modules must be recompiled. On supported ELF hosts, `cpu_fallback=jit` compiles missed
-code in background threads while the interpreter runs it; `cpu_fallback=interp` keeps interpretation only.
+The module ABI is 8: `RtAPI.miss` handles addresses absent from the dispatch table, whose slots are read
+atomically. Modules built for an earlier ABI must be recompiled. On supported ELF hosts, the default
+`cpu_fallback=jit` compiles missed code in background threads while the interpreter runs it.
+`cpu_fallback=interp` disables runtime JIT and interprets missed code. Both modes still use the AOT module.
+If the JIT cannot start, including on Windows, missed code runs in the interpreter.
 `src/nx/runtime/guest_jit.c` connects the runtime to `llvm/jit_service.c`. Loaded NRO text is registered with the
 service and removed before unmapping, so runtime-loaded gameplay code can be compiled too. ELF object loading
 and module linking share relocation code in `elf_object.c`. The JIT service tests cover concurrent misses,
