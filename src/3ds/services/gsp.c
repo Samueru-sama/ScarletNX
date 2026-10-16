@@ -68,6 +68,33 @@ static void signal_registered(SnxCtrProcess* p, uint32_t thread) {
 }
 static uint32_t screen_height(uint32_t screen) { return screen ? 320u : 400u; }
 static uint32_t bpp_of(uint32_t format) { return format == 0 ? 4u : format == 1 ? 3u : 2u; }
+/* libctru gspPresentBuffer posts framebuffers into the shared FrameBufferUpdate
+   blocks (0x200 + thread*0x80 + screen*0x40) instead of calling SetBufferSwap.
+   Latch every dirty block at vblank and clear its update flag, as GSP does. */
+static void latch_shared_framebuffers(SnxCtrProcess* p) {
+    CtrSharedMap* map = p->gsp.shared_object ? shared_map(p, p->gsp.shared_object) : NULL;
+    if (!map) return;
+    for (uint32_t thread = 0; thread < CTR_GSP_THREADS; ++thread) {
+        if (!(p->gsp.thread_mask & (1u << thread))) continue;
+        for (uint32_t screen = 0; screen < 2; ++screen) {
+            uint32_t base = map->va + 0x200 + thread * 0x80 + screen * 0x40;
+            unsigned char header[4];
+            if (snx_ctr_read_ram(p->space, base, header, sizeof header) != SNX_CTR_MEM_OK) continue;
+            if (!header[1]) continue;
+            unsigned slot = header[0] & 1;
+            unsigned char info[28];
+            if (snx_ctr_read_ram(p->space, base + 4 + slot * 28, info, sizeof info) != SNX_CTR_MEM_OK) continue;
+            for (unsigned i = 0; i < 7; ++i) {
+                uint32_t word = 0;
+                for (unsigned b = 0; b < 4; ++b) word |= (uint32_t)info[i * 4 + b] << (b * 8);
+                p->gsp.fb_screen[screen][i] = word;
+            }
+            p->gsp.fb_pending[screen] = 1;
+            header[1] = 0; /* applied: the guest may post the next update */
+            (void)snx_ctr_write_ram(p->space, base, header, sizeof header);
+        }
+    }
+}
 /* Present one latched buffer swap: the displayed half of the pair, read as
    guest RAM and shown through the Vulkan presenter. */
 static void present_screen(SnxCtrProcess* p, uint32_t screen) {
@@ -103,6 +130,7 @@ void snx_ctr_gsp_vblank(SnxCtrProcess* p) {
     if (!p->gsp.shared_object) return;
     ++p->gsp.vblank_count;
     p->gsp.next_vblank_ns += GSP_VBLANK_NS;
+    latch_shared_framebuffers(p);
     for (uint32_t screen = 0; screen < 2; ++screen)
         if (p->gsp.fb_pending[screen]) present_screen(p, screen);
     for (uint32_t thread = 0; thread < CTR_GSP_THREADS; ++thread) {
@@ -217,7 +245,7 @@ static void set_buffer_swap(SnxCtrIpc* c) {
     }
     /* Only the bit layouts the presenter converts are accepted; the rest stop
        instead of being displayed with invented colors. */
-    if (format != 0 && format != 2) {
+    if (format > 2) {
         c->state = SNX_CTR_IPC_UNSUPPORTED;
         return;
     }

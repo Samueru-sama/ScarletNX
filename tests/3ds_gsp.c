@@ -61,6 +61,13 @@ int main(int argc, char** argv) {
     assert(argc == 2);
 
     (void)plat_mkdir(argv[1]);
+    /* a fresh frame sequence every run */
+    for (unsigned screen = 0; screen < 2; ++screen)
+        for (unsigned i = 0; i < 8; ++i) {
+            char stale[1024];
+            snprintf(stale, sizeof stale, "%s/frame-%u-%02u.ppm", argv[1], screen, i);
+            (void)remove(stale);
+        }
     unsigned char code[0x3000] = {0};
     SnxCtrImage image = {.segment = {{0x100000, 1, 16}, {0x200000, 1, 4}, {0x300000, 1, 4}},
                          .stack_size = 0x4000,
@@ -191,6 +198,38 @@ int main(int argc, char** argv) {
             ppm_pixel(ppm, (size_t)length, 240, 400, 0, 239, rgb); /* fb bottom-right: (239,399) */
             assert(rgb[0] == 239 && rgb[1] == 143 && rgb[2] == 1);
             free(ppm);
+            /* The libctru path posts framebuffers through the shared
+               FrameBufferUpdate blocks; vblank must latch and show those too. */
+            for (unsigned i = 0; i < 240u * 400; ++i) {
+                unsigned char* px = pattern + (size_t)i * 4;
+                px[0] = 0x21;
+                px[1] = 0x43;
+                px[2] = 0x65;
+            }
+            assert(snx_ctr_write_ram(p->space, fb, pattern, 240u * 400 * 4) == SNX_CTR_MEM_OK);
+            uint32_t block = QUEUE + 0x200;
+            word(p, block + 0, 0x100); /* slot 0 selected, update pending */
+            word(p, block + 4, 0);     /* active_framebuf */
+            word(p, block + 8, fb);    /* framebuf0_vaddr */
+            word(p, block + 12, fb);
+            word(p, block + 16, 960);
+            word(p, block + 20, 0x100); /* format 0, linear */
+            word(p, block + 24, 0);
+            word(p, block + 28, 0);
+            snx_ctr_gsp_vblank(p);
+            assert(at(p, block + 0) == 0); /* applied */
+            snprintf(path, sizeof path, "%s/frame-0-01.ppm", argv[1]);
+            f = fopen(path, "rb");
+            assert(f);
+            fseek(f, 0, SEEK_END);
+            length = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            ppm = malloc((size_t)length);
+            assert(ppm && length > 0 && fread(ppm, 1, (size_t)length, f) == (size_t)length);
+            fclose(f);
+            ppm_pixel(ppm, (size_t)length, 240, 400, 100, 100, rgb);
+            assert(rgb[0] == 0x21 && rgb[1] == 0x43 && rgb[2] == 0x65);
+            free(ppm);
             /* Presenter contract: RGB565 converts to RGBA8 on the device and
                the hash covers exactly the converted pixels. */
             unsigned short low[2] = {0xffffu, 0xf800u};
@@ -200,6 +239,18 @@ int main(int argc, char** argv) {
             assert(snx_ctr_present_frame(1, 2, 1, 2, 4, raw, &hash));
             const unsigned char expect[8] = {255, 255, 255, 255, 255, 0, 0, 255};
             assert(hash == fnv(expect, sizeof expect));
+            /* RGB8 (libctru BGR8_OES: B,G,R bytes) converts on the device too */
+            unsigned char bgr[3] = {0x10, 0x20, 0x30};
+            uint64_t hash2 = 0;
+            assert(snx_ctr_present_frame(1, 1, 1, 1, 3, bgr, &hash2));
+            const unsigned char expect2[4] = {0x30, 0x20, 0x10, 255};
+            if (hash2 != fnv(expect2, sizeof expect2)) {
+                unsigned char probe[4] = {0x10, 0x20, 0x30, 0};
+                (void)probe;
+                fprintf(stderr, "hash2=%llx want=%llx\n", (unsigned long long)hash2,
+                        (unsigned long long)fnv(expect2, sizeof expect2));
+            }
+            assert(hash2 == fnv(expect2, sizeof expect2));
         }
         free(pattern);
         /* WaitSynchronization1 on the relay event completes at a real vblank. */

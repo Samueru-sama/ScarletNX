@@ -176,6 +176,7 @@ def state(words, seed=1, group='data'):
     if group in ('memory', 'extra', 'multiple', 'atomic'):
         cpu.r[4] = 0x8000
         cpu.r[6] = 8
+        cpu.r[13] = 0x8800
         cpu.cpsr &= ~(1 << 29)  # RRX address must stay within this small mapping
     if group == 'branch':
         cpu.r[2] = 0x2000 | (seed & 1)

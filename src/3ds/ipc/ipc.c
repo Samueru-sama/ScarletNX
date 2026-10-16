@@ -108,6 +108,7 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
                                           : SNX_CTR_SERVICE_FILE;
             bool mapped_supported =
                 (mapped_service == SNX_CTR_SERVICE_FILE && c->in[0] == 0x080200c2 && (d & 15) == 12) ||
+                (mapped_service == SNX_CTR_SERVICE_FILE && c->in[0] == 0x08030102 && (d & 15) == 10) ||
                 (mapped_service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080d0144 && ((d & 15) == 10 || (d & 15) == 12));
             unsupported = unsupported || !mapped_supported;
         } else if ((d & 1023) == 2 || (d & 15) == 4 || (d & 15) == 6) {
@@ -120,7 +121,13 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
                                    : SNX_CTR_SERVICE_FILE;
             bool supported = (service == SNX_CTR_SERVICE_APT && c->in[0] == 0x004b00c2 && (d & 0x3fff) == 0x402) ||
                              (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080c00c2 && d == 0x4002) ||
-                             (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080201c2 && d == 0x30002) ||
+                             (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080201c2 &&
+                              ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802)) ||
+                             (service == SNX_CTR_SERVICE_FS &&
+                              (c->in[0] == 0x08040142 || c->in[0] == 0x08050244 || c->in[0] == 0x08060142 ||
+                               c->in[0] == 0x08080202 || c->in[0] == 0x08090182 || c->in[0] == 0x080a0244 ||
+                               c->in[0] == 0x080b0102) &&
+                              ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802)) ||
                              (service == SNX_CTR_SERVICE_GSP && (c->in[0] == 0x00010082 || c->in[0] == 0x00020084)) ||
                              (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x08030204 &&
                               ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802));

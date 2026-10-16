@@ -18,6 +18,11 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     if (!p) return;
     free(p->gsp.regs);
     snx_ctr_romfs_free(p->romfs);
+    if (p->tree) {
+        fs_tree_destroy(p->tree);
+        pm_destroy(&p->tree->lock);
+        free(p->tree);
+    }
     snx_ctr_space_free(p->space);
     snx_ctr_memory_free(p->memory);
     free(p);
@@ -113,8 +118,49 @@ fail:
     snx_ctr_process_free(p);
     return NULL;
 }
+/* One NX-style shared tree over the extracted title directory: romfs and
+   exefs are shared read-only and always open; sdmc is the read-write area,
+   created on demand. The process owns the tree. */
 bool snx_ctr_process_mount_fs(SnxCtrProcess* p, const char* directory) {
-    return p && !p->romfs && snx_ctr_romfs_open(directory, &p->romfs);
+    if (!p || !directory || !*directory || p->tree) return false;
+    FsTree* tree = calloc(1, sizeof *tree);
+    if (!tree) return false;
+    if (fs_tree_init(tree, directory) != FS_TREE_OK) {
+        pm_destroy(&tree->lock);
+        free(tree);
+        return false;
+    }
+    p->tree = tree;
+    pm_lock(&tree->lock);
+    unsigned shared = 0, failed = 0;
+    bool ok = true;
+    for (unsigned i = 0; i < 2 && ok; ++i) {
+        FsNode* node = NULL;
+        if (!fs_tree_lookup(tree, NULL, i ? "exefs" : "romfs", &node))
+            ok = !fs_tree_share(tree, node, &shared, &failed);
+    }
+    pm_unlock(&tree->lock);
+    if (!ok || !snx_ctr_romfs_open(tree, &p->romfs)) ok = false;
+    FsNode* sd = NULL;
+    if (ok) {
+        pm_lock(&tree->lock);
+        FsTreeResult rc = fs_tree_lookup(tree, NULL, "sdmc", &sd);
+        if (rc == FS_TREE_NOTFOUND) rc = fs_tree_create(tree, NULL, "sdmc", 1, 0, &sd);
+        pm_unlock(&tree->lock);
+        ok = !rc && sd;
+    }
+    if (!ok) { /* leave no partial mount behind; the process itself stays the caller's */
+        snx_ctr_romfs_free(p->romfs);
+        p->romfs = NULL;
+        fs_tree_destroy(p->tree);
+        pm_destroy(&p->tree->lock);
+        free(p->tree);
+        p->tree = NULL;
+        p->sd = NULL;
+        return false;
+    }
+    p->sd = sd;
+    return true;
 }
 /* HLE shared pages come from board FCRAM past the application pool, outside
    pool accounting: each call reserves the next page-aligned block. */

@@ -30,11 +30,14 @@ enum {
     CTR_OBJ_SHARED,
     CTR_OBJ_FILE
 };
+/* file.kind */
+enum { CTR_FILE_VIEW, CTR_FILE_HOST, CTR_FILE_DIR };
 #define CTR_SELF_ARCHIVES 32u
 /* FS-private read-only SelfNCCH bindings, never kernel handles. Tokens are
    monotonically issued and never reused; the process owns their RomFS backing. */
 typedef struct {
     uint64_t token;
+    uint32_t kind; /* 0: SelfNCCH RomFS view (read-only), 1: SDMC host area (read-write) */
 } CtrSelfArchive;
 typedef struct {
     SnxArmCPU context; /* inactive architectural prefix only; never the checked adapter */
@@ -50,7 +53,9 @@ typedef struct {
         } session;
         CtrThread thread;
         struct {
-            uint32_t closed;
+            uint32_t closed, kind, writable;
+            void* host; /* FILE* for CTR_FILE_HOST */
+            void* node; /* FsNode*, retained for the file's lifetime */
         } file;
         struct {
             uint32_t physical, size, permissions;
@@ -86,6 +91,8 @@ typedef struct {
 } SnxCtrGsp;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
+    FsTree* tree;       /* the shared NX-style tree: romfs/exefs read-only, sdmc read-write */
+    FsNode* sd;         /* the "sdmc" subtree root (read-write) */
     SnxCtrMemory* memory;
     SnxCtrAddressSpace* space;
     SnxCtrCpu cpu;

@@ -5,11 +5,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "filesystem/tree.h"
 typedef struct SnxCtrRomfs SnxCtrRomfs;
-/* Builds CTR level-3 metadata over the same indexed/shared host files as NX.
-   Input is an extracted, trusted, non-concurrently-modified title directory.
-   Missing romfs/ is genuinely absent (*out stays NULL). No CIA is reopened. */
-bool snx_ctr_romfs_open(const char* directory, SnxCtrRomfs** out);
+/* Builds the CTR level-3 view over the tree's "romfs" child, shared read-only
+   and always open like NX's romfs/exefs. The tree is owned by the process and
+   outlives the view; missing romfs/ is genuinely absent (*out stays NULL).
+   No CIA is reopened. */
+bool snx_ctr_romfs_open(FsTree* tree, SnxCtrRomfs** out);
 void snx_ctr_romfs_free(SnxCtrRomfs* fs);
 uint64_t snx_ctr_romfs_size(const SnxCtrRomfs* fs);
 bool snx_ctr_romfs_read(SnxCtrRomfs* fs, uint64_t offset, void* data, size_t size);
@@ -19,4 +21,7 @@ bool snx_ctr_romfs_read(SnxCtrRomfs* fs, uint64_t offset, void* data, size_t siz
    milliseconds since 1900-01-01 00:00:00 UTC. */
 typedef enum { SNX_CTR_TIME_OK = 0, SNX_CTR_TIME_NOTFOUND, SNX_CTR_TIME_INVALID } SnxCtrTimeResult;
 SnxCtrTimeResult snx_ctr_romfs_time(SnxCtrRomfs* fs, const unsigned char* path16, size_t bytes, uint64_t* datetime);
+/* Bounded UTF-16LE archive path to UTF-8 with '/' separators (also accepts
+   '\\'); the result is NUL-terminated. False: malformed or too long. */
+bool snx_ctr_utf16_path(const unsigned char* path16, size_t bytes, char* out, size_t out_size);
 #endif

@@ -228,6 +228,93 @@ static void timestamps(SnxCtrProcess* p, uint32_t fs, const char* directory) {
     request(p, fs, cmd, 10, SNX_CTR_SVC_RETURN, 0);
     assert(get(p, 1) == 0xc8804465); /* timestamps need a live binding */
 }
+/* The sdmc area is read-write, backed by the shared host tree like NX: real
+   create/write/read/resize/rename/delete, with host files as the durable
+   store. Directory probes match the devoptab's stat fallback. */
+static void sd_area(SnxCtrProcess* p, uint32_t fs, const char* directory) {
+    uint32_t a[] = {0x80c00c2, 9, 1, 1, 0x4002, 0x300020};
+    request(p, fs, a, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    uint32_t lo = get(p, 2), hi = get(p, 3);
+    static const uint16_t dir16[] = {'d', 0};
+    static const uint16_t file16[] = {'d', '/', 'f', '.', 'b', 'i', 'n', 0};
+    static const uint16_t moved16[] = {'d', '/', 'm', '.', 'b', 'i', 'n', 0};
+    utf16(p, 0x300400, dir16, 4);
+    uint32_t mkdir[] = {0x8090182, 0, lo, hi, 4, 4, 0, 0x10002, 0x300400};
+    request(p, fs, mkdir, 9, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    request(p, fs, mkdir, 9, SNX_CTR_SVC_RETURN, 0);
+    assert(get(p, 1) == 0xc88044be); /* already exists */
+    utf16(p, 0x300400, file16, 16);
+    uint32_t mkfile[] = {0x8080202, 0, lo, hi, 4, 16, 0, 4, 0, 0x40002, 0x300400};
+    request(p, fs, mkfile, 11, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    uint32_t open[] = {0x80201c2, 0, lo, hi, 4, 16, 3, 0, 0x40002, 0x300400};
+    request(p, fs, open, 10, SNX_CTR_SVC_RETURN, 0);
+    assert(get(p, 0) == 0x8020042 && !get(p, 1) && get(p, 2) == 0x10);
+    uint32_t file = get(p, 3);
+    word(p, 0x300600, 0x64636261); /* "abcd" */
+    uint32_t write[] = {0x8030102, 0, 0, 4, 0, (4u << 4) | 10, 0x300600};
+    request(p, file, write, 7, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1) && get(p, 2) == 4);
+    uint32_t size[] = {0x8040000};
+    request(p, file, size, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1) && get(p, 2) == 4 && !get(p, 3));
+    uint32_t grow[] = {0x8050080, 6, 0};
+    request(p, file, grow, 3, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    word(p, 0x300500, 0);
+    word(p, 0x300504, 0);
+    uint32_t read[] = {0x80200c2, 0, 0, 6, (6u << 4) | 12, 0x300500};
+    request(p, file, read, 6, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1) && get(p, 2) == 6);
+    unsigned char bytes[8];
+    assert(snx_ctr_read_ram(p->space, 0x300500, bytes, 6) == SNX_CTR_MEM_OK);
+    assert(!memcmp(bytes, "abcd\0\0", 6)); /* grown with zeros */
+    uint32_t finish[] = {0x8080000};
+    request(p, file, finish, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1) && !snx_ctr_handle_close(p, file));
+    /* stat-style probes: a directory is not a file, then opens as directory */
+    utf16(p, 0x300400, dir16, 4);
+    uint32_t probe[] = {0x80201c2, 0, lo, hi, 4, 4, 1, 0, 0x10002, 0x300400};
+    request(p, fs, probe, 10, SNX_CTR_SVC_RETURN, 0);
+    assert(get(p, 1) == 0xc8804702);
+    utf16(p, 0x300400, dir16, 4);
+    uint32_t opend[] = {0x80b0102, lo, hi, 4, 4, 0x10002, 0x300400};
+    request(p, fs, opend, 7, SNX_CTR_SVC_RETURN, 0);
+    assert(get(p, 0) == 0x80b0042 && !get(p, 1) && get(p, 2) == 0x10);
+    uint32_t handle = get(p, 3);
+    request(p, handle, finish, 1, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1) && !snx_ctr_handle_close(p, handle));
+    /* rename through the wire, then delete */
+    utf16(p, 0x300400, file16, 16);
+    utf16(p, 0x300700, moved16, 16);
+    uint32_t rename[] = {0x8050244, 0, lo, hi, 4, 16, lo, hi, 4, 16, 0x40002, 0x300400, (16u << 14) | (1u << 11) | 2,
+                         0x300700};
+    request(p, fs, rename, 14, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    /* the host file under the shared sdmc tree carries the written bytes */
+    char* host = snx_path_join(directory, "sdmc/d/m.bin");
+    FILE* disk = fopen(host, "rb");
+    assert(disk);
+    char content[8] = {0};
+    assert(fread(content, 1, 6, disk) == 6 && !memcmp(content, "abcd\0\0", 6));
+    assert(!fclose(disk));
+    free(host);
+    uint32_t remove[] = {0x8040142, 0, lo, hi, 4, 16, 0x40002, 0x300700};
+    request(p, fs, remove, 8, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    request(p, fs, remove, 8, SNX_CTR_SVC_RETURN, 0);
+    assert(get(p, 1) == 0xc8804478); /* gone */
+    utf16(p, 0x300400, dir16, 4);
+    uint32_t rmdir[] = {0x8060142, 0, lo, hi, 4, 4, 0x10002, 0x300400};
+    request(p, fs, rmdir, 8, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+    /* save commit on the SD area succeeds: writes already landed on the host */
+    uint32_t commit[] = {0x80d0144, lo, hi, 0, 12, 8, (12u << 4) | 10, 0x300400, (8u << 4) | 12, 0x300500};
+    request(p, fs, commit, 10, SNX_CTR_SVC_RETURN, 0);
+    assert(!get(p, 1));
+}
 int main(int argc, char** argv) {
     assert(argc == 4);
 #if defined(__unix__)
@@ -259,6 +346,7 @@ int main(int argc, char** argv) {
         unsigned before = objects(p);
         archives(p, fs, absent);
         if (!absent) timestamps(p, fs, argv[1]);
+        sd_area(p, fs, argv[1]);
         if (absent) {
             request(p, fs, open, 13, SNX_CTR_SVC_RETURN, 0);
             assert(get(p, 1) == 0xc8804464 && objects(p) == before);

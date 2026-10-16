@@ -628,6 +628,23 @@ FILE* fs_tree_open(FsTree* tree, FsNode* node, const char* mode) {
     if (file) setvbuf(file, NULL, _IONBF, 0);
     return file;
 }
+FsTreeResult fs_tree_resize(FsTree* tree, FsNode* node, uint64_t size) {
+    if (!node || node->is_virtual || node->readonly || !belongs_to(tree, node)) return FS_TREE_INVALID;
+    if (node->is_dir) return FS_TREE_INVALID;
+    if (size > (uint64_t)1 << 40) return FS_TREE_INVALID;
+    FILE* file = fs_tree_open(tree, node, "r+b");
+    if (!file) return FS_TREE_IO;
+    int rc;
+#if defined(_WIN32)
+    rc = _chsize_s(_fileno(file), (long long)size);
+#else
+    rc = ftruncate(fileno(file), (off_t)size);
+#endif
+    int closed = !fclose(file);
+    if (rc || !closed) return FS_TREE_IO;
+    node->size = size;
+    return FS_TREE_OK;
+}
 /* The backing file's actual host modification time, not a stored timestamp. */
 FsTreeResult fs_tree_mtime(FsTree* tree, const FsNode* node, uint64_t* unix_ms) {
     char path[FS_TREE_PATH_MAX];

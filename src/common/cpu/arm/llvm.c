@@ -392,7 +392,10 @@ static void multiple(ArmIR* a) {
             ++index;
         }
     if (!load) transfer_commit(a);
-    if (w & (1u << 21)) setreg(a, n, adjusted);
+    /* Writeback after stores (STM snapshots keep the old base) but before
+       nothing else: for LDM with the base in the list the loaded value wins,
+       so writeback is discarded there. */
+    if ((w & (1u << 21)) && !(load && (w & (1u << n)))) setreg(a, n, adjusted);
 }
 
 static LLVMValueRef intrinsic(ArmIR* a, const char* name, size_t len, LLVMTypeRef type, LLVMValueRef* args,

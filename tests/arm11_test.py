@@ -33,6 +33,21 @@ def main():
             for opcode in (0x06500F90, 0x06800FB0):
                 A.case(condition << 28 | opcode | n << 16 | d << 12 | m, 'packed')
     A.CASES.append((A.program(0xE6513F92, 0xE0233004, 0xE6815FB2), 'packed'))
+    # A32 base-in-list transfers with writeback: ARM11 MPCore (and ARMv8)
+    # semantics, checked against Unicorn. STM stores the old base; LDM's
+    # loaded base wins over writeback.
+    for word in (
+        0xE8A40050,
+        0xE8B40050,
+        0xE8A40010,
+        0xE8B40010,
+        0xE9244010,
+        0xE9340050,
+        0xE92D6000,
+        0xE8BD4010,
+        0xE8A48000,
+    ):
+        A.case(word, 'multiple')
     regs = [getattr(R, f'UC_ARM_REG_R{i}') for i in range(13)] + [R.UC_ARM_REG_SP, R.UC_ARM_REG_LR, R.UC_ARM_REG_PC]
     emu = U.Uc(U.UC_ARCH_ARM, U.UC_MODE_ARM)
     emu.ctl_set_cpu_model(R.UC_CPU_ARM_11MPCORE)

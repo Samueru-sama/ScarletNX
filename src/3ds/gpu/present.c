@@ -382,12 +382,16 @@ static bool window_show(const unsigned char* rgba, unsigned width, unsigned heig
 }
 bool snx_ctr_present_frame(unsigned screen, unsigned width, unsigned height, unsigned format, unsigned pitch,
                            const unsigned char* pixels, uint64_t* hash) {
-    if (!v.up || !pixels || !width || !height || width > 1024 || height > 1024 || (format != 0 && format != 2))
-        return false;
-    uint32_t bytes = format == 0 ? 4 : 2;
+    if (!v.up || !pixels || !width || !height || width > 1024 || height > 1024 || format > 2) return false;
+    uint32_t bytes = format == 0 ? 4 : format == 1 ? 3 : 2;
     if (pitch < width * bytes) return false;
-    VkFormat source = format == 0 ? VK_FORMAT_R8G8B8A8_UNORM : VK_FORMAT_R5G6B5_UNORM_PACK16;
-    VkDeviceSize raw_size = (VkDeviceSize)pitch * height;
+    VkFormat source = format == 0   ? VK_FORMAT_R8G8B8A8_UNORM
+                      : format == 1 ? VK_FORMAT_B8G8R8A8_UNORM
+                                    : VK_FORMAT_R5G6B5_UNORM_PACK16;
+    /* RGB8 is uploaded padded to its implicit opaque alpha in B8G8R8A8
+       (layout normalization on transfer); the channel conversion to RGBA8
+       stays on the device. */
+    VkDeviceSize raw_size = format == 1 ? (VkDeviceSize)width * height * 4 : (VkDeviceSize)pitch * height;
     VkBuffer staging = VK_NULL_HANDLE, readback = VK_NULL_HANDLE;
     VkDeviceMemory staging_mem = VK_NULL_HANDLE, readback_mem = VK_NULL_HANDLE;
     VkImage src = VK_NULL_HANDLE, dst = VK_NULL_HANDLE;
@@ -400,7 +404,19 @@ bool snx_ctr_present_frame(unsigned screen, unsigned width, unsigned height, uns
               make_image(width, height, VK_FORMAT_R8G8B8A8_UNORM,
                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, &dst, &dst_mem);
     if (ok) {
-        memcpy(raw, pixels, (size_t)raw_size);
+        if (format == 1) {
+            unsigned char* dst = raw;
+            for (uint32_t y = 0; y < height; ++y)
+                for (uint32_t x = 0; x < width; ++x) {
+                    const unsigned char* p = pixels + (size_t)y * pitch + (size_t)x * 3;
+                    dst[0] = p[0];
+                    dst[1] = p[1];
+                    dst[2] = p[2];
+                    dst[3] = 255; /* RGB8 has implicit opaque alpha */
+                    dst += 4;
+                }
+        } else
+            memcpy(raw, pixels, (size_t)raw_size);
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                                           .commandPool = v.pool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
