@@ -1760,7 +1760,7 @@ int main(int argc, char** argv) {
         render(&app);
         page = rgb(app.theme.page);
         ink = rgb(app.theme.ink);
-        colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", page, ink);
+        colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", ink, page); /* its head plain, as NieR's titles */
         colored_text_on(&app, 3, menu_row(&app, GUI_SETTINGS), "Settings", page, ink); /* the focused line's band */
         colored_text_on(&app, 3, menu_row(&app, GUI_EXIT), "Exit", ink, page);
         colored_text_on(&app, 1, app.rows - 2, "CWD:", page, ink);
@@ -1780,7 +1780,7 @@ int main(int argc, char** argv) {
         page.r = 0x10; /* its own page; its ink, unreadable, is YoRHa's */
         page.g = 0x20;
         page.b = 0x30;
-        colored_text_on(&app, 1, 0, "TEST  /  MENU", page, ink);
+        colored_text_on(&app, 1, 0, "TEST  /  MENU", ink, page); /* YoRHa's plain head */
         colored_text_on(&app, 1, menu_row(&app, GUI_SETTINGS), "> Settings", page, ink);
         colored_text_on(&app, 1, menu_row(&app, GUI_EXIT), "> Exit", ink, page);
         app_select(&app, GUI_APP_THEME);
@@ -1897,13 +1897,13 @@ int main(int argc, char** argv) {
         assert(entered && faded == entered + app.theme.fade_out_ms);
         app.clock = entered;
         render(&app);
-        colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", rgb(app.theme.page), rgb(app.theme.ink));
+        colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", rgb(app.theme.ink), rgb(app.theme.page));
         /* the run's output waits for the run: its rows, which end above the message (a small window has few) */
         for (row = app.log_top - 2; row <= app.log_top && row < app.rows - 4; ++row)
             colored_text_on(&app, 1, row, "                            ", rgb(app.theme.ink), rgb(app.theme.page));
         app.clock = entered + app.theme.fade_out_ms / 2;
         render(&app);
-        dimmed = pixel(&app, 4, 4); /* the head's bar, half way to black */
+        dimmed = pixel(&app, 4, 4); /* the page, half way to black */
         assert(!same_colour(dimmed, rgb(app.theme.ink)) && !same_colour(dimmed, black));
         app.clock = entered + app.theme.fade_out_ms;
         render(&app);
@@ -2139,7 +2139,7 @@ int main(int argc, char** argv) {
         assert(same_colour(pixel(&app, x, y + 2), black));
         app.clock += app.theme.fade_in_ms;
         render(&app);
-        colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", rgb(app.theme.page), rgb(app.theme.ink)); /* the menus' own */
+        colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", rgb(app.theme.ink), rgb(app.theme.page)); /* the menus' own */
         app.clock = 0;
         lines(&app, "default");
         launcher(&app, false);
@@ -2484,6 +2484,24 @@ int main(int argc, char** argv) {
         text_px_is(&app, b.x + cw / 2, b.y + s, "\xfe Exit", ink, dim = rgb(app.theme.dim));
         r = m.place.side;
         text_px_is(&app, r.x + cw, r.y + 2 * s, "Setup device keys", page, ink);
+        /* its title twice the text's size, over its shadow in the dim colour a big pixel down and right */
+        r = m.place.title;
+        assert(r.h == 2 * 16 * s + 2 * s && r.y + r.h <= m.place.list.y);
+        {
+            const unsigned char* g = &gui_vga_font['S' * 16];
+            int big = 2 * s, shadowed = 0;
+            for (int fy = 0; fy < 15; ++fy)
+                for (int fx = 0; fx < 7; ++fx) {
+                    int here = g[fy] & (0x80 >> fx), under = g[fy + 1] & (0x80 >> (fx + 1));
+                    if (here) assert(same_colour(pixel(&app, (float)(r.x + fx * big), (float)(r.y + fy * big)), ink));
+                    if (here && !under) {
+                        SDL_Color c = pixel(&app, (float)(r.x + (fx + 1) * big), (float)(r.y + (fy + 1) * big));
+                        assert(same_colour(c, dim));
+                        ++shadowed;
+                    }
+                }
+            assert(shadowed > 4);
+        }
         /* letters too big for the screen: the list scrolls, the focus in view, an arrow where entries are hidden */
         app.menu.text_size = GUI_TEXT_MAX;
         app.menu.selected = GUI_EXIT;

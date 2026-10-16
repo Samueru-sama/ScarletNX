@@ -50,7 +50,9 @@ typedef struct {
     GuiRgb page, ink, soft, focus, active, failure, dim, warning, added;
     GuiStyle head, footer;
     int head_rule, footer_rule;
-    int tabs;      /* the menu, Games and the Settings as tabs over the title */
+    int tabs;            /* the menu, Games and the Settings as tabs over the title */
+    uint32_t title_size; /* boxes: the title's letters, times the text's; 0 is 1 */
+    int title_shadow;
     int focus_bar; /* the focused line as a band of ink, its text in the page colour */
     char marker[16];
     GuiBoxStyle boxes;

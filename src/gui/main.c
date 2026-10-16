@@ -1165,12 +1165,27 @@ static void bar(App* app, GuiRect r, const char* about, SDL_Color color, const c
     hints(app, keys, text.w / cell_w(app), text, r.y + 2 * s + cell_h(app), 1);
 }
 /* the screen's title in its box: on a band of ink with the head's bar style */
+/* the title's letters, times the text's */
+static int title_size(const App* app) { return (int)SDL_clamp(app->theme.title_size, 1, 3); }
+/* value from pixel x, y in letters size times the text's, cut at the right edge of r */
+static void big_text(App* app, GuiRect r, int x, int y, const char* value, int size, SDL_Color color) {
+    float w = 8.0f * (float)(app->scale * size), h = 16.0f * (float)(app->scale * size);
+    SDL_SetTextureColorMod(app->font, color.r, color.g, color.b);
+    for (; *value && (float)x + w <= (float)(r.x + r.w); x += (int)w) {
+        unsigned char c = gui_glyph(SDL_StepUTF8(&value, NULL));
+        SDL_FRect source = {(float)(c % 16 * 8), (float)(c / 16 * 16), 8, 16}, at = {(float)x, (float)y, w, h};
+        SDL_RenderTexture(app->renderer, app->font, &source, &at);
+    }
+}
+/* the screen's title in its box, its letters as big as the head's size says over their shadow; on a band of ink with
+   the head's bar style */
 static void title_box(App* app, GuiRect r, const char* title) {
     const GuiTheme* t = &app->theme;
+    int bar = t->head == GUI_STYLE_BAR, size = title_size(app), x = r.x + (bar ? cell_w(app) : 0);
     if (!r.h) return;
-    if (t->head == GUI_STYLE_BAR) fill_rect(app, r, t->ink);
-    text_in(app, r, r.x + (t->head == GUI_STYLE_BAR ? cell_w(app) : 0), r.y, title,
-            rgb(t->head == GUI_STYLE_BAR ? t->page : t->ink));
+    if (bar) fill_rect(app, r, t->ink);
+    if (t->title_shadow) big_text(app, r, x + size * app->scale, r.y + size * app->scale, title, size, rgb(t->dim));
+    big_text(app, r, x, r.y, title, size, rgb(bar ? t->page : t->ink));
 }
 /* the theme's title for a screen, "" when the head shows none */
 static const char* boxed_title(const App* app, GuiScreen s) {
@@ -1256,7 +1271,8 @@ static void place_screen(App* app, GuiPlace* p, const char* title, const char* k
     in.cw = cell_w(app);
     in.ch = cell_h(app);
     in.tabs = shows & GUI_SHOWS_TABS && app->theme.tabs ? cell_h(app) + 4 * app->scale : 0;
-    in.title = title[0] ? cell_h(app) : 0;
+    in.title =
+        title[0] ? title_size(app) * cell_h(app) + (app->theme.title_shadow ? title_size(app) * app->scale : 0) : 0;
     in.bar = bar_h(app, width - 2 * cell_w(app), keys);
     in.list_cols = list_cols ? SDL_min(SDL_max(list_cols, 20), SDL_max(20, (width / cell_w(app) - 2) * 3 / 5)) : 0;
     gui_place(&in, p);

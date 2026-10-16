@@ -205,8 +205,8 @@ console layout shows the driver's output in a box sized to it, beside it what ru
 the ESC line in the bar, which a tap aborts. A question, or the files an older version left, comes in a box over the
 screen darkened. `boxes = none` keeps the lines down the page described above.
 
-The built-ins are `default`, the look above, and `yorha`: paper and ink with a header
-bar, square markers and the focused line inverted on the menus, and a run drawn as a
+The built-ins are `default`, the look above, and `yorha`: paper and ink, a title twice the text's size over its
+shadow, square markers and the focused box inverted on the menus, and a run drawn as a
 dark loading screen in its own colours (`[run]`): the title, the game's name with turning
 dots and a turning ring; each step the driver and the runner report (unpack, extract,
 recompile with its blocks, built, launch, GPU) typed down the page, with turning dots
@@ -254,6 +254,11 @@ added = #6A9A50
 ; plain | bar | none; rule: a line under the head
 style = bar
 rule = true
+; boxes: the menu, Games and the Settings as tabs over the title
+tabs = true
+; boxes: the title's letters, times the text's (1 to 3), and a shadow under them in the dim colour
+size = 2
+shadow = true
 ; the title per screen: menu, games, keys, compiling, loading
 menu = NIGHT  /  MENU
 [body]

@@ -28,6 +28,8 @@ static const char* const format_keys[] = {"theme/format",
                                           "head/style",
                                           "head/rule",
                                           "head/tabs",
+                                          "head/size",
+                                          "head/shadow",
                                           "head/menu",
                                           "head/games",
                                           "head/keys",
@@ -169,9 +171,10 @@ int main(void) {
     }
     assert(!strcmp(loading->title[GUI_SCREEN_LOADING], "BOOTING"));
     assert(def->head == GUI_STYLE_PLAIN && !def->focus_bar && !strcmp(def->marker, "- ") && !def->title[0][0]);
-    assert(yorha->head == GUI_STYLE_BAR && yorha->focus_bar && yorha->title[GUI_SCREEN_COMPILING][0]);
+    assert(yorha->head == GUI_STYLE_PLAIN && yorha->focus_bar && yorha->title[GUI_SCREEN_COMPILING][0]);
     /* the menus in boxes: the default's framed, YoRHa's filled with a cursor in the margin */
     assert(def->boxes == GUI_BOXES_LINE && !def->cursor[0] && def->tabs && yorha->tabs);
+    assert(def->title_size == 1 && !def->title_shadow && yorha->title_size == 2 && yorha->title_shadow);
     assert(yorha->boxes == GUI_BOXES_FILL && !strcmp(yorha->cursor, "\xe2\x96\xba "));
 
     parse(&theme, ""); /* nothing: the default, named after its folder */
