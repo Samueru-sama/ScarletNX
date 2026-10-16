@@ -2477,6 +2477,26 @@ int main(int argc, char** argv) {
            side box's name on a band of its ink */
         app.theme = *gui_theme_builtin("yorha");
         assert(app.theme.boxes == GUI_BOXES_FILL && !strcmp(app.theme.cursor, "\xe2\x96\xba "));
+        /* the page behind the boxes: its grid and diagonals in the dim colour under them, the corners darkened over
+           everything */
+        {
+            SDL_Color plain = rgb(app.theme.page), c, corner, side;
+            int width, height;
+            app.theme.corners = false;
+            render(&app);
+            area(&app, &width, &height);
+            c = pixel(&app, 0, (float)(height / 2 + 1)); /* the grid's first column, beside the boxes */
+            assert(!same_colour(c, plain) && c.r < plain.r && c.r > app.theme.dim.r);
+            corner = pixel(&app, 1, 1);
+            side = pixel(&app, 1, (float)(height / 2 + 1));
+            c = pixel(&app, (float)(width / 2), (float)(height / 2)); /* the middle, a box */
+            app.theme.corners = true;
+            render(&app);
+            assert(same_colour(pixel(&app, (float)(width / 2), (float)(height / 2)), c)); /* untouched */
+            assert(pixel(&app, 1, 1).r + 30 < corner.r);                                  /* a corner, darker */
+            assert(pixel(&app, 1, (float)(height / 2 + 1)).r + 30 > side.r);              /* an edge's middle, less */
+            app.theme.corners = app.theme.grid = app.theme.diagonals = false;             /* exact colours below */
+        }
         page = rgb(app.theme.page);
         ink = rgb(app.theme.ink);
         render(&app);

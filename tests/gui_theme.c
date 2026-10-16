@@ -44,6 +44,9 @@ static const char* const format_keys[] = {"theme/format",
                                           "frame/spacing",
                                           "frame/rule",
                                           "frame/color",
+                                          "backdrop/grid",
+                                          "backdrop/diagonals",
+                                          "backdrop/corners",
                                           "footer/style",
                                           "footer/rule",
                                           "run/layout",
@@ -182,6 +185,7 @@ int main(void) {
     assert(def->title_size == 1 && !def->title_shadow && yorha->title_size == 2 && yorha->title_shadow);
     assert(def->edges == GUI_EDGES_NONE && yorha->edges == GUI_EDGES_BOTH && yorha->mark == GUI_MARK_DOTS);
     assert(yorha->mark_spacing == 26 && yorha->edge_rule && same(yorha->edge_color, yorha->ink));
+    assert(!def->grid && !def->diagonals && !def->corners && yorha->grid && yorha->diagonals && yorha->corners);
     assert(yorha->boxes == GUI_BOXES_FILL && !strcmp(yorha->cursor, "\xe2\x96\xba "));
 
     parse(&theme, ""); /* nothing: the default, named after its folder */

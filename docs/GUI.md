@@ -279,6 +279,11 @@ spacing = 26
 ; a line along the edge, a tick between the marks
 rule = true
 color = #D8D4C4
+[backdrop]
+; boxes: the page behind them: a faint grid and thin diagonals in the dim colour, its corners darker
+grid = true
+diagonals = true
+corners = true
 [footer]
 style = plain
 rule = true

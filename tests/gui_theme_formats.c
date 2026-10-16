@@ -156,7 +156,8 @@ static int later_keys(const GuiTheme* t, const GuiTheme* base) {
     return t->boxes == base->boxes && !strcmp(t->cursor, base->cursor) && t->tabs == base->tabs &&
            t->title_size == base->title_size && t->title_shadow == base->title_shadow && t->edges == base->edges &&
            t->mark == base->mark && t->mark_spacing == base->mark_spacing && t->edge_rule == base->edge_rule &&
-           !memcmp(&t->edge_color, &base->edge_color, sizeof t->edge_color);
+           !memcmp(&t->edge_color, &base->edge_color, sizeof t->edge_color) && t->grid == base->grid &&
+           t->diagonals == base->diagonals && t->corners == base->corners;
 }
 /* one fixture: every field its JSON names has the value the file reads to */
 static int check(const char* dir, const char* name, int format) {

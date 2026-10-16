@@ -65,6 +65,7 @@ typedef struct {
     uint32_t mark_spacing; /* pixels at 1x from a mark to the next; 0: none */
     int edge_rule;         /* a line along the edge, a tick between the marks */
     GuiRgb edge_color;
+    int grid, diagonals, corners; /* boxes: the page's own lines behind them, in the dim colour; darker corners */
     char title[GUI_SCREEN_COUNT][64];
     GuiRunLayout run;
     GuiPalette run_colors;  /* the steps screen's own: a loading screen, darker than the menus */

@@ -1281,8 +1281,49 @@ static void edge(App* app, GuiRect r) {
         }
     }
 }
-/* what a screen in boxes draws before its own: the edges, the tabs */
+/* the page's own lines behind the boxes, in the dim colour: a faint grid, thin diagonals */
+static void backdrop(App* app) {
+    const GuiTheme* t = &app->theme;
+    int width, height, s = app->scale, x, y;
+    if (!t->grid && !t->diagonals) return;
+    area(app, &width, &height);
+    SDL_SetRenderDrawBlendMode(app->renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(app->renderer, t->dim.r, t->dim.g, t->dim.b, 72);
+    for (x = 0; t->grid && x < width; x += 6 * s) SDL_RenderLine(app->renderer, (float)x, 0, (float)x, (float)height);
+    for (y = 0; t->grid && y < height; y += 6 * s) SDL_RenderLine(app->renderer, 0, (float)y, (float)width, (float)y);
+    SDL_SetRenderDrawColor(app->renderer, t->dim.r, t->dim.g, t->dim.b, 160);
+    for (x = -height; t->diagonals && x < width; x += 112 * s)
+        SDL_RenderLine(app->renderer, (float)x, 0, (float)(x + height), (float)height);
+    SDL_SetRenderDrawBlendMode(app->renderer, SDL_BLENDMODE_NONE);
+}
+/* the screen's corners darker over all of it, as an old monitor's, where the theme says so: from the middle out to
+   the corners, the edges' middles darkened less */
+static void vignette(App* app) {
+    /* around the edge from the top left corner, in halves of the screen, and how dark */
+    static const int round[8][3] = {{0, 0, 30}, {1, 0, 8}, {2, 0, 30}, {2, 1, 8},
+                                    {2, 2, 30}, {1, 2, 8}, {0, 2, 30}, {0, 1, 8}};
+    SDL_Vertex v[9];
+    int order[24], width, height, i;
+    if (!app->theme.corners) return;
+    area(app, &width, &height);
+    memset(v, 0, sizeof v);
+    v[0].position.x = (float)width / 2; /* black, its alpha 0 in the middle */
+    v[0].position.y = (float)height / 2;
+    for (i = 0; i < 8; ++i) {
+        v[i + 1].position.x = (float)(round[i][0] * width) / 2;
+        v[i + 1].position.y = (float)(round[i][1] * height) / 2;
+        v[i + 1].color.a = (float)round[i][2] / 100;
+        order[3 * i] = 0;
+        order[3 * i + 1] = i + 1;
+        order[3 * i + 2] = (i + 1) % 8 + 1;
+    }
+    SDL_SetRenderDrawBlendMode(app->renderer, SDL_BLENDMODE_BLEND);
+    SDL_RenderGeometry(app->renderer, NULL, v, 9, order, 24);
+    SDL_SetRenderDrawBlendMode(app->renderer, SDL_BLENDMODE_NONE);
+}
+/* what a screen in boxes draws before its own: the page's lines, the edges, the tabs */
 static void chrome(App* app, const GuiPlace* p) {
+    backdrop(app);
     edge(app, p->edge_top);
     edge(app, p->edge_bottom);
     draw_tabs(app, p->tabs);
@@ -1446,6 +1487,7 @@ static void draw_menu_boxed(App* app) {
     list_marks(app, &m.list);
     menu_side(app, &m);
     status_box(app, m.place.status);
+    vignette(app);
     bar_for(app, m.place.bar, entry_about(app, focus), screen_keys(app, SAY_MENU_KEYS, keys, sizeof keys));
 }
 /* the screen darkened under a box over it, to the window's edges as the fades */
@@ -1607,6 +1649,7 @@ static void draw_games_boxed(App* app) {
     }
     list_marks(app, &g.list);
     status_box(app, g.place.status);
+    vignette(app);
     about = app->browser.selected ? app->games.paths[g.start + app->browser.selected - 1] : "Back to the menu";
     bar_for(app, g.place.bar, about, screen_keys(app, SAY_GAMES, keys, sizeof keys));
 }
@@ -1674,6 +1717,7 @@ static void draw_pick_boxed(App* app) {
     prompt_in(app, r, SDL_max(y, k.prompt), GUI_PROMPT_KEYS, keys ? SAY_KEYS_WAIT : SAY_FILE_WAIT,
               rgb(app->theme.focus));
     list_item(app, &k.back, 0, "Back [ESC]", false, false); /* nothing to move to: ESC's */
+    vignette(app);
     snprintf(line, sizeof line, "%s: " SAY_PICK_BOX, items[keys ? GUI_KEYS : app->menu.active]);
     bar_for(app, k.place.bar, line, screen_keys(app, SAY_KEYS_HOW, hints_line, sizeof hints_line));
 }
@@ -1718,6 +1762,7 @@ static void draw_run_boxed(App* app) {
     else if (app->aborting)
         wrap_in(app, text, text.x, y + cell_h(app) / 2, "Aborting process tree...", 0, rgb(t->failure));
     status_box(app, p.status);
+    vignette(app);
     bar(app, p.bar, app->file ? app->file : "", rgb(t->soft), "");
     text = box_rect(p.bar.x + 3 * cell_w(app), p.bar.y, p.bar.w - 4 * cell_w(app), p.bar.h);
     if (app->finished || app->aborting)
@@ -3064,6 +3109,7 @@ static void draw_form_boxed(App* app) {
                                                            : "The runtime listed no settings",
                     rgb(app->theme.soft));
     }
+    vignette(app);
     about = form_about(app, &color);
     bar(app, f.place.bar, about, color, form_keys(app, keys, sizeof keys));
 }
