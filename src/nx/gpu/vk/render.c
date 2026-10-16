@@ -1434,9 +1434,9 @@ retry:
     VkBuffer ibuf = VK_NULL_HANDLE;
     u64 ioff = 0;
     VkIndexType itype = VK_INDEX_TYPE_UINT32;
-    u32 ifmt = r[0x5F6], isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
+    u32 ifmt = indexed == 3 ? 2 : r[0x5F6], isz = ifmt == 0 ? 1 : ifmt == 1 ? 2 : 4;
     u64 ia = ((u64)r[0x5F2] << 32) | r[0x5F3], iend = ((u64)r[0x5F4] << 32) | r[0x5F5];
-    if (indexed && iend >= ia && (u64)first + count > (iend - ia + 1) / isz) {
+    if (indexed && indexed != 3 && iend >= ia && (u64)first + count > (iend - ia + 1) / isz) {
         u64 avail = (iend - ia + 1) / isz;
         LOG_LIMIT(1, "vulkan: a draw reads indices %u..%u of an index buffer of %llu (cut there)\n", first,
                   first + count - 1, (unsigned long long)avail);
@@ -1460,7 +1460,9 @@ retry:
     if (topology == 7) { /* quads -> two triangles each */
         u32 nq = count / 4;
         const u8* src = NULL;
-        if (indexed) src = gmem_ptr(ia + (u64)first * isz, (u64)count * isz);
+        if (indexed)
+            src = indexed == 3 ? (const u8*)(ch->inline_indices + first)
+                               : gmem_ptr(ia + (u64)first * isz, (u64)count * isz);
         u32* idx = (u32*)vk_stage((u64)nq * 24 + 4, vk_stage_align(), &ibuf, &ioff);
         if (!idx) {
             draw_images_discard(&images);
@@ -1486,7 +1488,18 @@ retry:
         quads_indexed = indexed;
         indexed = 2; /* drawn indexed, with the first vertex in the indices */
     } else if (indexed) {
-        if (ifmt == 0) { /* 8-bit indices need an extension: widen them */
+        if (indexed == 3) {
+            u32* o = (u32*)vk_stage((u64)count * 4, vk_stage_align(), &ibuf, &ioff);
+            if (!o) {
+                draw_images_discard(&images);
+                return;
+            }
+            memcpy(o, ch->inline_indices + first, (size_t)count * 4);
+            if (restart && r[0x592] != 0xFFFFFFFFu)
+                for (u32 j = 0; j < count; j++)
+                    if (o[j] == r[0x592]) o[j] = 0xFFFFFFFFu;
+            itype = VK_INDEX_TYPE_UINT32;
+        } else if (ifmt == 0) { /* 8-bit indices need an extension: widen them */
             const u8* src = gmem_ptr(ia + first, count);
             u16* o = (u16*)vk_stage((u64)count * 2, vk_stage_align(), &ibuf, &ioff);
             if (!o) {

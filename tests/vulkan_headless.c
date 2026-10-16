@@ -200,6 +200,10 @@ int main(int argc, char** argv) {
     CHECK(!check_viewport_orientation());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_direct_spirv());
+    CHECK(g_renderer->method_barrier);
+    u32 epoch = g_vk_epoch;
+    for (int kind = 0; kind <= 4; kind++) g_renderer->method_barrier(kind);
+    CHECK(g_vk_epoch == epoch + 2); /* data and descriptor invalidation each expire cached reads */
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */
     vkCreateSwapchainKHR = NULL;

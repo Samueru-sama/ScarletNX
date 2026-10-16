@@ -404,6 +404,7 @@ void gpu_channel_close(u32 channel) {
             GpuChannel* c = g_gpu.chan[i];
             g_gpu.chan[i] = g_gpu.chan[--g_gpu.nchan];
             free(c->i2m_buf);
+            free(c->inline_indices);
             free(c);
             break;
         }

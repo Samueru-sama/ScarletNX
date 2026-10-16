@@ -13,12 +13,13 @@
 static struct {
     int on, indexed;
     GpuChannel* ch;
-    u32 topo, first, count, bv, bi, inst;
+    u32 topo, first, count, bv, bi, inst, small_kind;
 } g_pd;
 void r3d_pending_flush(void) {
     if (!g_pd.on) return;
     g_pd.on = 0;
     r3d_draw(g_pd.ch, g_pd.indexed, g_pd.topo, g_pd.first, g_pd.count, g_pd.bv, g_pd.bi, g_pd.inst);
+    if (g_pd.indexed == 3) g_pd.ch->inline_n = 0;
 }
 int r3d_pending_on(void) { return g_pd.on; }
 
@@ -76,6 +77,10 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     } else if (op == 2) { /* counter */
         u32 sel = (v >> 23) & 31;
         u64 val = sel == 0 ? 0 : (sel == 1 ? g_draws * 3 : 1000);
+        if (ch && (ch->r3d_counter_reset_mask & (1u << sel))) {
+            u64 draws = g_draws - ch->r3d_counter_base[sel];
+            val = draws * (sel == 1 ? 3 : 1000);
+        }
         fake_report_mark(addr, sel != 0);
         if ((v >> 28) & 1)
             gmem_w32(addr, (u32)val);
@@ -113,6 +118,51 @@ static int render_enabled(const GpuChannel* ch) {
     }
 }
 
+static void inline_index_push(GpuChannel* ch, u32 v) {
+    if (ch->inline_n == ch->inline_cap) {
+        u32 cap = ch->inline_cap ? ch->inline_cap * 2 : 64;
+        if (cap > (1u << 24)) {
+            WARN_LIMIT(1, "gpu: inline index buffer exceeds 16M indices (remaining indices skipped)\n");
+            return;
+        }
+        u32* p = realloc(ch->inline_indices, (size_t)cap * sizeof *p);
+        if (!p) {
+            WARN_LIMIT(1, "gpu: no memory for inline indices (remaining indices skipped)\n");
+            return;
+        }
+        ch->inline_indices = p;
+        ch->inline_cap = cap;
+    }
+    ch->inline_indices[ch->inline_n++] = v;
+}
+
+static void counter_reset(GpuChannel* ch, u32 reset) {
+    /* Report selectors and reset selectors use different enums. Keep these estimates relative to the reset rather
+       than returning the pre-reset constant for a counter that the game just cleared. */
+    u32 mask;
+    switch (reset) {
+        case 0x01: mask = 1u << 0x15; break;                                                /* samples passed */
+        case 0x02: mask = (1u << 0x0A) | (1u << 0x0C) | (1u << 0x0E) | (1u << 0x10); break; /* ZCull stats */
+        case 0x10: mask = 1u << 0x0B; break;                  /* transform feedback primitives */
+        case 0x12: mask = 1u << 0x01; break;                  /* input/generated vertices */
+        case 0x13: mask = (1u << 0x03) | (1u << 0x12); break; /* input primitives; Eden: generated primitives */
+        case 0x15: mask = 1u << 0x05; break;                  /* vertex shader invocations */
+        case 0x16: mask = 1u << 0x1B; break;                  /* tess control invocations */
+        case 0x17: mask = 1u << 0x1D; break;                  /* tess evaluation invocations */
+        case 0x18: mask = 1u << 0x1F; break;                  /* tess evaluation primitives */
+        case 0x1A: mask = 1u << 0x07; break;                  /* geometry shader invocations */
+        case 0x1B: mask = 1u << 0x09; break;                  /* geometry shader primitives */
+        case 0x1C: mask = 1u << 0x0F; break;                  /* clipper input primitives */
+        case 0x1D: mask = 1u << 0x11; break;                  /* clipper output primitives */
+        case 0x1E: mask = 1u << 0x13; break;                  /* fragment shader invocations */
+        case 0x1F: mask = 1u << 0x12; break;                  /* Ryujinx: generated primitives; Eden: VTG output */
+        default: return;
+    }
+    for (u32 sel = 0; sel < 32; sel++)
+        if (mask & (1u << sel)) ch->r3d_counter_base[sel] = g_draws;
+    ch->r3d_counter_reset_mask |= mask;
+}
+
 void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
     if (ch->cb_n && !(m >= 0x8E4 && m <= 0x8F3)) r3d_const_flush(ch); /* constant buffer data lands first */
     if (m >= 0xE00) {                                                 /* macro call */
@@ -130,6 +180,11 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
         return;
     }
     m &= 0xFFF;
+    u32 raw = v;
+    if (ch->r3d_shadow_mode <= 1)
+        ch->r3d_shadow[m] = v;
+    else if (ch->r3d_shadow_mode == 3)
+        v = ch->r3d_shadow[m];
     if (g_pd.on) { /* keep accumulating only for BEGIN(next instance), END, ranges, or writes that don't change a reg */
         int keep;
         switch (m) {
@@ -139,7 +194,13 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             case 0x35D:
             case 0x35E:
             case 0x5F7:
-            case 0x5F8: keep = 1; break;
+            case 0x5F8:
+            case 0x5FC:
+            case 0x5FD:
+            case 0x5FE: keep = 1; break;
+            case 0x4C1:
+            case 0x57A:
+            case 0x57C: keep = 0; break; /* the next inline indices cannot modify a pending draw */
             case 0x45:
             case 0x46:
             case 0x47:
@@ -148,6 +209,13 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             case 0x6D:
             case 0xB2:
             case 0x8C4:
+            case 0x44:
+            case 0x378:
+            case 0x3DD:
+            case 0x3DF:
+            case 0x509:
+            case 0x50A:
+            case 0x54C:
             case 0x674:
             case 0x6C3:
             case 0x904:
@@ -161,6 +229,22 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
     }
     R3(m) = v;
     switch (m) {
+        case 0x49: ch->r3d_shadow_mode = raw & 3; break;
+        case 0x54C: counter_reset(ch, v); break;
+        case 0x44: /* WAIT_FOR_IDLE */
+            gpu_signal_point();
+            if (g_renderer_up && g_renderer->method_barrier) g_renderer->method_barrier(4);
+            break;
+        case 0x378: /* FRAGMENT_BARRIER */
+        case 0x3DF: /* TILED_CACHE_BARRIER */
+            if (g_renderer_up && g_renderer->method_barrier) g_renderer->method_barrier(m == 0x378 ? 0 : 1);
+            break;
+        case 0x3DD: /* INVALIDATE_TEXTURE_DATA_CACHE */
+        case 0x509: /* INVALIDATE_SAMPLER_CACHE_NO_WFI */
+        case 0x50A: /* INVALIDATE_TEXTURE_HEADER_CACHE_NO_WFI */
+            if (m == 0x3DD) gpu_signal_point();
+            if (g_renderer_up && g_renderer->method_barrier) g_renderer->method_barrier(m == 0x3DD ? 2 : 3);
+            break;
         case 0x45: ch->mme_upload_ptr = v; break;
         case 0x46: ch->mme_code[ch->mme_upload_ptr++ & 0x1FFF] = v; break;
         case 0x47: ch->mme_start_ptr = v; break;
@@ -181,14 +265,25 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
         case 0x556:                                              /* SetRenderEnableC: the mode */
         case 0x651: ch->render_off = !render_enabled(ch); break; /* the override */
         case 0x42B: r3d_draw_texture(ch); break;                 /* DRAW_TEXTURE: its last word starts it */
+        case 0x4C1:                                              /* four u8 inline indices */
+            for (u32 i = 0; i < 4; i++) inline_index_push(ch, (v >> (i * 8)) & 0xFF);
+            break;
+        case 0x57A: inline_index_push(ch, v); break; /* one u32 inline index */
+        case 0x57C:                                  /* two u16 inline indices */
+            inline_index_push(ch, v & 0xFFFF);
+            inline_index_push(ch, v >> 16);
+            break;
         case 0x6C3: query_get(ch, ch->r3d, 0x6C0, v); break;
         case 0x585: { /* END: flush */
+            if (g_pd.on && g_pd.indexed == 3) r3d_pending_flush();
             u32 topo = R3(0x586) & 0xFFFF;
-            int idx = R3(0x5F8) != 0;
-            u32 first = idx ? R3(0x5F7) : R3(0x35D), count = idx ? R3(0x5F8) : R3(0x35E), bv = idx ? R3(0x50D) : 0,
-                bi = R3(0x50E);
-            if (g_pd.on && g_pd.ch == ch && ((R3(0x586) >> 26) & 1) && g_pd.indexed == idx && g_pd.topo == topo &&
-                g_pd.first == first && g_pd.count == count && g_pd.bv == bv && g_pd.bi == bi) {
+            int idx = ch->inline_n ? 3 : R3(0x5F8) != 0;
+            u32 first = idx == 3 ? 0 : idx ? R3(0x5F7) : R3(0x35D);
+            u32 count = idx == 3 ? ch->inline_n : idx ? R3(0x5F8) : R3(0x35E);
+            u32 bv = idx ? R3(0x50D) : 0, bi = R3(0x50E);
+            if (idx != 3 && g_pd.on && g_pd.ch == ch && g_pd.small_kind == ~0u && ((R3(0x586) >> 26) & 1) &&
+                g_pd.indexed == idx && g_pd.topo == topo && g_pd.first == first && g_pd.count == count &&
+                g_pd.bv == bv && g_pd.bi == bi) {
                 g_pd.inst = ch->instance_count + 1;
             } /* one more instance */
             else {
@@ -209,6 +304,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
                 g_pd.bv = bv;
                 g_pd.bi = bi;
                 g_pd.inst = ch->instance_count + 1;
+                g_pd.small_kind = ~0u;
             }
             /* hw consumes the counts on each draw; if we don't, the next non-indexed draw picks up stale indices */
             R3(0x5F8) = 0;
@@ -241,6 +337,7 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             g_pd.bv = 0;
             g_pd.bi = bi;
             g_pd.inst = ch->instance_count + 1;
+            g_pd.small_kind = ~0u;
             break;
         }
         case 0x586: /* BEGIN, bit 26 = next instance */
@@ -249,6 +346,36 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
             else if (!(v & (1u << 27)))
                 ch->instance_count = 0;
             break;
+        case 0x5F9: /* INDEX_BUFFER{32,16,8}_{FIRST,SUBSEQUENT}: packed first/count/topology */
+        case 0x5FA:
+        case 0x5FB:
+        case 0x5FC:
+        case 0x5FD:
+        case 0x5FE: {
+            u32 first = v & 0xFFFF, count = (v >> 16) & 0xFFF, topo = (v >> 28) & 0xF;
+            u32 bv = R3(0x50D), bi = R3(0x50E);
+            if (m < 0x5FC)
+                ch->instance_count = 0;
+            else
+                ch->instance_count++;
+            if (m >= 0x5FC && g_pd.on && g_pd.ch == ch && g_pd.indexed == 1 && g_pd.small_kind == (m - 0x5F9) % 3 &&
+                g_pd.topo == topo && g_pd.first == first && g_pd.count == count && g_pd.bv == bv && g_pd.bi == bi) {
+                g_pd.inst = ch->instance_count + 1;
+                break;
+            }
+            r3d_pending_flush();
+            g_pd.on = 1;
+            g_pd.ch = ch;
+            g_pd.indexed = 1;
+            g_pd.topo = topo;
+            g_pd.first = first;
+            g_pd.count = count;
+            g_pd.bv = bv;
+            g_pd.bi = bi;
+            g_pd.inst = ch->instance_count + 1;
+            g_pd.small_kind = (m - 0x5F9) % 3;
+            break;
+        }
         case 0x8E4:
         case 0x8E5:
         case 0x8E6:

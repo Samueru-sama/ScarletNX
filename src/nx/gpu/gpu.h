@@ -24,6 +24,10 @@ typedef struct GpuChannel {
     u32 sub_class[8];
     u32 puller[0x40];
     u32 r3d[0x1000]; /* 3D engine regs, 0xE00+ are MME macro calls */
+    u32 r3d_shadow[0xE00]; /* SET_MME_SHADOW_RAM_CONTROL track/replay state */
+    u32 r3d_shadow_mode;
+    u64 r3d_counter_base[32]; /* draw-count baselines for estimated Maxwell counter reports */
+    u32 r3d_counter_reset_mask;
     u32 rcomp[0x1000];
     u32 r2d[0x400];
     u32 rdma[0x200];
@@ -58,6 +62,8 @@ typedef struct GpuChannel {
     u64 cbind[5][18];
     u32 cbind_size[5][18];
     u32 instance_count; /* the instance the next draw is, counted by BEGIN's next-instance bit and 0x486 */
+    u32* inline_indices; /* 3D inline index methods, widened to u32 until END draws them */
+    u32 inline_n, inline_cap;
     GpuMme mme;         /* the macro running, or one a wait stopped after the method that asked for it */
     /* what the stream waits for before its next method (gpu_park): the GPU thread runs other channels' work meanwhile,
        as the GPU's Host unit (PFIFO) switches channels on a semaphore acquire that fails */

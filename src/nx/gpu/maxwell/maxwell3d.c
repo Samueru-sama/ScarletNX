@@ -71,6 +71,8 @@ void r3d_draw_texture(GpuChannel* ch) {
 void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
               u32 instances) {
     if (ch->render_off) return; /* SetRenderEnable says no */
+    /* SET_PRIMITIVE_TOPOLOGY_CONTROL selects the separate topology register for every draw path. */
+    if ((ch->r3d[0x652] & 1) && ch->r3d[0x65C]) topology = ch->r3d[0x65C] & 0xF;
     if (g_renderer_up) {
         g_renderer->draw(ch, indexed, topology, first, count, base_vertex, base_instance, instances);
         return;

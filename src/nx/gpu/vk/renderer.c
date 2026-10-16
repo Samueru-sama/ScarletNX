@@ -95,6 +95,32 @@ static void vkr_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 c
     vk_render_draw(ch, indexed, topology, first, count, bv, bi, instances);
     vk_unlock();
 }
+static void vkr_method_barrier(int kind) {
+    vk_lock();
+    if (kind == 3) {
+        /* The TIC/TSC words are read from guest memory on each bind. Expire cached texture backing as well. */
+        vk_tex_invalidate_all();
+        __atomic_add_fetch(&g_vk_epoch, 1, __ATOMIC_RELAXED);
+    } else if (kind == 4 || kind == 2) {
+        vk_render_end();
+        vk_finish();
+        if (kind == 2) {
+            vk_tex_invalidate_all();
+            __atomic_add_fetch(&g_vk_epoch, 1, __ATOMIC_RELAXED);
+        }
+    } else {
+        vk_render_end();
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                               .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
+        VkDependencyInfo di = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        vkCmdPipelineBarrier2(vk_cmd(), &di);
+    }
+    vk_unlock();
+}
 static int vkr_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                     double sdy) {
     vk_lock();
@@ -488,6 +514,7 @@ const Renderer vk_renderer = {
     .clear = vkr_clear,
     .draw_texture = vkr_draw_texture,
     .draw = vkr_draw,
+    .method_barrier = vkr_method_barrier,
     .blit = vkr_blit,
     .rt_flush = vkr_rt_flush,
     .rt_reload = vkr_rt_reload,

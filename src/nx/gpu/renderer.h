@@ -18,6 +18,9 @@ typedef struct Renderer {
     void (*clear)(GpuChannel* ch, u32 v);
     void (*draw)(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                  u32 instances);
+    /* Maxwell ordering methods: 0 texture barrier, 1 tiled barrier, 2 data-cache invalidate,
+       3 descriptor-cache invalidate, 4 wait for idle. */
+    void (*method_barrier)(int kind);
     /* DRAW_TEXTURE: a texture's rectangle onto color target 0. NULL: not drawn */
     void (*draw_texture)(GpuChannel* ch);
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */

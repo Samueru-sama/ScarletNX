@@ -210,6 +210,39 @@ int main(void) {
         failures++;
     }
 
+    g_draws = 9;
+    maxwell3d_method(&ch, 0x54C, 1, 1); /* samples-passed counter reset */
+    report(VA, 0x15);
+    u64 samples = 1;
+    memcpy(&samples, vram, sizeof samples);
+    if (samples != 0) {
+        fprintf(stderr, "FAIL: counter report after reset is %llu, expected zero\n", (unsigned long long)samples);
+        failures++;
+    }
+    g_draws = 10;
+    report(VA, 0x15);
+    memcpy(&samples, vram, sizeof samples);
+    if (!samples) {
+        fprintf(stderr, "FAIL: counter report stayed zero after another draw\n");
+        failures++;
+    }
+    static const struct {
+        u32 reset, report;
+    } reset_pairs[] = {
+        {0x01, 0x15}, {0x02, 0x0A}, {0x10, 0x0B}, {0x12, 0x01}, {0x13, 0x03}, {0x13, 0x12}, {0x15, 0x05}, {0x16, 0x1B},
+        {0x17, 0x1D}, {0x18, 0x1F}, {0x1A, 0x07}, {0x1B, 0x09}, {0x1C, 0x0F}, {0x1D, 0x11}, {0x1E, 0x13}, {0x1F, 0x12},
+    };
+    for (u32 i = 0; i < sizeof reset_pairs / sizeof reset_pairs[0]; i++) {
+        g_draws = 12;
+        maxwell3d_method(&ch, 0x54C, reset_pairs[i].reset, 1);
+        report(VA, reset_pairs[i].report);
+        memcpy(&samples, vram, sizeof samples);
+        if (samples) {
+            fprintf(stderr, "FAIL: reset selector %x for report %x\n", reset_pairs[i].reset, reset_pairs[i].report);
+            failures++;
+        }
+    }
+
     if (failures) return 1;
     puts("SetRenderEnable: FALSE, TRUE, CONDITIONAL, IF_EQUAL, IF_NOT_EQUAL and the override gate draws and clears; a "
          "report semaphore acquire waits");
