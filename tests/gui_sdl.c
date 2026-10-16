@@ -636,6 +636,7 @@ int main(int argc, char** argv) {
     app.games_dir = snx_path_join(temporary, "games");
     app.settings_file = snx_path_join(temporary, "config/settings.ini"); /* the Settings' picks, kept */
     app.folders_file = snx_path_join(temporary, "config/folders.txt");   /* the player's game folders */
+    app.app_file = snx_path_join(temporary, "config/app.ini");           /* Settings > App's picks */
     gui_app_render(&app);
     colored_text(&app, menu_row(&app, GUI_SWITCH), "- Load Switch NSP/XCI/NRO", yellow);
     assert(!app.menu.activated);
@@ -977,6 +978,76 @@ int main(int argc, char** argv) {
     assert(app.menu.panels && app.form == GUI_FORM_APP);
     key(&app, SDLK_RETURN);
     assert(!app.menu.panels && !strcmp(app.app_form.layout, "Classic"));
+    /* the App's picks kept at once in app.ini, which the next start reads back */
+    {
+        size_t size = 0;
+        char *kept, expected[512], id[64], first_id[64];
+        const char* broken = "[app]\ntheme = gone\ntext_size = 9\nlayout = boxes\ncolour = red\ntext_size = 2x\n"
+                             "[other]\nlayout = panels\n";
+        char* blocker = snx_path_join(temporary, "not a folder");
+        char* kept_file = app.app_file;
+        snprintf(first_id, sizeof first_id, "%s", app.theme.id);
+        key(&app, SDLK_RIGHT); /* Panels */
+        key(&app, SDLK_UP);
+        key(&app, SDLK_RIGHT); /* 1x */
+        key(&app, SDLK_UP);
+        key(&app, SDLK_RIGHT); /* the next theme */
+        snprintf(id, sizeof id, "%s", app.theme.id);
+        assert(strcmp(id, first_id));
+        snprintf(expected, sizeof expected,
+                 "; Settings > App in the launcher, as they were left\n[app]\ntheme = %s\ntext_size = 1\n"
+                 "layout = panels\n",
+                 id);
+        kept = (char*)snx_read_file(app.app_file, &size);
+        assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
+        free(kept);
+        /* a start with them: the theme, the letters and the layout as they were left, and nothing to say */
+        gui_theme_load(&app.theme, (const char* const*)app.themes_dirs, 2, first_id);
+        app.menu.text_size = 0;
+        app.menu.panels = false;
+        app.message[0] = 0;
+        app_load(&app);
+        assert(!strcmp(app.theme.id, id) && app.menu.text_size == 1 && app.scale == 1 && app.menu.panels);
+        assert(!app.message[0]);
+        /* back as they were, kept so */
+        key(&app, SDLK_LEFT);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_LEFT);
+        key(&app, SDLK_DOWN);
+        key(&app, SDLK_LEFT);
+        assert(!strcmp(app.theme.id, first_id) && !app.menu.text_size && !app.menu.panels && !app.editor.note[0]);
+        snprintf(expected, sizeof expected,
+                 "; Settings > App in the launcher, as they were left\n[app]\ntheme = %s\ntext_size = auto\n"
+                 "layout = classic\n",
+                 first_id);
+        kept = (char*)snx_read_file(app.app_file, &size);
+        assert(kept && size == strlen(expected) && !memcmp(kept, expected, size));
+        free(kept);
+        /* a file a hand broke: what it does not know is left, named, and the menu keeps what it has */
+        assert(!snx_write_file(app.app_file, broken, strlen(broken)));
+        app_load(&app);
+        assert(!strcmp(app.theme.id, first_id) && !app.menu.text_size && !app.menu.panels);
+        snprintf(expected, sizeof expected,
+                 "Not used from %s: theme = gone, text_size = 9, layout = boxes, colour = red, text_size = 2x, "
+                 "[other] layout = panels",
+                 app.app_file);
+        assert(!strcmp(app.message, expected));
+        app.message[0] = 0;
+        /* a file that cannot be written: the pick holds for the session, and the note says it is not kept */
+        assert(!snx_write_file(blocker, "file", 4));
+        app.app_file = snx_path_join(blocker, "app.ini");
+        key(&app, SDLK_RIGHT);
+        assert(app.menu.panels && !snx_is_file(app.app_file));
+        snprintf(expected, sizeof expected, "Not kept for the next start: %s could not be written", app.app_file);
+        assert(!strcmp(app.editor.note, expected));
+        key(&app, SDLK_LEFT);
+        assert(!app.menu.panels);
+        free(app.app_file);
+        app.app_file = kept_file;
+        remove(blocker);
+        free(blocker);
+        app.editor.note[0] = 0;
+    }
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RIGHT); /* the editor opens with Enter only */
     assert(app.form == GUI_FORM_APP);
@@ -1876,6 +1947,12 @@ int main(int argc, char** argv) {
             key_with(&app, SDLK_S, SDL_KMOD_LCTRL);
             assert(snx_is_file(saved) && !app.editor.dirty && !strcmp(app.theme.id, "mytheme"));
             assert(same_colour(rgb(app.theme.page), night));
+            {
+                size_t size = 0;
+                char* kept = (char*)snx_read_file(app.app_file, &size);
+                assert(kept && strstr(kept, "\ntheme = mytheme\n")); /* the next start opens on it too */
+                free(kept);
+            }
             key(&app, SDLK_ESCAPE); /* nothing left unsaved: it leaves at once, back to App */
             assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_EDITOR);
             gui_app_leave_editor(&app);

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "app.h"
+#include "ini_lines.h"
 #ifndef SNX_GUI_NO_MAIN
 #include <SDL3/SDL_main.h>
 #endif
@@ -90,6 +91,87 @@ static void next_theme(App* app, int step) {
     if (app->themes.count)
         gui_theme_load(&app->theme, dirs, 2, app->themes.ids[(i + app->themes.count + step) % app->themes.count]);
     theme_note(app);
+}
+/* Settings > App's picks, kept at once in app_file for the next start. The App's note, or the menu's message, says when
+   they could not be */
+static void app_save(App* app) {
+    char text[256], *dir, *staged;
+    int n, failed;
+    if (!app->app_file) return;
+    n = snprintf(text, sizeof text, "; Settings > App in the launcher, as they were left\n[app]\ntheme = %s\n",
+                 app->theme.id);
+    if (app->menu.text_size)
+        n += snprintf(text + n, sizeof text - (size_t)n, "text_size = %d\n", app->menu.text_size);
+    else
+        n += snprintf(text + n, sizeof text - (size_t)n, "text_size = auto\n");
+    n += snprintf(text + n, sizeof text - (size_t)n, "layout = %s\n", app->menu.panels ? "panels" : "classic");
+    /* staged beside it, then put in place: a crash mid-write leaves the old picks */
+    dir = snx_dirname(app->app_file);
+    staged = snx_format("%s.new", app->app_file);
+    failed = !dir || !staged || snx_mkdirs(dir) || snx_write_file(staged, text, (size_t)n) ||
+             snx_replace(staged, app->app_file);
+    if (failed && staged) remove(staged);
+    if (failed && app->editing)
+        snprintf(app->editor.note, sizeof app->editor.note, "Not kept for the next start: %s could not be written",
+                 app->app_file);
+    else if (failed)
+        snprintf(app->message, sizeof app->message, "Not kept for the next start: %s could not be written",
+                 app->app_file);
+    free(dir);
+    free(staged);
+}
+/* what app_save kept, as the menu opens. A value it does not know, or a theme no longer there, leaves what the menu has
+   and the message names it */
+static void app_load(App* app) {
+    size_t size = 0, i;
+    char *text = app->app_file ? (char*)snx_read_file(app->app_file, &size) : NULL, *key, *value, bad[384];
+    const char* const* dirs = (const char* const*)app->themes_dirs;
+    int scale = app->menu.text_size, n = 0;
+    SnxIni ini;
+    if (!text) return;
+    bad[0] = 0;
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value)) {
+        char* end = NULL;
+        long number = strtol(value, &end, 10);
+        if (!strcmp(ini.section, "app") && !strcmp(key, "theme")) {
+            gui_themes_scan(&app->themes, dirs, 2);
+            for (i = 0; i < app->themes.count && strcmp(app->themes.ids[i], value); ++i) {}
+            if (i < app->themes.count) {
+                gui_theme_load(&app->theme, dirs, 2, value);
+                continue;
+            }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "text_size")) {
+            if (!strcmp(value, "auto")) {
+                scale = 0;
+                continue;
+            }
+            if (*value && !*end && number >= 1 && number <= GUI_TEXT_MAX) {
+                scale = (int)number;
+                continue;
+            }
+        } else if (!strcmp(ini.section, "app") && !strcmp(key, "layout")) {
+            if (!strcmp(value, "classic") || !strcmp(value, "panels")) {
+                app->menu.panels = !strcmp(value, "panels");
+                continue;
+            }
+        }
+        if (n) n += snprintf(bad + n, sizeof bad - (size_t)n, ", ");
+        if (n < (int)sizeof bad && strcmp(ini.section, "app")) /* a key outside [app] says where it is */
+            n += snprintf(bad + n, sizeof bad - (size_t)n, "[%s] ", ini.section);
+        if (n < (int)sizeof bad) n += snprintf(bad + n, sizeof bad - (size_t)n, "%s = %s", key, value);
+        if (n >= (int)sizeof bad) n = (int)sizeof bad - 1;
+    }
+    free(text);
+    if (scale != app->menu.text_size) {
+        app->menu.text_size = scale;
+        gui_app_layout(app);
+    }
+    theme_note(app);
+    if (bad[0]) {
+        size_t m = strlen(app->message);
+        snprintf(app->message + m, sizeof app->message - m, "%sNot used from %s: %s", m ? " " : "", app->app_file, bad);
+    }
 }
 /* the list as the menu and the file have it */
 static void recent_changed(App* app) {
@@ -587,6 +669,7 @@ static void app_action(App* app, int row, int step) {
         open_folders(app, 0);
         return;
     }
+    if (row == GUI_APP_THEME || row == GUI_APP_LAYOUT || row == GUI_APP_TEXT) app_save(app);
     gui_app_values(app);
 }
 /* saved in themes/ of the data folder, and the menu's theme from then on */
@@ -595,6 +678,7 @@ static void save_editor(App* app) {
     if (gui_editor_save(&app->editor, app->themes_dirs[0])) return;
     gui_themes_scan(&app->themes, dirs, 2);
     gui_theme_load(&app->theme, dirs, 2, app->editor.id);
+    app_save(app);
 }
 /* a Settings pick, kept at once */
 void gui_app_keep_settings(App* app) {
@@ -1820,6 +1904,7 @@ static void cleanup(App* app) {
     free(app->settings_file);
     for (int i = 0; i < app->folder_count; ++i) free(app->folders[i]);
     free(app->folders_file);
+    free(app->app_file);
     free(app->left);
     free(app->self);
     free(app->drivers);
@@ -1896,8 +1981,10 @@ int snx_gui_main(const char* self) {
     if (app.settings_file) {
         char* config = snx_dirname(app.settings_file);
         app.folders_file = config ? snx_path_join(config, "folders.txt") : NULL;
+        app.app_file = config ? snx_path_join(config, "app.ini") : NULL;
         free(config);
         folders_load(&app);
+        app_load(&app);
     }
     count_games(&app);
     if (app.menu.games) app.menu.selected = GUI_GAMES; /* the first item */

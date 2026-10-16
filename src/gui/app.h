@@ -64,6 +64,7 @@ typedef struct {
     GuiRecent recent;
     GuiSettings settings; /* read the first time a run or the Settings need them */
     char* settings_file;  /* the picks kept for every game (settings_path); NULL keeps none */
+    char* app_file;       /* Settings > App's picks (app.ini), beside it; NULL keeps none */
     GuiSpace* space;      /* the latest count, its thread counter until joined */
     SDL_Thread* counter;
     uint64_t free_bytes; /* on the data folder's disk, when the count started */

@@ -89,7 +89,11 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
   the menu's own) and what is left on that disk, counted as the menu opens and after each run.
 - Settings > App's **Theme** switches to the next theme, or the one before: the built-in Default
-  and YoRHa, then each folder of `themes/` (see [Themes](#themes)). It lasts for the session.
+  and YoRHa, then each folder of `themes/` (see [Themes](#themes)). It is kept for the next start,
+  as are Text size and Layout, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's
+  folder name), `text_size` (`auto` or 1 to 4) and `layout` (`classic` or `panels`). A value the
+  menu does not know, or a theme no longer there, is named in the menu's message as it opens and
+  left out; a file that cannot be written is named in App's note.
 - Settings > App's **Theme editor** edits the current theme: a row per `theme.ini` key, and beside them a
   preview of the menu or a run (Ctrl+P, or a click on it, switches). Left/Right change a word, a switch or a
   number, Enter types a colour, a text or a number.
