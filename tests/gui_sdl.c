@@ -121,18 +121,23 @@ static void marks(App* app, int first, int last, bool up, bool down) {
     colored_text_on(app, 0, last, down ? "\x1f" : " ", soft, page);
 }
 /* text drawn from pixel x, y in the font's own bytes: its glyphs in color, around them back but on the font's last row,
-   empty, which a box's frame may cover */
-static void text_px_is(App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
+   empty, which a box's frame may cover; a pixel that differs is named with the check's line */
+#define text_px_is(app, x0, y0, text, color, back) text_px_is_at(__LINE__, app, x0, y0, text, color, back)
+static void text_px_is_at(int line, App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
     SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
     assert(image);
     for (int i = 0; text[i]; ++i)
         for (int y = 0; y < 16; ++y)
             for (int x = 0; x < 8; ++x) {
                 Uint8 r, g, b, a;
-                assert(SDL_ReadSurfacePixel(image, x0 + (i * 8 + x) * app->scale, y0 + y * app->scale, &r, &g, &b, &a));
+                int px = x0 + (i * 8 + x) * app->scale, py = y0 + y * app->scale;
+                assert(SDL_ReadSurfacePixel(image, px, py, &r, &g, &b, &a));
                 bool ink = (gui_vga_font[(unsigned char)text[i] * 16 + y] & (0x80 >> x)) != 0;
                 SDL_Color want = ink ? color : back;
-                assert((y == 15 && !ink) || (r == want.r && g == want.g && b == want.b));
+                if ((y == 15 && !ink) || (r == want.r && g == want.g && b == want.b)) continue;
+                fprintf(stderr, "gui_sdl.c:%d: \"%s\" from %d,%d: '%c' at %d,%d is %02x%02x%02x, not %02x%02x%02x\n",
+                        line, text, x0, y0, text[i], px, py, r, g, b, want.r, want.g, want.b);
+                assert(!"the text drawn");
             }
     SDL_DestroySurface(image);
 }
