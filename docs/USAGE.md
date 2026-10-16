@@ -42,6 +42,7 @@ mouse's left button (the default). The game's menu sets it too; the game's `.ini
 the game's `.ini` keeps `controls`. Any other `--key=value` of the game's
 `.ini` is forwarded as well, for that run (`scarletnx --settings` lists them all), and so are the timed-run ones
 (`--seconds=`, `--shot=`...); any other key stops the run with `unknown option`.
+The game's own executable also takes `-v`, the same as `--log=2`.
 `--backend=gcc` selects libgccjit instead of the default LLVM backend when preparing
 a dump. An explicit `--backend=llvm|gcc` forces recompilation rather than reusing a
 cached executable built by another compiler.
@@ -125,6 +126,10 @@ Remaining examples: POSIX.
 - **Recompile:** AOT → module (LLVM, or `--backend=gcc` for libgccjit on DEC Alpha EV67 hosts) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
   `-O 0..3,s,z` sets the optimization level.
+  `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
+  them. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
+  `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
+  `--keep-c` is the deprecated spelling of `--keep-ir`.
 - **Codegen:** `--no-build` stages data/INI only; `--interp-only` omits AOT functions.
   `--chunk N` sets instructions per code unit. Nothing is cached between runs.
   `--keep-ir` saves the generated code (LLVM IR, libgccjit dumps) in `<outdir>/<NAME>/<NAME>_build/`.
