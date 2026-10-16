@@ -1223,7 +1223,8 @@ static const char* screen_keys(const App* app, const char* keys, char* out, size
 #endif
 }
 /* a screen's boxes: the tabs when the theme shows them, its title, the bar for its keys, a list asking for list_cols
-   columns (0: one box, the whole width), and with status the status box, when the theme has a footer */
+   columns, three fifths of the width at most (0: one box, the whole width), and with status the status box, when the
+   theme has a footer */
 static void place_screen(App* app, GuiPlace* p, const char* title, const char* keys, int list_cols, int status) {
     GuiPlaceIn in;
     int width, height;
@@ -1236,7 +1237,7 @@ static void place_screen(App* app, GuiPlace* p, const char* title, const char* k
     in.tabs = app->theme.tabs ? cell_h(app) + 4 * app->scale : 0;
     in.title = title[0] ? cell_h(app) : 0;
     in.bar = bar_h(app, width - 2 * cell_w(app), keys);
-    in.list_cols = list_cols ? SDL_min(SDL_max(list_cols, 20), SDL_max(20, (width / cell_w(app) - 2) / 2)) : 0;
+    in.list_cols = list_cols ? SDL_min(SDL_max(list_cols, 20), SDL_max(20, (width / cell_w(app) - 2) * 3 / 5)) : 0;
     gui_place(&in, p);
     if (status && in.list_cols && app->theme.footer != GUI_STYLE_NONE) { /* its rows at the side box's width */
         GuiRect none = {0, 0, 0, 0};
@@ -1783,16 +1784,14 @@ static void preview_box(const App* app, int* col, int* row, int* cols, int* rows
     *col = app->cols - *cols;
     *row = 4;
 }
-static void render_preview(App* app) {
+/* the menu or a run drawn in the theme being edited, at 1x, in app->preview; false when it cannot be made */
+static bool preview_texture(App* app) {
     static App saved; /* the whole app, put back after: drawing the preview borrows it */
-    SDL_FRect box;
-    int col, row, cols, rows;
     int run = app->editor.preview != GUI_SCREEN_MENU;
     Uint64 now = now_ms(app);
-    preview_box(app, &col, &row, &cols, &rows);
     if (!app->preview) {
         app->preview = SDL_CreateTexture(app->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 640, 400);
-        if (!app->preview) return;
+        if (!app->preview) return false;
     }
     if (!app->preview_since || now - app->preview_since >= GUI_PREVIEW_MS) {
         app->preview_since = SDL_max(now, 1);
@@ -1808,6 +1807,7 @@ static void render_preview(App* app) {
     app->rows = 25;
     app->menu.view = GUI_LOAD_NONE;
     app->menu.running = run;
+    app->editing = false; /* the menu's own tabs */
     app->finished = app->aborting = app->abnormal_exit = app->confirm.shown = false;
     app->native = 0;
     app->entering_ms = app->leaving_ms = 0;
@@ -1827,6 +1827,13 @@ static void render_preview(App* app) {
     SDL_SetRenderTarget(app->renderer, NULL);
     *app = saved;
     set_area(app);
+    return true;
+}
+static void render_preview(App* app) {
+    SDL_FRect box;
+    int col, row, cols, rows, run = app->editor.preview != GUI_SCREEN_MENU;
+    preview_box(app, &col, &row, &cols, &rows);
+    if (!preview_texture(app)) return;
     box.x = (float)(col * 8 * app->scale);
     box.y = (float)(row * 16 * app->scale);
     box.w = (float)(cols * 8 * app->scale);
@@ -1924,6 +1931,8 @@ static void render_editor(App* app) {
 }
 static bool menu_key_of(const SDL_KeyboardEvent* k, GuiKey* key);
 static void screen_tab(App* app, int step);
+static void go_tab(App* app, int tab);
+static int tab_hit(App* app, float x, float y);
 /* the editor on the theme the menu shows: a folder of themes/ keeps its file's extras and its name, a built-in is
    saved as a new theme */
 static void open_editor(App* app) {
@@ -2673,11 +2682,233 @@ static void editor_pointer(App* app, float x, float y, bool click) {
         app->editor.row = r;
     }
 }
+/* ---- the Settings and the theme editor in boxes: the groups on the left, the open or the focused group's rows on the
+   right; the theme editor's keys on the left, the preview on the right ---- */
+typedef struct {
+    GuiPlace place;
+    GuiList left, right;
+    GuiEditor peek;        /* the focused group's rows, shown while the focus is on the groups */
+    const GuiEditor* rows; /* the right box's rows: the editor's, or peek */
+    GuiRect info;          /* the right box's foot, for a line about its rows */
+} GuiFormBoxes;
+static const char* form_title(const App* app, char* out, size_t size) {
+    if (app->theme.head == GUI_STYLE_NONE) return "";
+    if (app->form == GUI_FORM_THEME)
+        snprintf(out, size, "THEME EDITOR  /  %s", app->editor.id);
+    else
+        snprintf(out, size, "SETTINGS");
+    return out;
+}
+static const char* form_keys(const App* app, char* out, size_t size) {
+    return screen_keys(app,
+                       app->form == GUI_FORM_THEME      ? SAY_EDITOR
+                       : app->form == GUI_FORM_SETTINGS ? SAY_GROUPS
+                       : app->form == GUI_FORM_APP      ? SAY_APP
+                       : app->form == GUI_FORM_FOLDERS  ? SAY_FOLDERS
+                                                        : SAY_SETTINGS,
+                       out, size);
+}
+/* the group the groups' list shows open, -1 for none: the one being edited, App for its folders */
+static int form_group(const App* app) {
+    if (app->form == GUI_FORM_GROUP) return app->group;
+    return app->form == GUI_FORM_APP || app->form == GUI_FORM_FOLDERS ? 0 : -1;
+}
+/* the columns a form's row label takes, the widest's */
+static int form_labels(const GuiEditor* e) {
+    char label[64];
+    int r, labels = 8;
+    for (r = 0; r < gui_editor_rows(e); ++r) {
+        gui_editor_label(e, r, label, sizeof label);
+        labels = SDL_max(labels, (int)strlen(label));
+    }
+    return labels;
+}
+static void form_boxes(App* app, GuiFormBoxes* f) {
+    char title[96], keys[256];
+    int theme = app->form == GUI_FORM_THEME, width, height, g, longest = (int)strlen("Reset all to the defaults");
+    area(app, &width, &height);
+    for (g = 0; g < app->groups; ++g) longest = SDL_max(longest, (int)strlen(app->group_keys[g].key));
+    place_screen(app, &f->place, form_title(app, title, sizeof title), form_keys(app, keys, sizeof keys),
+                 theme ? width / cell_w(app) : longest + 2 + (int)SDL_utf8strlen(app->theme.marker), 0);
+    f->rows = &app->editor;
+    if (app->form == GUI_FORM_SETTINGS) { /* the focused group's rows, to see before opening it */
+        int g = app->editor.row;
+        memset(&f->peek, 0, sizeof f->peek);
+        if (g == 0) {
+            app_values(app);
+            gui_editor_form(&f->peek, app_keys, GUI_APP_ROWS, &app->app_form, NULL);
+        } else if (g < app->groups)
+            gui_editor_form(&f->peek, app->settings.keys + app->group_first[g], app->group_rows[g],
+                            app->settings.values, NULL);
+        f->peek.flat = true;
+        f->peek.row = -1;
+        f->rows = &f->peek;
+    }
+    if (theme)
+        list_place(app, &f->left, f->place.list, gui_editor_rows(&app->editor), app->editor.row);
+    else
+        list_place(app, &f->left, f->place.list, app->groups + 1,
+                   app->form == GUI_FORM_SETTINGS ? app->editor.row : -1);
+    f->info = box_rect(f->place.side.x, f->place.side.y + f->place.side.h - cell_h(app) - 4 * app->scale,
+                       f->place.side.w, cell_h(app) + 2 * app->scale);
+    list_place(app, &f->right,
+               box_rect(f->place.side.x + cell_w(app), f->place.side.y + head_h(app) + 4 * app->scale,
+                        f->place.side.w - 2 * cell_w(app), f->info.y - f->place.side.y - head_h(app) - 6 * app->scale),
+               theme ? 0 : gui_editor_rows(f->rows), app->form == GUI_FORM_SETTINGS ? -1 : f->rows->row);
+}
+/* a row of a form as its box shows it: its label, the value past the widest label; one being typed ends where the
+   typing is, its start giving way */
+static void form_row(App* app, const GuiList* l, const GuiEditor* e, int r, int labels, int focused, int marked) {
+    char label[64], value[96], line[200];
+    const GuiThemeKey* k = gui_editor_key_of(e, r);
+    int typing = focused && e->typing, room = (list_box(l, r).w - cell_w(app) * 3 / 2) / cell_w(app); /* list_item's */
+    size_t n;
+    gui_editor_label(e, r, label, sizeof label);
+    if (typing)
+        snprintf(value, sizeof value, "%s_", e->text);
+    else
+        gui_editor_value(e, r, value, sizeof value);
+    if (app->form == GUI_FORM_GROUP && e == &app->editor && k && !value[0]) snprintf(value, sizeof value, ".ini");
+    snprintf(line, sizeof line, "%s%-*s %s", app->theme.marker, labels, label, value);
+    n = SDL_utf8strlen(line);
+    if (typing && room > 4 && n > (size_t)room) { /* the typed end in view */
+        const char* tail = value;
+        size_t skip = n - (size_t)room + 3;
+        while (skip-- && *tail) SDL_StepUTF8(&tail, NULL);
+        snprintf(line, sizeof line, "%s%-*s ...%s", app->theme.marker, labels, label, tail);
+    }
+    list_item(app, l, r, line, focused, marked);
+    if (k && k->type == GUI_KEY_COLOUR) { /* its colour, framed in soft so a page-coloured one shows */
+        GuiRect b = list_box(l, r);
+        const GuiRgb* c = (const GuiRgb*)((const char*)(e->object ? e->object : (const char*)&e->theme) + k->at);
+        int x = b.x + cell_w(app) / 2 + (int)SDL_utf8strlen(line) * cell_w(app) + cell_w(app), s = app->scale;
+        if (x + 2 * cell_w(app) <= b.x + b.w) {
+            fill_rect(app, box_rect(x, b.y + 3 * s, 2 * cell_w(app), b.h - 6 * s), app->theme.soft);
+            fill_rect(app, box_rect(x + s, b.y + 4 * s, 2 * cell_w(app) - 2 * s, b.h - 8 * s), *c);
+        }
+    }
+}
+/* what the bar says of the focused row: the note of the last key, else the row's help */
+static const char* form_about(const App* app, SDL_Color* color) {
+    const GuiEditor* e = &app->editor;
+    const GuiThemeKey* k = gui_editor_key_of(e, e->row);
+    *color = rgb(e->note[0] ? (e->leaving ? app->theme.failure : app->theme.focus) : app->theme.ink);
+    if (e->note[0]) return e->note;
+    if (k) return k->about;
+    if (app->form == GUI_FORM_SETTINGS) return "Every setting back to its default";
+    if (app->form == GUI_FORM_FOLDERS) return "Pick, drop or paste a folder of games";
+    return e->object ? "" : e->row == GUI_EDITOR_FOLDER ? "The folder of themes/ it is saved in" : "Ctrl+S saves too";
+}
+static void draw_form_boxed(App* app) {
+    GuiFormBoxes f;
+    char title[96], keys[256], line[1100];
+    const char* about;
+    SDL_Color color;
+    int r, labels, theme = app->form == GUI_FORM_THEME;
+    SDL_SetRenderDrawColor(app->renderer, app->theme.page.r, app->theme.page.g, app->theme.page.b, 255);
+    SDL_RenderClear(app->renderer);
+    form_boxes(app, &f);
+    draw_tabs(app, f.place.tabs);
+    title_box(app, f.place.title, form_title(app, title, sizeof title));
+    if (theme) {
+        labels = form_labels(&app->editor);
+        for (r = f.left.first; r < f.left.first + f.left.shown; ++r)
+            form_row(app, &f.left, &app->editor, r, labels, r == app->editor.row, false);
+    } else
+        for (r = f.left.first; r < f.left.first + f.left.shown; ++r) {
+            snprintf(line, sizeof line, "%s%s", app->theme.marker,
+                     r < app->groups ? app->group_keys[r].key : "Reset all to the defaults");
+            list_item(app, &f.left, r, line, app->form == GUI_FORM_SETTINGS && r == app->editor.row,
+                      r == form_group(app));
+        }
+    list_marks(app, &f.left);
+    if (theme) { /* the preview, 16 by 10, and what switches it */
+        GuiRect p = inner(app, f.place.side);
+        int w = SDL_min(p.w, (f.info.y - f.place.side.y - 2 * cell_h(app)) * 16 / 10), y;
+        y = pane(app, f.place.side, "Preview");
+        if (w > 0 && preview_texture(app)) {
+            SDL_FRect box = {(float)(p.x + (p.w - w) / 2), (float)y, (float)w, (float)(w * 10 / 16)};
+            SDL_RenderTexture(app->renderer, app->preview, NULL, &box);
+            text_in(app, p, p.x, y + w * 10 / 16 + 2 * app->scale,
+                    app->editor.preview != GUI_SCREEN_MENU ? "A run (Ctrl+P: the menu)" : "The menu (Ctrl+P: a run)",
+                    rgb(app->theme.soft));
+        }
+        if (w > 0) y += w * 10 / 16 + 2 * app->scale + cell_h(app);
+        snprintf(line, sizeof line, "Saves in %s", app->themes_dirs[0] ? app->themes_dirs[0] : "(no themes folder)");
+        wrap_in(app, box_rect(p.x, y, p.w, f.place.side.y + f.place.side.h - y), p.x, y, line, 1, rgb(app->theme.soft));
+    } else {
+        int g = app->form == GUI_FORM_SETTINGS ? app->editor.row : app->group;
+        pane(app, f.place.side,
+             app->form == GUI_FORM_FOLDERS ? "Game folders"
+             : g < app->groups             ? app->group_keys[g].key
+                                           : "Reset all to the defaults");
+        labels = form_labels(f.rows);
+        for (r = f.right.first; r < f.right.first + f.right.shown; ++r)
+            form_row(app, &f.right, f.rows, r, labels, f.rows == &app->editor && r == app->editor.row,
+                     app->form == GUI_FORM_FOLDERS && r == app->folder_armed && r);
+        list_marks(app, &f.right);
+        if (app->form == GUI_FORM_SETTINGS || app->form == GUI_FORM_GROUP)
+            text_in(app, inner(app, f.info), f.info.x + cell_w(app), f.info.y,
+                    app->settings.count > GUI_SETTINGS_OWN ? "For the next runs. .ini: as the game's .ini says"
+                                                           : "The runtime listed no settings",
+                    rgb(app->theme.soft));
+    }
+    about = form_about(app, &color);
+    bar(app, f.place.bar, about, color, form_keys(app, keys, sizeof keys));
+}
+/* a row of a form under the pointer: focused, or on the focused one Select, as a key would */
+static void form_row_pointer(App* app, int r) {
+    if (r == app->editor.row && !app->editor.typing)
+        editor_key(app, GUI_SELECT);
+    else if (r != app->editor.row) {
+        if (app->editor.typing) editor_key(app, GUI_CANCEL);
+        app->editor.row = r;
+    }
+}
+/* a click on a form in boxes: a tab; a row of the list or of the right box; a group of the list opens it from a
+   group's rows; the theme editor's preview switches */
+static void form_boxed_pointer(App* app, float x, float y, bool touch) {
+    GuiFormBoxes f;
+    int i;
+    if ((i = tab_hit(app, x, y)) >= 0) {
+        go_tab(app, i);
+        return;
+    }
+    form_boxes(app, &f);
+    if (app->form == GUI_FORM_THEME && x >= (float)f.place.side.x && x < (float)(f.place.side.x + f.place.side.w) &&
+        y >= (float)f.place.side.y && y < (float)(f.place.side.y + f.place.side.h)) {
+        app->editor.preview = app->editor.preview == GUI_SCREEN_MENU ? GUI_SCREEN_COMPILING : GUI_SCREEN_MENU;
+        app->preview_since = 0;
+        return;
+    }
+    if ((i = list_hit(&f.left, x, y, touch)) >= 0) {
+        if (app->form == GUI_FORM_THEME || app->form == GUI_FORM_SETTINGS) {
+            form_row_pointer(app, i);
+            return;
+        }
+        if (app->editor.typing) editor_key(app, GUI_CANCEL);
+        keep_settings(app);
+        leave_editor(app);
+        settings_top(app, i); /* another group: from its row, as Enter there */
+        if (i < app->groups) open_group(app, i);
+        return;
+    }
+    if ((i = list_hit(&f.right, x, y, touch)) < 0) return;
+    if (app->form == GUI_FORM_SETTINGS) { /* a row of the focused group: it opens, on that row */
+        if (app->editor.row >= app->groups) return;
+        open_group(app, app->editor.row);
+        app->editor.row = SDL_min(i, gui_editor_rows(&app->editor) - 1);
+        return;
+    }
+    form_row_pointer(app, i);
+}
 static void render(App* app) {
     layout(app);
     if (splash_shown(app)) return;
     if (app->editing && app->form == GUI_FORM_PAD)
         render_pad(app);
+    else if (app->editing && boxed(app))
+        draw_form_boxed(app);
     else if (app->editing)
         render_editor(app);
     else
@@ -3390,7 +3621,11 @@ static void pointer(App* app, float window_x, float window_y, bool click, bool t
         if (click) pad_did(app, snx_pad_screen_tap(&app->pad, snx_pad_screen_hit(&app->pad_drawing, x, y)));
         return;
     }
-    if (boxed(app) && !app->editing && !app->confirm.shown) {
+    if (boxed(app) && app->editing) {
+        if (click) form_boxed_pointer(app, x, y, touch);
+        return;
+    }
+    if (boxed(app) && !app->confirm.shown) {
         boxed_pointer(app, x, y, click, touch);
         return;
     }

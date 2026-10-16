@@ -198,7 +198,9 @@ folders, the keys in use, the last run's output) and under it the status (resour
 folder); at the foot a bar with what the focus is about, or the screen's message, over the screen's keys. Games
 lists Back and a page of the games, as many as the list's box holds, the focused one's path and kind beside them; the
 keys' screen, and a load's, is one box with where the keys go, the waiting line in its middle (a click in the box opens
-the picker) and Back at its foot. A window too narrow for both puts the side box under the list. `boxes = none` keeps the lines down the page described above.
+the picker) and Back at its foot. The Settings list their groups, and beside them the focused group's rows: Enter, or a
+click on a row, opens the group, its rows taking the focus, and a click on another group opens that one. The theme editor
+lists its keys, the preview beside them. A window too narrow for both puts the side box under the list. `boxes = none` keeps the lines down the page described above.
 
 The built-ins are `default`, the look above, and `yorha`: paper and ink with a header
 bar, square markers and the focused line inverted on the menus, and a run drawn as a

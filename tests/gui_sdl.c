@@ -1769,6 +1769,7 @@ int main(int argc, char** argv) {
         colored_text_on(&app, 1, menu_row(&app, GUI_EXIT), "> Exit", ink, page);
         app_select(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "default") && !strcmp(app.app_form.theme, "Default"));
+        lines(&app, NULL);
         free(custom_ini);
         free(custom);
         free(themes);
@@ -1842,8 +1843,7 @@ int main(int argc, char** argv) {
             key(&app, SDLK_ESCAPE); /* nothing left unsaved: it leaves at once, back to App */
             assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_EDITOR);
             leave_editor(&app);
-            assert(app.theme.boxes == GUI_BOXES_LINE); /* the editor writes every key */
-            lines(&app, NULL);
+            assert(app.theme.boxes == GUI_BOXES_NONE); /* the editor writes every key: none, not its base's line */
             render(&app);
             colored_text_on(&app, 1, menu_row(&app, GUI_LOG), "- Share log", normal, night);
             /* opened on a theme of themes/, it saves there under its own name */
@@ -2275,6 +2275,86 @@ int main(int argc, char** argv) {
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.menu.view == GUI_LOAD_NONE);
             app.message[0] = 0;
+        }
+        /* the Settings: the groups on the left, beside them the focused group's rows; Enter opens it, its rows taking
+           the focus and the group marked chosen; a click on another group opens that one, one on a row focuses it and
+           a second changes it; the bar says what the focused row is */
+        {
+            GuiFormBoxes f;
+            int launch, row;
+            open_settings(&app);
+            assert(app.editing && app.form == GUI_FORM_SETTINGS && !app.editor.row && app.groups > 3);
+            render(&app);
+            form_boxes(&app, &f);
+            assert(f.place.side.x > f.place.list.x + f.place.list.w && f.left.count == app.groups + 1);
+            b = list_box(&f.left, 0);
+            text_px_is(&app, b.x + cw / 2, b.y + s, "- App", yellow, black);
+            b = list_box(&f.left, app.groups); /* the last row, whole */
+            text_px_is(&app, b.x + cw / 2, b.y + s, "- Reset all to the defaults", normal, black);
+            text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "App", normal, black);
+            b = list_box(&f.right, GUI_APP_THEME);
+            text_px_is(&app, b.x + cw / 2, b.y + s, "- Theme", normal, black); /* no focus on the right yet */
+            for (launch = 0; launch < app.groups && strcmp(app.group_keys[launch].key, "Launch"); ++launch) {}
+            assert(launch < app.groups);
+            app.editor.row = launch;
+            render(&app);
+            form_boxes(&app, &f);
+            text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "Launch", normal, black);
+            text_px_is(&app, list_box(&f.right, 0).x + cw / 2, list_box(&f.right, 0).y + s, "- libgccjit", normal,
+                       black);
+            key(&app, SDLK_RETURN);
+            assert(app.form == GUI_FORM_GROUP && app.group == launch && !app.editor.row);
+            render(&app);
+            form_boxes(&app, &f);
+            b = list_box(&f.left, launch);
+            text_px_is(&app, b.x + cw / 2, b.y + s, "- Launch", pink, black); /* the group open */
+            b = list_box(&f.right, 0);
+            text_px_is(&app, b.x + cw / 2, b.y + s, "- libgccjit", yellow, black);
+            text_px_is(&app, f.place.bar.x + 3 * cw, f.place.bar.y + 2 * s, app.settings.keys[0].about, normal, black);
+            /* a click on the second row focuses it, a second click changes it */
+            launcher(&app, false);
+            b = list_box(&f.right, 1);
+            mouse_px(&app, b.x + 4, b.y + 4, true);
+            assert(app.form == GUI_FORM_GROUP && app.editor.row == 1 && setting_is(&app, "gdbstub", NULL));
+            mouse_px(&app, b.x + 4, b.y + 4, true);
+            assert(setting_is(&app, "gdbstub", "on"));
+            key(&app, SDLK_LEFT); /* back as it was */
+            assert(setting_is(&app, "gdbstub", NULL));
+            /* a click on App in the list opens it, from a group's rows */
+            b = list_box(&f.left, 0);
+            mouse_px(&app, b.x + 4, b.y + 4, true);
+            assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME);
+            /* the theme editor: its keys on the left, the theme's menu in the preview on the right, which a click, or
+               Ctrl+P, turns to a run; a long value being typed shows its end */
+            app.editor.row = GUI_APP_EDITOR;
+            key(&app, SDLK_RETURN);
+            assert(app.form == GUI_FORM_THEME);
+            render(&app);
+            form_boxes(&app, &f);
+            assert(f.left.count == gui_editor_rows(&app.editor) && f.left.shown < f.left.count);
+            text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "Preview", normal, black);
+            mouse_px(&app, f.place.side.x + f.place.side.w / 2, f.place.side.y + f.place.side.h / 2, true);
+            assert(app.editor.preview == GUI_SCREEN_COMPILING);
+            key_with(&app, SDLK_P, SDL_KMOD_LCTRL);
+            assert(app.editor.preview == GUI_SCREEN_MENU);
+            for (row = 0;
+                 !gui_editor_key_of(&app.editor, row) || strcmp(gui_editor_key_of(&app.editor, row)->key, "name");
+                 ++row) {}
+            app.editor.row = row;
+            key(&app, SDLK_RETURN);
+            assert(app.editor.typing);
+            typed(&app, "a theme name long enough to run past its box's right edge");
+            render(&app);
+            form_boxes(&app, &f);
+            b = list_box(&f.left, row);
+            {
+                int room = (b.w - cw * 3 / 2) / cw, end = b.x + cw / 2 + (room - 2) * cw;
+                text_px_is(&app, end, b.y + s, "e_", yellow, black); /* its end, and the cursor */
+            }
+            key(&app, SDLK_ESCAPE);
+            key(&app, SDLK_ESCAPE);
+            assert(app.editing && app.form == GUI_FORM_APP);
+            leave_editor(&app);
         }
         /* YoRHa: the boxes on its dim colour, the focused one on its focus colour with the cursor in the margin, the
            side box's name on a band of its ink */
