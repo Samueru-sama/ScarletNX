@@ -35,8 +35,9 @@ void gui_place(const GuiPlaceIn* in, GuiPlace* out) {
     out->list = content;
     if (!in->list_cols) return;
     cols = content.w / in->cw;
-    if (cols >= in->list_cols + 1 + GUI_PLACE_SIDE_MIN) {
-        int w = in->list_cols * in->cw;
+    if (cols >= GUI_PLACE_LIST_MIN + 1 + GUI_PLACE_SIDE_MIN) { /* the list gives way to the side box's least */
+        int w =
+            (in->list_cols < cols - 1 - GUI_PLACE_SIDE_MIN ? in->list_cols : cols - 1 - GUI_PLACE_SIDE_MIN) * in->cw;
         out->list = rect(content.x, content.y, w, content.h);
         out->side = rect(content.x + w + in->cw, content.y, content.w - w - in->cw, content.h);
     } else { /* a phone held upright: the list over three fifths, the side box under it */

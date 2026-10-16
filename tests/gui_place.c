@@ -58,11 +58,18 @@ int main(void) {
        under the list, the status box under it */
     {
         GuiPlaceIn phone = {720, 1500, 24, 48, 36, 36, 56, 96, 120, 20, 144};
-        assert(720 / 24 - 2 < 20 + 1 + GUI_PLACE_SIDE_MIN);
+        assert(720 / 24 - 2 < GUI_PLACE_LIST_MIN + 1 + GUI_PLACE_SIDE_MIN);
         gui_place(&phone, &p);
         sound(&p, 720, 1500);
         assert(p.stacked && p.list.w == 720 - 48 && p.side.w == p.list.w && p.side.y > p.list.y + p.list.h);
         assert(p.list.h > p.side.h && p.status.y > p.side.y + p.side.h);
+    }
+    /* a list asking for more than leaves the side box its least: it gives way */
+    {
+        GuiPlaceIn narrow = {50 * 16, 800, 16, 32, 0, 0, 0, 0, 0, 30, 0};
+        gui_place(&narrow, &p);
+        sound(&p, 50 * 16, 800);
+        assert(!p.stacked && p.list.w == (48 - 1 - GUI_PLACE_SIDE_MIN) * 16 && p.side.w == GUI_PLACE_SIDE_MIN * 16);
     }
     /* a status box taller than its column takes half of it, the side box the rest */
     in.list_cols = 34;

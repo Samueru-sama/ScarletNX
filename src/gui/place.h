@@ -25,6 +25,7 @@ typedef struct {
     int stacked; /* the side box under the list: too narrow for both side by side */
 } GuiPlace;
 #define GUI_PLACE_SIDE_MIN 24 /* the side box's columns at least, beside the list */
+#define GUI_PLACE_LIST_MIN 20 /* and the list's: narrower than both, the side box goes under the list */
 void gui_place(const GuiPlaceIn* in, GuiPlace* out);
 /* count items item pixels high, pitch apart from the top of a box height high: as many as fit, the first of them
    chosen so focus (-1: none) is among them */
