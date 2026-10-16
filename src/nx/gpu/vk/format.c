@@ -269,7 +269,6 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x2A:
         case 0x2B: {
             VkFmt r = vk_zt_format(0x14);
-            r.bpp = 4;
             r.raw = 0;
             r.bpp = 4; /* guest texel size, even when the host uses D32F/S8 */
             r.conv = f == 0x0E || f == 0x29 ? VKC_S8D24 : f == 0x2A ? VKC_D24X8 : VKC_D24S8;

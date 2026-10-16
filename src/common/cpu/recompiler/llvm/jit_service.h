@@ -5,9 +5,9 @@
    the code at pc. When the service has compiled it, that code is the answer. Otherwise the pc joins a queue and the
    answer is NULL: the miss runs pc in its interpreter at once, so no guest thread ever waits for a compile.
 
-   Compile threads of the service take the queued pcs in batches. A batch finds the functions at all of its pcs and
-   those they call (snx_codegen_discover, one budget for the batch), emits them into one LLVM module (snx_ir_emit, as
-   the AOT build does), loads its object into the code arena (code_loader.c, packed after the code already there) and
+   Compile threads take queued pcs from one image per batch. A batch finds the functions at its pcs and those they
+   call within that image (snx_codegen_discover, one budget for the batch), emits one LLVM module (snx_ir_emit),
+   loads its object into the code arena (code_loader.c, packed after the code already there) and
    publishes every leader of every function into the dispatch table. An interpreter running one of those functions
    moves to the compiled code at its next taken branch to a leader, and later lookups find it without a miss. The
    compile threads are host threads: none is a guest thread or holds a guest core, so a compile never delays a guest
@@ -25,9 +25,10 @@
    long as the service, which outlives every thread that runs its code.
 
    Images can join while the service runs (snx_jit_add_image: an NRO the game maps). Their pcs are outside CPU.disp,
-   so the service keeps a table for each, which snx_jit_resolve reads without a lock before anything else: a call
-   into such code misses in snx_lookup and costs RtAPI.miss and that load once compiled. Removing one (the game
-   unmaps the NRO) waits for the batches reading it and forgets its pcs.
+   so the service keeps a table for each, which snx_jit_resolve reads under its region lock: a call
+   into such code misses in snx_lookup and reaches RtAPI.miss even once compiled. Removing one (the game
+   unmaps the NRO) waits for the batches reading it and forgets its pcs. Calls across image boundaries dispatch
+   dynamically, so callers surviving an unload cannot retain an inlined or direct call to the old image.
 
    Not NX-specific: gnuabi's execution can create one too, with its code ranges and table */
 #ifndef SNX_RECOMPILER_LLVM_JIT_SERVICE_H

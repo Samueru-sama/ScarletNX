@@ -42,8 +42,7 @@
 
 /* the runtime library as an object for the libgccjit backend, compiled when the recompiler is built (rtlib.c,
    snx-rtlib-gen embed); the LLVM backend compiles its bitcode instead (snx_ir_rtlib_object) */
-extern const unsigned char snx_rtlib_object[];
-extern const unsigned long snx_rtlib_object_size;
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 
 /* instructions per code unit (an LLVM module, a libgccjit context): whole functions until a unit reaches it, as the
    game workflow splits them (SNX_CHUNK_INSTRUCTIONS) */

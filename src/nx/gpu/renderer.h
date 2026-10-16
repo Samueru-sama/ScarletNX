@@ -39,7 +39,8 @@ typedef struct Renderer {
     void (*release_write)(u64 gva, const void* data, u32 len);
     /* the stream reads or writes [a, a + n): a release still waiting to write there happens first */
     void (*release_need)(u64 a, u64 n);
-    u32 (*release_queued)(u32 id); /* increments of syncpoint id waiting to happen */
+    u32 (*release_value)(u32 id); /* completed and queued increments, read consistently */
+    void (*release_retire)(u32 id); /* finish this syncpoint's queued releases before its id is reused */
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */

@@ -78,7 +78,7 @@ void save_hints(void) {
     }
     pm_unlock(&g_hint_lock);
 }
-/* the JIT's warm start (jit.c) */
+/* the JIT's warm start (guest_jit.c) */
 u64* hints_copy(size_t* count) {
     pm_lock(&g_hint_lock);
     u64* copy = g_nhints ? malloc(8 * (size_t)g_nhints) : NULL;

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT's NX side (jit.h): the game's code ranges and the module's entries handed to the service, and the
+/* The runtime JIT's NX side (guest_jit.h): the game's code ranges and the module's entries handed to the service, and the
    hints of earlier runs queued for it */
 #include "nx/runtime/guest_jit.h"
 #include "nx/runtime/loader.h"

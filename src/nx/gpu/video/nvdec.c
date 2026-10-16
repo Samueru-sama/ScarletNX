@@ -178,6 +178,8 @@ typedef struct {
     u32 w, h;             /* the picture in pixels */
 } PicOut;
 struct NvdecCtx {
+    u32 vp9_hint_magic;
+    u32 vp9_previous_invisible;
 #ifndef SNX_NO_H264
     AVCodecContext* dec;
     u32 app;
@@ -197,7 +199,11 @@ struct NvdecCtx {
 #ifndef SNX_NO_H264
 static u32 g_vframes; /* pictures written, all channels: only for the log */
 #endif
-NvdecCtx* nvdec_new(void) { return calloc(1, sizeof(NvdecCtx)); }
+NvdecCtx* nvdec_new(void) {
+    NvdecCtx* d = calloc(1, sizeof(NvdecCtx));
+    if (d) d->vp9_hint_magic = 0x534e5856; /* SNXV */
+    return d;
+}
 void nvdec_free(NvdecCtx* d) {
     if (!d) return;
 #ifndef SNX_NO_H264
@@ -318,7 +324,7 @@ static int write_pic(const AVFrame* f, const PicOut* t) {
     if (w > t->w) w = t->w;
     if (h > t->h) h = t->h;
     if (w > t->pitch_y) w = t->pitch_y;
-    if (w > t->pitch_c) w = t->pitch_c & ~1u;
+    if ((u64)((w + 1) / 2) * 2 > t->pitch_c) w = t->pitch_c & ~1u;
     if (w > 4096) w = 4096;
     u32 ch = (t->h + 1) / 2;
     u8* py = iova_ptr(t->luma, bl_size(t->pitch_y, t->h, t->bh));
@@ -334,15 +340,17 @@ static int write_pic(const AVFrame* f, const PicOut* t) {
             memcpy(py + bl_offset(x, y, 0, t->pitch_y, t->h, t->bh, 0), s + x, w - x < 16 ? w - x : 16);
     }
     u8 row[4096];
-    for (u32 y = 0; y < h / 2; y++) {
+    u32 chroma_width = (w + 1) / 2 * 2;
+    for (u32 y = 0; y < (h + 1) / 2; y++) {
         const u8* u = pl[1] + (u64)y * sc;
         const u8* v = pl[2] + (u64)y * sv;
-        for (u32 x = 0; x < w / 2; x++) {
+        for (u32 x = 0; x < (w + 1) / 2; x++) {
             row[2 * x] = u[x];
             row[2 * x + 1] = v[x];
         }
-        for (u32 x = 0; x < w; x += 16)
-            memcpy(pc + bl_offset(x, y, 0, t->pitch_c, ch, t->bh, 0), row + x, w - x < 16 ? w - x : 16);
+        for (u32 x = 0; x < chroma_width; x += 16)
+            memcpy(pc + bl_offset(x, y, 0, t->pitch_c, ch, t->bh, 0), row + x,
+                   chroma_width - x < 16 ? chroma_width - x : 16);
     }
     g_vframes++;
     return 1;
@@ -399,7 +407,13 @@ static void vp9_execute(NvdecCtx* d, const u32* r) {
     d->pkt->data = d->buf;
     d->pkt->size = (int)packet.size;
     d->cur_new = 0;
+    d->vp9_previous_invisible = !packet.previous_visible;
     int err = avcodec_send_packet(d->dec, d->pkt);
+    if (err < 0) {
+        char reason[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(err, reason, sizeof reason);
+        LOG_LIMIT(8, "video: VP9 decoder rejected packet: %s\n", reason);
+    }
     while (avcodec_receive_frame(d->dec, d->frame) == 0) av_frame_unref(d->frame);
     PicOut pt = {0};
     pt.luma = packet.luma;
@@ -410,7 +424,7 @@ static void vp9_execute(NvdecCtx* d, const u32* r) {
     pt.w = packet.width;
     pt.h = packet.height;
     int wrote = 0;
-    if (d->cur_new && d->cur->buf[0]) {
+    if (err >= 0 && d->cur_new && d->cur->buf[0]) {
         if (packet.layout & 3)
             LOG_LIMIT(2, "video: VP9 output tile format %u is not handled\n", packet.layout & 3);
         else if (!pt.luma || !pt.chroma)

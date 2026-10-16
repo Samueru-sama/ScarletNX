@@ -32,22 +32,23 @@ static u32 g_rincr[SYNC_N];  /* increments queued per syncpoint */
 static PMutex g_rlock = PMUTEX_INIT;
 static PCond g_rcv;
 static int g_rthread;
-static _Thread_local int t_performing; /* a release's own write doesn't wait for the queue */
 
 static void perform(const Release* r) {
-    t_performing = 1;
+    vk_result_begin();
     if (r->gva)
         gmem_write(r->gva, r->data, r->len);
     else
         syncpt_incr(r->id);
-    t_performing = 0;
+    vk_result_end();
 }
 /* lands the results of every submit up to gate and compute batch up to cgate (they have finished) and performs the
    releases they gate, in order */
 static void release_through(u64 gate, u64 cgate) {
     vk_lock();
+    vk_result_begin();
     vk_compute_land_through(cgate);
     vk_land_through(gate);
+    vk_result_end();
     for (;;) {
         Release r;
         pm_lock(&g_rlock);
@@ -57,10 +58,14 @@ static void release_through(u64 gate, u64 cgate) {
         }
         r = g_rq[g_rtail % RQ_N];
         g_rtail++;
-        if (!r.gva && r.id < SYNC_N) g_rincr[r.id]--;
+        if (!r.gva) {
+            /* release_value sees the transfer from queued to completed atomically. */
+            perform(&r);
+            if (r.id < SYNC_N) g_rincr[r.id]--;
+        }
         if (g_rtail == g_rhead) __atomic_store_n(&g_gpu_releases, 0, __ATOMIC_RELEASE);
         pm_unlock(&g_rlock);
-        perform(&r);
+        if (r.gva) perform(&r);
     }
     vk_unlock();
 }
@@ -89,8 +94,8 @@ static void release(Release* r) {
     queued = g_rtail != g_rhead;
     pm_unlock(&g_rlock);
     if (!vk_buf_pending_any() && !r->cgate && !queued) {
-        vk_unlock();
         perform(r);
+        vk_unlock();
         return;
     }
     /* the work before it, submitted so its completion can be waited for; results of earlier submits are older */
@@ -104,6 +109,13 @@ static void release(Release* r) {
         vk_compute_wait(coldest);
         release_through(oldest, coldest);
         pm_lock(&g_rlock);
+    }
+    /* Gates cover the entire queued prefix even if ordinary reads already landed
+       the batches belonging to earlier releases. */
+    if (g_rhead != g_rtail) {
+        const Release* prev = &g_rq[(g_rhead - 1) % RQ_N];
+        if (r->gate < prev->gate) r->gate = prev->gate;
+        if (r->cgate < prev->cgate) r->cgate = prev->cgate;
     }
     g_rq[g_rhead % RQ_N] = *r;
     g_rhead++;
@@ -133,31 +145,56 @@ void vk_release_incr(u32 id) {
     r.id = id;
     release(&r);
 }
-/* the stream reads or writes [gva, gva + len): the queued releases up to the last one written there happen first */
-void vk_release_need(u64 gva, u64 len) {
-    u64 gate = 0, cgate = 0, i;
+/* Mapping changes hold vk_lock and drain the queue before changing translations.
+   Thus these translations name the backing that was present at enqueue time. */
+static int release_overlaps(const Release* r, u64 gva, u64 len) {
+    if (!r->gva || !r->len || !len) return 0;
+    if (gva >= r->gva ? gva - r->gva < r->len : r->gva - gva < len) return 1;
+    for (u32 at = 0; at < r->len;) {
+        u64 a = r->gva + at, cpu = gmmu_translate(a);
+        u32 n = 4096 - (u32)(a & 4095);
+        if (n > r->len - at) n = r->len - at;
+        for (u64 off = 0; cpu && off < len;) {
+            u64 b = gva + off, other = gmmu_translate(b), span = 4096 - (b & 4095);
+            if (span > len - off) span = len - off;
+            if (other && (other >= cpu ? other - cpu < n : cpu - other < span)) return 1;
+            off += span;
+        }
+        at += n;
+    }
+    return 0;
+}
+/* Drain through the latest matching release. Gates are monotonic prefix maxima. */
+static void release_match(u64 gva, u64 len, u32 id, int all) {
+    u64 gate = 0, cgate = 0;
     int found = 0;
-    if (t_performing) return;
+    if (vk_result_landing()) return;
+    vk_lock();
     pm_lock(&g_rlock);
-    for (i = g_rtail; i < g_rhead; i++) {
+    for (u64 i = g_rtail; i < g_rhead; i++) {
         const Release* r = &g_rq[i % RQ_N];
-        if (r->gva && r->gva < gva + len && gva < r->gva + r->len) {
+        if (all || (len ? release_overlaps(r, gva, len) : !r->gva && r->id == id)) {
             gate = r->gate;
             cgate = r->cgate;
             found = 1;
         }
     }
     pm_unlock(&g_rlock);
-    if (!found) return;
-    vk_wait_submit(gate);
-    vk_compute_wait(cgate);
-    release_through(gate, cgate);
+    if (found) {
+        vk_wait_submit(gate);
+        vk_compute_wait(cgate);
+        release_through(gate, cgate);
+    }
+    vk_unlock();
 }
-u32 vk_release_queued(u32 id) {
-    u32 n;
-    if (id >= SYNC_N) return 0;
+void vk_release_need(u64 gva, u64 len) {
+    if (len) release_match(gva, len, 0, 0);
+}
+void vk_release_drain(void) { release_match(0, 0, 0, 1); }
+void vk_release_retire(u32 id) { release_match(0, 0, id, 0); }
+u32 vk_release_value(u32 id) {
     pm_lock(&g_rlock);
-    n = g_rincr[id];
+    u32 n = syncpt_read(id) + (id < SYNC_N ? g_rincr[id] : 0);
     pm_unlock(&g_rlock);
     return n;
 }

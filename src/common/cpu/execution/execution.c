@@ -89,7 +89,7 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         fputs("(CPU* RESTRICT c,u64 e);\n", file);
     }
     snx_a64_interp_checked(file);
-    /* the interpreter, for the runtime's RtAPI.miss (snx_execution_interpret) */
+    /* the interpreter, for the runtime's RtAPI.miss callback */
     fputs("SNX_EXPORT void snx_interpret(CPU*c,u64 pc){snx_interp(c,pc);}\n", file);
     for (i = 0; i < codegen.function_count; ++i) snx_codegen_emit(file, &codegen, &codegen.functions[i]);
     fputs("typedef struct{u64 address;GuestFn function;} ExecutionEntry;\nstatic const ExecutionEntry entries[]={",

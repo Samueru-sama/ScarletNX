@@ -18,13 +18,11 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
 #include "nx/loader/codegen_view.h"
 #include "common/cpu/recompiler/gccjit/jit.h"
 #include "nx/loader/module_abi.h"
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* the runtime library, compiled when the recompiler is built (rtlib.c, snx-rtlib-gen embed) */
-extern const unsigned char snx_rtlib_object[];
-extern const unsigned long snx_rtlib_object_size;
 
 /* module.c's emit_module through libgccjit: the same tables and the same snx_module */
 static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenOptions* options,

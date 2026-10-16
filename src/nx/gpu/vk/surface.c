@@ -306,7 +306,7 @@ void vk_rt_reload(u64 gva) {
 static int depth_copies_raw(const Surf* s) {
     return (s->f.vk == VK_FORMAT_D32_SFLOAT || s->f.vk == VK_FORMAT_D16_UNORM) && s->sw == s->w && s->sh == s->h;
 }
-void vk_surf_flush(Surf* s, const u8* original) {
+static void surf_flush(Surf* s, const u8* original) {
     if (!s || (s->f.depth ? !depth_copies_raw(s) : !s->f.raw) || s->layout == VK_IMAGE_LAYOUT_UNDEFINED) return;
     u64 gva = s->gva;
     /* not drawn to since it was last written back or loaded: memory has it already (and a CPU write since then is
@@ -410,6 +410,11 @@ void vk_surf_flush(Surf* s, const u8* original) {
         s->hash ^= 1;
         s->gw = 0;
     }
+}
+void vk_surf_flush(Surf* s, const u8* original) {
+    vk_result_begin();
+    surf_flush(s, original);
+    vk_result_end();
 }
 void vk_rt_flush(u64 gva) { vk_surf_flush(vk_rt_find(gva), NULL); }
 

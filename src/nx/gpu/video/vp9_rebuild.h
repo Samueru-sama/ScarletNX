@@ -16,6 +16,7 @@ typedef struct {
     uint32_t width, height, pitch_y, pitch_c;
     uint32_t layout;
     uint64_t luma, chroma;
+    uint8_t previous_visible;
 } SnxVp9Frame;
 
 SnxVp9Builder* snx_vp9_new(void);

@@ -922,6 +922,8 @@ void spv_emit_patch_barrier(SpvEmitter* e, uint32_t u32_type) {
 /* Ids that are not dynamically uniform: an element of a texture array, and what is loaded or made from it.
    Vulkan wants each decorated NonUniform. */
 static void nonuniform(SpvEmitter* e, uint32_t id) {
+    for (size_t i = 0; i < e->nonuniform_count; i++)
+        if (e->nonuniform[i] == id) return;
     if (e->nonuniform_count == e->nonuniform_capacity) {
         size_t capacity = e->nonuniform_capacity ? e->nonuniform_capacity * 2 : 32;
         uint32_t* grown = realloc(e->nonuniform, capacity * sizeof *grown);

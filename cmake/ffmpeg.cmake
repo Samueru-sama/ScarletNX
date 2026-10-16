@@ -10,6 +10,10 @@
 # NASM for the x86-64 assembly.
 # This file is included into the top-level scope: its variables carry the snx_ffmpeg_ prefix.
 set(snx_ffmpeg_src "${FFmpeg_SOURCE_DIR}")
+set(snx_ffmpeg_patch "${CMAKE_CURRENT_LIST_DIR}/patch_ffmpeg_vp9.cmake")
+file(SHA256 "${snx_ffmpeg_patch}" snx_ffmpeg_patch_hash)
+string(SUBSTRING "${snx_ffmpeg_patch_hash}" 0 12 snx_ffmpeg_patch_short)
+set(snx_ffmpeg_build_src "${CMAKE_BINARY_DIR}/ffmpeg-source-${snx_ffmpeg_commit}-${snx_ffmpeg_patch_short}")
 set(snx_ffmpeg_prefix "${CMAKE_BINARY_DIR}/ffmpeg")
 # FFmpeg's configure stops on a source path with a space in it, which would only show at build time
 if(snx_ffmpeg_src MATCHES "[ \t]")
@@ -100,7 +104,8 @@ endif()
 
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
-snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_commit}" "configure: ${snx_ffmpeg_args}"
+snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_commit}" "patch: ${snx_ffmpeg_patch_hash}"
+                "configure: ${snx_ffmpeg_args}"
                 "nasm: ${snx_ffmpeg_nasm}")
 if(snx_ffmpeg_cache_FOUND)
     set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
@@ -114,10 +119,12 @@ else()
     # FFmpeg's configure leaves a src symlink and generated headers in the binary directory. Keep each source commit
     # in its own directory so changing the pin cannot build against the previous source.
     ExternalProject_Add(ffmpeg_build
-        SOURCE_DIR "${snx_ffmpeg_src}"
-        BINARY_DIR "${CMAKE_BINARY_DIR}/ffmpeg-build-${snx_ffmpeg_commit}"
+        SOURCE_DIR "${snx_ffmpeg_build_src}"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/ffmpeg-build-${snx_ffmpeg_commit}-${snx_ffmpeg_patch_short}"
         INSTALL_DIR "${snx_ffmpeg_prefix}"
-        CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure" --prefix=${snx_ffmpeg_prefix}
+        DOWNLOAD_COMMAND "${CMAKE_COMMAND}" -E copy_directory "${snx_ffmpeg_src}" "${snx_ffmpeg_build_src}"
+        PATCH_COMMAND "${CMAKE_COMMAND}" -DFFMPEG_SOURCE=${snx_ffmpeg_build_src} -P "${snx_ffmpeg_patch}"
+        CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_build_src}/configure" --prefix=${snx_ffmpeg_prefix}
                           ${snx_ffmpeg_args}
         BUILD_COMMAND "${SNX_FFMPEG_MAKE}" -j${snx_ffmpeg_jobs} ${snx_ffmpeg_make_cc}
         INSTALL_COMMAND "${SNX_FFMPEG_MAKE}" install

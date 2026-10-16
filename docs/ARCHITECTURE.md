@@ -94,9 +94,9 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
   immediates are folded; FP arithmetic, compares and conversions run inline on the host's IEEE unit when the result
   is provably the soft-float helper's, flags included (`ir_fp_fast`); common SIMD (loads/stores, permutes, shifts,
   compares, byte ops, saturating and halving adds) is inline instead of `snx_simd`. Build == host == target: the
-  generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection) and the runtime library is
-  built with `-march=native`, its helpers choosing paths from the compiler's feature macros; nothing is detected at
-  run time. x86 paths sit under `__x86_64__` or the target triple: AES-NI, PCLMULQDQ (PMULL, CRC32 by Barrett
+  generated code uses the host's extensions (`snx_ir_host`, from LLVM's host detection). The embedded runtime
+  library is compiled for the configured target without `-march=native`; its helpers use the compiler's target
+  feature macros. x86 paths sit under `__x86_64__` or the target triple: AES-NI, PCLMULQDQ (PMULL, CRC32 by Barrett
   reduction), SSE4.2 CRC32C, VPTERNLOG (BSL/BIT/BIF, signed saturation), PAVGB/PAVGW (rounding halving adds, signed
   ones biased by 0x80), GF2P8AFFINEQB (8-bit shifts, bit reversal); the tricks are wunkolo's (wunkolo.github.io).
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.

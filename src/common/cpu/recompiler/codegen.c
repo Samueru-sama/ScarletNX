@@ -96,7 +96,7 @@ SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address) {
     size_t i;
     SnxCodeImage* module;
     SnxU64 start;
-    module = codegen->last_module;
+    module = __atomic_load_n(&codegen->last_module, __ATOMIC_RELAXED);
     if (module) {
         start = module->base + module->text_off;
         if (address >= start && address - start < module->text_size) return module;
@@ -105,7 +105,7 @@ SnxCodeImage* snx_codegen_module(SnxCodegen* codegen, SnxU64 address) {
         module = &codegen->modules[i];
         start = module->base + module->text_off;
         if (address >= start && address - start < module->text_size) {
-            codegen->last_module = module;
+            __atomic_store_n(&codegen->last_module, module, __ATOMIC_RELAXED);
             return module;
         }
     }
@@ -248,7 +248,8 @@ static SnxU64 taken_address(SnxCodegen* codegen, SnxU64 address, SnxU32 word) {
         if ((before & 0x9f000000UL) == 0x90000000UL && (before & 31) == reg) { /* ADRP */
             imm = ((SnxU64)((before >> 5) & 0x7ffffUL) << 2) | ((before >> 29) & 3);
             if (imm & 0x100000UL) imm |= ~(SnxU64)0x1fffffUL;
-            return ((address - (SnxU64)i * 4) & ~(SnxU64)0xfff) + (imm << 12) + ((word >> 10) & 0xfff);
+            return ((address - (SnxU64)i * 4) & ~(SnxU64)0xfff) + (imm << 12) +
+                   ((SnxU64)((word >> 10) & 0xfff) << ((word & (1UL << 22)) ? 12 : 0));
         }
         /* the register written in between (or perhaps only stored: bits 0-4 are Rt too), or a way in from elsewhere */
         if ((before & 31) == reg || snx_a64_decode(before)->kind != SNX_FLOW_PLAIN) return 0;

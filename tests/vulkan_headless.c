@@ -121,6 +121,9 @@ static int check_depth_array(void) {
     vk_render_end();
     Surf* target = vk_rt_find(r[0x3F9]);
     CHECK(target && target->layers == 3 && target->layer_size == 4096);
+    Surf* drawn[4];
+    CHECK(vk_rt_drawn_in(target->gva, target->gva + target->layer_size * target->layers, drawn, 4) >= 1);
+    CHECK(drawn[0] == target && vk_rt_drawn_fresh(target));
     VkBuffer buffer;
     u8* data = vk_readback_buffer(12, &buffer);
     CHECK(data);

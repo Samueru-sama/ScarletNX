@@ -123,7 +123,7 @@ static void analysis_test(void) {
 
 /* Function pointers built in code must be compiled even without symbols or unwind information. */
 static void address_taken_test(void) {
-    unsigned char image[80];
+    unsigned char image[0x1004];
     SnxProgram program;
     SnxModuleImage module;
     SnxCodegen codegen;
@@ -138,7 +138,10 @@ static void address_taken_test(void) {
     put32(image, 12, 0xD65F03C0UL); /* RET */
     put32(image, 32, 0x90000002UL); /* ADRP x2, current page */
     put32(image, 36, 0x91010042UL); /* ADD x2, x2, #64: another callback */
-    put32(image, 40, 0xD65F03C0UL);
+    put32(image, 40, 0x90000003UL); /* ADRP x3, current page */
+    put32(image, 44, 0x91400463UL); /* ADD x3, x3, #1, LSL #12 */
+    put32(image, 48, 0xD65F03C0UL);
+    put32(image, 0x1000, 0xD65F03C0UL);
     put32(image, 64, 0xD65F03C0UL);
     for (with_fde = 0; with_fde < 2; ++with_fde) {
         setup_program(&program, &module, image, sizeof(image));
@@ -151,7 +154,8 @@ static void address_taken_test(void) {
         check(snx_codegen_function(&codegen, SNX_CODE_BASE + 64) != NULL, "ADRP/ADD callback discovered");
         function = snx_codegen_function(&codegen, SNX_CODE_BASE);
         check(function && has_leader(function, SNX_CODE_BASE + 12), "interior address becomes a leader");
-        check(codegen.function_count == 3, "interior address does not duplicate a function");
+        check(snx_codegen_function(&codegen, SNX_CODE_BASE + 0x1000) != NULL, "shifted ADRP/ADD callback discovered");
+        check(codegen.function_count == 4, "interior address does not duplicate a function");
         snx_codegen_free(&codegen);
     }
 }

@@ -21,10 +21,10 @@ typedef struct {
     size_t module_count;
     SnxFunction* functions;
     size_t function_count, function_capacity, instruction_count;
-    SnxCodeImage* last_module;
+    SnxCodeImage* last_module; /* atomic cache; image tables are immutable while workers emit */
     /* emit options, set after snx_codegen_analyze (which clears the struct). check_fetch: each instruction compares its
        word with memory and interprets it when the code changed. hook_direct_calls (--hook-direct-calls): calls and
-       branches between functions go through CPU.disp too, so wrappers installed there (gpu/nvn_trace.c) see them */
+       branches between functions go through CPU.disp too, so dispatch wrappers installed there see them */
     int check_fetch;
     int hook_direct_calls;
 } SnxCodegen;

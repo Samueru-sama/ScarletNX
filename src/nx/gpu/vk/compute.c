@@ -20,6 +20,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/renderer.h"
+#include "nx/gpu/vk/backing.h"
 
 typedef struct CsPipe {
     u64 key;
@@ -220,7 +221,7 @@ static void cs_wait(u64 value) {
                               .pValues = &value};
     u64 t0 = plat_ns();
     VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
-    g_vk_cs_wait_ns += plat_ns() - t0;
+    __atomic_add_fetch(&g_vk_cs_wait_ns, plat_ns() - t0, __ATOMIC_RELAXED);
 }
 /* the arena's results that changed, into guest memory, after its batch is done */
 static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
@@ -359,7 +360,11 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     if (!g_cs_any || g_landing) return 0;
     for (int i = 0; i < g_nout; i++) {
         CsOut* o = &g_out[i];
-        if (gva >= o->addr + o->size || o->addr >= gva + len) continue;
+        if (gva >= o->addr + o->size || o->addr >= gva + len) {
+            if (vk_backing_overlap(gva, len, o->addr, o->size)) cs_land();
+            else continue;
+            return 0;
+        }
         /* partly covered, or at an offset that suits no use of it (index, storage and uniform buffers): it lands */
         if (gva < o->addr || gva + len > o->addr + o->size || ((o->off + (gva - o->addr)) & (vk_stage_align() - 1))) {
             cs_land();
@@ -375,10 +380,13 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     }
     for (k = g_ptail; k != g_phead; k++) {
         CsBatch* b = &g_pend[k % CS_PENDING];
-        if (gva >= b->hi || gva + len <= b->lo) continue;
         for (int i = 0; i < b->nout; i++) {
             CsOut* o = &b->out[i];
-            if (gva >= o->addr + o->size || o->addr >= gva + len) continue;
+            if (gva >= o->addr + o->size || o->addr >= gva + len) {
+                if (vk_backing_overlap(gva, len, o->addr, o->size)) cs_land();
+                else continue;
+                return 0;
+            }
             if (gva < o->addr || gva + len > o->addr + o->size ||
                 ((o->off + (gva - o->addr)) & (vk_stage_align() - 1))) {
                 cs_land();
@@ -394,7 +402,6 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return 0;
 }
 void vk_compute_land(void) {
-    if (!g_recording && !g_inflight && g_ptail == g_phead) return;
     vk_lock();
     cs_land();
     vk_unlock();
@@ -427,23 +434,22 @@ void vk_compute_before_write(u64 gva, u64 size) {
    reader waits for a landing in progress on another thread. The landing thread itself passes (g_landing). A result of
    a batch put aside lands that batch and those before it */
 void vk_compute_mem_need(u64 a, u64 n) {
-    u32 k, last = g_ptail;
+    u32 k, last;
     int found = 0;
     vk_lock();
+    last = g_ptail;
     if (!g_landing) {
         for (k = g_ptail; k != g_phead; k++) {
             const CsBatch* b = &g_pend[k % CS_PENDING];
-            if (a >= b->hi || a + n <= b->lo) continue;
             for (int i = 0; i < b->nout && !(found && last == k + 1); i++)
-                if (a < b->out[i].addr + b->out[i].size && b->out[i].addr < a + n) {
+                if (vk_backing_overlap(a, n, b->out[i].addr, b->out[i].size)) {
                     found = 1;
                     last = k + 1;
                 }
         }
         while (found && g_ptail != last) cs_land_oldest();
-        if (a < g_out_hi && a + n > g_out_lo)
-            for (int i = 0; i < g_nout; i++)
-                if (a < g_out[i].addr + g_out[i].size && g_out[i].addr < a + n) {
+        for (int i = 0; i < g_nout; i++)
+                if (vk_backing_overlap(a, n, g_out[i].addr, g_out[i].size)) {
                     cs_land();
                     break;
                 }
@@ -581,6 +587,27 @@ static int cs_buffer_image(const u32* tic, int kind, CsBufImg* out) {
     return 1;
 }
 
+/* Both the initial translation and format specialization use the same bounded program. */
+static void cs_read_code(u64 pa, u8* dst) {
+    u32 code_size = 0x10000;
+    /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
+       targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
+       clients keep the whole window. */
+    if (pa >= 0x100) {
+        const u8* header = gmem_ptr_untracked(pa - 0x100, 8);
+        if (header) {
+            u32 magic, declared;
+            memcpy(&magic, header, sizeof magic);
+            memcpy(&declared, header + 4, sizeof declared);
+            if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+                gmem_ptr_untracked(pa, declared))
+                code_size = declared;
+        }
+    }
+    memset(dst, 0, 0x10000 + 80);
+    gmem_read_code(pa, dst + 80, code_size);
+}
+
 void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     u32* rc = ch->rcomp;
     u32 gx = q[12] & 0x7FFFFFFF, gy = q[13] & 0xFFFF, gz = q[13] >> 16, lx = q[18] >> 16, ly = q[19] & 0xFFFF,
@@ -629,25 +656,8 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     if (!p || fe->addr != pa || fe->epoch != g_vk_epoch || fe->lx != lx || fe->ly != ly || fe->lz != lz ||
         fe->shm != shm || !vk_cb_reads_hold(&p->cbr, cs_cb_read)) {
         static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
-        u32 code_size = 0x10000;
-        /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
-           targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
-           clients keep the whole window. */
-        if (pa >= 0x100) {
-            const u8* header = gmem_ptr_untracked(pa - 0x100, 8);
-            if (header) {
-                u32 magic, declared;
-                memcpy(&magic, header, sizeof magic);
-                memcpy(&declared, header + 4, sizeof declared);
-                if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
-                    gmem_ptr_untracked(pa, declared))
-                    code_size = declared;
-            }
-        }
         CsKey unkeyed = {0, 0, 0};
-        memset(code_buf, 0, 80);
-        gmem_read_code(pa, code_buf + 80, code_size);
-        memset(code_buf + 80 + code_size, 0, 0x10000 - code_size);
+        cs_read_code(pa, code_buf);
         p = cs_pipe(code_buf, lx, ly, lz, shm, unkeyed);
         *fe = (typeof(fc[0])){pa, g_vk_epoch, lx, ly, lz, shm, p};
     }
@@ -682,8 +692,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         if (!p->keyed || (p->keyed->si.rt_int_mask >> 8) != ck.image || p->keyed->si.tex_int_mask != ck.tex_int ||
             p->keyed->si.tex_sint_mask != ck.tex_sint) {
             static u8 keyed_code[0x10000 + 80];
-            memset(keyed_code, 0, 80);
-            gmem_read_code(pa, keyed_code + 80, 0x10000);
+            cs_read_code(pa, keyed_code);
             p->keyed = cs_pipe(keyed_code, lx, ly, lz, shm, ck);
         }
         p = p->keyed;
@@ -757,7 +766,10 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         chain[i] = -1;
         for (int k = 0; k < g_nout && !overlap; k++) {
             CsOut* o = &g_out[k];
-            if (sa[i] >= o->addr + o->size || o->addr >= sa[i] + ss[i]) continue;
+            if (sa[i] >= o->addr + o->size || o->addr >= sa[i] + ss[i]) {
+                if (vk_backing_overlap(sa[i], ss[i], o->addr, o->size)) overlap = 1;
+                continue;
+            }
             if (!((p->si.gbuf_wmask >> i) & 1) && g_recording && sa[i] >= o->addr && sa[i] + ss[i] <= o->addr + o->size)
                 chain[i] = (i64)(o->off + (sa[i] - o->addr));
             else
@@ -922,8 +934,10 @@ rebind:
             const Surf* sampled = v ? t : NULL; /* the texture whose own view is bound, for the sampler */
             if (v)
                 vk_surf_use(vk_cmd(), t, sampled_layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-            else
+            else {
                 v = vk_null_view(want, num);
+                sampled_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
             VkSampler smp = vk_tex_bind_sampler(tsc, st, num, sampled, want);
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
                 g_vk_cs_skipped++;

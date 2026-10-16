@@ -110,7 +110,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write) {
         if (zt_ro)
             vk_surf_use(cb, zt, zl,
                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
-                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                            VK_SAMPLED_STAGES,
                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else
             vk_surf_use(cb, zt, zl,
@@ -333,7 +333,15 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
             else
                 vk_rt_drawn(s);
         }
-        if (na > (u32)color_clear && zt) zt->wgen++;
+        if (na > (u32)color_clear && zt) {
+            zt->wgen++;
+            int all_aspects = (v & 1) && (!zt->f.stencil || (v & 2));
+            if (all_aspects && zt->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
+                rect.rect.extent.width == zt->sw && rect.rect.extent.height == zt->sh)
+                vk_rt_drawn_full(zt);
+            else
+                vk_rt_drawn(zt);
+        }
     }
 }
 
@@ -585,6 +593,7 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res, u32 last_out) {
         ShTex* st = &s0->si.tex[i];
         tex_resolve(ch, tex_handle(ch, 4, r[0x982], st), &res[i]);
         if (st->shadow) {
+            if (st->flags & SNX_TEX_INDEXED) continue; /* the selected entry's function comes from the table */
             /* a depth compare of a color texture compares its first component, which Vulkan's compare samplers
                can't do on a color image: the shader samples it and compares (the TSC's function, LEQUAL when the
                TSC has none, as vk_tex_bind_sampler sets) */
@@ -737,8 +746,9 @@ static int frame_consts(VkBuffer* buf, u64* off) {
 
 typedef struct {
     VkWriteDescriptorSet w[SNX_VKB_END];
-    VkDescriptorBufferInfo bi[SNX_VKB_SMAP + 1];
+    VkDescriptorBufferInfo bi[SNX_VKB_END];
     VkDescriptorImageInfo ii[SNX_VKB_SMAP + 1];
+    VkDescriptorImageInfo depth_table[SNX_TEX_ARRAY];
     VkDescriptorImageInfo table[SNX_TEX_ARRAY]; /* SNX_VKB_TEXARRAY's elements */
     u32 n;
 } DescWrites;
@@ -880,11 +890,17 @@ static int tex_table_set(GpuChannel* ch, int stage, const VkSh* s, int slot, Sur
     u64 cba = bank < 18 ? ch->cbind[stage][bank] : 0;
     VkImageViewType want = vk_tex_view_type(st);
     int num = st->shadow || !((s->si.tex_int_mask >> slot) & 1) ? 0 : ((s->si.tex_sint_mask >> slot) & 1) ? 2 : 1;
-    VkImageView none = vk_null_view(want, st->shadow ? 3 : num), view;
+    /* Keep real depth comparison samplers (including PCF) alongside plain color
+       samplers. Each entry selects its own table and comparison function. */
+    ShTex plain = *st;
+    if (st->shadow) plain.shadow = 0;
+    VkImageView none = vk_null_view(want, num), view;
+    VkImageView far = st->shadow ? vk_null_view(want, 3) : VK_NULL_HANDLE;
     VkSampler smp;
     VkWriteDescriptorSet* w;
     TexRes x;
-    if (!none) return 0;
+    u32 funcs[SNX_TEX_ARRAY];
+    if (!none || (st->shadow && !far)) return 0;
     size = cba ? ch->cbind_size[stage][bank] : 0;
     if (size > 65536 || !size) size = 65536;
     for (k = 0; k < SNX_TEX_ARRAY; k++) {
@@ -894,8 +910,12 @@ static int tex_table_set(GpuChannel* ch, int stage, const VkSh* s, int slot, Sur
         memset(&x, 0, sizeof x);
         if (cba && at + 4 <= size && (handle & 0xFFFFF) <= r[0x55F] && ((handle >> 20) & 0xFFF) <= r[0x559]) {
             tex_resolve(ch, handle, &x);
-            if (x.t && !is_target(x.t, rt, zt, n)) view = vk_tex_bind_view(x.t, want, x.tic, x.tsc, num);
+            if (x.t && (!st->shadow || !x.t->f.is_int) && !is_target(x.t, rt, zt, n))
+                view = vk_tex_bind_view(x.t, want, x.tic, x.tsc, num);
         }
+        funcs[k] = x.have && (x.tsc[0] >> 9 & 1) ? (x.tsc[0] >> 10) & 7 : 3;
+        int depth = st->shadow && (!view || x.t->f.depth);
+        if (depth) funcs[k] |= 8; /* missing shadow textures retain far depth */
         if (view)
             vk_surf_use(vk_cmd(), x.t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         else {
@@ -905,11 +925,18 @@ static int tex_table_set(GpuChannel* ch, int stage, const VkSh* s, int slot, Sur
                 LOG_LIMIT(4, "vulkan: texture slot %d[%u] reads the null texture (bank %u handle %08x)\n", slot, k,
                           bank, handle);
         }
-        smp = vk_tex_bind_sampler(x.tsc, st, num, view != none ? x.t : NULL, want);
+        VkImageView color_view = depth ? none : view;
+        smp = vk_tex_bind_sampler(x.tsc, &plain, num, color_view != none ? x.t : NULL, want);
         if (!smp) return 0;
-        d->table[k].sampler = smp;
-        d->table[k].imageView = view;
-        d->table[k].imageLayout = layout;
+        d->table[k] = (VkDescriptorImageInfo){smp, color_view,
+            color_view == none ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+        if (st->shadow) {
+            VkImageView depth_view = depth && view != none ? view : far;
+            VkSampler compare = vk_tex_bind_sampler(x.tsc, st, 0, depth_view != far ? x.t : NULL, want);
+            if (!compare) return 0;
+            d->depth_table[k] = (VkDescriptorImageInfo){compare, depth_view,
+                depth_view == far ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : layout};
+        }
     }
     w = &d->w[d->n++];
     memset(w, 0, sizeof *w);
@@ -919,6 +946,18 @@ static int tex_table_set(GpuChannel* ch, int stage, const VkSh* s, int slot, Sur
     w->descriptorCount = SNX_TEX_ARRAY;
     w->descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w->pImageInfo = d->table;
+    if (st->shadow) {
+        VkWriteDescriptorSet* depth_write = &d->w[d->n++];
+        *depth_write = *w;
+        depth_write->dstBinding = SNX_VKB_TEXDEPTH;
+        depth_write->pImageInfo = d->depth_table;
+        VkBuffer buffer;
+        u64 offset;
+        u8* data = vk_stage(sizeof funcs, vk_stage_align(), &buffer, &offset);
+        if (!data) return 0;
+        memcpy(data, funcs, sizeof funcs);
+        dw_buffer(d, set, SNX_VKB_TEXFUNCS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, buffer, offset, sizeof funcs);
+    }
     return 1;
 }
 
@@ -1048,8 +1087,10 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
             layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
         } else if (view)
             vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        else
+        else {
             view = vk_null_view(want, st->shadow ? 3 : num);
+            layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         if (!view) return VK_NULL_HANDLE;
         VkSampler smp = vk_tex_bind_sampler(x->tsc, st, num, sampled, want);
         if (!smp) return VK_NULL_HANDLE;
@@ -1195,9 +1236,10 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
     if (!count || !instances) return;
     vk_frame_check();
     u32 initial_first = first, initial_count = count;
-    int retries = 0;
+    int retries = 0, initial_indexed = indexed;
 retry:
     vk_buf_writable_abort();
+    indexed = initial_indexed;
     first = initial_first;
     count = initial_count;
     u64 setup_frame = vk_submit_number();
@@ -1306,6 +1348,7 @@ retry:
                 a.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
                 VkClearRect cr = {{{0, 0}, g_rp.ext}, 0, 1};
                 vkCmdClearAttachments(vk_cmd(), 1, &a, 1, &cr);
+                target_written(zt);
             }
         }
         g_vk_skipped++;
@@ -1684,7 +1727,7 @@ retry:
                                              : VK_CULL_MODE_BACK_BIT);
     vkCmdSetFrontFace(cb, front_face_at_viewport(r, vp.height));
     vkCmdSetPrimitiveTopology(cb, topo);
-    vkCmdSetPrimitiveRestartEnable(cb, restart && indexed == 1);
+    vkCmdSetPrimitiveRestartEnable(cb, restart && (indexed == 1 || indexed == 3));
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
     {
         float lw; /* smooth lines (0x55C) have a width of their own */
@@ -1736,6 +1779,7 @@ retry:
        lower-left window's bottom (0x4EB bit 0): it flips when the sprite's origin (0x581 bit 2, 1 the top) is the
        other side */
     float pc[8] = {0, (r[0x35F] & 1) ? 0.0f : 1.0f, 0, 0};
+    memcpy(&pc[0], &r[0x50E], sizeof(u32));
     {
         u32 fn = r[0x4C5];
         int f = fn >= 0x200 && fn <= 0x207 ? (int)(fn - 0x200) : fn >= 1 && fn <= 8 ? (int)fn - 1 : 7;
@@ -1758,7 +1802,7 @@ retry:
     if (fs)
         for (u32 i = 0; i < n; i++)
             if (g_rp.rt[i] && (k.blend[i].mask & ((fs->si.sph[18] >> (i * 4)) & 15))) target_written(g_rp.rt[i]);
-    if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) zt->wgen++;
+    if (zt && !zt_ro && (r[0x4BA] || (r[0x4E0] && ((r[0x4E7] & 0xFF) || (r[0x565] && (r[0x3D6] & 0xFF)))))) target_written(zt);
     g_vk_drawn++;
 }
 

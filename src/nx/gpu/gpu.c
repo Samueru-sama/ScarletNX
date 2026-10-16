@@ -280,7 +280,10 @@ void i2m_data(GpuChannel* ch, u32 v) {
             u32 wb = ch->i2m_dw ? ch->i2m_dw : w, hh = ch->i2m_dh ? ch->i2m_dh : h;
             u64 hi = 0;
             for (int pass = 0; pass < 2; pass++) {
-                if (pass && g_gpu_before_write && hi) g_gpu_before_write(ch->i2m_addr, hi);
+                if (pass && hi) {
+                    gmem_need(ch->i2m_addr, hi);
+                    if (g_gpu_before_write) g_gpu_before_write(ch->i2m_addr, hi);
+                }
                 for (u32 y = 0; y < h; y++)
                     for (u32 x = 0; x < w;) {
                         u32 xb = ch->i2m_x + x, n = 16 - (xb & 15);
@@ -405,6 +408,8 @@ typedef struct {
     u32 id, sub_class[8];
     int waits;
     u32 rdma[0x200];
+    u64 job_id;
+    u32 launch_index;
 } SubmitScan;
 static SubmitScan* g_scan[128]; /* by channel (syncpoint id), made at its first submission */
 static int scan_method(void* ctx, u32 sub, u32 m, u32 v, int last) {
@@ -415,16 +420,21 @@ static int scan_method(void* ctx, u32 sub, u32 m, u32 v, int last) {
         if (m == 0)
             s->sub_class[sub] = v & 0xFFFF;
         else if ((m == 0x07 && ((v & 0x1F) == 1 || (v & 0x1F) == 4 || (v & 0x1F) == 8)) || (m == 0x1D && !(v & 1)))
-            s->waits = 1; /* a semaphore acquire (equal, at least, AcqAnd) or a syncpoint wait */
-        return 0;
+            s->waits = 1;
+        return s->waits;
     }
     cls = s->sub_class[sub];
+    if ((cls == 0xB197 && m >= 0xE00) || ((cls == 0xB197 || cls == 0xB1C0) && m == 0x6C3)) {
+        s->waits = 1; /* macros and report acquires can wait before later DMA reads */
+        return 1;
+    }
     if (cls != 0xB0B5 && (sub != 4 || cls == 0xB197 || cls == 0xB1C0 || cls == 0xA140 || cls == 0x902D)) return 0;
     s->rdma[m & 0x1FF] = v; /* dma_method's registers */
-    if ((m & 0x1FF) == 0xC0) dma_snap_launch(s->id, s->rdma, v, !s->waits);
+    if ((m & 0x1FF) == 0xC0) dma_snap_launch(s->id, s->job_id, s->launch_index++, s->rdma, v);
     return 0;
 }
-static void scan_submission(const void* entries, u32 n, u32 channel, int waits) {
+static void scan_submission(const void* entries, u32 n, u32 channel, u64 job_id, const u32* prefetched,
+                            int deferred) {
     SubmitScan* s = g_scan[channel & 127];
     u32 k;
     if (!s) {
@@ -438,24 +448,18 @@ static void scan_submission(const void* entries, u32 n, u32 channel, int waits) 
         s->sub_class[4] = 0xB0B5;
         g_scan[channel & 127] = s;
     }
-    s->waits = waits;
+    s->job_id = job_id;
+    s->launch_index = 0;
+    u64 at = 0;
     for (k = 0; k < n; k++) {
         u64 entry;
         memcpy(&entry, (const u8*)entries + (u64)k * 8, 8);
-        if (entry >> 63) s->waits = 1;
-        u64 va = entry & 0xFFFFFFFFFCull;
         u32 words = (u32)((entry >> 42) & 0x1FFFFF);
-        u32 *w, *tmp = NULL;
-        if (!words) continue;
-        w = (u32*)gmem_ptr_untracked(va, (u64)words * 4);
-        if (!w) {
-            tmp = w = malloc((u64)words * 4);
-            if (!w) fatal("gpu: out of memory reading a pushbuffer\n");
-            gmem_read_untracked(va, w, (u64)words * 4);
-        }
-        pb_walk(&s->pb, w, 0, words, channel, 0, scan_method, s);
-        free(tmp);
+        if (s->waits || !prefetched || (entry >> 63)) break;
+        pb_walk(&s->pb, prefetched + at, 0, words, channel, 0, scan_method, s);
+        at += words;
     }
+    if (k < n || deferred) s->waits = 1;
 }
 
 static GpuChannel* chan_get(u32 id) {
@@ -499,6 +503,9 @@ void gpu_channel_close(u32 channel) {
     g_scan[channel & 127] = NULL;
     dma_snap_reset(channel);
     pm_unlock(&g_gpulock);
+}
+void gpu_release_retire(u32 channel) {
+    if (g_renderer_up && g_renderer->release_retire) g_renderer->release_retire(channel);
 }
 
 /* ============================================================ waits */
@@ -587,6 +594,8 @@ typedef struct GpuJob {
     void* arg;
     u32 chans[4], nchans;
     u32 k, i; /* where the job goes on: word i of entry k */
+    u64 id;
+    u32 dma_launch_index;
     u32 n;    /* GPFIFO entries */
     u32* prefetched;
     u32* current; /* fetched commands up to the next SYNC entry, retained while parked */
@@ -605,11 +614,14 @@ static u32 g_qgen;  /* bumped by every job queued and every gpu_kick: the GPU th
 static PMutex g_qlock = PMUTEX_INIT; /* gpu_kick may come before gpu_init */
 static PCond g_qcv;
 static int g_qthread;
+static u64 g_job_id;
 
 /* runs a job as far as it goes, and returns 1 when it's done. *ran is set when any of it ran */
 static int gpu_job_run(GpuJob* j, u64* wake, int* ran) {
     pm_lock(&g_gpulock);
     GpuChannel* ch = chan_get(j->channel);
+    ch->dma_job_id = j->id;
+    ch->dma_launch_index = j->dma_launch_index;
     if (j->wait_id != ~0u) { /* the fence is the stream's first wait */
         gpu_park(ch, GPU_PARK_FENCE, j->wait_id, j->wait_val, 1);
         j->wait_id = ~0u;
@@ -656,16 +668,18 @@ static int gpu_job_run(GpuJob* j, u64* wake, int* ran) {
         j->i = 0;
     }
     int parked = ch->park != 0;
+    j->dma_launch_index = ch->dma_launch_index;
     r3d_const_flush(ch);
     r3d_pending_flush();
     pm_unlock(&g_gpulock);
     if (parked) return 0;
+    dma_snap_finish(j->channel, j->id);
     /* the submission's own increments, after its work like the stream's (nothing else of a job's end is seen) */
     for (u32 i = 0; i < j->incs; i++) g_renderer->stream_incr(j->channel);
     /* a stream that increments less than its fence promised leaves whoever waits for the fence waiting 2 s. Increments
        the renderer still holds count: they happen once the work before them lands */
-    if ((i32)(syncpt_read(j->channel) + (g_renderer->release_queued ? g_renderer->release_queued(j->channel) : 0) -
-              j->expect) < 0)
+    u32 value = g_renderer->release_value ? g_renderer->release_value(j->channel) : syncpt_read(j->channel);
+    if ((i32)(value - j->expect) < 0)
         WARN_LIMIT(16, "gpu: channel %u's submission left its syncpoint at %u, short of the %u its fence promised\n",
                    j->channel, syncpt_read(j->channel), j->expect);
     return 1;
@@ -791,6 +805,7 @@ void gpu_submit(const void* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wa
     j->wait_id = wait_id;
     j->wait_val = wait_val;
     j->expect = expect;
+    j->id = __atomic_add_fetch(&g_job_id, 1, __ATOMIC_RELAXED);
     /* SYNC (bit 63) postpones prefetch until the GPU reaches that entry. A submission fence also postpones reads.
        Copy the earlier commands before returning to the guest, which may reuse its command ring. */
     u64 total = 0;
@@ -812,7 +827,7 @@ void gpu_submit(const void* e, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wa
             at += words;
         }
     }
-    scan_submission(e, n, channel, wait_id != ~0u); /* submit lock preserves DMA source snapshot order */
+    scan_submission(e, prefetch_end, channel, j->id, j->prefetched, prefetch_end != n);
     gpu_queue(j);
 }
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {

@@ -239,7 +239,7 @@ static int tex_rehash(Surf* t) {
 void vk_tex_note_writeback(Surf* t) {
     t->hash = mem_hash(t->gva, t->size);
     t->gw = gpu_mem_generation();
-    t->wseen = vk_ww_now() + 1;
+    t->wseen = vk_ww_now();
     t->checked = g_vk_present;
     t->stable = 0;
 }

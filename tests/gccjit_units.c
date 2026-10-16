@@ -9,11 +9,16 @@
 #include <stdlib.h>
 #include <string.h>
 #ifndef _WIN32
+#include <pthread.h>
+#include <sched.h>
 #include <errno.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 #define SNX_UNITS_BASE      0x10000
@@ -82,6 +87,81 @@ static int no_children(void) {
 #endif
 }
 
+/* Independent callers meet the first-use paths together. The same read-only image tables also exercise the
+   shared module cache as each thread alternates between two modules. */
+typedef struct {
+    int failed, fma, round;
+} FirstUse;
+static int first_use_start;
+static SnxCodegen shared_codegen;
+static SnxCodeImage shared_images[2];
+#ifdef _WIN32
+static DWORD WINAPI first_use(void* arg) {
+#else
+static void* first_use(void* arg) {
+#endif
+    FirstUse* result = arg;
+    SnxJitUnits units;
+    SnxJit* jit;
+    unsigned i;
+    while (!__atomic_load_n(&first_use_start, __ATOMIC_ACQUIRE)) {
+#ifdef _WIN32
+        Sleep(0);
+#else
+        sched_yield();
+#endif
+    }
+    jit = snx_jit_new('0');
+    if (jit) {
+        result->fma = jit->fma;
+        result->round = jit->round;
+        snx_jit_free(jit);
+    } else
+        result->failed = 1;
+    memset(&units, 0, sizeof units);
+    units.jobs = 1;
+    if (snx_jit_compile_units(&units)) result->failed = 1; /* first Windows PATH setup, without compiling */
+    for (i = 0; i < 10000; ++i)
+        if (snx_codegen_module(&shared_codegen, shared_images[i & 1].base) != &shared_images[i & 1]) result->failed = 1;
+    return 0;
+}
+static void first_use_test(void) {
+    FirstUse results[8] = {{0}};
+    unsigned i, count = 0;
+#ifdef _WIN32
+    HANDLE threads[8];
+#else
+    pthread_t threads[8];
+#endif
+    shared_images[0].base = 0x1000;
+    shared_images[1].base = 0x2000;
+    shared_images[0].text_size = shared_images[1].text_size = 4;
+    shared_codegen.modules = shared_images;
+    shared_codegen.module_count = 2;
+    for (i = 0; i < 8; ++i) {
+#ifdef _WIN32
+        threads[i] = CreateThread(NULL, 0, first_use, &results[i], 0, NULL);
+        if (!threads[i]) break;
+#else
+        if (pthread_create(&threads[i], NULL, first_use, &results[i])) break;
+#endif
+        ++count;
+    }
+    __atomic_store_n(&first_use_start, 1, __ATOMIC_RELEASE);
+    check(count == 8, "start concurrent first-use callers");
+    for (i = 0; i < count; ++i) {
+#ifdef _WIN32
+        WaitForSingleObject(threads[i], INFINITE);
+        CloseHandle(threads[i]);
+#else
+        pthread_join(threads[i], NULL);
+#endif
+        check(!results[i].failed, "concurrent initialization and module lookup");
+        check(results[i].fma == results[0].fma && results[i].round == results[0].round,
+              "all callers receive completed host target features");
+    }
+}
+
 int main(void) {
     SnxCodeImage view;
     SnxCodegen codegen, broken;
@@ -90,6 +170,7 @@ int main(void) {
     SnxU64 hints[SNX_UNITS_FUNCTIONS];
     size_t bounds[SNX_UNITS_FUNCTIONS + 1], count, i, k;
     char *root, *here, *forked, *missing, *in_process[SNX_UNITS_FUNCTIONS], *apart[SNX_UNITS_FUNCTIONS], name[32];
+    first_use_test();
     /* six functions of MOV, ADD and RET, the even ones calling the next with BL: calls cross units */
     for (k = 0; k < SNX_UNITS_FUNCTIONS; ++k) {
         size_t at = k * 0x20;

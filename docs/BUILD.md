@@ -320,8 +320,8 @@ readback hashes and PPM contents without WSI. Validation requires the Khronos va
 
 Cross-builds omit host hactool. Use a native driver for `-x`. The recompiler still requires LLVM development
 files for the target. `SNX_LLVM_CONFIG` must run on the build machine and describe that target installation,
-not the build machine's LLVM libraries. Running the `snx-rtlib-gen` build helper also requires a suitable
-`CMAKE_CROSSCOMPILING_EMULATOR`.
+not the build machine's LLVM libraries. The build uses a native `snx-rtlib-gen-host` helper in cross builds, so it
+does not need an emulator for that step.
 
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 

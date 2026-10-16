@@ -34,6 +34,7 @@ typedef struct {
 } ScriptPress;
 static ScriptPress* g_script;
 static int g_nscript;
+static char* g_script_text;
 
 static void script_parse(const char* v) {
     free(g_script);
@@ -76,7 +77,16 @@ static void press_set(const IniOpt* o, const char* v) {
 }
 static void script_set(const IniOpt* o, const char* v) {
     (void)o;
+    /* An unrelated INI change reapplies script too. Keep the progress of unchanged frame-based presses. */
+    if (g_script_text && !strcmp(g_script_text, v)) return;
+    char* text = strdup(v);
+    if (!text) {
+        WARN("script: out of memory, keeping the current script\n");
+        return;
+    }
     script_parse(v);
+    free(g_script_text);
+    g_script_text = text;
 }
 /* given as --key=value, or read from the .ini's [Other] (none is in its sections, so none is written with help) */
 static const IniOpt INI[] = {{"seconds", NULL, NULL, INI_INT, 0, &g_seconds, 0, INT_MAX, NULL, NULL, NULL, 0, 0},
@@ -95,7 +105,6 @@ int unattended_ini(const char* k, const char* v) {
 }
 int unattended_known(const char* k) { return ini_find(INI, k) != NULL; }
 void unattended_start(void) { g_start = plat_ns(); }
-u64 unattended_ms(void) { return (plat_ns() - g_start) / 1000000ull; }
 int unattended_active(void) { return g_seconds || g_maxframes >= 0; }
 u64 unattended_buttons(void) {
     u64 el = (plat_ns() - g_start) / 1000000ull, b = 0;

@@ -16,7 +16,6 @@
    render.c    the render target set (dynamic rendering), clears and draws
    compute.c   compute dispatches (on a queue of their own when there is one), landing their results in guest memory
    renderer.c  the renderer interface the GPU front end calls (gpu/renderer.h) and presenting
-   renderdoc.c RenderDoc captures of chosen frames (SNX_RENDERDOC)
    ui.c        the on-screen controls and the game's menu, drawn over the swapchain image
    vma.cpp     VulkanMemoryAllocator's implementation
 
@@ -258,8 +257,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
 /* the stages a texture moved to SHADER_READ_ONLY_OPTIMAL is made visible to: all that sample, since a later read in
    the same layout gets no barrier of its own */
 #define VK_SAMPLED_STAGES                                                                                              \
-    (VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |                                 \
-     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
+    (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
 void vk_gfx_image_mem_need(u64 gva, u64 size);
@@ -328,16 +326,13 @@ void vk_buf_mem_need(u64 gva, u64 len);
 int vk_buf_pending(u64 gva, u64 len); /* a pending graphics result overlaps the range */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
-/* renderdoc.c: with SNX_RENDERDOC set, RenderDoc loaded before the instance exists (load) and the frames
-   SNX_RENDERDOC_FRAMES names captured (present, at each present under vk_lock) */
-void vk_renderdoc_load(void);
-void vk_renderdoc_present(u64 present);
-
 /* release.c: releases the game can observe, once the results before them land (renderer.h release_write) */
 void vk_release_write(u64 gva, const void* data, u32 len);
 void vk_release_incr(u32 id);
 void vk_release_need(u64 gva, u64 len);
-u32 vk_release_queued(u32 id);
+u32 vk_release_value(u32 id);
+void vk_release_retire(u32 id);
+void vk_release_drain(void);
 void vk_buf_mem_need_map(u64 gva, u64 len);
 void vk_buf_before_write(u64 gva, u64 len);
 void vk_buf_land(void);
@@ -347,6 +342,9 @@ void vk_buf_frame_done(u64 frame);
 void vk_buf_host_barrier(VkCommandBuffer cb, u64 frame);
 void vk_buf_frame(void);
 /* Land GPU-written bytes only where guest memory still matches the shader's input snapshot. */
+void vk_result_begin(void);
+void vk_result_end(void);
+int vk_result_landing(void);
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size);
 /* 1 if [host, host+len) was written since the write-tracking clock read `since`, 0 if not, -1 when write tracking
    can't tell (no host pointer, or not available): then check the contents */

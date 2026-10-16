@@ -165,6 +165,7 @@ int main(int argc, char** argv) {
         size_t size, length = 0;
         const char* args[12];
         CPU reference;
+        int have_reference = 0;
         if (only && strcmp(only, kernels[k].name)) continue;
         source = snx_format("    .text\n    .globl _start\n_start:\n    b main\n    .org 0x80\n%s", kernels[k].source);
         assembly = snx_path_join(root, "kernel.s");
@@ -203,9 +204,9 @@ int main(int argc, char** argv) {
             int n = 0;
             const char* rargs[20];
 #ifdef _WIN32
-            module = snx_path_join(out, "Kernel_code.dll");
+            module = snx_path_join(out, "Kernel/Kernel_code.dll");
 #else
-            module = snx_path_join(out, "Kernel_code.so");
+            module = snx_path_join(out, "Kernel/Kernel_code.so");
 #endif
             rargs[n++] = argv[1];
             rargs[n++] = "--repo";
@@ -231,12 +232,14 @@ int main(int argc, char** argv) {
             } else {
                 printf("%-8s %-10s %8.3f s %8.2f ns/iteration\n", kernels[k].name, backends[b], seconds,
                        seconds * 1e9 / (double)iterations);
-                if (!b)
+                if (!b) {
                     reference = result;
-                else if (memcmp(reference.x, result.x, sizeof(result.x)) ||
-                         memcmp(reference.v, result.v, sizeof(result.v)) || reference.fpsr != result.fpsr ||
-                         reference.n != result.n || reference.z != result.z || reference.cf != result.cf ||
-                         reference.vf != result.vf) {
+                    have_reference = 1;
+                } else if (have_reference &&
+                           (memcmp(reference.x, result.x, sizeof(result.x)) ||
+                            memcmp(reference.v, result.v, sizeof(result.v)) || reference.fpsr != result.fpsr ||
+                            reference.n != result.n || reference.z != result.z || reference.cf != result.cf ||
+                            reference.vf != result.vf)) {
                     fprintf(stderr, "%s: %s state differs from %s\n", kernels[k].name, backends[b], backends[0]);
                     ++failures;
                 }

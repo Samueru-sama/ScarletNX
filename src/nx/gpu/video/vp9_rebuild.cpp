@@ -170,9 +170,9 @@ struct PictureInfo {
             .frame_offsets{},
             .ref_frame_sign_bias = ref_frame_sign_bias,
             .base_q_index = base_q_index,
-            .y_dc_delta_q = y_dc_delta_q,
-            .uv_dc_delta_q = uv_dc_delta_q,
-            .uv_ac_delta_q = uv_ac_delta_q,
+            .y_dc_delta_q = static_cast<s8>(y_dc_delta_q),
+            .uv_dc_delta_q = static_cast<s8>(uv_dc_delta_q),
+            .uv_ac_delta_q = static_cast<s8>(uv_ac_delta_q),
             .transform_mode = tx_mode,
             .interp_filter = interp_filter,
             .reference_mode = reference_mode,
@@ -191,7 +191,8 @@ struct PictureInfo {
             .error_resilient_mode =
                 (static_cast<u32>(vp9_flags) & static_cast<u32>(FrameFlags::ErrorResilientMode)) != 0,
             .last_frame_shown = (static_cast<u32>(vp9_flags) & static_cast<u32>(FrameFlags::LastShowFrame)) != 0,
-            .show_frame = true,
+            .show_frame = (static_cast<u32>(vp9_flags) & static_cast<u32>(FrameFlags::IsKeyFrame)) != 0 ||
+                          (static_cast<u32>(vp9_flags) & static_cast<u32>(FrameFlags::IntraOnly)) == 0,
             .lossless = lossless != 0,
             .allow_high_precision_mv = allow_high_precision_mv != 0,
             .segment_enabled = segmentation.enabled != 0,
@@ -296,26 +297,19 @@ struct Vp9FrameContainer {
     u64 chroma{};
 };
 
-enum class SeekOrigin { SetOrigin, FromCurrentPos, FromEnd };
 class Stream {
   public:
-    void Seek(s32 offset, SeekOrigin origin) {
-        s64 target = origin == SeekOrigin::SetOrigin        ? offset
-                     : origin == SeekOrigin::FromCurrentPos ? static_cast<s64>(position) + offset
-                                                            : static_cast<s64>(buffer.size()) - offset;
-        position = static_cast<std::size_t>(std::clamp<s64>(target, 0, buffer.size()));
-    }
-    u8 ReadByte() {
-        if (position >= buffer.size()) throw std::out_of_range("VP9 header stream read past its end");
-        return buffer[position++];
+    void PrependByte(u8 byte) {
+        buffer.insert(buffer.begin(), byte);
+        ++position;
     }
     void WriteByte(u8 byte) {
         if (position == buffer.size()) {
             buffer.push_back(byte);
-            ++position;
         } else {
-            buffer.insert(buffer.begin() + position, byte);
+            buffer[position] = byte;
         }
+        ++position;
     }
     std::size_t GetPosition() const { return position; }
     std::vector<u8>& GetBuffer() { return buffer; }
@@ -354,7 +348,6 @@ class VpxRangeEncoder {
     [[nodiscard]] const std::vector<u8>& GetBuffer() const { return base_stream.GetBuffer(); }
 
   private:
-    u8 PeekByte();
     Stream base_stream{};
     u32 low_value{};
     u32 range{0xff};
@@ -380,7 +373,7 @@ class VpxBitStreamWriter {
     void WriteS(s32 value, u32 value_size);
 
     /// Based on 6.2.10 of VP9 Spec, writes a delta coded value
-    void WriteDeltaQ(u32 value);
+    void WriteDeltaQ(s32 value);
 
     /// Write a single bit.
     void WriteBit(bool state);
@@ -471,9 +464,9 @@ class VP9 final {
     std::array<s8, 2> loop_filter_mode_deltas{};
 
     std::vector<u8> frame_scratch;
-    Vp9FrameContainer next_frame{};
-    std::array<Vp9EntropyProbs, 4> frame_ctxs{};
-    bool swap_ref_indices{};
+    std::array<u64, 8> reference_surfaces{};
+    std::array<u64, 8> reference_age{};
+    u64 frame_number{};
 
     Segmentation last_segmentation{};
     PictureInfo current_picture_info{};
@@ -587,7 +580,7 @@ static constexpr Vp9EntropyProbs default_probs{
         2, 173, 34, 0, 7, 145, 85, 0, 7, 166, 63, 0, 7, 94, 66, 0, 8, 64, 46, 0, 17, 81, 31, 0, 25, 29, 30, 0,
     },
     .intra_inter_prob{9, 102, 187, 225},
-    .comp_inter_prob{9, 102, 187, 225, 0},
+    .comp_inter_prob{239, 183, 119, 96, 41},
     .single_ref_prob{33, 16, 77, 74, 142, 142, 172, 170, 238, 247},
     .comp_ref_prob{50, 126, 123, 221, 226},
     .tx_32x32_prob{3, 136, 37, 5, 52, 13},
@@ -831,14 +824,6 @@ Vp9FrameContainer VP9::GetCurrentFrame(const PictureInfo& picture, const Entropy
     current_frame.info.frame_offsets = offsets;
     current_frame.chroma = chroma;
     current_frame.bit_stream.assign(body.begin(), body.end());
-    if (!next_frame.bit_stream.empty()) {
-        Vp9FrameContainer incoming = std::move(current_frame);
-        current_frame = std::move(next_frame);
-        current_frame.info.show_frame = incoming.info.last_frame_shown;
-        next_frame = std::move(incoming);
-    } else {
-        next_frame = current_frame;
-    }
     current_picture_info = current_frame.picture;
     current_entropy_probs = current_frame.entropy;
     current_chroma = current_frame.chroma;
@@ -847,7 +832,7 @@ Vp9FrameContainer VP9::GetCurrentFrame(const PictureInfo& picture, const Entropy
 
 std::vector<u8> VP9::ComposeCompressedHeader() {
     VpxRangeEncoder writer{};
-    const bool update_probs = !current_frame_info.is_key_frame && current_frame_info.show_frame;
+    const bool update_probs = true;
     if (!current_frame_info.lossless) {
         if (static_cast<u32>(current_frame_info.transform_mode) >= 3) {
             writer.Write(3, 2);
@@ -875,7 +860,18 @@ std::vector<u8> VP9::ComposeCompressedHeader() {
     WriteProbabilityUpdate(writer, current_frame_info.entropy.skip_probs, prev_frame_probs.skip_probs);
 
     if (update_probs) {
-        prev_frame_probs.coef_probs = current_frame_info.entropy.coef_probs;
+        constexpr u32 coef_block_bytes = 2 * 2 * 6 * 6 * 3;
+        for (u32 block = 0; block <= static_cast<u32>(current_frame_info.transform_mode) && block < 4; ++block) {
+            for (u32 index = 0; index < coef_block_bytes; index += 3) {
+                u32 group = (index / 3) % 6;
+                u32 band = (index / 18) % 6;
+                if (band || group < 3) {
+                    u32 offset = block * coef_block_bytes + index;
+                    std::copy_n(current_frame_info.entropy.coef_probs.begin() + offset, 3,
+                                prev_frame_probs.coef_probs.begin() + offset);
+                }
+            }
+        }
         prev_frame_probs.skip_probs = current_frame_info.entropy.skip_probs;
     }
 
@@ -1023,10 +1019,11 @@ VpxBitStreamWriter VP9::ComposeUncompressedHeader() {
 
         // Reset context
         prev_frame_probs = default_probs;
-        swap_ref_indices = false;
-        loop_filter_ref_deltas.fill(0);
+        reference_surfaces.fill(current_frame_info.frame_offsets[3]);
+        reference_age.fill(++frame_number);
+        loop_filter_ref_deltas = {1, 0, -1, -1};
         loop_filter_mode_deltas.fill(0);
-        frame_ctxs.fill(default_probs);
+        last_segmentation = {};
 
         // intra only, meaning the frame can be recreated with no other references
         current_frame_info.intra_only = true;
@@ -1036,26 +1033,47 @@ VpxBitStreamWriter VP9::ComposeUncompressedHeader() {
         } else {
             current_frame_info.intra_only = false;
         }
+        if (current_frame_info.error_resilient_mode || current_frame_info.intra_only) {
+            loop_filter_ref_deltas = {1, 0, -1, -1};
+            loop_filter_mode_deltas.fill(0);
+            last_segmentation = {};
+        }
         if (!current_frame_info.error_resilient_mode) {
             uncomp_writer.WriteU(0, 2); // Reset frame context.
         }
         const auto& curr_offsets = current_frame_info.frame_offsets;
-        const auto& next_offsets = next_frame.info.frame_offsets;
-        const bool ref_frames_different = curr_offsets[1] != curr_offsets[2];
-        const bool next_references_swap = (next_offsets[1] == curr_offsets[2]) || (next_offsets[2] == curr_offsets[1]);
-        const bool needs_ref_swap = ref_frames_different && next_references_swap;
-        if (needs_ref_swap) { swap_ref_indices = !swap_ref_indices; }
-        u32 refresh_frame_flags = 0;
-        for (u32 index = 0; index < 3; ++index) {
-            // Refresh indices that use the current frame as an index
-            if (curr_offsets[3] == next_offsets[index]) { refresh_frame_flags |= 1u << index; }
+        std::array<u32, 3> ref_frame_index{};
+        u32 referenced_slots = 0;
+        for (u32 ref = 0; ref < 3; ++ref) {
+            u64 newest = 0;
+            for (u32 slot = 0; slot < reference_surfaces.size(); ++slot) {
+                if (reference_surfaces[slot] == curr_offsets[ref] && reference_age[slot] >= newest) {
+                    ref_frame_index[ref] = slot;
+                    newest = reference_age[slot];
+                }
+            }
+            referenced_slots |= 1u << ref_frame_index[ref];
         }
-        if (swap_ref_indices) {
-            const u32 golden = (refresh_frame_flags >> 1) & 3;
-            const u32 alt = (refresh_frame_flags >> 2) & 1;
-            refresh_frame_flags = (refresh_frame_flags & ~(3u << 1)) | (alt << 1);
-            refresh_frame_flags = (refresh_frame_flags & ~(1u << 2)) | ((golden & 1) << 2);
+        u32 refresh_slot = 0;
+        u64 oldest = UINT64_MAX;
+        for (u32 slot = 0; slot < reference_surfaces.size(); ++slot) {
+            if (referenced_slots & (1u << slot)) continue;
+            if (reference_age[slot] < oldest) {
+                refresh_slot = slot;
+                oldest = reference_age[slot];
+            }
         }
+        // Reusing a guest output surface replaces its prior picture, even if that picture was a reference
+        // for this decode. Refresh happens after prediction. Keeping its slot avoids evicting a long-lived
+        // reference while a small set of output surfaces is reused repeatedly.
+        u64 newest_output = 0;
+        for (u32 slot = 0; slot < reference_surfaces.size(); ++slot) {
+            if (reference_surfaces[slot] == curr_offsets[3] && reference_age[slot] >= newest_output) {
+                refresh_slot = slot;
+                newest_output = reference_age[slot];
+            }
+        }
+        u32 refresh_frame_flags = 1u << refresh_slot;
         if (current_frame_info.intra_only) {
             uncomp_writer.WriteU(frame_sync_code, 24);
             uncomp_writer.WriteU(refresh_frame_flags, 8);
@@ -1063,20 +1081,33 @@ VpxBitStreamWriter VP9::ComposeUncompressedHeader() {
             uncomp_writer.WriteU(current_frame_info.frame_size.height - 1, 16);
             uncomp_writer.WriteBit(false); // Render and frame size different.
         } else {
-            const bool swap_indices = needs_ref_swap ^ swap_ref_indices;
-            const auto ref_frame_index = swap_indices ? std::array{0, 2, 1} : std::array{0, 1, 2};
             uncomp_writer.WriteU(refresh_frame_flags, 8);
             for (size_t index = 1; index < 4; index++) {
                 uncomp_writer.WriteU(ref_frame_index[index - 1], 3);
                 uncomp_writer.WriteU(current_frame_info.ref_frame_sign_bias[index], 1);
             }
-            uncomp_writer.WriteBit(true);  // Frame size with refs.
+            const std::array ref_sizes = {current_picture_info.last_frame_size,
+                                         current_picture_info.golden_frame_size,
+                                         current_picture_info.alt_frame_size};
+            bool found_size = false;
+            for (const auto& ref_size : ref_sizes) {
+                if (found_size) break;
+                found_size = ref_size.width == current_frame_info.frame_size.width &&
+                             ref_size.height == current_frame_info.frame_size.height;
+                uncomp_writer.WriteBit(found_size);
+            }
+            if (!found_size) {
+                uncomp_writer.WriteU(current_frame_info.frame_size.width - 1, 16);
+                uncomp_writer.WriteU(current_frame_info.frame_size.height - 1, 16);
+            }
             uncomp_writer.WriteBit(false); // Render and frame size different.
             uncomp_writer.WriteBit(current_frame_info.allow_high_precision_mv);
             uncomp_writer.WriteBit(current_frame_info.interp_filter == 4);
 
             if (current_frame_info.interp_filter != 4) { uncomp_writer.WriteU(current_frame_info.interp_filter, 2); }
         }
+        reference_surfaces[refresh_slot] = curr_offsets[3];
+        reference_age[refresh_slot] = ++frame_number;
     }
 
     if (!current_frame_info.error_resilient_mode) {
@@ -1084,12 +1115,8 @@ VpxBitStreamWriter VP9::ComposeUncompressedHeader() {
         uncomp_writer.WriteBit(true); // Frame parallel decoding mode.
     }
 
-    int frame_ctx_idx = 0;
-    if (!current_frame_info.show_frame) { frame_ctx_idx = 1; }
-
-    uncomp_writer.WriteU(frame_ctx_idx, 2);       // Frame context index.
-    prev_frame_probs = frame_ctxs[frame_ctx_idx]; // reference probabilities for compressed header
-    frame_ctxs[frame_ctx_idx] = current_frame_info.entropy;
+    uncomp_writer.WriteU(0, 2); // Only context zero is used; the pinned decoder resets probabilities for each job.
+    prev_frame_probs = default_probs; // the pinned decoder starts this packet from the same defaults
 
     uncomp_writer.WriteU(current_frame_info.first_level, 6);
     uncomp_writer.WriteU(current_frame_info.sharpness_level, 3);
@@ -1221,15 +1248,14 @@ void VpxRangeEncoder::Write(bool bit, s32 probability) {
         const s32 offset = shift - count;
 
         if (((low_value << (offset - 1)) >> 31) != 0) {
-            const s32 current_pos = static_cast<s32>(base_stream.GetPosition());
-            base_stream.Seek(-1, SeekOrigin::FromCurrentPos);
-            while (PeekByte() == 0xff) {
-                base_stream.WriteByte(0);
-
-                base_stream.Seek(-2, SeekOrigin::FromCurrentPos);
+            auto& bytes = base_stream.GetBuffer();
+            std::size_t at = base_stream.GetPosition();
+            while (at && bytes[at - 1] == 0xff) bytes[--at] = 0;
+            if (at)
+                ++bytes[at - 1];
+            else {
+                base_stream.PrependByte(1);
             }
-            base_stream.WriteByte(static_cast<u8>((PeekByte() + 1)));
-            base_stream.Seek(current_pos, SeekOrigin::SetOrigin);
         }
         base_stream.WriteByte(static_cast<u8>((low_value >> (24 - offset))));
 
@@ -1247,13 +1273,6 @@ void VpxRangeEncoder::End() {
     for (std::size_t index = 0; index < 32; ++index) { Write(false); }
 }
 
-u8 VpxRangeEncoder::PeekByte() {
-    const u8 value = base_stream.ReadByte();
-    base_stream.Seek(-1, SeekOrigin::FromCurrentPos);
-
-    return value;
-}
-
 VpxBitStreamWriter::VpxBitStreamWriter() = default;
 
 VpxBitStreamWriter::~VpxBitStreamWriter() = default;
@@ -1267,11 +1286,11 @@ void VpxBitStreamWriter::WriteS(s32 value, u32 value_size) {
     WriteBits(static_cast<u32>(value << 1) | (sign ? 1 : 0), value_size + 1);
 }
 
-void VpxBitStreamWriter::WriteDeltaQ(u32 value) {
+void VpxBitStreamWriter::WriteDeltaQ(s32 value) {
     const bool delta_coded = value != 0;
     WriteBit(delta_coded);
 
-    if (delta_coded) { WriteBits(value, 4); }
+    if (delta_coded) { WriteS(value, 4); }
 }
 
 void VpxBitStreamWriter::WriteBits(u32 value, u32 bit_count) {
@@ -1358,6 +1377,7 @@ extern "C" int snx_vp9_compose(SnxVp9Builder* builder, const uint8_t* picture, c
         frame->layout = builder->decoder.Layout();
         frame->luma = info.frame_offsets[3];
         frame->chroma = builder->decoder.Chroma();
+        frame->previous_visible = info.last_frame_shown;
         return 1;
     } catch (...) { return 0; }
 }

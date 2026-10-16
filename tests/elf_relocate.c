@@ -10,6 +10,7 @@
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include <llvm-c/Target.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -342,7 +343,304 @@ static int llvm_objects(void) {
     return 0;
 }
 
+/* Small native-aligned objects keep malformed metadata tests independent of LLVM output. */
+typedef struct {
+    Elf64_Ehdr eh;
+    Elf64_Shdr sh[6];
+    Elf64_Sym syms[3];
+    Elf64_Rela rela[2];
+    char strings[24];
+    unsigned char text[16], data[16];
+} Fixture;
+
+static void fixture(Fixture* f) {
+    memset(f, 0, sizeof(*f));
+    memcpy(f->eh.e_ident, ELFMAG, SELFMAG);
+    f->eh.e_ident[EI_CLASS] = ELFCLASS64;
+    f->eh.e_ident[EI_DATA] = ELFDATA2LSB;
+    f->eh.e_ident[EI_VERSION] = EV_CURRENT;
+    f->eh.e_type = ET_REL;
+    f->eh.e_machine = EM_X86_64;
+    f->eh.e_version = EV_CURRENT;
+    f->eh.e_ehsize = sizeof(f->eh);
+    f->eh.e_shoff = offsetof(Fixture, sh);
+    f->eh.e_shentsize = sizeof(f->sh[0]);
+    f->eh.e_shnum = 6;
+    f->sh[1].sh_type = f->sh[2].sh_type = SHT_PROGBITS;
+    f->sh[1].sh_flags = SHF_ALLOC | SHF_EXECINSTR;
+    f->sh[2].sh_flags = SHF_ALLOC | SHF_WRITE;
+    f->sh[1].sh_offset = offsetof(Fixture, text);
+    f->sh[2].sh_offset = offsetof(Fixture, data);
+    f->sh[1].sh_size = f->sh[2].sh_size = 16;
+    f->sh[1].sh_addralign = f->sh[2].sh_addralign = 8;
+    f->sh[3].sh_type = SHT_SYMTAB;
+    f->sh[3].sh_offset = offsetof(Fixture, syms);
+    f->sh[3].sh_size = sizeof(f->syms);
+    f->sh[3].sh_entsize = sizeof(f->syms[0]);
+    f->sh[3].sh_link = 4;
+    f->sh[3].sh_info = 1;
+    f->sh[4].sh_type = SHT_STRTAB;
+    f->sh[4].sh_offset = offsetof(Fixture, strings);
+    f->sh[4].sh_size = sizeof(f->strings);
+    memcpy(f->strings, "\0target\0caller\0", 15);
+    f->syms[1].st_name = 1;
+    f->syms[1].st_info = ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT);
+    f->syms[1].st_shndx = SHN_ABS;
+    f->syms[1].st_value = 0x1234;
+    f->syms[2].st_name = 8;
+    f->syms[2].st_info = ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT);
+    f->syms[2].st_shndx = 2;
+    f->sh[5].sh_type = SHT_RELA;
+    f->sh[5].sh_offset = offsetof(Fixture, rela);
+    f->sh[5].sh_size = sizeof(f->rela[0]);
+    f->sh[5].sh_entsize = sizeof(f->rela[0]);
+    f->sh[5].sh_info = 2;
+    f->sh[5].sh_link = 3;
+    f->rela[0].r_info = ELF64_R_INFO(1, R_X86_64_64);
+}
+
+static void malformed_objects(void) {
+    Fixture good, bad;
+    unsigned char unaligned[sizeof(Fixture) + 8];
+    SnxElfObject parsed;
+    SnxLinkInput input;
+    char error[256];
+    unsigned machine;
+    int i, rc;
+    uint64_t sizes[SNX_ELF_KINDS], aligns[SNX_ELF_KINDS];
+    fixture(&good);
+    {
+        unsigned char* bytes = unaligned + (((8 - ((size_t)unaligned & 7)) & 7) + 1);
+        memcpy(bytes, &good, sizeof(good));
+        input.data = bytes; input.size = sizeof(good); input.name = "unaligned";
+        machine = 0;
+        check(!snx_elf_parse(&parsed, &input, &machine, error, sizeof(error)), "unaligned input gets a safe view");
+        snx_elf_free(&parsed);
+    }
+    input.data = (const unsigned char*)&bad;
+    input.size = sizeof(bad);
+    input.name = "malformed";
+    for (i = 0; i < 12; ++i) {
+        bad = good;
+        switch (i) {
+            case 0: bad.eh.e_shoff = UINT64_MAX - 7; break;
+            case 1: bad.sh[1].sh_offset = UINT64_MAX - 7; break;
+            case 2: bad.eh.e_shstrndx = 6; break;
+            case 3: bad.eh.e_shstrndx = 4; bad.sh[1].sh_name = 24; break;
+            case 4: bad.syms[1].st_name = 24; break;
+            case 5: memset(bad.strings, 'x', sizeof(bad.strings)); break;
+            case 6: bad.syms[1].st_shndx = 6; break;
+            case 7: bad.sh[3].sh_size--; break;
+            case 8: bad.sh[3].sh_offset++; break;
+            case 9: bad.sh[5].sh_link = 4; break;
+            case 10: bad.sh[4].sh_type = SHT_NOBITS; bad.sh[4].sh_offset = UINT64_MAX; break;
+            default: bad.sh[1].sh_addralign = 3; break;
+        }
+        machine = 0;
+        rc = snx_elf_parse(&parsed, &input, &machine, error, sizeof(error));
+        check(rc != 0, "malformed ELF metadata is rejected");
+        snx_elf_free(&parsed);
+    }
+    bad = good;
+    bad.sh[2].sh_type = SHT_NOBITS;
+    bad.sh[2].sh_size = UINT64_MAX;
+    machine = 0;
+    rc = snx_elf_parse(&parsed, &input, &machine, error, sizeof(error));
+    check(!rc, "NOBITS metadata is independent of input length");
+    if (!rc) check(snx_elf_layout(&parsed, 1, sizes, aligns) != 0, "overflowing ELF layout rejected");
+    snx_elf_free(&parsed);
+}
+
+static const Elf64_Shdr* output_section(const SnxLinkOutput* output, const char* name) {
+    const Elf64_Ehdr* eh = (const Elf64_Ehdr*)output->data;
+    const Elf64_Shdr* sh = (const Elf64_Shdr*)(output->data + eh->e_shoff);
+    size_t i;
+    for (i = 0; i < eh->e_shnum; ++i)
+        if (!strcmp((const char*)output->data + sh[eh->e_shstrndx].sh_offset + sh[i].sh_name, name)) return &sh[i];
+    return NULL;
+}
+
+static void symbol_binding(void) {
+    Fixture f[2];
+    SnxLinkInput inputs[2];
+    SnxLinkOutput output;
+    const Elf64_Shdr* section;
+    SnxCodeLoader* loader;
+    SnxU64 address;
+    const char* names[] = {"caller"};
+    char error[256];
+    int rc;
+    fixture(&f[0]);
+    fixture(&f[1]);
+    inputs[0].data = (const unsigned char*)&f[0]; inputs[0].size = sizeof(f[0]); inputs[0].name = "weak";
+    inputs[1].data = (const unsigned char*)&f[1]; inputs[1].size = sizeof(f[1]); inputs[1].name = "strong";
+    f[0].syms[1].st_info = ELF64_ST_INFO(STB_WEAK, STT_OBJECT);
+    f[0].syms[1].st_shndx = 1;
+    f[0].syms[1].st_value = 0;
+    f[1].syms[2].st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT);
+    f[1].sh[5].sh_size = 0;
+    rc = snx_link(inputs, 2, names, 1, "binding.so", &output, error, sizeof(error));
+    check(!rc, "weak and strong definitions link");
+    if (!rc) {
+        section = output_section(&output, ".data");
+        check(section && get64(output.data + section->sh_offset) == 0x1234,
+              "weak definition's own reference resolves to strong definition");
+        free(output.data);
+    }
+    loader = snx_code_loader_new_machine(0, EM_X86_64, error, sizeof(error));
+    check(loader != NULL, "weak-binding loader created");
+    if (loader) {
+        check(!snx_code_define(loader, "target", 0x4567), "loaded strong symbol defined");
+        rc = snx_code_load(loader, inputs, 1, names, 1, &address, error, sizeof(error));
+        check(!rc, "weak definition links against loaded strong symbol");
+        if (!rc) check(get64((const unsigned char*)(size_t)address) == 0x4567, "loaded strong overrides own weak");
+        snx_code_loader_free(loader);
+    }
+    fixture(&f[0]);
+    f[0].sh[5].sh_info = 1;
+    f[0].rela[0].r_info = ELF64_R_INFO(1, R_X86_64_GOTPCREL);
+    rc = snx_link(inputs, 1, names, 1, "absolute.so", &output, error, sizeof(error));
+    check(!rc, "absolute GOT reference links");
+    if (!rc) {
+        section = output_section(&output, ".got");
+        check(section && get64(output.data + section->sh_offset) == 0x1234, "absolute GOT value preserved");
+        section = output_section(&output, ".rela.dyn");
+        check(section && !section->sh_size, "absolute GOT value has no load-bias relocation");
+        free(output.data);
+    }
+}
+
+static void veneer_addends(void) {
+    Fixture f[2];
+    SnxLinkInput inputs[2];
+    SnxLinkOutput output;
+    const Elf64_Shdr* text;
+    const char* exports[] = {"caller"};
+    char error[256];
+    uint64_t first, second, targets[2], at;
+    int rc, i;
+    for (i = 0; i < 2; ++i) {
+        fixture(&f[i]);
+        f[i].eh.e_machine = EM_AARCH64;
+        inputs[i].data = (const unsigned char*)&f[i]; inputs[i].size = sizeof(f[i]); inputs[i].name = "veneer";
+    }
+    f[0].syms[1].st_shndx = SHN_UNDEF;
+    f[0].syms[1].st_value = 0;
+    f[0].syms[2].st_shndx = 1;
+    f[0].sh[5].sh_info = 1;
+    f[0].sh[5].sh_size = sizeof(f[0].rela);
+    for (i = 0; i < 2; ++i) {
+        snx_link_put32(f[0].text + i * 4, 0x94000000);
+        f[0].rela[i].r_info = ELF64_R_INFO(1, SNX_A64_CALL26);
+        f[0].rela[i].r_offset = i * 4;
+        f[0].rela[i].r_addend = i * 4;
+    }
+    f[1].syms[1].st_shndx = 1;
+    f[1].syms[1].st_value = 0;
+    f[1].syms[2].st_info = ELF64_ST_INFO(STB_LOCAL, STT_OBJECT);
+    f[1].sh[5].sh_size = 0;
+    f[1].sh[1].sh_addralign = 1u << 27; /* two targets just outside CALL26 reach */
+    rc = snx_link(inputs, 2, exports, 1, "veneers.so", &output, error, sizeof(error));
+    check(!rc, "far calls with distinct addends link");
+    if (rc) return;
+    text = output_section(&output, ".text");
+    check(text != NULL, "veneer text section exists");
+    if (text) {
+        first = branch_target(get32(output.data + text->sh_offset), text->sh_addr);
+        second = branch_target(get32(output.data + text->sh_offset + 4), text->sh_addr + 4);
+        check(first != second, "different addends use distinct veneers");
+        for (i = 0; i < 2; ++i) {
+            at = i ? second : first;
+            targets[i] = adrp_page(get32(output.data + at), at) + (get32(output.data + at + 4) >> 10 & 0xfff);
+        }
+        check(targets[0] == text->sh_addr + (1u << 27) && targets[1] == targets[0] + 4,
+              "veneers retain target and target+4 independently");
+    }
+    free(output.data);
+}
+
+static void malformed_coff(void) {
+    unsigned char good[136], bad[136];
+    SnxLinkInput input;
+    SnxLinkOutput output;
+    char error[256];
+    int i, rc;
+    memset(good, 0, sizeof(good));
+    good[0] = 0x64; good[1] = 0x86; good[2] = 1;
+    snx_link_put32(good + 8, 68); /* symbol table */
+    snx_link_put32(good + 12, 1);
+    memcpy(good + 20, ".text", 5);
+    snx_link_put32(good + 36, 8);
+    snx_link_put32(good + 40, 60);
+    snx_link_put32(good + 44, 90); /* relocations */
+    snx_link_put32(good + 56, 0x60000020);
+    good[60] = 0xc3;
+    good[68] = 'x'; good[80] = 1; good[84] = 2;
+    snx_link_put32(good + 86, 4);
+    input.data = bad; input.size = sizeof(bad); input.name = "malformed-coff";
+    for (i = 0; i < 7; ++i) {
+        memcpy(bad, good, sizeof(bad));
+        switch (i) {
+            case 0: snx_link_put32(bad + 86, UINT32_MAX); break;
+            case 1: bad[85] = 1; break; /* auxiliary record past symbol table */
+            case 2: snx_link_put32(bad + 68, 0); snx_link_put32(bad + 72, 100); break;
+            case 3:
+                snx_link_put32(bad + 56, 0x61000020);
+                snx_link_put32(bad + 44, UINT32_MAX);
+                break;
+            case 4:
+                bad[52] = 1;
+                snx_link_put32(bad + 90, UINT32_MAX - 3);
+                bad[98] = 1; /* ADDR64 whose at+8 used to wrap */
+                break;
+            case 5:
+                snx_link_put32(bad + 68, 0); snx_link_put32(bad + 72, 4);
+                snx_link_put32(bad + 86, 14);
+                memset(bad + 90, 'x', 10);
+                break;
+            default:
+                snx_link_put32(bad + 12, 2);
+                bad[85] = 1;
+                memset(bad + 86, 0, 18);
+                bad[86] = 'y'; bad[98] = 1; bad[102] = 2;
+                snx_link_put32(bad + 104, 4);
+                snx_link_put32(bad + 44, 108);
+                bad[52] = 1;
+                snx_link_put32(bad + 112, 1); /* relocation names auxiliary symbol */
+                bad[116] = 1;
+                break;
+        }
+        rc = snx_link(&input, 1, NULL, 0, "bad.dll", &output, error, sizeof(error));
+        check(rc != 0, "malformed COFF metadata is rejected");
+        if (!rc) free(output.data);
+    }
+    /* Tiny input, enormous virtual sections: aggregate sizing and RVA alignment must not wrap. */
+    memset(bad, 0, sizeof(bad));
+    bad[0] = 0x64; bad[1] = 0x86; bad[2] = 2;
+    snx_link_put32(bad + 8, 100);
+    snx_link_put32(bad + 100, 4);
+    memcpy(bad + 20, ".text", 5);
+    memcpy(bad + 60, ".text", 5);
+    snx_link_put32(bad + 36, 0xfffffff0u);
+    snx_link_put32(bad + 76, 0x20);
+    snx_link_put32(bad + 56, 0xa0); /* code + uninitialized: no input bytes */
+    snx_link_put32(bad + 96, 0xa0);
+    for (i = 0; i < 2; ++i) {
+        if (i) {
+            snx_link_put32(bad + 56, 0x80); /* ordinary BSS must not wrap RVAs either */
+            snx_link_put32(bad + 96, 0x80);
+        }
+        rc = snx_link(&input, 1, NULL, 0, "large.dll", &output, error, sizeof(error));
+        check(rc != 0, "overflowing COFF layout is rejected");
+        if (!rc) free(output.data);
+    }
+}
+
 int main(void) {
+    malformed_coff();
+    malformed_objects();
+    symbol_binding();
+    veneer_addends();
     data_relocations();
     instruction_relocations();
     veneers();

@@ -21,6 +21,7 @@ static int failures;
 static const char* storage_paths[2];
 static const char* nro_paths[4];
 static const char* dc_color_path;
+static const char* audit_paths[6];
 static const char* issue126_paths[17];
 static const char* stage_paths[3];
 static const char* query_paths[2];
@@ -1987,6 +1988,80 @@ static void system_values(void) {
     free(code);
 }
 
+/* Indexed depth comparisons retain the hardware compare operation for depth
+   entries, while color entries use their own TSC function. Both paths must be
+   valid in a single module; the emitted fixtures also run through spirv-val. */
+static void audit_shader_regressions(void) {
+    const u64 indexed[] = {
+        0xe003ff870ff7ff00ull, 0x5cb0118000070a00ull, 0x3848000000470000ull,
+        0xef94002000070004ull, 0x5c9807800ff70000ull, 0x5c9807800ff70001ull,
+        0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (4ull << 20) |
+            (1ull << 50) | (1ull << 31),
+    };
+    ShaderInfo info;
+    size_t words = 0;
+    g_shader_texture_arrays = 1;
+    u32* code = translate(indexed, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "indexed shadow translates mixed depth/color table");
+    if (code) {
+        check(count_opcode(code, words, 88, 0xffffffffu) && count_opcode(code, words, 90, 0xffffffffu),
+              "indexed shadow keeps both plain and hardware depth LOD samples");
+        check(count_opcode(code, words, 180, 0xffffffffu) > 0,
+              "indexed shadow also compares color entries in the shader");
+        save_fixture(audit_paths[0], code, words);
+    }
+    free(code);
+    u64 variant[7];
+    memcpy(variant, indexed, sizeof variant);
+    variant[6] |= 1ull << 36; /* register offset: dimensions must come from the selected array */
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "indexed shadow dynamic offset translates");
+    if (code) {
+        check(count_opcode(code, words, 103, 0xffffffffu) == 2,
+              "indexed shadow queries dimensions of both descriptor arrays");
+        save_fixture(audit_paths[4], code, words);
+    }
+    free(code);
+    variant[6] = 0xdec0000000070008ull | (2ull << 28) | (1ull << 31) | (4ull << 20) | (1ull << 50);
+    code = translate(variant, 7, ST_FS, &info, &words, 1);
+    check_translated(code, &info, "indexed shadow gather translates");
+    if (code) {
+        check(count_opcode(code, words, 96, 0xffffffffu) && count_opcode(code, words, 97, 0xffffffffu),
+              "indexed shadow gather keeps color and hardware depth paths");
+        save_fixture(audit_paths[5], code, words);
+    }
+    free(code);
+    g_shader_texture_arrays = 0;
+    const u64 instance = 0xefd800000007ff00ull | (0x2f8ull << 20);
+    code = translate(&instance, 1, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "instance attribute translates with original guest base");
+    if (code) {
+        check(count_builtin(code, words, 43) == 1 && count_builtin(code, words, 4425) == 0,
+              "instance uses InstanceIndex and never Vulkan BaseInstance");
+        check(count_opcode(code, words, 130, 0xffffffffu) > 0,
+              "instance subtracts the original guest base");
+        save_fixture(audit_paths[1], code, words);
+    }
+    free(code);
+    const u64 tlds = 0xD244012030570A02ull;
+    for (int sign = 0; sign < 2; sign++) {
+        size_t slots;
+        u64* guest = guest_program(&tlds, 1, NULL, &slots);
+        memset(&info, 0, sizeof info);
+        info.tex_int_mask = 1;
+        info.tex_sint_mask = sign;
+        code = shader_to_spirv((const u8*)guest, slots * sizeof *guest, ST_FS, &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "integer TLDS half output translates");
+        if (code) {
+            check(count_opcode(code, words, sign ? 111 : 112, 0xffffffffu) > 0,
+                  "integer TLDS converts its actual integer component type to float");
+            save_fixture(audit_paths[2 + sign], code, words);
+        }
+        free(code);
+        free(guest);
+    }
+}
+
 /* Fire Emblem Three Houses fragment shaders sample fp16 surfaces with TLDS.
    The f32 forms translate; the fp16 form must translate the same way, with the
    components converted and packed into halves. */
@@ -2137,11 +2212,16 @@ int main(int argc, char** argv) {
             passthrough_paths[i] = fixture_path(argv[1], name);
         }
         dc_color_path = fixture_path(argv[1], "dc_color");
-        if (fixture_count != 58) {
+        for (int i = 0; i < 6; i++) {
+            snprintf(name, sizeof name, "audit_%d", i);
+            audit_paths[i] = fixture_path(argv[1], name);
+        }
+        if (fixture_count != 64) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
         }
     }
+    audit_shader_regressions();
     dc_color_compare();
     unfed_fragment_input();
     brx_length();

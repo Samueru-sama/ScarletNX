@@ -39,7 +39,14 @@ void mem_query(u64 addr, MemBlock* out) {
     (void)addr;
 }
 u64 guest_ns(void) { return 0; }
-void compute_method(GpuChannel* ch, u32 m, u32 v, int last) { (void)ch, (void)m, (void)v, (void)last; }
+/* Keep the compute report path identical to compute.c, using the real shared report handler. */
+void query_get(GpuChannel* ch, u32* r, int base, u32 v);
+void compute_method(GpuChannel* ch, u32 m, u32 v, int last) {
+    (void)last;
+    m &= 0xFFF;
+    ch->rcomp[m] = v;
+    if (m == 0x6C3) query_get(ch, ch->rcomp, 0x6C0, v);
+}
 void kepler_i2m_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
 void fermi2d_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
 
@@ -197,6 +204,17 @@ static u64 wait_marks(u32 n) {
     return plat_ns() - t0;
 }
 static void called(void* arg) { see((u32)(uintptr_t)arg); }
+static pthread_mutex_t gate_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gate_cv = PTHREAD_COND_INITIALIZER;
+static int gate_entered, gate_open;
+static void held_call(void* arg) {
+    (void)arg;
+    pthread_mutex_lock(&gate_lock);
+    gate_entered = 1;
+    pthread_cond_broadcast(&gate_cv);
+    while (!gate_open) pthread_cond_wait(&gate_cv, &gate_lock);
+    pthread_mutex_unlock(&gate_lock);
+}
 /* a release the game's CPU code writes: it stands in for the guest's plain store, which the GPU thread reads with a
    plain read, racing as it does on the console */
 static void cpu_store(u64 addr, u32 v) { __atomic_store_n((u32*)guest + addr / 4, v, __ATOMIC_SEQ_CST); }
@@ -395,8 +413,8 @@ int main(void) {
         forget_marks();
     }
 
-    /* A queued DMA upload keeps CPU staging bytes, but GPU writes after submission supersede that snapshot.
-       The preceding job holds execution while the submitting CPU reuses the staging allocation. */
+    /* A preceding semaphore wait lets the CPU produce the source after submission. The scanner must not
+       snapshot either this job or later jobs on the same channel from the pre-wait state. */
     for (int gpu_write = 0; gpu_write < 2; gpu_write++) {
         cpu_store(SEM + 64, 0);
         cpu_store(0x9000, 0x11223344);
@@ -409,8 +427,47 @@ int main(void) {
         cpu_store(SEM + 64, 1);
         wait_marks(2);
         expect(marks_are((u32[]){0x910, 0x911}, 2), "DMA follows the channel's earlier wait");
+        expect(gmem_r32(0x9100) == 0x55667788, "DMA reads the source after an earlier channel wait");
+        forget_marks();
+    }
+    for (int gpu_write = 0; gpu_write < 2; gpu_write++) {
+        cpu_store(0x9000, 0x11223344);
+        u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
+                      imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0x912)};
+        pthread_mutex_lock(&gate_lock);
+        gate_entered = gate_open = 0;
+        pthread_mutex_unlock(&gate_lock);
+        gpu_call(held_call, NULL, NULL, 0);
+        pthread_mutex_lock(&gate_lock);
+        while (!gate_entered) pthread_cond_wait(&gate_cv, &gate_lock);
+        pthread_mutex_unlock(&gate_lock);
+        submit1(push(copy, sizeof copy / sizeof copy[0]), 31);
+        if (gpu_write)
+            gmem_w32(0x9000, 0x55667788);
+        else
+            cpu_store(0x9000, 0x55667788);
+        pthread_mutex_lock(&gate_lock);
+        gate_open = 1;
+        pthread_cond_broadcast(&gate_cv);
+        pthread_mutex_unlock(&gate_lock);
+        wait_marks(1);
         expect(gmem_r32(0x9100) == (gpu_write ? 0x55667788 : 0x11223344),
-               "DMA snapshots CPU staging but respects later GPU writes");
+               "DMA keeps CPU staging bytes but discards a snapshot after a GPU write");
+        forget_marks();
+    }
+    /* Both report engines can wait for CPU-produced DMA input. Use fresh channels so a previous wait cannot
+       already have disabled their submission scanner. */
+    for (u32 sub = 0; sub < 2; sub++) {
+        cpu_store(SEM + 80, 0);
+        cpu_store(0x9000, 0x11223344);
+        u32 copy[] = {inc(0x6C0, 4) | (sub << 13), 0, SEM + 80, 1, 1,
+                      inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
+                      imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0x913)};
+        submit1(push(copy, sizeof copy / sizeof copy[0]), 32 + sub);
+        cpu_store(0x9000, 0x55667788);
+        cpu_store(SEM + 80, 1);
+        wait_marks(1);
+        expect(gmem_r32(0x9100) == 0x55667788, "DMA reads CPU data produced after a 3D or compute report acquire");
         forget_marks();
     }
     expect(!warned, "no wait timed out");

@@ -231,9 +231,12 @@ i64 plat_tz_offset(void) {
     long b = z.Bias + (r == TIME_ZONE_ID_DAYLIGHT ? z.DaylightBias : r == TIME_ZONE_ID_STANDARD ? z.StandardBias : 0);
     return -(i64)b * 60;
 }
-static int g_ww_ok; /* MEM_WRITE_WATCH: Windows tracks written pages, so unchanged buffers don't need a reread */
+/* MEM_WRITE_WATCH: Windows tracks written pages, so unchanged buffers don't need a reread. On unless SNX_NO_WW is set,
+   as on Linux: without it every cache checks its memory by content each time, and Super Mario Odyssey's GPU thread
+   spent a third of its time hashing render targets */
+static int g_ww_ok;
 u8* plat_vm_reserve(u64 size) {
-    void* p = !getenv("SNX_WW") ? NULL : VirtualAlloc(NULL, size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
+    void* p = getenv("SNX_NO_WW") ? NULL : VirtualAlloc(NULL, size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS);
     if (p) {
         g_ww_ok = 1;
         return (u8*)p;
@@ -265,7 +268,6 @@ int plat_vm_commit(u8* p, u64 size) {
 void plat_vm_decommit(u8* p, u64 size) { VirtualFree(p, size, MEM_DECOMMIT); }
 void* plat_dl_open(const char* path) { return (void*)LoadLibraryA(path); }
 void* plat_dl_sym(void* h, const char* n) { return (void*)GetProcAddress((HMODULE)h, n); }
-int plat_setenv(const char* name, const char* value) { return _putenv_s(name, value) ? -1 : 0; }
 const char* plat_dl_error(void) {
     static __thread char buf[300];
     DWORD e = GetLastError();

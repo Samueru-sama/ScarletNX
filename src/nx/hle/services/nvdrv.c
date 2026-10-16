@@ -25,6 +25,7 @@ typedef struct {
     u64 addr;
     u32 id;
     int alive;
+    int allocated;
     u32 refs; /* CREATE and each FROM_ID take one, FREE drops one: the handle dies with the last */
 } NvMapH;
 /* what MAP_BUFFER_EX mapped, for UNMAP_BUFFER: [gva, gva+size) maps cpu. base is the address UNMAP_BUFFER names; a
@@ -94,7 +95,7 @@ static struct {
    and free them, so under the lock, the address and the size in one hold: two would let them describe two handles */
 int nvmap_get(u32 h, u64* addr, u32* size) {
     pm_lock(&nv.lock);
-    int alive = h && h < 8192 && nv.nvh[h].alive;
+    int alive = h && h < 8192 && nv.nvh[h].alive && nv.nvh[h].allocated;
     *addr = alive ? nv.nvh[h].addr : 0;
     *size = alive ? nv.nvh[h].size : 0;
     pm_unlock(&nv.lock);
@@ -109,7 +110,7 @@ static u32 nvmap_from_id(u32 id) {
 u64 nvmap_addr_by_id(u32 id) {
     pm_lock(&nv.lock);
     u32 h = nvmap_from_id(id);
-    u64 a = h ? nv.nvh[h].addr : 0;
+    u64 a = h && nv.nvh[h].allocated ? nv.nvh[h].addr : 0;
     pm_unlock(&nv.lock);
     return a;
 }
@@ -394,6 +395,7 @@ static u32 gpu_channel_syncpt(NvFile* f) {
 /* on the GPU thread, after the jobs queued on the channel before its fd closed */
 static void gpu_channel_retire(void* p) {
     u32 id = (u32)(uintptr_t)p;
+    gpu_release_retire(id);
     gpu_channel_close(id);
     syncpt_free(id);
 }
@@ -458,21 +460,25 @@ static u32 ioctl_nvmap(u32 cmd, u8* d, u32 n) {
         }
         case 0x04: { /* ALLOC: the handle's memory. Under the lock: vi and host1x read the address from their threads */
             u32 h;
+            u64 addr;
             memcpy(&h, d, 4);
+            memcpy(&addr, d + 24, 8);
             if (!h || h >= 8192) return 1;
             pm_lock(&nv.lock);
             NvMapH* m = &nv.nvh[h];
             int alive = m->alive;
-            if (alive) {
+            int valid = alive && m->size && addr <= AS_SIZE - m->size && !(addr & 0xFFF);
+            if (valid) {
                 memcpy(&m->heap, d + 4, 4);
                 memcpy(&m->flags, d + 8, 4);
                 memcpy(&m->align, d + 12, 4);
                 m->kind = d[16];
-                memcpy(&m->addr, d + 24, 8);
+                m->addr = addr;
+                m->allocated = 1;
             }
             pm_unlock(&nv.lock);
-            if (!alive) return 1;
-            LOGV("nvmap alloc h=%u addr=%llx\n", h, (unsigned long long)m->addr);
+            if (!valid) return alive ? 4 : 1;
+            LOGV("nvmap alloc h=%u addr=%llx\n", h, (unsigned long long)addr);
             return 0;
         }
         case 0x05: {
@@ -602,7 +608,7 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
             memcpy(&off, d + 32, 8);
             if ((flags & 0x100) && h == 0) return 0; /* just updates kind on an existing map */
             pm_lock(&nv.lock);                       /* ALLOC and FREE write the handle under it */
-            int alive = h && h < 8192 && nv.nvh[h].alive;
+            int alive = h && h < 8192 && nv.nvh[h].alive && nv.nvh[h].allocated;
             u64 haddr = alive ? nv.nvh[h].addr : 0, hsize = alive ? nv.nvh[h].size : 0;
             pm_unlock(&nv.lock);
             if (!alive) {
@@ -614,8 +620,13 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
             /* an allocation at address 0 nvservices backs with its own memory (Ryujinx's Alloc): here it maps the
                guest's lowest pages, so it is logged to see whether a game does it */
             if (!haddr) WARN_LIMIT(4, "as map: nvmap handle %u has address 0\n", h);
-            u64 cpu = haddr + (u64)boff, size = msize ? msize : hsize;
-            if (boff < 0 || !cpu_ok(cpu, size) || ((flags & 0x101) && !gva_ok(off, size))) {
+            u64 size = msize ? msize : hsize;
+            u64 cpu = haddr + (u64)boff;
+            /* PTEs expose complete 4 KiB pages, even when the requested byte count is smaller. */
+            u64 span = size <= AS_SIZE ? (size + 0xFFF) & ~0xFFFull : 0;
+            if (boff < 0 || !span || (cpu & 0xFFF) || !cpu_ok(cpu, span) ||
+                ((flags & 0x101) && ((off & 0xFFF) || !gva_ok(off, span))) ||
+                (!(flags & 0x101) && psz && (psz & (psz - 1)))) {
                 WARN_LIMIT(4, "as map: handle %u offset %llx size %llx at %llx (flags %x) refused\n", h,
                            (unsigned long long)boff, (unsigned long long)size, (unsigned long long)off, flags);
                 return 4;
@@ -698,8 +709,10 @@ static u32 ioctl_as(u32 cmd, u8* d, u32 n, u8* extra, u32 nextra) {
                 /* big page size comes from ALLOC_AS_EX */
                 u64 gva = (u64)goff << nv.big_page_bits, size = (u64)pages << nv.big_page_bits;
                 pm_lock(&nv.lock); /* ALLOC and FREE write the handle under it */
-                int alive = h && h < 8192 && nv.nvh[h].alive;
-                u64 haddr = alive ? nv.nvh[h].addr : 0, cpu = haddr + ((u64)moff << nv.big_page_bits);
+                int alive = h && h < 8192 && nv.nvh[h].alive && nv.nvh[h].allocated;
+                u64 haddr = alive ? nv.nvh[h].addr : 0;
+                u64 mem_off = (u64)moff << nv.big_page_bits;
+                u64 cpu = haddr + mem_off;
                 pm_unlock(&nv.lock);
                 if (alive && !haddr) /* as for MAP_BUFFER_EX */
                     WARN_LIMIT(4, "nvdrv: remap of nvmap handle %u, which has address 0\n", h);

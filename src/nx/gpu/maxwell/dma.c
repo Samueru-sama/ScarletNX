@@ -80,6 +80,8 @@ static int dma_linear_source(const DmaLaunch* d, u64* src, u64* len) {
    read: then the source is GPU work queued before the copy, and guest memory has it */
 typedef struct {
     u64 src, len, gen;
+    u64 job_id;
+    u32 launch_index;
     u8* data;
 } DmaSnap;
 typedef struct {
@@ -91,16 +93,18 @@ static DmaSnapRing g_snap[128];     /* by channel (syncpoint id) */
 static u64 g_snap_bytes;
 static PMutex g_snap_lock = PMUTEX_INIT;
 
-void dma_snap_launch(u32 channel, const u32* r, u32 v, int read) {
+void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u32 v) {
     DmaLaunch d;
     DmaSnap e;
     DmaSnapRing* g = &g_snap[channel & 127];
     dma_decode(r, v, &d);
     if (!dma_linear_source(&d, &e.src, &e.len)) return;
     e.data = NULL;
+    e.job_id = job_id;
+    e.launch_index = launch_index;
     e.gen = gpu_mem_generation(); /* before the read: a GPU write landing during it counts as after */
     pm_lock(&g_snap_lock);
-    if (read && g_snap_bytes + e.len <= SNAP_BYTES) {
+    if (g_snap_bytes + e.len <= SNAP_BYTES) {
         g_snap_bytes += e.len;
         pm_unlock(&g_snap_lock);
         e.data = malloc(e.len);
@@ -123,11 +127,17 @@ void dma_snap_launch(u32 channel, const u32* r, u32 v, int read) {
     pm_unlock(&g_snap_lock);
 }
 /* the queued bytes of this launch's source, or NULL to read guest memory. The caller frees them */
-static u8* dma_snap_take(u32 channel, u64 src, u64 len) {
+static u8* dma_snap_take(u32 channel, u64 job_id, u32 launch_index, u64 src, u64 len) {
     DmaSnapRing* g = &g_snap[channel & 127];
     DmaSnap e;
     pm_lock(&g_snap_lock);
-    if (g->tail == g->head) {
+    while (g->tail != g->head && g->q[g->tail % g->cap].job_id < job_id) {
+        DmaSnap* stale = &g->q[g->tail++ % g->cap];
+        if (stale->data) g_snap_bytes -= stale->len;
+        free(stale->data);
+    }
+    if (g->tail == g->head || g->q[g->tail % g->cap].job_id != job_id ||
+        g->q[g->tail % g->cap].launch_index != launch_index) {
         pm_unlock(&g_snap_lock);
         return NULL;
     }
@@ -149,6 +159,16 @@ static u8* dma_snap_take(u32 channel, u64 src, u64 len) {
         }
     }
     return e.data;
+}
+void dma_snap_finish(u32 channel, u64 job_id) {
+    DmaSnapRing* g = &g_snap[channel & 127];
+    pm_lock(&g_snap_lock);
+    while (g->tail != g->head && g->q[g->tail % g->cap].job_id <= job_id) {
+        DmaSnap* stale = &g->q[g->tail++ % g->cap];
+        if (stale->data) g_snap_bytes -= stale->len;
+        free(stale->data);
+    }
+    pm_unlock(&g_snap_lock);
 }
 void dma_snap_reset(u32 channel) {
     DmaSnapRing* g = &g_snap[channel & 127];
@@ -230,7 +250,9 @@ void dma_method(GpuChannel* ch, u32 m, u32 v) {
     u8* snap = NULL;
     {
         u64 ssrc, slen;
-        if (dma_linear_source(&d, &ssrc, &slen)) snap = dma_snap_take(ch->id, ssrc, slen);
+        if (dma_linear_source(&d, &ssrc, &slen))
+            snap = dma_snap_take(ch->id, ch->dma_job_id, ch->dma_launch_index, ssrc, slen);
+        ch->dma_launch_index++;
     }
     u8* dpp = NULL;
     u8* spp = NULL;

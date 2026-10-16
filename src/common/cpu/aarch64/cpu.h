@@ -93,8 +93,7 @@ typedef struct CPU {
 #define WRQ(a, src) memcpy(MP(a), &(src), 16)
 
 /* ---- calls ---- */
-/* A slot goes from NULL to a function while other threads read it (the runtime JIT publishes with release ordering,
-   gpu/nvn_trace.c installs wrappers): a relaxed load, which costs a plain one, makes that no data race. The code and
+/* A slot goes from NULL to a function while other threads read it (the runtime JIT publishes with release ordering): a relaxed load, which costs a plain one, makes that no data race. The code and
    data behind a published address were written before the release store, and reaching them depends on the loaded
    address, which orders them on every host the backends target */
 SNX_INLINE GuestFn snx_lookup(CPU* c, u64 pc);

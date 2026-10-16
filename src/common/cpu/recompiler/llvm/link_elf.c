@@ -40,7 +40,7 @@ typedef struct {
     size_t nobjs;
     SnxLinkNames globals;       /* name -> (object << 32 | symbol index) */
     SnxLinkNames got;           /* "object:symbol" of a symbol's definition -> GOT slot */
-    SnxLinkNames veneer;        /* "caller:object:symbol" -> the caller's veneer to that definition */
+    SnxLinkNames veneer;        /* "caller:object:symbol:addend" -> the caller's veneer to that definition */
     unsigned machine, relative; /* EM_X86_64 or EM_AARCH64, and its R_*_RELATIVE */
     uint64_t page;              /* segment alignment: AArch64 kernels may use 16 or 64 KiB pages */
     uint64_t kind_size[SNX_ELF_KINDS], kind_align[SNX_ELF_KINDS], kind_address[SNX_ELF_KINDS];
@@ -86,8 +86,9 @@ static uint64_t symbol_address(Link* l, size_t object, size_t index, int* absolu
 static void got_key(char* key, size_t object, size_t index) {
     sprintf(key, "%lu:%lu", (unsigned long)object, (unsigned long)index);
 }
-static void veneer_key(char* key, size_t caller, size_t object, size_t index) {
-    sprintf(key, "%lu:%lu:%lu", (unsigned long)caller, (unsigned long)object, (unsigned long)index);
+static void veneer_key(char* key, size_t caller, size_t object, size_t index, int64_t addend) {
+    sprintf(key, "%lu:%lu:%lu:%llx", (unsigned long)caller, (unsigned long)object, (unsigned long)index,
+            (unsigned long long)(uint64_t)addend);
 }
 
 /* text before veneers, which only a module this large needs */
@@ -106,7 +107,7 @@ static uint64_t text_size(const Link* l) {
 static int scan_relocations(Link* l) {
     size_t i, j, k, def_object, def_index, slot;
     int weak, far = l->machine == EM_AARCH64 && text_size(l) >= VENEER_TEXT;
-    char key[72];
+    char key[96];
     for (i = 0; i < l->nobjs; ++i) {
         SnxElfObject* o = &l->objs[i];
         for (j = 0; j < o->eh->e_shnum; ++j) {
@@ -129,7 +130,7 @@ static int scan_relocations(Link* l) {
                     }
                 } else if (far && snx_elf_call_relocation(l->machine, type) && !weak && def_object != i &&
                            def_object != (size_t)-1) {
-                    veneer_key(key, i, def_object, def_index);
+                    veneer_key(key, i, def_object, def_index, r[k].r_addend);
                     if (!snx_link_find(&l->veneer, key, &slot)) snx_link_insert(&l->veneer, key, o->veneers++);
                 } else if (snx_elf_absolute_relocation(l->machine, type) && !weak) {
                     if (o->kind[s->sh_info] != SNX_ELF_DATA)
@@ -211,7 +212,10 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     l.relative = snx_elf_relative_type(l.machine);
     l.page = l.machine == EM_AARCH64 ? 0x10000 : 0x1000;
     if (snx_elf_collect_globals(l.objs, count, NULL, &l.globals, error, error_size) || scan_relocations(&l)) goto done;
-    snx_elf_layout(l.objs, count, l.kind_size, l.kind_align);
+    if (snx_elf_layout(l.objs, count, l.kind_size, l.kind_align)) {
+        fail(&l, "ELF layout exceeds the supported 2 GiB span%s%s", "", "");
+        goto done;
+    }
     /* dynamic symbol names */
     snx_link_append(&dynstr, "", 1);
     for (i = 0; i < export_count; ++i) snx_link_append(&dynstr, exports[i], strlen(exports[i]) + 1);
@@ -256,6 +260,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
             sscanf(l.got.keys[i], "%lu:%lu", &object, &index);
             value = symbol_address(&l, object, index, &absolute);
             snx_link_put64(out.data + slot, value);
+            if (absolute) continue;
             r.r_offset = slot;
             r.r_info = ELF64_R_INFO((Elf64_Xword)0, l.relative);
             r.r_addend = (int64_t)value;
@@ -277,7 +282,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
                 uint64_t P = o->address[s->sh_info] + r[k].r_offset, S = 0, slot = 0, at;
                 int64_t A = r[k].r_addend;
                 int weak, absolute = 1, written = SNX_LINK_OUTSIDE;
-                char key[72];
+                char key[96];
                 size_t found = 0;
                 if (definition(&l, i, ELF64_R_SYM(r[k].r_info), &def_object, &def_index, &weak)) goto done;
                 if (!weak) S = symbol_address(&l, def_object, def_index, &absolute);
@@ -292,7 +297,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
                                                got_off, slot);
                     if (written == SNX_LINK_RANGE && snx_elf_call_relocation(l.machine, type) && !weak) {
                         /* the caller's veneer, which it reaches, jumps there */
-                        veneer_key(key, i, def_object, def_index);
+                        veneer_key(key, i, def_object, def_index, r[k].r_addend);
                         if (snx_link_find(&l.veneer, key, &found)) {
                             at = l.kind_address[SNX_ELF_TEXT] + o->island + SNX_ELF_VENEER_SIZE * (uint64_t)found;
                             written = snx_elf_branch_veneer(p, P, out.data + at, at, S + (uint64_t)A, 0);
@@ -353,7 +358,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
         memcpy(out.data + dynsym_off + (i + 1) * sizeof(Elf64_Sym), &s, sizeof(s));
     }
     memcpy(out.data + dynstr_off, dynstr.data, dynstr.size);
-    memcpy(out.data + rela_off, rela.data, rela.size);
+    if (rela.size) memcpy(out.data + rela_off, rela.data, rela.size);
     /* .dynamic */
 #define DYN(tag, value)                                                                                                \
     do {                                                                                                               \

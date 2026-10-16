@@ -74,7 +74,9 @@ typedef struct {
 #define SNX_VKB_SMAP     76 /* graphics: storage-buffer page indices for aliased bindings */
 #define SNX_VKB_IMGBUF   77 /* 8 storage texel buffers: surface operations on buffer images (compute) */
 #define SNX_VKB_TEXARRAY 85 /* SNX_TEX_ARRAY textures: the handles an indexed LDC loads (graphics) */
-#define SNX_VKB_END      86 /* one past the last binding */
+#define SNX_VKB_TEXFUNCS 86 /* comparison functions for indexed depth samples */
+#define SNX_VKB_TEXDEPTH 87 /* depth counterparts for mixed indexed shadow tables */
+#define SNX_VKB_END      88 /* one past the last binding */
 /* An indexed texture's handle is loaded by an LDC whose address takes a register: the shader picks one of
    SNX_TEX_ARRAY handles, each (1 << shift) bytes after the one before, from cbuf_off on. ShTex.flags holds the shift
    in bits 4-7. */

@@ -20,22 +20,63 @@ const char* snx_elf_symbol_name(const SnxElfObject* o, const Elf64_Sym* s) {
 }
 
 const char* snx_elf_section_name(const SnxElfObject* o, size_t index) {
+    if (!o->eh->e_shstrndx) return "<unnamed>";
     return (const char*)o->input->data + o->sh[o->eh->e_shstrndx].sh_offset + o->sh[index].sh_name;
 }
 
 int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine, char* error, size_t error_size) {
-    size_t i;
+    size_t i, symtab = (size_t)-1;
+    const Elf64_Shdr* strings;
     memset(o, 0, sizeof(*o));
     o->input = input;
+    if (!input->data) return fail(error, error_size, "%s: missing ELF input%s", input->name, "");
+    if ((uintptr_t)input->data & 7) {
+        o->aligned_data = (unsigned char*)malloc(input->size ? input->size : 1);
+        if (!o->aligned_data) return fail(error, error_size, "out of memory%s%s", "", "");
+        memcpy(o->aligned_data, input->data, input->size);
+        o->aligned_input = *input;
+        o->aligned_input.data = o->aligned_data;
+        input = o->input = &o->aligned_input;
+    }
     o->eh = (const Elf64_Ehdr*)input->data;
     if (input->size < sizeof(Elf64_Ehdr) || memcmp(o->eh->e_ident, ELFMAG, SELFMAG) ||
         o->eh->e_ident[EI_CLASS] != ELFCLASS64 || o->eh->e_ident[EI_DATA] != ELFDATA2LSB || o->eh->e_type != ET_REL ||
         (o->eh->e_machine != EM_X86_64 && o->eh->e_machine != EM_AARCH64) || o->eh->e_shentsize != sizeof(Elf64_Shdr) ||
-        o->eh->e_shoff + (uint64_t)o->eh->e_shnum * sizeof(Elf64_Shdr) > input->size)
+        !o->eh->e_shnum || (o->eh->e_shoff & 7) || o->eh->e_shoff > input->size ||
+        o->eh->e_shnum > (input->size - o->eh->e_shoff) / sizeof(Elf64_Shdr) ||
+        o->eh->e_shstrndx >= o->eh->e_shnum)
         return fail(error, error_size, "%s: not an x86-64 or AArch64 ELF relocatable object%s", input->name, "");
     if (!*machine) *machine = o->eh->e_machine;
     if (o->eh->e_machine != *machine) return fail(error, error_size, "%s: another machine's object%s", input->name, "");
     o->sh = (const Elf64_Shdr*)(input->data + o->eh->e_shoff);
+    /* Validate every range before following links between sections. Native views require natural alignment. */
+    for (i = 0; i < o->eh->e_shnum; ++i) {
+        const Elf64_Shdr* h = &o->sh[i];
+        if ((h->sh_type != SHT_NOBITS &&
+             (h->sh_offset > input->size || h->sh_size > input->size - h->sh_offset)) ||
+            (h->sh_addralign && (h->sh_addralign & (h->sh_addralign - 1))))
+            return fail(error, error_size, "%s: invalid section range or alignment%s", input->name, "");
+        if (h->sh_type == SHT_SYMTAB) {
+            if (symtab != (size_t)-1 || (h->sh_offset & 7) || h->sh_entsize != sizeof(Elf64_Sym) ||
+                h->sh_size % sizeof(Elf64_Sym) || h->sh_link >= o->eh->e_shnum)
+                return fail(error, error_size, "%s: bad symbol table%s", input->name, "");
+            symtab = i;
+        }
+        if (h->sh_type == SHT_RELA && ((h->sh_offset & 7) || h->sh_entsize != sizeof(Elf64_Rela) ||
+            h->sh_size % sizeof(Elf64_Rela) || h->sh_info >= o->eh->e_shnum || h->sh_link >= o->eh->e_shnum))
+            return fail(error, error_size, "%s: bad relocation table%s", input->name, "");
+    }
+    strings = &o->sh[o->eh->e_shstrndx];
+    if (o->eh->e_shstrndx && strings->sh_type != SHT_STRTAB)
+        return fail(error, error_size, "%s: bad section name table%s", input->name, "");
+    for (i = 0; i < o->eh->e_shnum; ++i) {
+        const Elf64_Shdr* h = &o->sh[i];
+        if (o->eh->e_shstrndx && (h->sh_name >= strings->sh_size ||
+            !memchr(input->data + strings->sh_offset + h->sh_name, 0, (size_t)(strings->sh_size - h->sh_name))))
+            return fail(error, error_size, "%s: bad section name%s", input->name, "");
+        if (h->sh_type == SHT_RELA && h->sh_link != symtab)
+            return fail(error, error_size, "%s: relocation uses another symbol table%s", input->name, "");
+    }
     /* one block, the 8-byte arrays first */
     o->address = (uint64_t*)calloc(o->eh->e_shnum, 2 * sizeof(uint64_t) + sizeof(int));
     if (!o->address) return fail(error, error_size, "out of memory%s%s", "", "");
@@ -44,12 +85,14 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
     for (i = 0; i < o->eh->e_shnum; ++i) {
         const Elf64_Shdr* s = &o->sh[i];
         o->kind[i] = -1;
-        if (s->sh_type != SHT_NOBITS && s->sh_offset + s->sh_size > input->size)
+        if (s->sh_type != SHT_NOBITS && (s->sh_offset > input->size || s->sh_size > input->size - s->sh_offset))
             return fail(error, error_size, "%s: truncated section%s", input->name, "");
         if (s->sh_type == SHT_SYMTAB) {
             o->syms = (const Elf64_Sym*)(input->data + s->sh_offset);
             o->nsyms = s->sh_size / sizeof(Elf64_Sym);
             if (s->sh_link >= o->eh->e_shnum) return fail(error, error_size, "%s: bad symbol table%s", input->name, "");
+            if (o->sh[s->sh_link].sh_type != SHT_STRTAB)
+                return fail(error, error_size, "%s: bad symbol name table%s", input->name, "");
             o->strtab = (const char*)input->data + o->sh[s->sh_link].sh_offset;
         }
         if (!(s->sh_flags & SHF_ALLOC)) continue;
@@ -69,11 +112,23 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
             return fail(error, error_size, "%s: unsupported allocated section type%s", input->name, "");
     }
     if (!o->syms) return fail(error, error_size, "%s: no symbol table%s", input->name, "");
+    strings = &o->sh[o->sh[symtab].sh_link];
+    if (strings->sh_type != SHT_STRTAB)
+        return fail(error, error_size, "%s: bad symbol name table%s", input->name, "");
+    for (i = 0; i < o->nsyms; ++i) {
+        const Elf64_Sym* symbol = &o->syms[i];
+        if (symbol->st_name >= strings->sh_size ||
+            !memchr(o->strtab + symbol->st_name, 0, (size_t)(strings->sh_size - symbol->st_name)) ||
+            (symbol->st_shndx >= o->eh->e_shnum && symbol->st_shndx != SHN_ABS))
+            return fail(error, error_size, "%s: bad symbol name or section%s", input->name, "");
+    }
     return 0;
 }
 
 void snx_elf_free(SnxElfObject* o) {
     free(o->address);
+    free(o->aligned_data);
+    o->aligned_data = NULL;
     o->address = o->position = NULL;
     o->kind = NULL;
 }
@@ -114,7 +169,7 @@ int snx_elf_definition(const SnxElfObject* objs, const SnxLinkNames* globals, si
     size_t found;
     if (index >= o->nsyms) return fail(error, error_size, "%s: bad symbol index%s", o->input->name, "");
     s = &o->syms[index];
-    if (s->st_shndx != SHN_UNDEF) {
+    if (s->st_shndx != SHN_UNDEF && ELF64_ST_BIND(s->st_info) != STB_WEAK) {
         *def_object = object;
         *def_index = index;
         return SNX_ELF_HERE;
@@ -153,8 +208,9 @@ unsigned snx_elf_relative_type(unsigned machine) {
     return machine == EM_AARCH64 ? (unsigned)SNX_A64_RELATIVE : (unsigned)R_X86_64_RELATIVE;
 }
 
-void snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint64_t* kind_align) {
+int snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint64_t* kind_align) {
     size_t i, j, k;
+    uint64_t total = 0;
     for (k = 0; k < SNX_ELF_KINDS; ++k) {
         kind_size[k] = 0;
         kind_align[k] = 1;
@@ -165,16 +221,26 @@ void snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint6
             for (j = 0; j < o->eh->e_shnum; ++j) {
                 uint64_t align = o->sh[j].sh_addralign ? o->sh[j].sh_addralign : 1;
                 if (o->kind[j] != (int)k) continue;
+                /* Both loaders support modules within rel32 reach. Bound alignment and the whole layout before
+                   rounding, including NOBITS sections whose size is not bounded by the input file. */
+                if (align > INT32_MAX || o->sh[j].sh_size > INT32_MAX ||
+                    total > (uint64_t)INT32_MAX - align ||
+                    total + align > (uint64_t)INT32_MAX - o->sh[j].sh_size) return -1;
+                total += align + o->sh[j].sh_size;
                 kind_size[k] = (kind_size[k] + align - 1) / align * align;
                 o->position[j] = kind_size[k];
                 kind_size[k] += o->sh[j].sh_size;
                 if (align > kind_align[k]) kind_align[k] = align;
             }
             if (k == SNX_ELF_TEXT && o->veneers) { /* right after the object's code, in reach of all of it */
+                if (o->veneers > ((uint64_t)INT32_MAX - 3) / SNX_ELF_VENEER_SIZE ||
+                    total > (uint64_t)INT32_MAX - 3 - SNX_ELF_VENEER_SIZE * (uint64_t)o->veneers) return -1;
+                total += 3 + SNX_ELF_VENEER_SIZE * (uint64_t)o->veneers;
                 o->island = (kind_size[k] + 3) & ~(uint64_t)3;
                 kind_size[k] = o->island + SNX_ELF_VENEER_SIZE * (uint64_t)o->veneers;
             }
         }
+    return 0;
 }
 
 /* ---- AArch64 instruction fields. Everything in uint64_t: a negative displacement is its two's complement, which

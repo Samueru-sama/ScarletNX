@@ -67,6 +67,8 @@ typedef struct GpuChannel {
     u64 cbind[5][18];
     u32 cbind_size[5][18];
     u32 instance_count; /* the instance the next draw is, counted by BEGIN's next-instance bit and 0x486 */
+    u64 dma_job_id;
+    u32 dma_launch_index;
     u32* inline_indices; /* 3D inline index methods, widened to u32 until END draws them */
     u32 inline_n, inline_cap;
     GpuMme mme;         /* the macro running, or one a wait stopped after the method that asked for it */
@@ -118,7 +120,8 @@ void fermi2d_method(GpuChannel* ch, u32 m, u32 v);
 void dma_method(GpuChannel* ch, u32 m, u32 v);
 /* the linear source of a LAUNCH_DMA (v) with registers r, read now for the channel's copy to use when it runs: called
    in the channel's submit order, for every launch the stream will run (gpu_submit) */
-void dma_snap_launch(u32 channel, const u32* r, u32 v, int read); /* read 0: the copy reads guest memory itself */
+void dma_snap_launch(u32 channel, u64 job_id, u32 launch_index, const u32* r, u32 v);
+void dma_snap_finish(u32 channel, u64 job_id);
 void dma_snap_reset(u32 channel);                                 /* the channel closed: what it queued goes */
 void gpu_mem_written(u64 gva, u64 size);
 void gpu_mem_written_shader(u64 gva, u64 size); /* shader writeback tracks both GPU VA and guest backing */
@@ -136,6 +139,7 @@ void gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, 
    chans[0..nchans) (n at most 4) are done. Other channels' jobs, queued before or after it, don't hold it back */
 void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans);
 void gpu_channel_close(u32 channel); /* nvdrv closed the channel: a new one with the same id starts from reset */
+void gpu_release_retire(u32 channel); /* complete pending syncpoint releases before nvdrv reuses its id */
 /* the channel's stream waits for the u32 at GPU address addr (a syncpoint's id for the syncpoint kinds) to equal val,
    or reach it (geq), before its next method. Met already, nothing waits. Otherwise the method that asked returns and
    the stream stops after it (a macro after the method too, mme_resume), and the GPU thread goes on with other

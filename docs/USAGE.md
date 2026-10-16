@@ -18,7 +18,7 @@ directory. The game is named by its title ID, an NRO by its name ([Folders](#fol
 is named after the dump stem, retaining letters, digits, UTF-8, spaces, hyphens and underscores.
 `--repo DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
 `-H` (`--headless`) can precede or follow the dump and is passed to the game only.
-Omitting it starts the game with a window, unless the build has no window backend.
+Omitting it starts the game with a window.
 `-x` means `--extract`, and `-r` means `--recomp` (the old `--recompile` spelling was removed).
 On UNIX, short flags can be combined. Windows accepts separate short flags only.
 
@@ -207,8 +207,7 @@ Manifest names vary (for example `lvp_icd.json`). FreeBSD packages normally inst
 `LIBGL_ALWAYS_SOFTWARE` is an OpenGL setting and is not how this Vulkan renderer selects lavapipe.
 No display server is required. Check the `vulkan:` device line in the log to confirm the chosen ICD.
 
-For a build without an SDL3 dependency, see [headless build options](BUILD.md#build-variants).
-This does not impose a staging-memory cap or fix the allocation/flush issues identified separately.
+The NX runtime includes SDL3 even when running headless; headless mode skips video initialization.
 
 ## AppImage / display
 

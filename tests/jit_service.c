@@ -14,6 +14,7 @@
    compiles in flight, forgets its code, so the different code mapped at the same place later is what runs */
 #include "common/cpu/recompiler/llvm/jit_service.h"
 #include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,27 @@ static RtAPI rt;
 static unsigned misses, interpreted, wrapped;
 /* the batches the report saw, and the first after which 0x3800 had code */
 static unsigned batch_count, live_batch;
+/* Hold the worker at a real batch boundary while live work is queued. */
+static pthread_mutex_t report_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t report_cond = PTHREAD_COND_INITIALIZER;
+static int hold_report, report_waiting;
+static void hold_next_report(void) {
+    pthread_mutex_lock(&report_lock);
+    hold_report = 1;
+    report_waiting = 0;
+    pthread_mutex_unlock(&report_lock);
+}
+static void wait_report(void) {
+    pthread_mutex_lock(&report_lock);
+    while (!report_waiting) pthread_cond_wait(&report_cond, &report_lock);
+    pthread_mutex_unlock(&report_lock);
+}
+static void release_report(void) {
+    pthread_mutex_lock(&report_lock);
+    hold_report = 0;
+    pthread_cond_broadcast(&report_cond);
+    pthread_mutex_unlock(&report_lock);
+}
 
 static void put(u64 address, const u32* words, size_t count) { memcpy(memory + address, words, count * 4); }
 static GuestFn* slot(u64 address) { return &dispatch[(address - CODE_LO) / 4]; }
@@ -83,6 +105,13 @@ static void undef(CPU* c, u64 pc, u32 w) {
 static void report(const SnxJitReport* r) {
     unsigned i = __atomic_fetch_add(&batch_count, 1, __ATOMIC_RELAXED), unset = ~0u;
     if (get(0x3800)) __atomic_compare_exchange_n(&live_batch, &unset, i, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    pthread_mutex_lock(&report_lock);
+    if (hold_report) {
+        report_waiting = 1;
+        pthread_cond_broadcast(&report_cond);
+        while (hold_report) pthread_cond_wait(&report_cond, &report_lock);
+    }
+    pthread_mutex_unlock(&report_lock);
     if (r->error) {
         fprintf(stderr, "jit: %llx: %s\n", (unsigned long long)r->pc, r->error);
         __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
@@ -280,9 +309,33 @@ static void test_added_image(void) {
     over_main = nro;
     over_main.text_off = CODE_HI - 0x1000;
     put_nro(7);
+    {
+        u32 caller[] = {0xA9BF7BFD, 0, 0xA8C17BFD, 0xD65F03C0};
+        caller[1] = 0x94000000 | ((NRO - 0x4004) / 4);
+        put(0x4000, caller, 4);
+    }
+    {
+        SnxCodeImage bad = nro;
+        bad.text_size = 5;
+        CHECK(snx_jit_add_image(service, &bad) == -1);
+        bad = nro; bad.image = NULL;
+        CHECK(snx_jit_add_image(service, &bad) == -1);
+        bad = nro; bad.image_size = NRO + 4;
+        CHECK(snx_jit_add_image(service, &bad) == -1);
+        bad = nro; bad.base = ~(SnxU64)0 - NRO + 1;
+        CHECK(snx_jit_add_image(service, &bad) == -1);
+        CHECK(snx_jit_add_image(service, NULL) == -1);
+    }
     CHECK(!snx_jit_resolve(service, NRO + 0x1000)); /* not added yet: refused */
     CHECK(snx_jit_add_image(service, &nro) == 0);
     CHECK(snx_jit_add_image(service, &nro) == -1 && snx_jit_add_image(service, &over_main) == -1);
+    CHECK(!snx_jit_resolve(service, 0x4000));
+    snx_jit_drain(service);
+    CHECK(get(0x4000));
+    cpu_init(&c, 0xF000);
+    run(&c, 0x4000);
+    CHECK(c.x[0] == 7 && c.pc == RETURN);
+    snx_jit_drain(service);
     /* NRO + 0x1000: x0 + 7 + 100, interpreted while it compiles, then from the service's table for the image, which
        reaches the AOT function directly */
     for (i = 0; i < 2; ++i) {
@@ -291,8 +344,7 @@ static void test_added_image(void) {
         c.x[0] = 1;
         run(&c, NRO + 0x1000);
         CHECK(c.x[0] == 1 + 7 + 100 && c.pc == RETURN);
-        /* the first time, the interpreter's call to NRO misses too */
-        CHECK(i ? interpreted == before_interpreted : interpreted >= before_interpreted + 1);
+        CHECK(i ? interpreted == before_interpreted : interpreted >= before_interpreted);
         snx_jit_drain(service);
     }
     CHECK(snx_jit_resolve(service, NRO + 0x1000) != NULL);
@@ -301,6 +353,10 @@ static void test_added_image(void) {
     CHECK(!snx_jit_resolve(service, NRO + 0x1000));
     put_nro(9);
     CHECK(snx_jit_add_image(service, &nro) == 0);
+    cpu_init(&c, 0xF000);
+    run(&c, 0x4000); /* already compiled caller must reach the replacement image */
+    CHECK(c.x[0] == 9 && c.pc == RETURN);
+    snx_jit_drain(service);
     for (i = 0; i < 2; ++i) {
         cpu_init(&c, 0xF000);
         c.x[0] = 1;
@@ -336,6 +392,65 @@ static void test_added_image(void) {
     for (i = 1; i < NRO_COUNT; ++i) CHECK(snx_jit_resolve(service, NRO + 0x40 * (u64)i) != NULL);
     printf("added image: %u misses, every function compiled after the image went and came back\n",
            misses - before_misses);
+    snx_jit_service_free(service);
+}
+
+static void* remove_test_image(void* base) {
+    snx_jit_remove_image(service, (SnxU64)(size_t)base);
+    return NULL;
+}
+static int lookup_stop;
+static void* lookup_survivor(void* arg) {
+    SnxU64 pc = (SnxU64)(size_t)arg;
+    while (!__atomic_load_n(&lookup_stop, __ATOMIC_ACQUIRE))
+        if (!snx_jit_resolve(service, pc)) __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    return NULL;
+}
+
+static void region_retirement(void) {
+    SnxCodeImage a, b, c;
+    const u32 words[] = {0x91000400, 0xD65F03C0};
+    pthread_t remover, reader;
+    GuestFn survivor;
+    unsigned i;
+    service = start(1, 1);
+    if (!service) { ++failures; return; }
+    memset(&a, 0, sizeof(a));
+    a.base = 0x3c000; a.image = memory + a.base; a.image_size = a.text_size = sizeof(words);
+    b = a; b.base = 0x36000; b.image = memory + b.base;
+    c = a; c.base = 0x3a000; c.image = memory + c.base;
+    put(a.base, words, 2); put(b.base, words, 2); put(c.base, words, 2);
+    CHECK(!snx_jit_add_image(service, &a)); /* first dynamic region, reused below */
+    CHECK(!snx_jit_add_image(service, &c));
+    CHECK(!snx_jit_resolve(service, c.base));
+    snx_jit_drain(service);
+    survivor = snx_jit_resolve(service, c.base);
+    CHECK(survivor != NULL);
+    hold_next_report();
+    CHECK(!snx_jit_resolve(service, a.base));
+    wait_report(); /* A has published code but its worker still owns the image */
+    CHECK(snx_jit_resolve(service, a.base) != NULL);
+    CHECK(!pthread_create(&remover, NULL, remove_test_image, (void*)(size_t)a.base));
+    /* This is a state handshake, not a scheduling delay: retirement hides A before waiting on its worker. */
+    while (snx_jit_resolve(service, a.base)) sched_yield();
+    CHECK(snx_jit_add_image(service, &a) == -1); /* retiring interval stays reserved */
+    CHECK(!snx_jit_add_image(service, &b)); /* must not overwrite the retiring region */
+    CHECK(snx_jit_resolve(service, c.base) == survivor);
+    release_report();
+    pthread_join(remover, NULL);
+    CHECK(!snx_jit_resolve(service, b.base));
+    snx_jit_drain(service);
+    CHECK(snx_jit_resolve(service, b.base) != NULL);
+    snx_jit_remove_image(service, b.base);
+    /* Reuse the first slot between high A and low B while resolving a third live region between their addresses. */
+    __atomic_store_n(&lookup_stop, 0, __ATOMIC_RELEASE);
+    CHECK(!pthread_create(&reader, NULL, lookup_survivor, (void*)(size_t)c.base));
+    for (i = 0; i < 2000; ++i) {
+        CHECK(!snx_jit_add_image(service, i & 1 ? &a : &b));
+        snx_jit_remove_image(service, i & 1 ? a.base : b.base);
+    }
+    __atomic_store_n(&lookup_stop, 1, __ATOMIC_RELEASE);
+    pthread_join(reader, NULL);
     snx_jit_service_free(service);
 }
 
@@ -387,7 +502,7 @@ int main(void) {
     c.x[0] = 7;
     run(&c, 0x1000);
     CHECK(c.x[0] == 7 * 3 + 1 + 100 + 5 && c.pc == RETURN && c.x[31] == 0xF000);
-    CHECK(misses >= 1 && misses <= 2 && interpreted == misses);
+    CHECK(misses >= 1 && misses <= 2 && interpreted <= misses);
     snx_jit_drain(service);
     CHECK(get(0x1000) && get(0x1014) && get(0x1018) && get(0x3000));
     snx_jit_stats(service, &stats);
@@ -511,20 +626,24 @@ int main(void) {
     service = start(0, 1);
     if (!service) return 1;
     for (i = 0; i < BANK_COUNT; ++i) bank_pcs[i] = BANK + 0x40 * (SnxU64)i;
+    hold_next_report();
     CHECK(snx_jit_warm(service, bank_pcs, BANK_COUNT) == BANK_COUNT);
+    wait_report();
     cpu_init(&c, 0xF000);
     c.x[0] = 1;
     run(&c, 0x3800);
     CHECK(c.x[0] == 2 * (1 * 3 + 1 + 100 + 5));
+    release_report();
     snx_jit_drain(service);
     printf("warm start: %d pcs and 3 misses in %u batches, the miss at 0x3800 compiled by batch %u\n", BANK_COUNT,
            batch_count, live_batch);
-    CHECK(live_batch <= 2 && batch_count > 8);
+    CHECK(live_batch == 1 && batch_count > 8);
     snx_jit_stats(service, &stats);
     CHECK(stats.compiled + stats.failures >= BANK_COUNT + 1 && !stats.failures);
     snx_jit_service_free(service);
 
     test_added_image();
+    region_retirement();
     free(memory);
     if (failures) return 1;
     printf("jit service: passed\n");

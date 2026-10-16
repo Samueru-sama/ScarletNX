@@ -60,6 +60,8 @@ enum { SNX_ELF_RODATA, SNX_ELF_TEXT, SNX_ELF_DATA, SNX_ELF_BSS, SNX_ELF_KINDS };
 /* A view of one input object. The section arrays are one block, freed by snx_elf_free */
 typedef struct {
     const SnxLinkInput* input;
+    SnxLinkInput aligned_input; /* owned copy only when the caller supplies unaligned bytes */
+    unsigned char* aligned_data;
     const Elf64_Ehdr* eh;
     const Elf64_Shdr* sh;
     const Elf64_Sym* syms;
@@ -89,7 +91,7 @@ int snx_elf_collect_globals(const SnxElfObject* objs, size_t count, const SnxLin
                             char* error, size_t error_size);
 
 /* Where object's symbol index is defined: SNX_ELF_HERE, with the defining object and symbol in the set (itself for a
-   local or defined symbol), or SNX_ELF_ELSEWHERE for an undefined one no object of the set defines, which the caller
+   local or strong defined symbol), or SNX_ELF_ELSEWHERE for an undefined one no object of the set defines, which the caller
    resolves by its name or reports. -1 for a bad index */
 enum { SNX_ELF_HERE, SNX_ELF_ELSEWHERE };
 int snx_elf_definition(const SnxElfObject* objs, const SnxLinkNames* globals, size_t object, size_t index,
@@ -109,8 +111,9 @@ int snx_elf_absolute_relocation(unsigned machine, unsigned type);
 unsigned snx_elf_relative_type(unsigned machine);
 
 /* Positions of the loaded sections inside their kinds, in object and section order, and each kind's size and
-   alignment; an object with veneers gets its island right after its code */
-void snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint64_t* kind_align);
+   alignment; an object with veneers gets its island right after its code. Returns -1 if the layout cannot fit
+   the supported 2 GiB module span, otherwise 0. */
+int snx_elf_layout(SnxElfObject* objs, size_t count, uint64_t* kind_size, uint64_t* kind_align);
 
 /* Writes relocation type of machine at p, the place at address P with room bytes left in its section: S the symbol's
    address, A the addend, got the GOT's address and slot the address of the symbol's GOT slot (GOT relocations only).

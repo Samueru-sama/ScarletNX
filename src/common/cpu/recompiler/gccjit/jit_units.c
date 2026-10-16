@@ -19,6 +19,8 @@ static pthread_mutex_t compiling = PTHREAD_MUTEX_INITIALIZER;
 static void lock(void) { pthread_mutex_lock(&compiling); }
 static void unlock(void) { pthread_mutex_unlock(&compiling); }
 #else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 static void lock(void) {}
 static void unlock(void) {}
 #endif
@@ -227,23 +229,31 @@ static int compile_forked(SnxJitUnits* u, unsigned jobs) {
 }
 #endif
 
+#ifdef _WIN32
+/* Publish the packaged binutils directory before any caller searches PATH. */
+static BOOL CALLBACK tools_path_once(PINIT_ONCE once, PVOID parameter, PVOID* context) {
+    char *self = snx_executable("scarletnx"), *dir = self ? snx_dirname(self) : NULL;
+    (void)once;
+    (void)parameter;
+    (void)context;
+    if (dir) {
+        char* path = snx_format("%s;%s", dir, getenv("PATH") ? getenv("PATH") : "");
+        _putenv_s("PATH", path);
+        free(path);
+    }
+    free(dir);
+    free(self);
+    return TRUE;
+}
+#endif
+
 /* GCC's driver assembles every unit and links the module with GNU as and ld, from PATH when libgccjit's own GCC has
    none there (a packaged libgccjit), and a missing one ends the process from inside libgccjit: name it before */
 static int missing_tools(char* error, size_t size) {
     char missing[16] = "", *path;
 #ifdef _WIN32
-    static int beside;
-    if (!beside) { /* the zip carries as.exe and ld.exe beside the runtime, a folder PATH doesn't hold */
-        char *self = snx_executable("scarletnx"), *dir = self ? snx_dirname(self) : NULL;
-        beside = 1;
-        if (dir) {
-            path = snx_format("%s;%s", dir, getenv("PATH") ? getenv("PATH") : "");
-            _putenv_s("PATH", path);
-            free(path);
-        }
-        free(dir);
-        free(self);
-    }
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, tools_path_once, NULL, NULL);
 #endif
     if ((path = snx_find_tool("as")) == NULL) strcpy(missing, "as");
     free(path);

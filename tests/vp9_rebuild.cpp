@@ -37,9 +37,45 @@ int main() {
                               &frame));
         CHECK(frame.size > body.size() && (frame.data[0] >> 6) == 2);
         CHECK(frame.width == 64 && frame.height == 64);
-        CHECK(frame.luma == uint64_t(0x1000 + (job ? job - 1 : 0)) << 8);
-        CHECK(frame.chroma == uint64_t(0x2000 + (job ? job - 1 : 0)) << 8);
+        CHECK(frame.luma == uint64_t(0x1000 + job) << 8);
+        CHECK(frame.chroma == uint64_t(0x2000 + job) << 8);
+        CHECK(frame.previous_visible == (job == 1));
+        picture[0x68] = job == 0 ? 0x12 : 0;
+    }
+    // A golden picture can remain unused while two other output surfaces alternate for many frames.
+    // Track the decoder's slots from the emitted refresh flags, then ask for that old picture again.
+    snx_vp9_free(builder);
+    builder = snx_vp9_new();
+    CHECK(builder);
+    picture[0x68] = 1;
+    regs[0x430 / 4 + 3] = 0x3000;
+    CHECK(snx_vp9_compose(builder, picture.data(), probabilities.data(), body.data(), body.size(), regs.data(), &frame));
+    std::array<uint32_t, 8> surfaces;
+    surfaces.fill(0x3000);
+    uint32_t last = 0x3000;
+    for (unsigned job = 0; job < 20; ++job) {
         picture[0x68] = 0;
+        for (unsigned ref = 0; ref < 3; ++ref) regs[0x430 / 4 + ref] = job == 19 ? 0x3000 : last;
+        uint32_t output = 0x3001 + (job & 1);
+        regs[0x430 / 4 + 3] = output;
+        CHECK(snx_vp9_compose(builder, picture.data(), probabilities.data(), body.data(), body.size(), regs.data(), &frame));
+        unsigned bit = 10; // marker/profile/show-existing/type/show/error (8), reset-frame-context (2)
+        auto read = [&](unsigned n) {
+            unsigned value = 0;
+            while (n--) {
+                value = (value << 1) | ((frame.data[bit / 8] >> (7 - bit % 8)) & 1);
+                ++bit;
+            }
+            return value;
+        };
+        unsigned refresh = read(8);
+        for (unsigned ref = 0; ref < 3; ++ref) {
+            CHECK(surfaces[read(3)] == regs[0x430 / 4 + ref]);
+            read(1); // reference sign bias
+        }
+        for (unsigned slot = 0; slot < surfaces.size(); ++slot)
+            if (refresh & (1u << slot)) surfaces[slot] = output;
+        last = output;
     }
     picture[0x7E] = 1; // one tile column is invalid for a 64-pixel frame
     CHECK(

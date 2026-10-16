@@ -28,6 +28,7 @@ static Surf* g_last;
 static u32 g_last_x, g_last_y, g_last_w, g_last_h;
 static u32 g_last_transform;
 static void vkr_before_write(u64 gva, u64 size) {
+    if (size) vk_release_need(gva, size);
     vk_buf_before_write(gva, size);
     if (size)
         vk_gfx_image_mem_need(gva, size);
@@ -42,6 +43,7 @@ static void vkr_gfx_mem_need(u64 gva, u64 size) {
 }
 static void vkr_mapping_begin(u64 gva, u64 size, int full) {
     vk_lock();
+    vk_release_drain();
     if (full) {
         vk_buf_land_map();
         vk_gfx_image_land();
@@ -334,14 +336,13 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
             LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped; "
                 "%llu finishes (%llu ms)\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_dispatches,
-                (unsigned long long)g_vk_cs_batches, (unsigned long long)(g_vk_cs_wait_ns / 1000000),
+                (unsigned long long)g_vk_cs_batches, (unsigned long long)(__atomic_load_n(&g_vk_cs_wait_ns, __ATOMIC_RELAXED) / 1000000),
                 (unsigned long long)g_vk_cs_skipped, (unsigned long long)g_vk_finishes,
                 (unsigned long long)(g_vk_finish_ns / 1000000));
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
-    if (game) vk_renderdoc_present(g_vk_present);
     vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */
     if (signal) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -525,7 +526,8 @@ const Renderer vk_renderer = {
     .stream_incr = vkr_stream_incr,
     .release_write = vk_release_write,
     .release_need = vk_release_need,
-    .release_queued = vk_release_queued,
+    .release_value = vk_release_value,
+    .release_retire = vk_release_retire,
     .present_buffer = vkr_present_buffer,
     .screenshot = vkr_screenshot,
     .refresh = vkr_refresh,

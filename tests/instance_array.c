@@ -101,7 +101,11 @@ int main(void) {
     maxwell3d_method(&ch, 0x486, word(5, 0, 6), 1);
     expect(2, "a SUBSEQUENT of another topology is a draw of its own");
     expect_draw(0, 4, 0, 6, 1, "the FIRST before it");
-    expect_draw(1, 5, 0, 6, 2, "instances 0 and 1 of the SUBSEQUENT");
+    expect_draw(1, 5, 0, 6, 1, "only instance 1 of the SUBSEQUENT");
+    if (draws[1].base_instance != 1) {
+        fprintf(stderr, "FAIL: nonmerging subsequent must start at instance 1\n");
+        failures++;
+    }
 
     memset(&ch, 0, sizeof ch);
     ndraws = 0;
@@ -121,7 +125,7 @@ int main(void) {
         maxwell3d_method(&ch, method, word(4, 2, 3), 1);
         expect(1, "each packed indexed opcode draws");
         if (draws[0].indexed != 1 || draws[0].first != 2 || draws[0].count != 3 ||
-            draws[0].instances != (method >= 0x5FC ? 2u : 1u)) {
+            draws[0].instances != 1 || draws[0].base_instance != (method >= 0x5FC ? 1u : 0u)) {
             fprintf(stderr, "FAIL: packed indexed opcode %x\n", method);
             failures++;
         }
@@ -142,6 +146,15 @@ int main(void) {
     maxwell3d_method(&ch, 0x485, word(4, 0, 3), 1);
     expect(1, "topology override draw");
     expect_draw(0, 5, 0, 3, 1, "separate topology overrides BEGIN topology");
+    for (u32 override = 1; override <= 2; ++override) {
+        memset(&ch, 0, sizeof ch);
+        ndraws = 0;
+        ch.r3d[0x652] = 1;
+        ch.r3d[0x65C] = override;
+        maxwell3d_method(&ch, 0x485, word(4, 0, 3), 1);
+        expect(1, "point or line topology override draw");
+        expect_draw(0, override - 1, 0, 3, 1, "override enum maps to renderer enum");
+    }
 
     memset(&ch, 0, sizeof ch);
     ndraws = 0;

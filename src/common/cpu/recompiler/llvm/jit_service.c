@@ -47,20 +47,16 @@ typedef struct {
     size_t head, count, capacity; /* capacity: 0 or a power of two */
 } Queue;
 
-/* A dispatch table the service fills: the main one (config.dispatch over [code_lo, code_hi), regions[0]), and one per
-   image added while the game runs (snx_jit_add_image: an NRO's text), whose slots snx_jit_resolve reads, as nothing
-   else knows them. A free region has hi 0. lo and hi change under lock and are read without it (hi last, with acquire
-   and release ordering), and an added region's arrays live until its removal, which waits for the batches reading its
-   image (users). pending: one bit per instruction, set (under lock, never cleared) once the pc is in the misses'
-   queue, compiling or failed. A guest thread that misses a pc with its bit set and its slot empty gets NULL without
-   the lock: every miss after the first, until the code is published, costs two loads. It also tells discovery,
-   without the lock, which pcs other batches have or will have, so a batch doesn't compile them too */
+/* Main dispatch storage is immutable for the service lifetime. Dynamic regions, their tables and retirement
+   state are protected by lock. A worker holds users on its one image from queue extraction through publication;
+   retiring regions keep their address range reserved until that reference is released. */
 typedef struct {
     SnxU64 lo, hi;
     GuestFn* slots;
     unsigned char* pending;
     SnxCodeImage image; /* an added region's */
     unsigned users;     /* under lock: batches compiling with its image */
+    int retiring;
 } Region;
 
 struct SnxJitService {
@@ -223,7 +219,7 @@ static SnxU64 pop(Queue* q) {
     return pc;
 }
 
-/* ---- what the threads read without the lock ---- */
+/* ---- image and table lookup (dynamic regions require lock) ---- */
 
 /* pc in the text of the config's images */
 static int in_text(const SnxJitService* s, SnxU64 pc) {
@@ -239,14 +235,12 @@ static int in_text(const SnxJitService* s, SnxU64 pc) {
 /* the region whose table has a slot for pc, or NULL */
 static Region* region_of(const SnxJitService* s, SnxU64 pc) {
     Region* r = (Region*)&s->regions[0];
-    SnxU64 hi;
     size_t i;
     if (pc & 3) return NULL;
     if (pc - r->lo < r->hi - r->lo) return r;
     for (i = 1; i <= SNX_JIT_IMAGES; ++i) {
         r = (Region*)&s->regions[i];
-        hi = __atomic_load_n(&r->hi, __ATOMIC_ACQUIRE);
-        if (hi && pc >= __atomic_load_n(&r->lo, __ATOMIC_RELAXED) && pc < hi) return r;
+        if (!r->retiring && r->hi && pc >= r->lo && pc < r->hi) return r;
     }
     return NULL;
 }
@@ -294,14 +288,17 @@ static int in_batch(const Batch* b, SnxU64 pc) {
 static int known(void* user, SnxU64 address) {
     const Batch* b = (const Batch*)user;
     SnxJitService* s = b->service;
-    Region* r = region_of(s, address);
+    Region* r;
     Entry* e;
     int result;
-    if (r) {
-        if (__atomic_load_n(slot(r, address), __ATOMIC_RELAXED)) return 1;
-        return is_pending(r, address) && !in_batch(b, address);
-    }
     lock(&s->lock);
+    r = region_of(s, address);
+    if (r) {
+        result = __atomic_load_n(slot(r, address), __ATOMIC_RELAXED) != NULL ||
+                 (is_pending(r, address) && !in_batch(b, address));
+        unlock(&s->lock);
+        return result;
+    }
     e = find(s, address);
     result = e && e->state != QUEUED_WARM && e->state != GONE && !(e->state == IN_FLIGHT && in_batch(b, address));
     unlock(&s->lock);
@@ -370,41 +367,29 @@ static GuestFn unit_function(SnxU64 table, size_t i) {
 /* Compiles the batch of pcs (count of them by address, each IN_FLIGHT), publishes the code and ends their entries:
    DONE with the code that enters at each, or FAILED. A batch of several that fails to emit or load is split, so one pc
    LLVM or the loader refuses fails alone */
-/* Under lock: the images a batch reads, the config's and every added one, which stay readable until images_release
-   (snx_jit_remove_image waits for it). NULL when memory runs out */
-static SnxCodeImage* images_take(SnxJitService* s, size_t* count, unsigned char* taken) {
-    SnxCodeImage* images =
-        (SnxCodeImage*)malloc((s->config.image_count + SNX_JIT_IMAGES) * sizeof(*images) + sizeof(*images));
-    size_t i, n = s->config.image_count;
-    if (!images) return NULL;
-    memcpy(images, s->config.images, s->config.image_count * sizeof(*images));
-    for (i = 1; i <= SNX_JIT_IMAGES; ++i) {
-        taken[i] = s->regions[i].hi != 0;
-        if (!taken[i]) continue;
-        images[n++] = s->regions[i].image;
-        ++s->regions[i].users;
-    }
-    *count = n;
-    return images;
-}
-static void images_release(SnxJitService* s, SnxCodeImage* images, const unsigned char* taken) {
+/* Under lock: select a single owning image. Discovery must not inline code from another unloadable image. */
+static const SnxCodeImage* image_of(SnxJitService* s, SnxU64 pc, Region** owner) {
     size_t i;
-    lock(&s->lock);
-    for (i = 1; i <= SNX_JIT_IMAGES; ++i)
-        if (taken[i]) --s->regions[i].users;
-    cond_broadcast(&s->released);
-    unlock(&s->lock);
-    free(images);
+    Region* r;
+    *owner = NULL;
+    for (i = 0; i < s->config.image_count; ++i) {
+        const SnxCodeImage* m = &s->config.images[i];
+        if (!(pc & 3) && pc >= m->base + m->text_off && pc - (m->base + m->text_off) < m->text_size)
+            return m;
+    }
+    r = region_of(s, pc);
+    if (!r || r == &s->regions[0]) return NULL;
+    *owner = r;
+    return &r->image;
 }
 
-static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
+/* The worker owns the image reference even while a failed batch is retried one pc at a time. */
+static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, const SnxCodeImage* image) {
     SnxCodegen codegen;
     SnxJitReport report;
     SnxLinkInput input;
-    SnxCodeImage* images;
-    unsigned char taken[1 + SNX_JIT_IMAGES];
     unsigned char* object = NULL;
-    size_t size = 0, i, j, used, failed = 0, image_count = 0;
+    size_t size = 0, i, j, used, failed = 0;
     char error[512], name[48];
     const char* names[1];
     SnxU64 table = 0, address;
@@ -422,11 +407,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
     batch.service = s;
     batch.pcs = pcs;
     batch.count = count;
-    lock(&s->lock);
-    images = images_take(s, &image_count, taken);
-    unlock(&s->lock);
-    rc = images ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch, s->config.budget) : -1;
-    if (!images) memset(&codegen, 0, sizeof(codegen));
+    rc = snx_codegen_discover(&codegen, image, 1, pcs, count, known, &batch, s->config.budget);
     discovered = !rc;
     if (rc) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
     for (i = 0; !rc && i < codegen.function_count; ++i) report.instructions += codegen.functions[i].count;
@@ -453,13 +434,13 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
     free(object);
     if (rc && discovered && count > 1) {
         snx_codegen_free(&codegen);
-        if (images) images_release(s, images, taken);
-        for (i = 0; i < count; ++i) compile(s, &pcs[i], 1);
+        for (i = 0; i < count; ++i) compile(s, &pcs[i], 1, image);
         return;
     }
     /* publish: every leader's slot that is still empty, with release ordering, so a thread that loads the address
        (relaxed, cpu.h: x86-64 keeps loads in order) reaches the code and data written before it. A slot something
        else filled meanwhile (another batch, a wrapper) keeps what it holds */
+    lock(&s->lock);
     for (i = 0; !rc && i < codegen.function_count; ++i) {
         f = &codegen.functions[i];
         code = unit_function(table, i);
@@ -472,12 +453,13 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
             __atomic_compare_exchange_n(slot(r, address), &expected, code, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
         }
     }
-    lock(&s->lock);
     for (i = 0; !rc && i < codegen.function_count; ++i) {
         f = &codegen.functions[i];
         code = unit_function(table, i);
         for (j = 0; j < f->count; ++j) {
             if (!f->leaders[j]) continue;
+            address = snx_function_address(f, j);
+            if (!in_text(s, address) && !region_of(s, address)) continue;
             /* a queued pc this batch compiled is done (its queue skips it); one another batch compiles is that
                batch's to end, as this batch's own pcs are below, and an earlier batch's keeps its code */
             e = add(s, snx_function_address(f, j), DONE);
@@ -491,8 +473,8 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
         e = find(s, pcs[i]);
         f = rc ? NULL : snx_codegen_entry(&codegen, pcs[i]);
         code = f ? unit_function(table, (size_t)(f - codegen.functions)) : NULL;
-        /* its image went while the batch compiled (snx_jit_remove_image clears hi under this lock): gone, not failed */
-        if (!code && !in_text(s, pcs[i]) && !region_of(s, pcs[i])) {
+        /* its image went while the batch compiled (snx_jit_remove_image marks it retiring under this lock): gone, not failed */
+        if (!in_text(s, pcs[i]) && !region_of(s, pcs[i])) {
             if (e) {
                 e->state = GONE;
                 e->code = NULL;
@@ -524,25 +506,37 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count) {
     report.error = failed ? error : NULL;
     if (s->config.report) s->config.report(&report);
     snx_codegen_free(&codegen);
-    if (images) images_release(s, images, taken);
 }
 
 /* Under lock: up to max pcs of the first queue that has any into pcs, made IN_FLIGHT; 0 when both are empty. Skips
    the pcs a batch compiled while they waited */
-static size_t take(SnxJitService* s, SnxU64* pcs) {
+static size_t take(SnxJitService* s, SnxU64* pcs, SnxCodeImage* image, Region** owner) {
     size_t n = 0, max;
     int q, state;
     SnxU64 pc;
     Entry* e;
+    const SnxCodeImage *selected = NULL, *candidate;
+    Region* region;
+    *owner = NULL;
     for (q = LIVE; q < QUEUES && !n; ++q) {
         max = q == LIVE ? s->config.batch : (s->config.batch + 7) / 8;
         while (n < max && s->queues[q].count) {
-            pc = pop(&s->queues[q]);
+            pc = s->queues[q].pcs[s->queues[q].head];
+            candidate = image_of(s, pc, &region);
+            if (n && candidate && candidate != selected) break;
+            pop(&s->queues[q]);
             e = find(s, pc);
             state = q == LIVE ? QUEUED : QUEUED_WARM;
             /* compiled since as another batch's leader (whatever its slot holds: a wrapper isn't code for it), or moved
                to the misses' queue */
             if (!e || e->state != state) continue;
+            if (!candidate) { e->state = GONE; continue; }
+            if (!n) {
+                selected = candidate;
+                *image = *candidate;
+                *owner = region;
+                if (region) ++region->users;
+            }
             e->state = IN_FLIGHT;
             set_pending(s, pc);
             pcs[n++] = pc;
@@ -562,13 +556,15 @@ static int compare_pc(const void* a, const void* b) {
 static void worker(SnxJitService* s) {
     SnxU64* pcs = (SnxU64*)malloc(s->config.batch * sizeof(*pcs));
     size_t n;
+    SnxCodeImage image;
+    Region* owner;
 #if defined(__linux__)
     /* below the guest threads: when the host has no idle CPU, a compile waits, not the game */
     setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
 #endif
     lock(&s->lock);
     while (pcs && !s->stop) {
-        n = take(s, pcs);
+        n = take(s, pcs, &image, &owner);
         if (!n) {
             if (!s->busy) cond_broadcast(&s->idle);
             cond_wait(&s->work, &s->lock);
@@ -578,8 +574,12 @@ static void worker(SnxJitService* s) {
         if (s->queues[LIVE].count || s->queues[WARM].count) cond_signal(&s->work);
         unlock(&s->lock);
         qsort(pcs, n, sizeof(*pcs), compare_pc);
-        compile(s, pcs, n);
+        compile(s, pcs, n, &image);
         lock(&s->lock);
+        if (owner) {
+            --owner->users;
+            cond_broadcast(&s->released);
+        }
         --s->busy;
     }
     if (!s->busy) cond_broadcast(&s->idle);
@@ -613,14 +613,19 @@ static void thread_join(JitThread t) { pthread_join(t, NULL); }
 
 GuestFn snx_jit_resolve(SnxJitService* s, SnxU64 pc) {
     GuestFn code = NULL;
-    Region* r = region_of(s, pc);
+    Region* r;
     Entry* e;
-    /* an added image's table is the service's alone: its code is found here, without the lock (the main table's slot
-       is empty, or the caller's lookup would not have missed) */
-    if (r && r != &s->regions[0] && (code = __atomic_load_n(slot(r, pc), __ATOMIC_ACQUIRE)) != NULL) return code;
-    if (!in_text(s, pc) && !(r && r != &s->regions[0])) return NULL;
-    if (r && is_pending(r, pc) && !__atomic_load_n(slot(r, pc), __ATOMIC_ACQUIRE)) return NULL;
+    /* Keep the immutable main table's frequent pending miss cheap. Dynamic tables require the lock through use. */
+    r = &s->regions[0];
+    if (!(pc & 3) && pc - r->lo < r->hi - r->lo && is_pending(r, pc) &&
+        !__atomic_load_n(slot(r, pc), __ATOMIC_ACQUIRE)) return NULL;
     lock(&s->lock);
+    r = region_of(s, pc);
+    if (r && r != &s->regions[0]) code = __atomic_load_n(slot(r, pc), __ATOMIC_ACQUIRE);
+    if (code || (!in_text(s, pc) && !(r && r != &s->regions[0]))) {
+        unlock(&s->lock);
+        return code;
+    }
     e = find(s, pc);
     if (!e || e->state == QUEUED_WARM || e->state == GONE) {
         if (!e) e = add(s, pc, QUEUED);
@@ -669,12 +674,19 @@ void snx_jit_drain(SnxJitService* s) {
 GuestFn snx_jit_interpreter(SnxJitService* s) { return s->interpreter; }
 
 int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
-    SnxU64 lo = image->base + image->text_off, hi = lo + image->text_size;
-    size_t i, n = (size_t)(image->text_size / 4);
+    SnxU64 lo, hi;
+    size_t i, n;
     GuestFn* slots;
     unsigned char* pending;
     Region* r = NULL;
-    if (!image->text_size || (lo & 3) || hi < lo || n > ((size_t)-1) / sizeof(*slots)) return -1;
+    if (!image || !image->image || !image->text_size || (image->text_size & 3) ||
+        image->text_off > image->image_size || image->text_size > image->image_size - image->text_off ||
+        image->base > ~(SnxU64)0 - image->text_off) return -1;
+    lo = image->base + image->text_off;
+    if ((lo & 3) || image->text_size > ~(SnxU64)0 - lo ||
+        image->text_size / 4 > ((size_t)-1) / sizeof(*slots)) return -1;
+    hi = lo + image->text_size;
+    n = (size_t)(image->text_size / 4);
     slots = (GuestFn*)calloc(n, sizeof(*slots));
     pending = (unsigned char*)calloc(n / 8 + 1, 1);
     if (!slots || !pending) {
@@ -698,8 +710,8 @@ int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
     r->slots = slots;
     r->pending = pending;
     r->image = *image;
-    __atomic_store_n(&r->lo, lo, __ATOMIC_RELAXED);
-    __atomic_store_n(&r->hi, hi, __ATOMIC_RELEASE); /* last: region_of finds the region complete */
+    r->lo = lo;
+    r->hi = hi;
     unlock(&s->lock);
     return 0;
 }
@@ -717,9 +729,15 @@ void snx_jit_remove_image(SnxJitService* s, SnxU64 base) {
         unlock(&s->lock);
         return;
     }
+    if (r->retiring) {
+        /* A concurrent remover must also wait until the compiler releases these guest bytes. */
+        while (r->retiring && r->image.base == base) cond_wait(&s->released, &s->lock);
+        unlock(&s->lock);
+        return;
+    }
     lo = r->lo;
     hi = r->hi;
-    __atomic_store_n(&r->hi, 0, __ATOMIC_RELEASE); /* no batch takes the image, no publish finds the table */
+    r->retiring = 1; /* reserve its interval and storage, but prevent lookup and new compilation */
     while (r->users) cond_wait(&s->released, &s->lock);
     /* its pcs are new to the service again: queued ones are skipped when taken, compiled ones forgotten */
     for (i = 0; i < s->entry_capacity; ++i) {
@@ -732,7 +750,10 @@ void snx_jit_remove_image(SnxJitService* s, SnxU64 base) {
     pending = r->pending;
     r->slots = NULL;
     r->pending = NULL;
+    r->hi = 0;
+    r->retiring = 0;
     memset(&r->image, 0, sizeof(r->image));
+    cond_broadcast(&s->released);
     unlock(&s->lock);
     free(slots);
     free(pending);
@@ -748,7 +769,7 @@ static unsigned usable_cpus(void) {
     return snx_cpu_count();
 }
 /* the compile threads when the config leaves it open: every CPU the process may use but two, from one up to
-   SNX_JIT_THREADS. They run below the game's threads (compile_thread lowers their priority), so a compile only gets a
+   SNX_JIT_THREADS. They run below the game's threads (worker lowers their priority), so a compile only gets a
    CPU the guest threads, the GPU thread and audio leave idle. Keeping six CPUs for the game left one compile thread on
    hosts with up to 7 CPUs and two on 8, which fell minutes behind Ender Magnolia's misses */
 static unsigned default_threads(void) {

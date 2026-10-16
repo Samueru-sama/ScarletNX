@@ -74,6 +74,7 @@ typedef struct {
 typedef struct {
     const SnxLinkInput* input;
     const unsigned char* symbols;
+    unsigned char* primary; /* reject references into auxiliary symbol records */
     uint32_t nsymbols, nsections;
     const char* strings;
     uint32_t strings_size;
@@ -125,16 +126,32 @@ static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
     const unsigned char* d = input->data;
     uint32_t i, table;
     o->input = input;
-    if (input->size < 20 || rd16(d) != 0x8664 || rd16(d + 16))
+    if (!d || input->size < 20 || rd16(d) != 0x8664 || rd16(d + 16))
         return fail(l, "%s: not an x86-64 COFF object%s", input->name, "");
     o->nsections = rd16(d + 2);
     table = rd32(d + 8);
     o->nsymbols = rd32(d + 12);
-    if (20 + 40 * (size_t)o->nsections > input->size || table + 18 * (size_t)o->nsymbols + 4 > input->size)
+    if (o->nsections > (input->size - 20) / 40 || table > input->size ||
+        input->size - table < 4 || o->nsymbols > (input->size - table - 4) / 18)
         return fail(l, "%s: truncated COFF object%s", input->name, "");
     o->symbols = d + table;
     o->strings = (const char*)d + table + 18 * (size_t)o->nsymbols;
     o->strings_size = rd32((const unsigned char*)o->strings);
+    if (o->strings_size < 4 || o->strings_size > input->size - table - 18 * (size_t)o->nsymbols)
+        return fail(l, "%s: truncated string table%s", input->name, "");
+    o->primary = (unsigned char*)calloc(o->nsymbols ? o->nsymbols : 1, 1);
+    if (!o->primary) return fail(l, "out of memory%s%s", "", "");
+    for (i = 0; i < o->nsymbols;) {
+        const unsigned char* sym = symbol(o, i);
+        uint32_t offset = rd32(sym + 4);
+        if (sym[17] >= o->nsymbols - i)
+            return fail(l, "%s: truncated auxiliary symbol%s", input->name, "");
+        if (!rd32(sym) && (offset < 4 || offset >= o->strings_size ||
+            !memchr(o->strings + offset, 0, o->strings_size - offset)))
+            return fail(l, "%s: bad symbol name%s", input->name, "");
+        o->primary[i] = 1;
+        i += 1 + sym[17];
+    }
     o->sections = (Sec*)calloc(o->nsections + 1, sizeof(Sec));
     if (!o->sections) return fail(l, "out of memory%s%s", "", "");
     for (i = 1; i <= o->nsections; ++i) {
@@ -142,8 +159,15 @@ static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
         const unsigned char* h = d + 20 + 40 * (size_t)(i - 1);
         s->header = h;
         if (h[0] == '/') {
-            unsigned long offset = strtoul((const char*)h + 1, NULL, 10);
-            snprintf(s->name, sizeof(s->name), "%s", offset < o->strings_size ? o->strings + offset : "");
+            char number[8], *end;
+            unsigned long offset;
+            memcpy(number, h + 1, 7);
+            number[7] = 0;
+            offset = strtoul(number, &end, 10);
+            if (end == number || *end || offset < 4 || offset >= o->strings_size ||
+                !memchr(o->strings + offset, 0, o->strings_size - offset))
+                return fail(l, "%s: bad section name%s", input->name, "");
+            snprintf(s->name, sizeof(s->name), "%s", o->strings + offset);
         } else {
             memcpy(s->name, h, 8);
             s->name[8] = 0;
@@ -153,10 +177,18 @@ static int parse(Link* l, Obj* o, const SnxLinkInput* input) {
         s->relocs = rd32(h + 24);
         s->nrelocs = rd16(h + 32);
         s->flags = rd32(h + 36);
-        if (s->flags & SCN_NRELOC_OVFL) s->nrelocs = rd32(d + s->relocs) - 1, s->relocs += 10;
-        if (!(s->flags & SCN_UNINITIALIZED) && (size_t)s->raw + s->size > input->size)
+        if (s->flags & SCN_NRELOC_OVFL) {
+            uint32_t records;
+            if (s->relocs > input->size || input->size - s->relocs < 10 || s->relocs > UINT32_MAX - 10)
+                return fail(l, "%s: truncated relocation overflow header%s", input->name, "");
+            records = rd32(d + s->relocs);
+            if (!records) return fail(l, "%s: empty relocation overflow header%s", input->name, "");
+            s->nrelocs = records - 1;
+            s->relocs += 10;
+        }
+        if (!(s->flags & SCN_UNINITIALIZED) && (s->raw > input->size || s->size > input->size - s->raw))
             return fail(l, "%s: truncated section %s", input->name, s->name);
-        if ((size_t)s->relocs + 10 * (size_t)s->nrelocs > input->size)
+        if (s->relocs > input->size || s->nrelocs > (input->size - s->relocs) / 10)
             return fail(l, "%s: truncated relocations in %s", input->name, s->name);
         s->output = classify(s);
     }
@@ -249,7 +281,7 @@ static int resolve(Link* l, size_t object, uint32_t index, uint64_t* value, int*
     char name[256];
     int depth;
     for (depth = 0; depth < 8; ++depth) {
-        if (index >= o->nsymbols) return fail(l, "%s: bad symbol index%s", o->input->name, "");
+        if (index >= o->nsymbols || !o->primary[index]) return fail(l, "%s: bad symbol index%s", o->input->name, "");
         s = symbol(o, index);
         section = (int16_t)rd16(s + 12);
         *absolute = 0;
@@ -333,6 +365,41 @@ static uint32_t section_alignment(const Sec* s) {
     return bits ? 1u << (bits - 1) : 16;
 }
 
+/* Bound the complete image before doing layout in PE's 32-bit fields. Include worst-case padding and one
+   base-relocation block per input relocation; the actual layout can only be smaller. Keeping the span below
+   2 GiB also keeps relative calls between its sections representable. */
+static int layout_room(Link* l, uint64_t* span, uint64_t bytes) {
+    if (bytes > INT32_MAX || *span > (uint64_t)INT32_MAX - bytes)
+        return fail(l, "COFF layout exceeds the supported 2 GiB span%s%s", "", "");
+    *span += bytes;
+    return 0;
+}
+
+static int validate_layout(Link* l, const char* const* exports, size_t export_count, const char* soname) {
+    uint64_t span = 2 * O_COUNT * SECTION_ALIGNMENT;
+    size_t i;
+    uint32_t j;
+    for (i = 0; i < l->nobjs; ++i)
+        for (j = 1; j <= l->objs[i].nsections; ++j) {
+            const Sec* s = &l->objs[i].sections[j];
+            if (s->output < 0) continue;
+            if (layout_room(l, &span, (uint64_t)section_alignment(s) + s->size) ||
+                layout_room(l, &span, (uint64_t)s->nrelocs * 12)) return -1;
+        }
+    /* Each import has an eight-byte slot and at most a twelve-byte relocation block. */
+    if (l->imports.count > INT32_MAX / 20)
+        return fail(l, "COFF layout exceeds the supported 2 GiB span%s%s", "", "");
+    if (layout_room(l, &span, (uint64_t)l->imports.count * 20)) return -1;
+    if (export_count) {
+        if (export_count > 65536) return fail(l, "too many COFF exports%s%s", "", "");
+        if (layout_room(l, &span, 40 + 10 * (uint64_t)export_count) ||
+            layout_room(l, &span, strlen(soname)) || layout_room(l, &span, 1)) return -1;
+        for (i = 0; i < export_count; ++i)
+            if (layout_room(l, &span, strlen(exports[i])) || layout_room(l, &span, 1)) return -1;
+    }
+    return 0;
+}
+
 typedef struct {
     size_t object;
     uint32_t section;
@@ -383,6 +450,7 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
     comdats(&l);
     if (collect_globals(&l)) goto done;
     find_imports(&l);
+    if (validate_layout(&l, exports, export_count, soname)) goto done;
     /* order and place the input sections inside each output section */
     for (i = 0; i < count; ++i) norder += l.objs[i].nsections;
     order = (Order*)calloc(norder + 1, sizeof(Order));
@@ -458,7 +526,7 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
             uint64_t S;
             int absolute, target_section;
             if (type == REL_ABSOLUTE) continue;
-            if (at + 4 > s->size || (type == REL_ADDR64 && at + 8 > s->size)) {
+            if (at > s->size || (type == REL_ADDR64 ? 8u : type == REL_SECTION ? 2u : 4u) > s->size - at) {
                 snprintf(error, error_size, "%s: relocation outside section %s", o->input->name, s->name);
                 goto done;
             }
@@ -650,7 +718,10 @@ int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* e
     out.data = NULL;
     rc = 0;
 done:
-    for (i = 0; l.objs && i < count; ++i) free(l.objs[i].sections);
+    for (i = 0; l.objs && i < count; ++i) {
+        free(l.objs[i].sections);
+        free(l.objs[i].primary);
+    }
     free(l.objs);
     free(order);
     free(bases);

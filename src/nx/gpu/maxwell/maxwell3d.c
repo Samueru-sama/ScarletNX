@@ -73,7 +73,11 @@ void r3d_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u
               u32 instances) {
     if (ch->render_off) return; /* SetRenderEnable says no */
     /* SET_PRIMITIVE_TOPOLOGY_CONTROL selects the separate topology register for every draw path. */
-    if ((ch->r3d[0x652] & 1) && ch->r3d[0x65C]) topology = ch->r3d[0x65C] & 0xF;
+    if ((ch->r3d[0x652] & 1) && ch->r3d[0x65C]) {
+        /* The override register has a different enum for points and lines than BEGIN. */
+        u32 override = ch->r3d[0x65C] & 0xF;
+        topology = override == 1 ? 0 : override == 2 ? 1 : override;
+    }
     if (g_renderer_up) {
         g_renderer->draw(ch, indexed, topology, first, count, base_vertex, base_instance, instances);
         return;
@@ -125,27 +129,24 @@ int r3d_blit(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, d
    large textures read as written at every use (TotK hashed ~200 GB of textures again in two minutes for 13 that had
    changed) */
 static u64 g_gw_gen;      /* published after each complete update */
-static u64 g_gw_phys_gen; /* latest shader writeback to a guest CPU page */
+static u64 g_gw_phys_gen; /* latest GPU write to a guest CPU page */
 static PMutex g_gwlock = PMUTEX_INIT;
-static WritePages g_gw_va, g_gw_phys; /* by GPU address, and by the guest address shader writeback landed on */
-static void mem_written(u64 gva, u64 size, int shader) {
+static WritePages g_gw_va, g_gw_phys; /* by GPU address and by guest backing page */
+static void mem_written(u64 gva, u64 size) {
     if (!size) return;
     pm_lock(&g_gwlock);
     u64 gen = g_gw_gen + 1;
     write_pages_stamp(&g_gw_va, gva, size, gen);
-    if (shader) {
-        /* The shader landing caller holds vk_lock, so guest backing cannot be remapped between its copy and here. */
-        for (u64 b = gva >> 12, e = (gva + size - 1) >> 12; b <= e; b++) {
-            u64 cpu = gmmu_translate(b << 12);
-            if (cpu) write_pages_stamp(&g_gw_phys, cpu & ~0xFFFull, 1, gen);
-        }
-        g_gw_phys_gen = gen;
+    for (u64 b = gva >> 12, e = (gva + size - 1) >> 12; b <= e; b++) {
+        u64 cpu = gmmu_translate(b << 12);
+        if (cpu) write_pages_stamp(&g_gw_phys, cpu & ~0xFFFull, 1, gen);
     }
+    g_gw_phys_gen = gen;
     __atomic_store_n(&g_gw_gen, gen, __ATOMIC_RELEASE);
     pm_unlock(&g_gwlock);
 }
-void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size, 0); }
-void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size, 1); }
+void gpu_mem_written(u64 gva, u64 size) { mem_written(gva, size); }
+void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size); }
 u64 gpu_mem_generation(void) { return __atomic_load_n(&g_gw_gen, __ATOMIC_ACQUIRE); }
 static int phys_dirty_since(u64 since, u64 a, u64 sz) {
     if (!sz || since >= g_gw_phys_gen) return 0;

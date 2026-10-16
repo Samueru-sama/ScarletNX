@@ -6,6 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 /* ---- context ---- */
 
@@ -31,53 +37,67 @@ static int enabled(const char* listing, const char* option) {
     return 0;
 }
 
-static const HostTarget* host_target(void) {
-    static HostTarget host;
-    static int done;
-    if (!done) {
-        const char* args[5] = {"gcc", "-march=native", "-Q", "--help=target", NULL};
-        char *gcc = NULL, *output = NULL, *p;
-        done = 1;
+static HostTarget host;
+static void host_target_init(void) {
+    const char* args[5] = {"gcc", "-march=native", "-Q", "--help=target", NULL};
+    char *gcc = NULL, *output = NULL, *p;
 #if defined(LIBGCCJIT_HAVE_TARGET_INFO_API) && (defined(__x86_64__) || defined(__i386__))
-        {
-            gcc_jit_context* ctx = gcc_jit_context_acquire();
-            gcc_jit_target_info* info = gcc_jit_context_get_target_info(ctx);
-            const char* arch = gcc_jit_target_info_arch(info);
-            if (arch && *arch && strlen(arch) < sizeof(host.march) - 8) sprintf(host.march, "-march=%s", arch);
+    {
+        gcc_jit_context* ctx = gcc_jit_context_acquire();
+        gcc_jit_target_info* info = gcc_jit_context_get_target_info(ctx);
+        const char* arch = gcc_jit_target_info_arch(info);
+        if (arch && *arch && strlen(arch) < sizeof(host.march) - 8) sprintf(host.march, "-march=%s", arch);
+        gcc_jit_target_info_release(info);
+        gcc_jit_context_release(ctx);
+        if (host.march[0]) { /* what the CPU supports shows only in a context told its name */
+            ctx = gcc_jit_context_acquire();
+            gcc_jit_context_add_command_line_option(ctx, host.march);
+            info = gcc_jit_context_get_target_info(ctx);
+            host.fma = gcc_jit_target_info_cpu_supports(info, "fma");
+            host.round = gcc_jit_target_info_cpu_supports(info, "sse4.1");
             gcc_jit_target_info_release(info);
             gcc_jit_context_release(ctx);
-            if (host.march[0]) { /* what the CPU supports shows only in a context told its name */
-                ctx = gcc_jit_context_acquire();
-                gcc_jit_context_add_command_line_option(ctx, host.march);
-                info = gcc_jit_context_get_target_info(ctx);
-                host.fma = gcc_jit_target_info_cpu_supports(info, "fma");
-                host.round = gcc_jit_target_info_cpu_supports(info, "sse4.1");
-                gcc_jit_target_info_release(info);
-                gcc_jit_context_release(ctx);
-            }
         }
-#endif
-        if (!host.march[0]) gcc = snx_find_tool("gcc");
-        if (gcc) {
-            args[0] = gcc;
-            if (!snx_run(args, NULL, NULL, &output) && output && (p = strstr(output, "-march=")) != NULL) {
-                char name[64];
-                p += 7;
-                while (*p == ' ' || *p == '\t') ++p;
-                /* AArch64's GCC lists it empty: what follows is the next option */
-                if (*p != '\n' && *p != '\r' && sscanf(p, "%63s", name) == 1 && strcmp(name, "native")) {
-                    sprintf(host.march, "-march=%s", name);
-                    host.fma = enabled(output, "-mfma");
-                    host.round = enabled(output, "-msse4.1");
-                }
-            }
-            free(output);
-            free(gcc);
-        }
-#if defined(__aarch64__)
-        host.fma = host.round = 1; /* FMADD and FRINT* are baseline */
-#endif
     }
+#endif
+    if (!host.march[0]) gcc = snx_find_tool("gcc");
+    if (gcc) {
+        args[0] = gcc;
+        if (!snx_run(args, NULL, NULL, &output) && output && (p = strstr(output, "-march=")) != NULL) {
+            char name[64];
+            p += 7;
+            while (*p == ' ' || *p == '\t') ++p;
+            /* AArch64's GCC lists it empty: what follows is the next option */
+            if (*p != '\n' && *p != '\r' && sscanf(p, "%63s", name) == 1 && strcmp(name, "native")) {
+                sprintf(host.march, "-march=%s", name);
+                host.fma = enabled(output, "-mfma");
+                host.round = enabled(output, "-msse4.1");
+            }
+        }
+        free(output);
+        free(gcc);
+    }
+#if defined(__aarch64__)
+    host.fma = host.round = 1; /* FMADD and FRINT* are baseline */
+#endif
+}
+#ifdef _WIN32
+static BOOL CALLBACK host_target_once(PINIT_ONCE once, PVOID parameter, PVOID* context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
+    host_target_init();
+    return TRUE;
+}
+#endif
+static const HostTarget* host_target(void) {
+#ifdef _WIN32
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    InitOnceExecuteOnce(&once, host_target_once, NULL, NULL);
+#else
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, host_target_init);
+#endif
     return &host;
 }
 

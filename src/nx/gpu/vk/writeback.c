@@ -8,7 +8,14 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
 
+/* Nested because a result can flush an overlapping render target while landing. */
+static _Thread_local unsigned t_result_depth;
+void vk_result_begin(void) { t_result_depth++; }
+void vk_result_end(void) { t_result_depth--; }
+int vk_result_landing(void) { return t_result_depth != 0; }
+
 void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
+    vk_result_begin();
     vk_rt_before_write(addr, size);
     u8* dst = gmem_ptr(addr, size);
     u8* tmp = NULL;
@@ -39,4 +46,5 @@ void vk_write_changed(u64 addr, const u8* res, const u8* org, u32 size) {
     }
     free(tmp);
     if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
+    vk_result_end();
 }

@@ -523,6 +523,12 @@ int vk_written_since(const u8* host, u64 len, u32 since) {
             g_ww ? "write tracking on (caches skip unchanged memory)" : "no write tracking (caches check contents)");
         if (!g_ww) return -1;
     }
+    /* Existing cache baselines cannot be ordered against a wrapped clock. Fall back
+       to content checks permanently before consuming any dirty pages at wrap. */
+    if (g_wclock == UINT32_MAX) {
+        g_ww = 0;
+        return -1;
+    }
     g_wclock++;
     ww_take_changed();
     if (plat_ww_scan((u8*)host, len, ww_mark) < 0) {
@@ -591,18 +597,19 @@ int vk_buf_copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off) {
         }
     int pending = gfx_gpu_src(gva, len, buf, off, 1);
     if (pending == 1) return 1;
+    if (pending == 2) {
+        /* A fresh writable snapshot must include older GPU results in its original
+           bytes, otherwise reconciliation mistakes their landing for a CPU write. */
+        land_reason(WB_DRAW);
+    }
     o = gfx_out_new((u32)(((gva & 0xFFF) + len + 0xFFF) >> 12), len);
     if (!o) return 0;
-    if (pending == 2) /* guest memory's bytes, with the earlier results copied over them below */
-        read_untracked(gva, o->org, len);
-    else {
-        const u8* src = guest_bytes(gva, len);
-        if (!src) {
-            free(o);
-            return 0;
-        }
-        memcpy(o->org, src, len);
+    const u8* src = guest_bytes(gva, len);
+    if (!src) {
+        free(o);
+        return 0;
     }
+    memcpy(o->org, src, len);
     for (u32 i = 0; i < o->npages; i++) {
         u64 cpu = gmmu_translate((gva & ~0xFFFull) + (u64)i * 0x1000);
         o->pages[i] = cpu ? cpu >> 12 : ~0ull;
@@ -738,28 +745,20 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, V
     g_prep_tail = o;
     return 1;
 }
-/* An atlas page starts from guest memory, and the pending results over it are copied in on the GPU in the order they
-   were recorded, after the shaders that wrote them: an aliased draw doesn't wait for earlier results to land in guest
-   memory (TotK drew about four a frame, each landing everything with a vk_finish). Compute results that haven't
-   landed land for the atlas's pages alone. A result whose original bytes the guest has written since can't be copied
-   whole: it lands first, as in gfx_gpu_src, which submits, and the draw starts its setup over */
+/* Writable aliases share one page atlas. Land earlier overlapping results before
+   taking its guest baseline, so later reconciliation cannot mistake those results
+   for intervening CPU writes. Landing may free the whole output list. */
 static void atlas_fill(const DrawPage* p, size_t unique, u8* ptr, VkBuffer atlas, u64 atlas_off) {
     CopyBatch c;
     size_t i;
-    int landed = 0;
     if (g_cs_any)
         for (i = 0; i < unique; i++)
             if (!(p[i].key & (1ull << 63))) vk_compute_mem_need(p[i].gva, 4096);
-    /* first, so a landing comes before memory is read; it frees the list, and leaves nothing to copy */
-    for (GfxOut* o = g_out; o && !landed && !g_out_landing; o = o->next)
-        for (u64 g = o->addr & ~4095ull, e = o->addr + o->size; g < e && !landed; g += 4096) {
-            u64 key = draw_page_key(g), lo = g > o->addr ? g : o->addr, hi = g + 4096 < e ? g + 4096 : e;
-            u32 at = draw_page_index(p, unique, key);
-            if (at < unique && p[at].key == key && !out_copyable(o, lo, hi)) {
-                land_reason(WB_DRAW);
-                landed = 1;
-            }
-        }
+    /* Atlas pages can be written through any binding. Land overlapping results
+       before taking their baseline, including aliases through another GPU VA.
+       Landing frees the output list, so never traverse it across this call. */
+    for (i = 0; i < unique; i++)
+        if (!(p[i].key & (1ull << 63))) mem_need_reason(p[i].gva, 4096, WB_DRAW);
     for (i = 0; i < unique; i++) {
         const u8* page = p[i].key & (1ull << 63) ? NULL : gmem_ptr_untracked(p[i].gva, 4096);
         if (page)

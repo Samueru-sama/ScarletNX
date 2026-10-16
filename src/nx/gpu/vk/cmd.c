@@ -376,7 +376,7 @@ VkDescriptorSet vk_desc_alloc(VkDescriptorSetLayout layout) {
     return VK_NULL_HANDLE;
 }
 
-/* vk_cmd() first: after a submit g_cur is the next slot, still holding an older frame's work. Starting it waits for
+/* vk_cmd() first: after a frame advance g_cur is the next slot, still holding an older frame's work. Starting it waits for
    that work and frees its list, so what is pushed now waits for the frame recorded from now on, which is submitted
    after every frame that can still use it */
 void vk_defer_image(VkImage img, VmaAllocation a, VkImageView v1, VkImageView v2) {

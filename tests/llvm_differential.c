@@ -24,8 +24,7 @@
 #ifdef SNX_TEST_GCCJIT
 #include "common/cpu/recompiler/gccjit/jit.h"
 #endif
-extern const unsigned char snx_rtlib_object[];
-extern const unsigned long snx_rtlib_object_size;
+#include "common/cpu/recompiler/llvm/rtlib_object.h"
 
 typedef u64 (*StepFn)(CPU* c);
 typedef StepFn* (*TableFn)(void);
@@ -557,8 +556,9 @@ int main(int argc, char** argv) {
     char* c_native;
     unsigned long fallbacks, gccjit_fallbacks = 0;
     if (argc < 3) {
-        fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--portable]\n",
-              stderr);
+        fputs(
+            "usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--portable]\n",
+            stderr);
         return 2;
     }
     clang = argv[1];
@@ -606,9 +606,7 @@ int main(int argc, char** argv) {
     l_lib = snx_path_join(dir, "llvm.so");
     /* the reference: snx_a64_static_step's C for each word, compiled by Clang with the flags generated C had */
     f = snx_fopen(c_path, "wb");
-    fputs(
-        "#include \"cpu.h\"\n#include \"cpu_helpers.c\"\ntypedef u64 (*StepFnPtr)(CPU*);\n",
-        f);
+    fputs("#include \"cpu.h\"\n#include \"cpu_helpers.c\"\ntypedef u64 (*StepFnPtr)(CPU*);\n", f);
     for (i = 0; i < count; ++i) {
         char name[32];
         sprintf(name, "S_%lu", (unsigned long)i);

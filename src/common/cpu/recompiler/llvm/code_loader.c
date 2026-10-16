@@ -442,7 +442,10 @@ int snx_code_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t coun
         }
     if (scan(loader, &ld, error, error_size)) goto done;
     /* the unit's parts, each at its region's next free byte: [code, stubs] [read-only data, GOT] [data, bss] */
-    snx_elf_layout(ld.objs, count, kind_size, kind_align);
+    if (snx_elf_layout(ld.objs, count, kind_size, kind_align)) {
+        snprintf(error, error_size, "ELF layout exceeds the supported 2 GiB span");
+        goto done;
+    }
     start[CODE] =
         align_up(next_free(loader, CODE), kind_align[SNX_ELF_TEXT] > CODE_LINE ? kind_align[SNX_ELF_TEXT] : CODE_LINE);
     kind_address[SNX_ELF_TEXT] = start[CODE];

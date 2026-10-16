@@ -159,6 +159,7 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 nchans) {
     fn(arg); /* the GPU thread has nothing queued before it */
 }
 void gpu_channel_close(u32 channel) { test_gpu.closed_channel = channel; }
+void gpu_release_retire(u32 channel) { (void)channel; }
 void gpu_kick(void) { test_gpu.kicks++; }
 void gpu_mem_written(u64 gva, u64 size) { (void)gva, (void)size; }
 
@@ -446,6 +447,66 @@ int main(void) {
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
     nv_init();
+    {
+        u8 request[40] = {0};
+        u32 size = 0x2000, handle, align = 0x1000;
+        u64 addr = 0x2000;
+        memcpy(request, &size, 4);
+        CHECK(ioctl_nvmap(0x01, request, sizeof request) == 0);
+        memcpy(&handle, request + 4, 4);
+        CHECK(handle != 0);
+        u64 mapped;
+        u32 mapped_size;
+        CHECK(!nvmap_get(handle, &mapped, &mapped_size));
+        memcpy(request, &handle, 4);
+        memcpy(request + 12, &align, 4);
+        memcpy(request + 24, &addr, 8);
+        CHECK(ioctl_nvmap(0x04, request, sizeof request) == 0);
+        CHECK(nvmap_get(handle, &mapped, &mapped_size) && mapped == addr && mapped_size == size);
+        addr = AS_SIZE;
+        memcpy(request + 24, &addr, 8);
+        CHECK(ioctl_nvmap(0x04, request, sizeof request) == 4);
+        CHECK(nvmap_get(handle, &mapped, &mapped_size) && mapped == 0x2000);
+        addr = 0x2001;
+        memcpy(request + 24, &addr, 8);
+        CHECK(ioctl_nvmap(0x04, request, sizeof request) == 4);
+    }
+    {
+        /* A valid aligned allocation must not permit an unaligned MAP offset to expose host memory
+           beyond the guest reservation through the rest of a published PTE. */
+        u8 request[40] = {0};
+        u32 size = 0x1000, handle, flags = 1;
+        u64 addr = AS_SIZE - 0x1000, offset = 0xFFE, bytes = 1, gva = VA_BASE;
+        memcpy(request, &size, 4);
+        CHECK(ioctl_nvmap(0x01, request, sizeof request) == 0);
+        memcpy(&handle, request + 4, 4);
+        memcpy(request, &handle, 4);
+        memcpy(request + 24, &addr, 8);
+        CHECK(ioctl_nvmap(0x04, request, sizeof request) == 0);
+        memset(request, 0, sizeof request);
+        memcpy(request, &flags, 4);
+        memcpy(request + 8, &handle, 4);
+        memcpy(request + 16, &offset, 8);
+        memcpy(request + 24, &bytes, 8);
+        memcpy(request + 32, &gva, 8);
+        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 4);
+        CHECK(!gmmu_translate(gva) && !gmmu_translate(gva + 0xFFF));
+        offset = 0;
+        memcpy(request + 16, &offset, 8);
+        gva++;
+        memcpy(request + 32, &gva, 8);
+        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 4);
+        gva--;
+        memcpy(request + 32, &gva, 8);
+        bytes = 0x1001;
+        memcpy(request + 24, &bytes, 8);
+        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 4);
+        CHECK(!gmmu_translate(gva));
+        bytes = 1;
+        memcpy(request + 24, &bytes, 8);
+        CHECK(ioctl_as(0x06, request, sizeof request, NULL, 0) == 0);
+        CHECK(gmmu_translate(gva) == addr && gmmu_translate(gva + 0xFFF) == AS_SIZE - 1);
+    }
     nvdrv = new_nvdrv();
     u32 error;
 
@@ -495,6 +556,8 @@ int main(void) {
         if (nv.nvev[i].ev) kobj_unref(&nv.nvev[i].ev->o);
     CHECK(test_kobjs == 0 && test_locks == 0);
     svcobj_unref(nvdrv);
+    for (u32 i = 0; i < GL1; i++) free(nv.gmmu[i]);
+    free(nv.gmaps);
     free(nv.gmmu);
     free(g_mem);
     printf("nvdrv_service: %u checks passed\n", test_checks);
