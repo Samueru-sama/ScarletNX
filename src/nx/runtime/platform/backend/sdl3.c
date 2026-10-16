@@ -17,6 +17,7 @@
 #include "runtime/platform/touch.h"
 #include "runtime/platform/ui.h"
 #include "runtime/platform/vpad.h"
+#include "runtime/platform/gamepad.h"
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +40,6 @@ static u64 g_menu_held; /* buttons held while the menu had the controls (the B t
 static int g_fullscreen;
 static void set_fullscreen(int on);
 static int g_shot_req;
-static SDL_Gamepad* g_pads[4];
 static int g_audio_ready;
 static int g_hidden;         /* the app is in the background (Android) */
 static int g_given_up;       /* the window went to a fatal error's screen: the renderer presents nothing more */
@@ -546,41 +546,6 @@ static void hotkey(SDL_Keycode k) {
     }
 }
 
-static int pad_is_open(SDL_JoystickID id) {
-    for (int i = 0; i < 4; i++)
-        if (g_pads[i] && SDL_GetGamepadID(g_pads[i]) == id) return 1;
-    return 0;
-}
-static void pad_open(SDL_JoystickID id) {
-    if (pad_is_open(id)) return;
-    for (int i = 0; i < 4; i++)
-        if (!g_pads[i]) {
-            g_pads[i] = SDL_OpenGamepad(id);
-            if (g_pads[i]) LOG("input: gamepad %s\n", SDL_GetGamepadName(g_pads[i]));
-            return;
-        }
-}
-static void pad_close(SDL_JoystickID id) {
-    for (int i = 0; i < 4; i++)
-        if (g_pads[i] && SDL_GetGamepadID(g_pads[i]) == id) {
-            SDL_CloseGamepad(g_pads[i]);
-            g_pads[i] = NULL;
-        }
-    /* a fifth pad connected while four were open takes the free place */
-    int n = 0;
-    SDL_JoystickID* ids = SDL_GetGamepads(&n);
-    if (!ids) return;
-    for (int i = 0; i < n; i++) pad_open(ids[i]);
-    SDL_free(ids);
-}
-
-/* the dead zone as a circle, so a stick pushed along one axis keeps the small part of the other */
-static void dz(i32* x, i32* y) {
-    if ((i64)*x * *x + (i64)*y * *y < 7000ll * 7000) *x = *y = 0;
-}
-/* SDL's Y axes point down, the Switch's up */
-static i32 up(i32 v) { return v == -32768 ? 32767 : -v; }
-
 /* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open. Back, Home and F2 open
    and close it, and they and Esc end the on-screen controls' edit mode. Under ui_lock: the renderer draws them on its
    thread */
@@ -813,45 +778,27 @@ void video_poll(void) {
                    that took the focus: the game's touch from the mouse lifts now (a later release finds it up) */
                 touch_up(&g_touch, g_touch_ids, SNX_TOUCH_MOUSE);
                 break;
-            case SDL_EVENT_GAMEPAD_ADDED: pad_open(e.gdevice.which); break;
-            case SDL_EVENT_GAMEPAD_REMOVED: pad_close(e.gdevice.which); break;
+            case SDL_EVENT_GAMEPAD_ADDED: gamepad_open(e.gdevice.which); break;
+            case SDL_EVENT_GAMEPAD_REMOVED: gamepad_close(e.gdevice.which); break;
         }
     }
     /* the scripted presses act like keys, stick keys included. Bits 16..23 (the stick directions as buttons) can be
        scripted too, but the stick keys (40..47) are no npad buttons */
     u64 s = unattended_buttons(), k = keys_held | s, b = (k & 0xFFFFull) | (s & 0xFF0000ull);
-    i32 st[4];
+    i32 st[4], pad[4];
+    u64 pb;
     input_key_sticks(k, st);
     i32 lx = st[0], ly = st[1], rx = st[2], ry = st[3];
     /* every pad and the keyboard drive the one controller the game sees (hid.c has a single PadState) */
-    for (int i = 0; i < 4; i++) {
-        SDL_Gamepad* g = g_pads[i];
-        if (!g) continue;
-        /* by position like a Switch pad: A right, B bottom, X top, Y left */
-        static const struct {
-            SDL_GamepadButton btn;
-            int bit;
-        } map[] = {{SDL_GAMEPAD_BUTTON_EAST, 0},          {SDL_GAMEPAD_BUTTON_SOUTH, 1},
-                   {SDL_GAMEPAD_BUTTON_NORTH, 2},         {SDL_GAMEPAD_BUTTON_WEST, 3},
-                   {SDL_GAMEPAD_BUTTON_LEFT_STICK, 4},    {SDL_GAMEPAD_BUTTON_RIGHT_STICK, 5},
-                   {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 6}, {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, 7},
-                   {SDL_GAMEPAD_BUTTON_START, 10},        {SDL_GAMEPAD_BUTTON_BACK, 11},
-                   {SDL_GAMEPAD_BUTTON_DPAD_LEFT, 12},    {SDL_GAMEPAD_BUTTON_DPAD_UP, 13},
-                   {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, 14},   {SDL_GAMEPAD_BUTTON_DPAD_DOWN, 15}};
-        for (size_t m = 0; m < sizeof map / sizeof map[0]; m++)
-            if (SDL_GetGamepadButton(g, map[m].btn)) b |= 1ull << map[m].bit;
-        if (SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 8000) b |= 1ull << 8;
-        if (SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 8000) b |= 1ull << 9;
-        if (!lx && !ly) {
-            lx = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX);
-            ly = up(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY));
-            dz(&lx, &ly);
-        }
-        if (!rx && !ry) {
-            rx = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTX);
-            ry = up(SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_RIGHTY));
-            dz(&rx, &ry);
-        }
+    gamepad_state(&pb, pad);
+    b |= pb;
+    if (!lx && !ly) {
+        lx = pad[0];
+        ly = pad[1];
+    }
+    if (!rx && !ry) {
+        rx = pad[2];
+        ry = pad[3];
     }
     { /* the on-screen controls, as one more pad: their sticks over the others' while held */
         u64 vb;

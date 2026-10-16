@@ -308,6 +308,11 @@ snx_test_target(snx-test-vpad 11)
 target_link_libraries(snx-test-vpad PRIVATE scarletnx-common m)
 add_test(NAME vpad COMMAND snx-test-vpad)
 
+add_executable(snx-test-gamepad gamepad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/backend/gamepad.c")
+snx_test_target(snx-test-gamepad 11)
+target_link_libraries(snx-test-gamepad PRIVATE SDL3::SDL3)
+add_test(NAME gamepad COMMAND snx-test-gamepad)
+
 add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c")
 snx_test_target(snx-test-fatal-screen 11)
 target_link_libraries(snx-test-fatal-screen PRIVATE scarletnx-common)

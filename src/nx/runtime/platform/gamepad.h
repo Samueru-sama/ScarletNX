@@ -1,0 +1,17 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright 2026 the ScarletNX contributors */
+/* The controllers SDL knows as gamepads (backend/gamepad.c): each one drives the game's one controller, as the
+   keyboard does */
+#ifndef SNX_GAMEPAD_H
+#define SNX_GAMEPAD_H
+#include "cpu/aarch64/cpu.h"
+
+#define SNX_GAMEPADS 4 /* read at once; one more takes the place of one that goes */
+/* a gamepad the system added or removed (its SDL joystick id): opened, closed */
+void gamepad_open(u32 id);
+void gamepad_close(u32 id);
+/* the open gamepads together: their HidNpadButton bits, and the first stick past the dead zone of each side (lx, ly,
+   rx, ry; right and up) */
+void gamepad_state(u64* buttons, i32 sticks[4]);
+
+#endif
