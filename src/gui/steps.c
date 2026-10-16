@@ -118,6 +118,26 @@ int gui_steps_percent(const GuiSteps* steps) {
     }
     return percent;
 }
+void gui_step_progress(const GuiStep* s, int how, uint64_t now, char* out, size_t size) {
+    uint64_t spent = now > s->shown_ms ? now - s->shown_ms : 0, done = s->value < s->total ? s->value : s->total, left;
+    if (!s->total)
+        snprintf(out, size, "%s", "");
+    else if (how == GUI_PROGRESS_PERCENT)
+        snprintf(out, size, "%u%%", (unsigned)(done * 100 / s->total));
+    else if (how == GUI_PROGRESS_TIME && (!done || spent < 1000))
+        snprintf(out, size, "--:-- left");
+    else if (how == GUI_PROGRESS_TIME) {
+        left = (spent * (s->total - done) / done + 999) / 1000;
+        if (left >= 3600)
+            snprintf(out, size, "%u:%02u:%02u left", (unsigned)(left / 3600), (unsigned)(left / 60 % 60),
+                     (unsigned)(left % 60));
+        else
+            snprintf(out, size, "%02u:%02u left", (unsigned)(left / 60), (unsigned)(left % 60));
+    } else if (s->megabytes && s->total >= 1024)
+        snprintf(out, size, "%.1f / %.1f GB", s->value / 1024.0, s->total / 1024.0);
+    else
+        snprintf(out, size, s->megabytes ? "%u / %u MB" : "%u / %u", s->value, s->total);
+}
 const GuiStep* gui_steps_last(const GuiSteps* steps, const char* label) {
     int i;
     for (i = steps->count - 1; i >= 0; --i)

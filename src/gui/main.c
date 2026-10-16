@@ -566,7 +566,7 @@ static void run_name(const App* app, char* out, size_t size) {
     out[n] = 0;
 }
 /* a step's line: its label, its detail in capitals and its status */
-static size_t step_runs(const GuiStep* s, char run[3][112], size_t length[3]) {
+static size_t step_runs(const GuiStep* s, int how, Uint64 now, char run[3][112], size_t length[3]) {
     char* q;
     size_t total;
     int r;
@@ -578,10 +578,11 @@ static size_t step_runs(const GuiStep* s, char run[3][112], size_t length[3]) {
         snprintf(run[2], 112, "...FAILED");
     else if (s->state == GUI_STEP_DONE)
         snprintf(run[2], 112, "...OK");
-    else if (s->total)
-        snprintf(run[2], 112, " %u / %u", s->value, s->total);
-    else
-        run[2][0] = 0;
+    else {
+        char progress[64];
+        gui_step_progress(s, how, now, progress, sizeof progress);
+        snprintf(run[2], 112, "%s%s", progress[0] ? " " : "", progress);
+    }
     total = 0;
     for (r = 0; r < 3; ++r) total += length[r] = SDL_utf8strlen(run[r]);
     return total;
@@ -673,7 +674,7 @@ static void render_steps(App* app) {
         owner[rows] = s;
         is_note[rows] = 0;
         shown[rows] = SDL_max(s->shown_ms, since);
-        step_runs(s, runs[rows], lengths[rows]);
+        step_runs(s, theme->progress, now, runs[rows], lengths[rows]);
         clip_row(runs[rows], lengths[rows], 0, app->cols - 6);
         last_step = rows++;
         if (!theme->detailed || (theme->collapse && s->state == GUI_STEP_DONE)) continue;
@@ -2132,7 +2133,7 @@ static void tell(App* app) {
     Uint64 now = SDL_max(SDL_GetTicks(), 1);
     line[0] = 0;
     if (app->steps.count) {
-        step_runs(&app->steps.step[app->steps.count - 1], runs, lengths);
+        step_runs(&app->steps.step[app->steps.count - 1], app->theme.progress, now_ms(app), runs, lengths);
         snprintf(line, sizeof line, "%s%s%s", runs[0], runs[1], runs[2]);
     }
     if (app->told_ms && (now - app->told_ms < 1000 || (percent == app->told_percent && !strcmp(line, app->told))))

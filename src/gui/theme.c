@@ -24,6 +24,7 @@ static const char* const styles[] = {"plain", "bar", "none", NULL};
 static const char* const focuses[] = {"color", "bar", NULL};
 static const char* const layouts[] = {"console", "steps", NULL};
 static const char* const rings[] = {"none", "left", "right", "right-near-text", NULL};
+static const char* const progresses[] = {"amount", "percent", "time", NULL}; /* GuiProgress's order */
 static const char* const aligns[] = {"left", "center", "right", NULL};
 static const char* const entrances[] = {"none", "typing", "slide", "fade", NULL};
 static const char* const typings[] = {"async", "sync", NULL};
@@ -68,6 +69,8 @@ const GuiThemeKey gui_theme_keys[] = {
     FLAG("run", "detailed", detailed, "each step's other lines under it"),
     FLAG("run", "collapse", collapse, "a done step's lines folded away"),
     WORD("run", "ring", ring, rings, "the turning ring"),
+    WORD("run", "progress", progress, progresses,
+         "a running step's progress: amount (1.2 / 4.0 GB), percent, time left"),
     WORD("prompt", "align", prompt.align, aligns, "on its row"),
     TEXT("prompt", "open", prompt.open, "before the line"),
     TEXT("prompt", "close", prompt.close, "after it"),

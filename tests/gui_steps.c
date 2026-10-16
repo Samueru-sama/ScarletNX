@@ -101,6 +101,41 @@ int main(void) {
     assert(at(&s, 1)->value == 300 && at(&s, 1)->total == 400 && gui_steps_percent(&s) == 75);
     assert(gui_step_notes(&s, at(&s, 1), notes, 8) == 1 && !strcmp(notes[0]->text, "unpacked 9 of 9 MB (100%)"));
 
+    /* a step's progress on its line, as the theme says: amount in MB, GB past 1024 of them, blocks bare; percent;
+       the time left at its pace so far, once a second of it has gone; nothing while it has no total */
+    {
+        GuiStep step;
+        char text[32];
+        memset(&step, 0, sizeof step);
+        step.shown_ms = 1000;
+        gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);
+        assert(!strcmp(text, ""));
+        step.value = 300;
+        step.total = 900;
+        step.megabytes = 1;
+        gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);
+        assert(!strcmp(text, "300 / 900 MB"));
+        step.value = 2048;
+        step.total = 4096;
+        gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);
+        assert(!strcmp(text, "2.0 / 4.0 GB"));
+        gui_step_progress(&step, GUI_PROGRESS_PERCENT, 2000, text, sizeof text);
+        assert(!strcmp(text, "50%"));
+        gui_step_progress(&step, GUI_PROGRESS_TIME, 1500, text, sizeof text);
+        assert(!strcmp(text, "--:-- left"));
+        gui_step_progress(&step, GUI_PROGRESS_TIME, 31000, text, sizeof text); /* half in 30 s: 30 s more */
+        assert(!strcmp(text, "00:30 left"));
+        step.value = 1;
+        step.total = 1000;
+        gui_step_progress(&step, GUI_PROGRESS_TIME, 11000, text, sizeof text); /* 10 s a block, 999 to go */
+        assert(!strcmp(text, "2:46:30 left"));
+        step.megabytes = 0;
+        step.value = 3;
+        step.total = 6;
+        gui_step_progress(&step, GUI_PROGRESS_AMOUNT, 2000, text, sizeof text);
+        assert(!strcmp(text, "3 / 6"));
+    }
+
     /* a native launch, no recompile: 100% from the banner; the oldest steps go past the maximum */
     gui_steps_reset(&s);
     feed(&s, "ScarletNX - Native\n", 1);

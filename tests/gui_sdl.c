@@ -395,6 +395,29 @@ static void button_map(App* app) {
     assert(app->form == GUI_FORM_GROUP);
     leave_editor(app);
 }
+/* a running step's line ends in its progress as the theme says, a done one in OK */
+static void step_line(void) {
+    GuiStep s;
+    char runs[3][112];
+    size_t lengths[3];
+    memset(&s, 0, sizeof s);
+    snprintf(s.label, sizeof s.label, "UNPACK");
+    snprintf(s.detail, sizeof s.detail, "Game.xci");
+    s.value = 1024;
+    s.total = 4096;
+    s.megabytes = 1;
+    step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
+    assert(!strcmp(runs[0], "UNPACK:") && !strcmp(runs[1], " GAME.XCI") && !strcmp(runs[2], " 25%"));
+    step_runs(&s, GUI_PROGRESS_AMOUNT, 0, runs, lengths);
+    assert(!strcmp(runs[2], " 1.0 / 4.0 GB") && lengths[2] == 13);
+    s.state = GUI_STEP_DONE;
+    step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
+    assert(!strcmp(runs[2], "...OK"));
+    s.total = 0;
+    s.state = GUI_STEP_ACTIVE;
+    step_runs(&s, GUI_PROGRESS_PERCENT, 0, runs, lengths);
+    assert(!runs[2][0] && !lengths[2]);
+}
 static int SDLCALL hang(void* unused) {
     (void)unused;
     for (;;) SDL_Delay(100);
@@ -2341,6 +2364,7 @@ int main(int argc, char** argv) {
     assert(app.menu.running && app.menu.selected == GUI_SWITCH);
     finish(&app, 0);
     button_map(&app);
+    step_line();
     e.type = SDL_EVENT_QUIT;
     event(&app, &e);
     assert(app.menu.quit);

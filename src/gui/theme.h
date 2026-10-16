@@ -56,6 +56,7 @@ typedef struct {
     int texture, bar;       /* faint lines over the page; the progress bar and its percentage */
     int detailed, collapse; /* each step's lines under it; folded once the step is done */
     GuiRing ring;
+    int progress; /* how a running step's progress reads on its line: GuiProgress (steps.h) */
     GuiLineIn line_in;
     int typing_sync; /* one line typed at a time, those already done three times faster */
     GuiPrompt prompt;

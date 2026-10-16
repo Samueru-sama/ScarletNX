@@ -195,7 +195,11 @@ dots and a turning ring; each step the driver and the runner report (unpack, ext
 recompile with its blocks, built, launch, GPU) typed down the page, with turning dots
 while it runs and `...OK` or `...FAILED` once it ends, the cursor blinking on the current
 one, and the other lines it printed indented under it (`[run] bar` adds a progress bar
-with the recompile's percentage). The menu fades out to black as a run starts and the run fades in from it; ESC
+with the running step's percentage). A step that counts, the unpack and the extraction by
+what hactool has written, the recompile by its blocks, shows how far it is on its line as
+`[run] progress` says: `amount` (`1.2 / 4.0 GB`, `3 / 6`), `percent` (`30%`, YoRHa's) or
+`time`, what is left at its pace so far (`01:23 left`). With `layout = console` the
+driver's own row says it, `unpacked 1229 of 4096 MB (30%)`, written over itself each second. The menu fades out to black as a run starts and the run fades in from it; ESC
 fades the run out and the menu back in.
 
 A theme is also a folder holding a `theme.ini`, the folder's name its id, in
@@ -256,6 +260,8 @@ warning = #D9B24A
 texture = true
 bar = true
 ring = right
+; a running step's progress: amount | percent | time
+progress = percent
 ; detailed: each step's other lines under it, down the screen; collapse: a done step's
 ; folded away, a failed one's kept
 detailed = true

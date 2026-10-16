@@ -3,6 +3,7 @@
 /* GUI themes: the built-ins, a theme.ini over its base, and the themes/ folders the GUI offers. */
 #include "common.h"
 #include "gui_theme_colors.h"
+#include "steps.h" /* GuiProgress */
 #include "theme.h"
 #include <assert.h>
 #include <stdio.h>
@@ -47,6 +48,7 @@ static const char* const format_keys[] = {"theme/format",
                                           "run/detailed",
                                           "run/collapse",
                                           "run/ring",
+                                          "run/progress",
                                           "prompt/align",
                                           "prompt/open",
                                           "prompt/close",
@@ -148,6 +150,11 @@ int main(void) {
     assert(def->run == GUI_RUN_CONSOLE && !def->fade_in_ms && !def->fade_out_ms && def->line_in == GUI_LINE_NONE);
     assert(loading->run == GUI_RUN_STEPS && loading->ring == GUI_RING_RIGHT && loading->texture && !loading->bar);
     assert(loading->line_in == GUI_LINE_TYPING && loading->typing_ms == 5 && loading->fade_out_ms == 500);
+    /* a running step's progress: the default theme's amount, YoRHa's percent; a theme names its own */
+    assert(def->progress == GUI_PROGRESS_AMOUNT && yorha->progress == GUI_PROGRESS_PERCENT);
+    theme = *def;
+    parse(&theme, "[run]\nprogress = time\n");
+    assert(theme.progress == GUI_PROGRESS_TIME);
     assert(loading->typing_sync && !def->typing_sync);  /* YoRHa types one line at a time */
     assert(yorha->scroll_ms == 120 && !def->scroll_ms); /* a long line slides in YoRHa, is cut in the default */
     assert(loading->detailed && !loading->collapse && !def->detailed && !def->collapse);
