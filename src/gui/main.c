@@ -306,6 +306,8 @@ const GuiThemeKey gui_app_form_keys[] = {
      "Built-in themes, then each themes/<name>/theme.ini"},
     {"", "Text size", GUI_KEY_ACTION, offsetof(GuiAppForm, text), sizeof(((GuiAppForm*)0)->text), NULL, 0,
      "Bigger letters scroll the menu. Auto fits the screen"},
+    {"", "Layout", GUI_KEY_ACTION, offsetof(GuiAppForm, layout), sizeof(((GuiAppForm*)0)->layout), NULL, 0,
+     "Classic: lines down the page. Panels: the theme's panels side by side"},
     {"", "Theme editor", GUI_KEY_ACTION, 0, 0, NULL, 0,
      "This theme's keys with a preview, saved as themes/<name>/theme.ini"},
     {"", "Game folders", GUI_KEY_ACTION, offsetof(GuiAppForm, folders), sizeof(((GuiAppForm*)0)->folders), NULL, 0,
@@ -317,6 +319,7 @@ void gui_app_values(App* app) {
         snprintf(f->text, sizeof f->text, "%dx", app->menu.text_size);
     else
         snprintf(f->text, sizeof f->text, "Auto");
+    snprintf(f->layout, sizeof f->layout, "%s", app->menu.panels ? "Panels" : "Classic");
     if (app->folder_count)
         snprintf(f->folders, sizeof f->folders, "games/ and %d more", app->folder_count);
     else
@@ -560,6 +563,8 @@ void gui_app_leave_form(App* app) {
 static void app_action(App* app, int row, int step) {
     if (row == GUI_APP_THEME)
         next_theme(app, step < 0 ? -1 : 1);
+    else if (row == GUI_APP_LAYOUT) /* the two either way round */
+        app->menu.panels = !app->menu.panels;
     else if (row == GUI_APP_TEXT)
         app->menu.text_size = (app->menu.text_size + (step < 0 ? GUI_TEXT_MAX : 1)) % (GUI_TEXT_MAX + 1);
     else if (row == GUI_APP_EDITOR && !step) {

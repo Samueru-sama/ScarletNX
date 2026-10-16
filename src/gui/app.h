@@ -45,7 +45,7 @@ enum { GUI_FORM_SETTINGS, GUI_FORM_GROUP, GUI_FORM_APP, GUI_FORM_FOLDERS, GUI_FO
 #define GUI_FOLDERS_MAX 16 /* the player's game folders, past games/ */
 /* the App screen's values, as its rows show them, and the game folders' (games/ first) */
 typedef struct {
-    char theme[64], text[16], folders[32];
+    char theme[64], text[16], layout[16], folders[32];
     char folder[GUI_FOLDERS_MAX + 1][16];
 } GuiAppForm;
 typedef struct {
@@ -193,7 +193,7 @@ enum { GUI_TAB_MENU, GUI_TAB_GAMES, GUI_TAB_SETTINGS, GUI_TABS };
 /* what a screen has besides its title, list and bar: the status box when the theme has a footer, the tabs when it
    shows them */
 enum { GUI_SHOWS_STATUS = 1, GUI_SHOWS_TABS = 2 };
-enum { GUI_APP_THEME, GUI_APP_TEXT, GUI_APP_EDITOR, GUI_APP_FOLDERS, GUI_APP_ROWS };
+enum { GUI_APP_THEME, GUI_APP_TEXT, GUI_APP_LAYOUT, GUI_APP_EDITOR, GUI_APP_FOLDERS, GUI_APP_ROWS };
 extern const char* const gui_items[];         /* the menu's items, by GUI_GAMES and the others */
 extern const GuiThemeKey gui_app_form_keys[]; /* Settings > App's rows */
 static inline SDL_Color rgb(GuiRgb c) {
@@ -300,7 +300,8 @@ static inline void menu_label(const App* app, int item, char* label, size_t size
 static inline int entering(const App* app) {
     return app->entering_ms && now_ms(app) < app->entering_ms + app->theme.fade_out_ms;
 }
-static inline int boxed(const App* app) { return app->theme.boxes != GUI_BOXES_NONE; }
+/* the screens in the theme's boxes: Settings > App's Layout on Panels, and a theme that has them */
+static inline int boxed(const App* app) { return app->menu.panels && app->theme.boxes != GUI_BOXES_NONE; }
 static inline int cell_w(const App* app) { return 8 * app->scale; }
 static inline int cell_h(const App* app) { return 16 * app->scale; }
 static inline GuiRect box_rect(int x, int y, int w, int h) {

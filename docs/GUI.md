@@ -17,7 +17,7 @@ The window's title tells which build it is, as `ScarletNX <branch> <commit> (<co
 build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
 
 - Up/Down and Left/Right move the yellow focus, wrapping at the ends.
-- Tab and Shift+Tab go round the menu, Games and the Settings, which a theme in boxes shows as tabs over
+- Tab and Shift+Tab go round the menu, Games and the Settings, which the Panels layout shows as tabs over
   the title (`[head] tabs`); a click on a tab opens it. A theme edited and not saved keeps its screen.
 - A list with rows out of sight (the menu with big letters, `games/`'s pages, the Settings, the theme
   editor) shows an arrow beside it, up on its first row and down on its last, in the soft colour: in the
@@ -66,7 +66,7 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   for a press on the pad, which takes it. A change makes *Custom* the preset in use, kept as
   `gamepad_buttons` and `gamepad_map`; Del puts both back to the `.ini`'s. The first pad plugged in
   is shown, its held buttons lit; the launcher reads pads only on this page.
-  **App** holds **Theme** and **Text size**, which Left/Right or Enter go round either way, **Theme editor**, which comes back to App, and **Game folders**: `games/`,
+  **App** holds **Theme**, **Text size** and **Layout**, which Left/Right or Enter go round either way, **Theme editor**, which comes back to App, and **Game folders**: `games/`,
   always listed, then the player's own folders, whose games the `games/` browser lists after
   `games/`'s. **Add a folder** opens the system's folder picker; a folder dropped on the window
   or a path pasted with Ctrl+V is added too. Del, or Enter twice, takes one off the list (the
@@ -98,6 +98,8 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
   there are unsaved changes.
 - Settings > App's **Text size** steps the menu's letters through Auto (fit the screen) and four
   sizes. Bigger letters scroll the menu.
+- Settings > App's **Layout**: **Classic**, the lines down the page described here and the default for now, or
+  **Panels**, the theme's panels side by side (see [Themes](#themes)).
 - **Share log** saves the last run's output and game log to `scarletnx.log`. On the
   desktop it goes in the working folder with its path copied. On Android it goes to
   `/sdcard/ScarletNX/` and is shared.
@@ -192,7 +194,8 @@ at the top), the body (the menu, the file list or the driver's output) and the f
 run, which is **compiling** until the runner prints its `ScarletNX - <name>` banner and
 **loading** from then on.
 
-Both built-ins draw the menus in boxes side by side (`[body] boxes`), the default framing them in thin lines and
+With Settings > App's **Layout** on **Panels**, the screens are drawn in the theme's boxes side by side
+(`[body] boxes`; on **Classic**, the default for now, they keep the lines above whatever the theme), the default framing them in thin lines and
 YoRHa filling them: the list, each entry a box of its own, the focused one framed in the focus colour or inverted
 with the theme's cursor in the margin; beside it a box with what the focus is about (a recent game's path, Games'
 folders, the keys in use, the last run's output) and under it the status (resource use, the disk, the working
@@ -255,9 +258,9 @@ added = #6A9A50
 ; plain | bar | none; rule: a line under the head
 style = bar
 rule = true
-; boxes: the menu, Games and the Settings as tabs over the title
+; panels: the menu, Games and the Settings as tabs over the title
 tabs = true
-; boxes: the title's letters, times the text's (1 to 3), and a shadow under them in the dim colour
+; panels: the title's letters, times the text's (1 to 3), and a shadow under them in the dim colour
 size = 2
 shadow = true
 ; the title per screen: menu, games, keys, compiling, loading
@@ -267,12 +270,12 @@ menu = NIGHT  /  MENU
 marker = "> "
 ; color | bar
 focus = bar
-; none: lines down the page; line | fill: the screen in boxes side by side, framed or filled
+; panels (Settings > App's Layout): line | fill, the boxes framed or filled; none: lines down the page
 boxes = fill
 ; in the list's margin, beside the focused box
 cursor = "> "
 [frame]
-; boxes: the edges drawn along the top and the bottom: none | top | bottom | both
+; panels: the edges drawn along the top and the bottom: none | top | bottom | both
 edges = both
 ; the mark repeated along them: dot | dash | dots (three in a triangle), spacing pixels at 1x apart (0: none)
 mark = dots
@@ -281,7 +284,7 @@ spacing = 26
 rule = true
 color = #D8D4C4
 [backdrop]
-; boxes: the page behind them: a faint grid and thin diagonals in the dim colour, its corners darker
+; panels: the page behind them: a faint grid and thin diagonals in the dim colour, its corners darker
 grid = true
 diagonals = true
 corners = true

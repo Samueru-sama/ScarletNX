@@ -555,6 +555,8 @@ int main(int argc, char** argv) {
     SDL_setenv_unsafe("XDG_CACHE_HOME", "/nonexistent/snx-gui-test/cache", 1);
     /* the menu runs Switch inputs with the runtime it is part of, the other drivers from beside it */
     assert(initialize(&app, "/nonexistent/snx-gui-test/bin/scarletnx"));
+    /* the lines down the page at first (Settings > App's Layout, Classic), whatever the theme's boxes */
+    assert(!app.menu.panels && app.theme.boxes != GUI_BOXES_NONE && !boxed(&app));
     lines(&app, NULL);
     assert(!strcmp(app.self, "/nonexistent/snx-gui-test/bin/scarletnx"));
     assert(!strcmp(app.drivers, "/nonexistent/snx-gui-test/bin"));
@@ -948,7 +950,8 @@ int main(int argc, char** argv) {
         snprintf(line, sizeof line, "- %-24s %s", "Theme", first);
         colored_text(&app, 4, line, yellow);
         colored_text(&app, 5, "- Text size                Auto", normal);
-        colored_text(&app, 6, "- Theme editor", normal);
+        colored_text(&app, 6, "- Layout                   Classic", normal);
+        colored_text(&app, 7, "- Theme editor", normal);
         key(&app, SDLK_RIGHT);
         assert(strcmp(app.theme.name, first) && !strcmp(app.app_form.theme, app.theme.name));
         key(&app, SDLK_LEFT);
@@ -963,6 +966,17 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     assert(app.menu.text_size == GUI_TEXT_MAX);
     key(&app, SDLK_RIGHT);
+    /* the layout: Classic, the lines, at first; Panels the theme's boxes; Left, Right and Enter go round the two */
+    key(&app, SDLK_DOWN);
+    assert(app.editor.row == GUI_APP_LAYOUT && !app.menu.panels && !strcmp(app.app_form.layout, "Classic"));
+    key(&app, SDLK_RIGHT);
+    assert(app.menu.panels && !strcmp(app.app_form.layout, "Panels"));
+    key(&app, SDLK_LEFT);
+    assert(!app.menu.panels && !strcmp(app.app_form.layout, "Classic"));
+    key(&app, SDLK_RETURN);
+    assert(app.menu.panels && app.form == GUI_FORM_APP);
+    key(&app, SDLK_RETURN);
+    assert(!app.menu.panels && !strcmp(app.app_form.layout, "Classic"));
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RIGHT); /* the editor opens with Enter only */
     assert(app.form == GUI_FORM_APP);
@@ -974,7 +988,7 @@ int main(int argc, char** argv) {
        (SDL_FILE_DIALOG_DRIVER=none); Del or Enter twice takes one off, the folder staying */
     key(&app, SDLK_DOWN);
     gui_app_render(&app);
-    colored_text(&app, 7, "- Game folders             games/", yellow);
+    colored_text(&app, 8, "- Game folders             games/", yellow);
     key(&app, SDLK_RETURN);
     assert(app.form == GUI_FORM_FOLDERS && gui_editor_rows(&app.editor) == 2 && app.editor.row == 0);
     {
@@ -2161,6 +2175,7 @@ int main(int argc, char** argv) {
         SDL_Color dim, page, ink;
         app.theme = *gui_theme_builtin("default");
         assert(app.theme.boxes == GUI_BOXES_LINE && !app.theme.cursor[0] && app.theme.edges == GUI_EDGES_NONE);
+        app.menu.panels = true; /* Settings > App's Layout, Panels */
         app.menu.selected = GUI_KEYS;
         app.menu.recent_focus = 0;
         app.message[0] = 0;
@@ -2607,6 +2622,7 @@ int main(int argc, char** argv) {
         assert(SDL_SetWindowSize(app.window, 1280, 800));
         SDL_SyncWindow(app.window);
         app.menu.text_size = 0;
+        app.menu.panels = false;
         lines(&app, "default");
         gui_app_render(&app);
     }
@@ -2908,6 +2924,7 @@ int main(int argc, char** argv) {
         const SnxPadShape* first;
         int s = app.scale, cw = 8 * s, page = -1;
         app.theme = *gui_theme_builtin("default");
+        app.menu.panels = true;
         for (int i = 0; i < app.settings.count; ++i)
             if (app.settings.values[i].kind == GUI_SETTING_PAGE) page = i;
         open_settings(&app);
@@ -2932,6 +2949,7 @@ int main(int argc, char** argv) {
         key(&app, SDLK_ESCAPE);
         assert(app.form == GUI_FORM_GROUP);
         gui_app_leave_editor(&app);
+        app.menu.panels = false;
         lines(&app, "default");
     }
     step_line();
@@ -2949,6 +2967,7 @@ int main(int argc, char** argv) {
         gui_settings_mark(&app.settings);
         app.theme = *gui_theme_builtin("yorha");
         app.theme.corners = app.theme.grid = app.theme.diagonals = false;
+        app.menu.panels = true;
         open_settings(&app);
         app.editor.row = app.groups; /* the last row */
         gui_app_render(&app);
@@ -2979,6 +2998,7 @@ int main(int argc, char** argv) {
         text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, app.settings.keys[app.page].key,
                    rgb(app.theme.page), rgb(app.theme.ink));
         gui_app_leave_editor(&app);
+        app.menu.panels = false;
         lines(&app, "default");
     }
     e.type = SDL_EVENT_QUIT;
