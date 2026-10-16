@@ -14,6 +14,8 @@ typedef enum { GUI_RUN_CONSOLE, GUI_RUN_STEPS } GuiRunLayout;
 typedef enum { GUI_LINE_NONE, GUI_LINE_TYPING, GUI_LINE_SLIDE, GUI_LINE_FADE } GuiLineIn;
 typedef enum { GUI_RING_NONE, GUI_RING_LEFT, GUI_RING_RIGHT, GUI_RING_NEAR_TEXT } GuiRing;
 typedef enum { GUI_ALIGN_LEFT, GUI_ALIGN_CENTER, GUI_ALIGN_RIGHT } GuiAlign;
+/* the menus' screens: lines down the page, or boxes side by side, outlined or filled */
+typedef enum { GUI_BOXES_NONE, GUI_BOXES_LINE, GUI_BOXES_FILL } GuiBoxStyle;
 /* the lines that wait on the user: the keys screen's drop line, the ESC line after a run, a run being aborted */
 typedef enum {
     GUI_PROMPT_KEYS,
@@ -50,6 +52,8 @@ typedef struct {
     int head_rule, footer_rule;
     int focus_bar; /* the focused line as a band of ink, its text in the page colour */
     char marker[16];
+    GuiBoxStyle boxes;
+    char cursor[16]; /* in the list's margin, beside the focused box */
     char title[GUI_SCREEN_COUNT][64];
     GuiRunLayout run;
     GuiPalette run_colors;  /* the steps screen's own: a loading screen, darker than the menus */

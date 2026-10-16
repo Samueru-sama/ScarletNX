@@ -106,6 +106,11 @@ static SDL_Color pixel(App* app, float x, float y) {
     return out;
 }
 static int same_colour(SDL_Color a, SDL_Color b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+/* the checks are the lines layout's ([body] boxes none), but for those of the boxes, which say so */
+static void lines(App* app, const char* id) {
+    if (id) app->theme = *gui_theme_builtin(id);
+    app->theme.boxes = GUI_BOXES_NONE;
+}
 /* a list's margin: an arrow up on row first or none, and one down on row last or none */
 static void marks(App* app, int first, int last, bool up, bool down) {
     SDL_Color soft = rgb(app->theme.soft), page = rgb(app->theme.page);
@@ -113,6 +118,44 @@ static void marks(App* app, int first, int last, bool up, bool down) {
     colored_text_on(app, 0, last, down ? "\x1f" : " ", soft, page);
 }
 #ifdef SNX_XDG /* the old-files box's check: only an XDG system has older files to move */
+/* text drawn from pixel x, y in the font's own bytes: its glyphs in color, around them back */
+static void text_px_is(App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
+    SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+    assert(image);
+    for (int i = 0; text[i]; ++i)
+        for (int y = 0; y < 16; ++y)
+            for (int x = 0; x < 8; ++x) {
+                Uint8 r, g, b, a;
+                assert(SDL_ReadSurfacePixel(image, x0 + (i * 8 + x) * app->scale, y0 + y * app->scale, &r, &g, &b, &a));
+                bool ink = (gui_vga_font[(unsigned char)text[i] * 16 + y] & (0x80 >> x)) != 0;
+                SDL_Color want = ink ? color : back;
+                assert(r == want.r && g == want.g && b == want.b);
+            }
+    SDL_DestroySurface(image);
+}
+/* the mouse at pixel x, y of the render, moved there or clicking */
+static void mouse_px(App* app, int x, int y, bool click) {
+    SDL_Event e = {0};
+    float wx, wy;
+    layout(app);
+    assert(SDL_RenderCoordinatesToWindow(app->renderer, (float)x + 0.5f, (float)y + 0.5f, &wx, &wy));
+    e.type = click ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_MOTION;
+    e.button.button = SDL_BUTTON_LEFT;
+    if (click) {
+        e.button.x = wx;
+        e.button.y = wy;
+    } else {
+        e.motion.x = wx;
+        e.motion.y = wy;
+    }
+    event(app, &e);
+}
+/* the boxed menu's entry for an item, -1 when it has none */
+static int item_entry(const GuiMenuBoxes* m, int item) {
+    for (int i = 0; i < m->list.count; ++i)
+        if (m->entry[i].kind == GUI_ENTRY_ITEM && m->entry[i].index == item) return i;
+    return -1;
+}
 /* the rows a path takes wrapped at width */
 static int path_rows(const char* path, int width) {
     int n = 0;
@@ -492,6 +535,7 @@ int main(int argc, char** argv) {
     SDL_setenv_unsafe("XDG_CACHE_HOME", "/nonexistent/snx-gui-test/cache", 1);
     /* the menu runs Switch inputs with the runtime it is part of, the other drivers from beside it */
     assert(initialize(&app, "/nonexistent/snx-gui-test/bin/scarletnx"));
+    lines(&app, NULL);
     assert(!strcmp(app.self, "/nonexistent/snx-gui-test/bin/scarletnx"));
     assert(!strcmp(app.drivers, "/nonexistent/snx-gui-test/bin"));
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID)
@@ -889,6 +933,7 @@ int main(int argc, char** argv) {
         assert(strcmp(app.theme.name, first) && !strcmp(app.app_form.theme, app.theme.name));
         key(&app, SDLK_LEFT);
         assert(!strcmp(app.theme.name, first));
+        lines(&app, NULL); /* the file's own, read again */
     }
     key(&app, SDLK_DOWN);
     key(&app, SDLK_RETURN);
@@ -1142,12 +1187,12 @@ int main(int argc, char** argv) {
         mouse(&app, 3, 5, false);
         assert(app.menu.recent_focus == 1);
         /* YoRHa: the focused game on the band, the title in its soft colour */
-        app.theme = *gui_theme_builtin("yorha");
+        lines(&app, "yorha");
         app.theme.texture = 0;
         render(&app);
         colored_text_on(&app, 1, 4, "Recent games", rgb(app.theme.soft), rgb(app.theme.page));
         colored_text_on(&app, 3, 5, "option flags", rgb(app.theme.page), rgb(app.theme.focus));
-        app.theme = *gui_theme_builtin("default");
+        lines(&app, "default");
         /* a game whose file went away leaves the list when chosen, and the file says so */
         assert(!remove(again));
         key(&app, SDLK_RETURN);
@@ -1301,12 +1346,12 @@ int main(int argc, char** argv) {
     assert(escape_row(&app) == 3); /* the console's ESC line, under the head */
     tap(&app, 20, 5);
     assert(app.menu.running && !app.aborting);
-    app.theme = *gui_theme_builtin("yorha"); /* a loading screen's is the last row */
+    lines(&app, "yorha"); /* a loading screen's is the last row */
     tap(&app, 20, 3);
     assert(!app.aborting);
     tap(&app, 20, app.rows - 1);
     assert(app.aborting);
-    app.theme = *gui_theme_builtin("default");
+    lines(&app, "default");
     while (app.menu.running && SDL_GetTicks() < until) {
         pump(&app);
         SDL_Delay(5);
@@ -1370,14 +1415,14 @@ int main(int argc, char** argv) {
             event(&app, &held);
             assert(!app.confirm.shown);
             /* YoRHa's loading screen: its colours, the focused choice on a band of its ink */
-            app.theme = *gui_theme_builtin("yorha");
+            lines(&app, "yorha");
             app.fade_ms = 0;
             key(&app, SDLK_ESCAPE);
             render(&app);
             colored_text_on(&app, col + 2, row + 1, "Abort the recompile?", rgb(loading->warning), rgb(loading->page));
             colored_text_on(&app, col + 4, row + 3, "Keep going", rgb(loading->page), rgb(loading->ink));
             colored_text_on(&app, col + 4, row + 4, "Abort", rgb(loading->ink), rgb(loading->page));
-            app.theme = *gui_theme_builtin("default");
+            lines(&app, "default");
             tap(&app, col + 3, row + 4);
             assert(app.aborting && !app.confirm.shown);
             while (app.menu.running && SDL_GetTicks() < until) {
@@ -1692,7 +1737,8 @@ int main(int argc, char** argv) {
         app.themes_dirs[0] = snx_strdup(themes);
         assert(!strcmp(app.theme.id, "default"));
         app_select(&app, GUI_APP_THEME);
-        assert(!strcmp(app.theme.id, "yorha") && !app.editing);
+        assert(!strcmp(app.theme.id, "yorha") && !app.editing && app.theme.boxes == GUI_BOXES_FILL);
+        lines(&app, NULL);
         app.menu.selected = GUI_SETTINGS;
         app.menu.recent_focus = 0;
         render(&app);
@@ -1712,6 +1758,8 @@ int main(int argc, char** argv) {
         SDL_SyncWindow(app.window);
         app_select(&app, GUI_APP_THEME);
         assert(!strcmp(app.theme.id, "custom") && !strcmp(app.theme.name, "Custom test"));
+        assert(app.theme.boxes == GUI_BOXES_FILL); /* a file that says nothing of boxes: its base's */
+        lines(&app, NULL);
         render(&app);
         page.r = 0x10; /* its own page; its ink, unreadable, is YoRHa's */
         page.g = 0x20;
@@ -1791,6 +1839,8 @@ int main(int argc, char** argv) {
             key(&app, SDLK_ESCAPE); /* nothing left unsaved: it leaves at once, back to App */
             assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_EDITOR);
             leave_editor(&app);
+            assert(app.theme.boxes == GUI_BOXES_LINE); /* the editor writes every key */
+            lines(&app, NULL);
             render(&app);
             colored_text_on(&app, 1, menu_row(&app, GUI_LOG), "- Share log", normal, night);
             /* opened on a theme of themes/, it saves there under its own name */
@@ -1806,6 +1856,7 @@ int main(int argc, char** argv) {
         steps_input = snx_path_join(temporary, "option flags steps.nro");
         assert(!snx_write_file(steps_input, "fixture", 7));
         gui_theme_load(&app.theme, (const char* const*)app.themes_dirs, 2, "yorha");
+        lines(&app, NULL);
         app.menu.selected = GUI_SWITCH;
         launcher(&app, true);
         launch(&app, snx_strdup(steps_input), false);
@@ -2039,7 +2090,7 @@ int main(int argc, char** argv) {
         colored_text_on(&app, 3, last_row - 1, "line 18", ls, lp);
         app.steps = kept;
         /* the page's faint lines, one pixel row in four */
-        app.theme = *gui_theme_builtin("yorha");
+        lines(&app, "yorha");
         app.fade_ms = faded;
         app.clock = later;
         render(&app);
@@ -2071,9 +2122,105 @@ int main(int argc, char** argv) {
         render(&app);
         colored_text_on(&app, 1, 0, "SCARLETNX  /  MENU", rgb(app.theme.page), rgb(app.theme.ink)); /* the menus' own */
         app.clock = 0;
-        app.theme = *gui_theme_builtin("default");
+        lines(&app, "default");
         launcher(&app, false);
         free(steps_input);
+    }
+    /* The menu in boxes ([body] boxes, the built-ins'): each entry a box of its own, the focused one framed in the focus
+       colour (line) or inverted with the cursor in the margin (fill); beside the list what the focus is about, the
+       status under it, the bar at the foot with the same, or the screen's message, over the keys. A box under the
+       pointer takes the focus and a click selects it; many entries scroll, and a narrow window puts the side box under
+       the list */
+    {
+        GuiMenuBoxes m;
+        GuiRect b, r;
+        int s, cw, focus, exit_entry;
+        SDL_Color dim, page, ink;
+        app.theme = *gui_theme_builtin("default");
+        assert(app.theme.boxes == GUI_BOXES_LINE && !app.theme.cursor[0]);
+        app.menu.selected = GUI_KEYS;
+        app.menu.recent_focus = 0;
+        app.message[0] = 0;
+        app.abnormal_exit = false;
+        app.fade_ms = 0; /* the last run's fade in, on the clock it had */
+        render(&app);
+        menu_boxes(&app, &m);
+        s = app.scale;
+        cw = 8 * s;
+        dim = rgb(app.theme.dim);
+        focus = item_entry(&m, GUI_KEYS);
+        exit_entry = item_entry(&m, GUI_EXIT);
+        assert(focus >= 0 && m.list.focus == focus && exit_entry > focus && !m.place.stacked);
+        b = list_box(&m.list, focus);
+        assert(same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), yellow)); /* framed in the focus colour */
+        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "- Setup device keys", yellow, black);
+        b = list_box(&m.list, exit_entry);
+        assert(same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), dim)); /* the others in the dim one */
+        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "- Exit", normal, black);
+        /* the side box: the focus's name over a rule, what it is about and the keys in use; the status box under it */
+        r = m.place.side;
+        assert(r.x >= m.place.list.x + m.place.list.w && r.h > 0 && m.place.status.y >= r.y + r.h);
+        text_px_is(&app, r.x + cw, r.y + 2 * s, "Setup device keys", normal, black);
+        text_px_is(&app, r.x + cw, r.y + head_h(&app) + 2 * s, "Installs prod.keys", normal, black);
+        text_px_is(&app, m.place.status.x + cw, m.place.status.y + 2 * s, "Status", normal, black);
+        /* the bar: what the focus is about, then the keys against its right edge, each key in the focus colour */
+        r = m.place.bar;
+        text_px_is(&app, r.x + 3 * cw, r.y + 2 * s, "Installs prod.keys", normal, black);
+        text_px_is(&app, r.x + r.w - cw - 8 * cw, r.y + 2 * s + 16 * s, "ESC", yellow, black);
+        text_px_is(&app, r.x + r.w - cw - 4 * cw, r.y + 2 * s + 16 * s, "exit", normal, black);
+        /* the screen's message takes the bar's first row, a failure's in its colour */
+        snprintf(app.message, sizeof app.message, "Program ended abnormally (status 7).");
+        app.abnormal_exit = true;
+        render(&app);
+        text_px_is(&app, r.x + 3 * cw, r.y + 2 * s, "Program ended abnormally", red, black);
+        app.message[0] = 0;
+        app.abnormal_exit = false;
+        /* the pointer: over Exit's box it takes the focus, a click on Setup device keys opens its screen */
+        b = list_box(&m.list, exit_entry);
+        mouse_px(&app, b.x + 4, b.y + 4, false);
+        assert(app.menu.selected == GUI_EXIT && !app.menu.recent_focus);
+        b = list_box(&m.list, focus);
+        mouse_px(&app, b.x + 4, b.y + 4, true);
+        assert(app.menu.view == GUI_LOAD_KEYS);
+        key(&app, SDLK_ESCAPE);
+        assert(app.menu.view == GUI_LOAD_NONE && app.menu.selected == GUI_KEYS);
+        /* YoRHa: the boxes on its dim colour, the focused one on its focus colour with the cursor in the margin, the
+           side box's name on a band of its ink */
+        app.theme = *gui_theme_builtin("yorha");
+        assert(app.theme.boxes == GUI_BOXES_FILL && !strcmp(app.theme.cursor, "\xe2\x96\xba "));
+        page = rgb(app.theme.page);
+        ink = rgb(app.theme.ink);
+        render(&app);
+        menu_boxes(&app, &m);
+        b = list_box(&m.list, m.list.focus);
+        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "\xfe Setup device keys", page, rgb(app.theme.focus));
+        text_px_is(&app, m.list.at.x, b.y + 2 * s, "\x10", rgb(app.theme.focus), page);
+        b = list_box(&m.list, item_entry(&m, GUI_EXIT));
+        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "\xfe Exit", ink, dim = rgb(app.theme.dim));
+        r = m.place.side;
+        text_px_is(&app, r.x + cw, r.y + 2 * s, "Setup device keys", page, ink);
+        /* letters too big for the screen: the list scrolls, the focus in view, an arrow where entries are hidden */
+        app.menu.text_size = GUI_TEXT_MAX;
+        app.menu.selected = GUI_EXIT;
+        render(&app);
+        menu_boxes(&app, &m);
+        assert(m.list.shown < m.list.count && m.list.first > 0 && m.list.focus < m.list.first + m.list.shown);
+        assert(menu_scrolls(&app));
+        b = list_box(&m.list, m.list.first);
+        text_px_is(&app, m.list.at.x + m.list.at.w - 8 * app.scale, b.y + 2 * app.scale, "\x1e", rgb(app.theme.soft),
+                   page);
+        assert(!m.place.stacked);
+        /* and on a window too narrow for both, the side box goes under the list */
+        assert(SDL_SetWindowSize(app.window, 800, 800));
+        SDL_SyncWindow(app.window);
+        render(&app);
+        menu_boxes(&app, &m);
+        assert(m.place.stacked && m.place.side.y > m.place.list.y + m.place.list.h && m.place.side.h > 0);
+        assert(SDL_SetWindowSize(app.window, 1280, 800));
+        SDL_SyncWindow(app.window);
+        app.menu.text_size = 0;
+        lines(&app, "default");
+        render(&app);
     }
     /* ESC on the menu's first screen asks before the app closes: ESC again stays, Exit closes */
     assert(app.menu.view == GUI_LOAD_NONE && !app.menu.running && !app.finished && !app.confirm.shown);

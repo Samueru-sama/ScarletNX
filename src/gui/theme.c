@@ -16,7 +16,7 @@ static GuiTheme builtins[SNX_GUI_THEME_COUNT];
 typedef char snx_gui_id_slot[sizeof(((GuiThemes*)0)->ids[0]) == sizeof(((GuiTheme*)0)->id) ? 1 : -1];
 typedef char snx_gui_word_int[sizeof(GuiStyle) == sizeof(int) && sizeof(GuiRunLayout) == sizeof(int) &&
                                       sizeof(GuiRing) == sizeof(int) && sizeof(GuiLineIn) == sizeof(int) &&
-                                      sizeof(GuiAlign) == sizeof(int)
+                                      sizeof(GuiAlign) == sizeof(int) && sizeof(GuiBoxStyle) == sizeof(int)
                                   ? 1
                                   : -1];
 
@@ -28,6 +28,7 @@ static const char* const progresses[] = {"amount", "percent", "time", NULL}; /* 
 static const char* const aligns[] = {"left", "center", "right", NULL};
 static const char* const entrances[] = {"none", "typing", "slide", "fade", NULL};
 static const char* const typings[] = {"async", "sync", NULL};
+static const char* const box_styles[] = {"none", "line", "fill", NULL};
 #define FIELD(f)                    offsetof(GuiTheme, f), sizeof(((GuiTheme*)0)->f)
 #define TEXT(s, k, f, about)        {s, k, GUI_KEY_TEXT, FIELD(f), NULL, 0, about}
 #define COLOUR(s, k, f, about)      {s, k, GUI_KEY_COLOUR, FIELD(f), NULL, 0, about}
@@ -55,6 +56,8 @@ const GuiThemeKey gui_theme_keys[] = {
     TEXT("head", "loading", title[GUI_SCREEN_LOADING], "a run's title once the runner's banner came"),
     TEXT("body", "marker", marker, "before each menu item"),
     WORD("body", "focus", focus_bar, focuses, "the focused line in the focus colour, or on a band of it"),
+    WORD("body", "boxes", boxes, box_styles, "the screen in boxes side by side, outlined or filled; none: lines"),
+    TEXT("body", "cursor", cursor, "in the margin, beside the focused box"),
     WORD("footer", "style", footer, styles, "bar: on a band of ink"),
     FLAG("footer", "rule", footer_rule, "a line over the footer"),
     WORD("run", "layout", run, layouts, "steps: the loading screen; the keys below but colours are its"),
@@ -95,7 +98,7 @@ static const char* const sections[][2] = {
     {"theme", "Who made it. The theme's id is its folder's name."},
     {"colors", "The menus' colours, #RRGGBB."},
     {"head", "The top: a title per screen and the hints under it."},
-    {"body", "The menu's lines."},
+    {"body", "The menu's lines, or its boxes."},
     {"footer", "The bottom: resource use and the working folder."},
     {"run", "A run: the driver's output as it comes, or a loading screen in its own colours."},
     {"prompt", "A line that waits on the user: framed, placed and blinking when its key is true."},

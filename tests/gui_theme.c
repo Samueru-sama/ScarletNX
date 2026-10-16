@@ -34,6 +34,8 @@ static const char* const format_keys[] = {"theme/format",
                                           "head/loading",
                                           "body/marker",
                                           "body/focus",
+                                          "body/boxes",
+                                          "body/cursor",
                                           "footer/style",
                                           "footer/rule",
                                           "run/layout",
@@ -167,6 +169,9 @@ int main(void) {
     assert(!strcmp(loading->title[GUI_SCREEN_LOADING], "BOOTING"));
     assert(def->head == GUI_STYLE_PLAIN && !def->focus_bar && !strcmp(def->marker, "- ") && !def->title[0][0]);
     assert(yorha->head == GUI_STYLE_BAR && yorha->focus_bar && yorha->title[GUI_SCREEN_COMPILING][0]);
+    /* the menus in boxes: the default's framed, YoRHa's filled with a cursor in the margin */
+    assert(def->boxes == GUI_BOXES_LINE && !def->cursor[0]);
+    assert(yorha->boxes == GUI_BOXES_FILL && !strcmp(yorha->cursor, "\xe2\x96\xba "));
 
     parse(&theme, ""); /* nothing: the default, named after its folder */
     assert(same(theme.ink, def->ink) && !strcmp(theme.id, "mine") && !strcmp(theme.name, "mine"));
@@ -229,6 +234,16 @@ int main(void) {
            !theme.prompt.lines[GUI_PROMPT_KEYS]);
     parse(&theme, "[prompt]\nalign = left\n");
     assert(theme.prompt.align == GUI_ALIGN_LEFT);
+
+    /* boxes: a file from before them takes its base's, one can say none for the lines; an unknown word keeps it */
+    parse(&theme, "[theme]\nformat = 1\nbase = default\n[colors]\npage = #102030\n");
+    assert(theme.boxes == GUI_BOXES_LINE && rgb_is(theme.page, 0x10, 0x20, 0x30));
+    parse(&theme, "[theme]\nbase = yorha\n[body]\ncursor = \"> \"\n");
+    assert(theme.boxes == GUI_BOXES_FILL && !strcmp(theme.cursor, "> "));
+    parse(&theme, "[theme]\nbase = yorha\n[body]\nboxes = none\n");
+    assert(theme.boxes == GUI_BOXES_NONE);
+    parse(&theme, "[body]\nboxes = round\n");
+    assert(theme.boxes == GUI_BOXES_LINE);
 
     /* a value longer than its field keeps the base's; an unknown base leaves the default */
     memset(longer, 0, sizeof longer);

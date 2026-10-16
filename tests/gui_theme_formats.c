@@ -134,6 +134,27 @@ static void bare(char* s) {
     n = strlen(s);
     while (n && (s[n - 1] == ',' || s[n - 1] == ' ' || s[n - 1] == '\r' || s[n - 1] == '\t')) s[--n] = 0;
 }
+/* the built-in a file starts from: its base, else ErET's layout's (docs/GUI.md) */
+static const GuiTheme* base_of(const char* file) {
+    size_t size = 0;
+    unsigned char* text = snx_read_file(file, &size);
+    GuiThemeFile f;
+    const GuiTheme* base = gui_theme_builtin("default");
+    if (text && gui_theme_file_read(&f, (const char*)text, size)) {
+        if (gui_theme_builtin(f.base))
+            base = gui_theme_builtin(f.base);
+        else if (!strcmp(f.layout, "menu") || !strcmp(f.layout, "loading"))
+            base = gui_theme_builtin("yorha");
+        gui_theme_file_free(&f);
+    }
+    free(text);
+    return base;
+}
+/* the keys added after a file's format, which it cannot name, are its base's: an older theme gets the menus' boxes of
+   the built-in it starts from */
+static int later_keys(const GuiTheme* t, const GuiTheme* base) {
+    return t->boxes == base->boxes && !strcmp(t->cursor, base->cursor);
+}
 /* one fixture: every field its JSON names has the value the file reads to */
 static int check(const char* dir, const char* name, int format) {
     char json_name[SNX_FIXTURE_LINE], id[SNX_FIXTURE_LINE];
@@ -156,6 +177,10 @@ static int check(const char* dir, const char* name, int format) {
     }
     if ((int)t.format != format) {
         printf("FAIL %s/%s: format %u in the folder of format %d\n", dir, name, t.format, format);
+        ++fails;
+    }
+    if (!later_keys(&t, base_of(ini_path))) {
+        printf("FAIL %s/%s: a key added since does not read as its base's\n", dir, name);
         ++fails;
     }
     dump(&d, &t);

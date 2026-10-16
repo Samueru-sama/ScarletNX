@@ -189,6 +189,13 @@ at the top), the body (the menu, the file list or the driver's output) and the f
 run, which is **compiling** until the runner prints its `ScarletNX - <name>` banner and
 **loading** from then on.
 
+Both built-ins draw the menus in boxes side by side (`[body] boxes`), the default framing them in thin lines and
+YoRHa filling them: the list, each entry a box of its own, the focused one framed in the focus colour or inverted
+with the theme's cursor in the margin; beside it a box with what the focus is about (a recent game's path, Games'
+folders, the keys in use, the last run's output) and under it the status (resource use, the disk, the working
+folder); at the foot a bar with what the focus is about, or the screen's message, over the screen's keys. A window too
+narrow for both puts the side box under the list. `boxes = none` keeps the lines down the page described above.
+
 The built-ins are `default`, the look above, and `yorha`: paper and ink with a header
 bar, square markers and the focused line inverted on the menus, and a run drawn as a
 dark loading screen in its own colours (`[run]`): the title, the game's name with turning
@@ -245,6 +252,10 @@ menu = NIGHT  /  MENU
 marker = "> "
 ; color | bar
 focus = bar
+; none: lines down the page; line | fill: the screen in boxes side by side, framed or filled
+boxes = fill
+; in the list's margin, beside the focused box
+cursor = "> "
 [footer]
 style = plain
 rule = true
