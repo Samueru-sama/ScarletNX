@@ -3,6 +3,7 @@
 /* mm:u (misc.c) and hid's IHidServer (hid.c) through their generated dispatchers, with the kernel objects they hand
    out made here and the shared memory a host buffer */
 #include "hle/services/services_int.h"
+#include <math.h>
 #include <stdarg.h>
 
 #include "hle/services/hid.c"
@@ -280,6 +281,48 @@ static KEvent* style_event(SvcObj* h, u32 id) {
     CHECK(o->type == KO_EVENT);
     return (KEvent*)o;
 }
+/* SendVibrationValue (201) {u32 handle, VibrationValue at 4, aruid at 0x18} and SendVibrationValues (206) {aruid},
+   with the handles and the values in two pointer buffers: what the frontend plays, per device */
+static void vibration(SvcObj* h, u32 handle, float amp_low, float amp_high) {
+    Request r;
+    float v[4] = {amp_low, 160, amp_high, 320};
+    request(&r, 201);
+    r.c.has_pid = 1; /* the aruid */
+    argument32(&r, 0, handle);
+    memcpy(r.raw + 4, v, sizeof v);
+    argument64(&r, 0x18, 0x55);
+    call(h, &r);
+    CHECK(r.c.out_size == 0);
+}
+static void vibrations(SvcObj* h, const u32* handles, const float (*values)[4], u32 n) {
+    Request r;
+    request(&r, 206);
+    argument64(&r, 0, 0x55);
+    memcpy(g_mem + 0x1000, handles, n * 4);
+    memcpy(g_mem + 0x2000, values, n * 16);
+    r.c.nx = 2;
+    r.c.x[0].addr = 0x1000;
+    r.c.x[0].size = n * 4;
+    r.c.x[1].addr = 0x2000;
+    r.c.x[1].size = n * 16;
+    call(h, &r);
+    CHECK(r.c.out_size == 0);
+}
+static void test_vibration(SvcObj* h) {
+    /* No1's Pro Controller (style index 3), the left device then the right one */
+    static const u32 both[2] = {0x00000003u, 0x00010003u};
+    static const float values[2][4] = {{0.25f, 160, 0, 320}, {1.5f, 160, 0.5f, 320}};
+    vibration(h, 0x00000003u, 0.5f, 1.0f);
+    CHECK(g_pad.rumble[0] == (32767u | 65535u << 16) && g_pad.rumble[1] == 0);
+    vibration(h, 0x00010020u, 0.0f, 0.25f); /* the handheld's right device */
+    CHECK(g_pad.rumble[1] == 16383u << 16);
+    vibration(h, 0x00000003u, -1.0f, NAN); /* none past the ends, nor a NaN */
+    CHECK(g_pad.rumble[0] == 0);
+    vibrations(h, both, values, 2);
+    CHECK(g_pad.rumble[0] == 16383u && g_pad.rumble[1] == (65535u | 32767u << 16));
+    vibrations(h, both, values, 0);
+    CHECK(g_pad.rumble[0] == 16383u);
+}
 static void test_hid(void) {
     svc_hid_init();
     SvcObj* h = new_hid();
@@ -298,6 +341,7 @@ static void test_hid(void) {
     CHECK(get_styles(h) == 2 && no1_style() == 0 && no1->signaled);
     set_styles(h, 0x7F);
     CHECK(get_styles(h) == 0x7F && no1_style() == 1);
+    test_vibration(h);
     svcobj_unref(h);
     close_handles();
     /* the service's own references: everything it made goes with them */

@@ -43,12 +43,21 @@ static void pump(void) {
         else if (e.type == SDL_EVENT_GAMEPAD_REMOVED)
             gamepad_close(e.gdevice.which);
 }
-/* a pad with every gamepad button and axis (button i is SDL_GamepadButton i), at rest */
+/* what each pad's motors were last told: low (the heavy one) | high << 16 */
+static Uint32 motors[8];
+static int pads;
+static bool SDLCALL rumble(void* pad, Uint16 low, Uint16 high) {
+    *(Uint32*)pad = low | (Uint32)high << 16;
+    return true;
+}
+/* a pad with every gamepad button and axis (button i is SDL_GamepadButton i) and two motors, at rest */
 static SDL_Joystick* attach(Uint16 vendor, Uint16 product) {
     SDL_VirtualJoystickDesc d;
     SDL_Joystick* j;
     int a;
     SDL_INIT_INTERFACE(&d);
+    d.Rumble = rumble;
+    d.userdata = &motors[pads++];
     d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
@@ -181,6 +190,22 @@ int main(void) {
     CHECK(with(cube, SDL_GAMEPAD_BUTTON_EAST) == A);
     CHECK(gamepad_button(SDL_GetJoystickID(xbox), SDL_GAMEPAD_BUTTON_SOUTH) == B);
     CHECK(gamepad_ini("gamepad_buttons", "1") && !gamepad_ini("gamepad", "1"));
+
+    /* the game's vibration on every pad: each motor the stronger of the left and right devices' bands, as strong as
+       gamepad_rumble says */
+    gamepad_rumble(0x4000u | 0x1000u << 16, 0x2000u | 0x8000u << 16);
+    CHECK(motors[0] == (0x4000u | 0x8000u << 16) && motors[1] == motors[0] && motors[3] == motors[0]);
+    CHECK(gamepad_ini("gamepad_rumble", "50"));
+    gamepad_rumble(0x4000u | 0x1000u << 16, 0x2000u | 0x8000u << 16);
+    CHECK(motors[0] == (0x2000u | 0x4000u << 16));
+    CHECK(gamepad_ini("gamepad_rumble", "0")); /* never: a pad that shakes stops */
+    gamepad_rumble(0xFFFFu | 0xFFFFu << 16, 0);
+    CHECK(motors[0] == 0 && motors[2] == 0);
+    CHECK(gamepad_ini("gamepad_rumble", "100"));
+    gamepad_rumble(0xFFFFu, 0);
+    CHECK(motors[0] == 0xFFFFu);
+    gamepad_rumble(0, 0); /* the game stops it */
+    CHECK(motors[0] == 0);
 
     /* every pad drives the one controller, and the first stick that is pushed wins */
     SDL_SetJoystickVirtualButton(xbox, SDL_GAMEPAD_BUTTON_SOUTH, true);

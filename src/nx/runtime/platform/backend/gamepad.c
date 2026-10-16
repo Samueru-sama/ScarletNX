@@ -9,8 +9,8 @@
 
 static SDL_Gamepad* g_pads[SNX_GAMEPADS];
 static struct {
-    int labels, deadzone, background;
-} g_cfg = {1, 20, 0};
+    int labels, deadzone, rumble, background;
+} g_cfg = {1, 20, 100, 0};
 
 /* SDL drops a gamepad's presses while no window of the program has the focus, unless told otherwise; set before it
    starts its gamepads (the .ini is read first), and at once on a change */
@@ -25,6 +25,8 @@ const IniOpt g_gamepad_ini[] = {
      &g_cfg.labels, 0, 1, NULL},
     {"gamepad_deadzone", "20", "The sticks' dead zone, in percent of their travel", INI_INT, 0, &g_cfg.deadzone, 0, 90,
      NULL},
+    {"gamepad_rumble", "100", "How strongly the controllers vibrate when the game asks, in percent: 0 = never", INI_INT,
+     0, &g_cfg.rumble, 0, 100, NULL},
     {"gamepad_background", "0", "1 = the controllers still play the game while its window is not focused", INI_INT, 0,
      &g_cfg.background, 0, 1, background_set},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL}};
@@ -144,4 +146,16 @@ void gamepad_state(u64* buttons, i32 sticks[4]) {
         }
     }
     *buttons = b;
+}
+
+void gamepad_rumble(u32 left, u32 right) {
+    /* each motor as the stronger of the two devices' bands: the heavy one low, the light one high */
+    u32 lo = (left & 0xFFFF) > (right & 0xFFFF) ? left & 0xFFFF : right & 0xFFFF;
+    u32 hi = left >> 16 > right >> 16 ? left >> 16 : right >> 16;
+    int i;
+    lo = lo * (u32)g_cfg.rumble / 100;
+    hi = hi * (u32)g_cfg.rumble / 100;
+    /* SDL sends a pad only what changed, and stops it when the time runs out: the game's thread may stop sending */
+    for (i = 0; i < SNX_GAMEPADS; i++)
+        if (g_pads[i]) SDL_RumbleGamepad(g_pads[i], (Uint16)lo, (Uint16)hi, 100);
 }

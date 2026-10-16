@@ -16,6 +16,9 @@ void gamepad_close(u32 id);
 void gamepad_state(u64* buttons, i32 sticks[4]);
 /* the HidNpadButton bit one of a gamepad's buttons (an SDL_GamepadButton) is, as the game reads it; 0 for none */
 u64 gamepad_button(u32 id, int button);
+/* the vibration the game sent its left and right devices (hid.h's PadState.rumble), played on every gamepad that can:
+   called each frame */
+void gamepad_rumble(u32 left, u32 right);
 extern const IniOpt g_gamepad_ini[];                 /* the settings, keys gamepad_* */
 int gamepad_ini(const char* key, const char* value); /* a key of the game's .ini: applied, 1; not one of these, 0 */
 

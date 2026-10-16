@@ -792,6 +792,8 @@ void video_poll(void) {
     i32 lx = st[0], ly = st[1], rx = st[2], ry = st[3];
     /* every pad and the keyboard drive the one controller the game sees (hid.c has a single PadState) */
     gamepad_state(&pb, pad);
+    gamepad_rumble(__atomic_load_n(&g_pad.rumble[0], __ATOMIC_RELAXED),
+                   __atomic_load_n(&g_pad.rumble[1], __ATOMIC_RELAXED));
     b |= pb;
     if (!lx && !ly) {
         lx = pad[0];

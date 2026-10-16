@@ -268,8 +268,8 @@ Windows, Linux and supported Unix systems. Choose the output in your operating s
 renderer does not render splitters, voice biquad filters, or the delay, reverb and biquad effects yet.
 
 SDL gamepads take A, B, X and Y as their labels say (`gamepad_buttons=0`: by Switch positions), with the sticks'
-dead zone in `gamepad_deadzone` (percent), and with `gamepad_background=1` still play while the window is not
-focused; pads + keyboard share one guest controller.
+dead zone in `gamepad_deadzone` and the game's vibration as strong as `gamepad_rumble` (both in percent), and with
+`gamepad_background=1` still play while the window is not focused; pads + keyboard share one guest controller.
 
 | Keyboard | Switch |
 | --- | --- |

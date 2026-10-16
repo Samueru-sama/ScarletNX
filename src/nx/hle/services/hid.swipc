@@ -107,14 +107,13 @@ interface nn::hid::IHidServer is hid {
     @stub [135] SetNpadCaptureButtonAssignment(nn::hid::NpadStyleSet style, aruid aruid, u64 buttons);
     @stub [136] ClearNpadCaptureButtonAssignment(aruid aruid);
     [200] GetVibrationDeviceInfo(nn::hid::VibrationDeviceHandle handle) -> nn::hid::VibrationDeviceInfo info;
-    @stub [201] SendVibrationValue(nn::hid::VibrationDeviceHandle handle, nn::hid::VibrationValue value, aruid aruid);
+    [201] SendVibrationValue(nn::hid::VibrationDeviceHandle handle, nn::hid::VibrationValue value, aruid aruid);
     [202] GetActualVibrationValue(nn::hid::VibrationDeviceHandle handle, aruid aruid) -> nn::hid::VibrationValue value;
     [203] CreateActiveVibrationDeviceList() -> object<nn::hid::IActiveVibrationDeviceList> list;
     @stub [204] PermitVibration(b8 permitted);
     [205] IsVibrationPermitted() -> b8 permitted;
-    @stub [206] SendVibrationValues(nn::applet::AppletResourceUserId aruid,
-                                    array<nn::hid::VibrationDeviceHandle, 9> handles,
-                                    array<nn::hid::VibrationValue, 9> values);
+    [206] SendVibrationValues(nn::applet::AppletResourceUserId aruid, array<nn::hid::VibrationDeviceHandle, 9> handles,
+                              array<nn::hid::VibrationValue, 9> values);
     @stub [207] SendVibrationGcErmCommand(nn::hid::VibrationDeviceHandle handle, aruid aruid,
                                           nn::hid::VibrationGcErmCommand command);
     @stub [208] GetActualVibrationGcErmCommand(nn::hid::VibrationDeviceHandle handle, aruid aruid)
