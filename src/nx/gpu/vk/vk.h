@@ -205,6 +205,7 @@ typedef struct Surf {
     u64 draw_hash;  /* fallback guest-memory hash at that baseline */
     u32 draw_wseen; /* CPU write-tracking clock at that baseline, zero after a reload */
     int draw_has_hash;
+    int feeds_tex; /* a texture asked for its pixels (vk_rt_drawn_fresh): without write tracking, its baselines are hashed */
     /* render targets: the two textures last copied from it (gpu/vk/texture.c), with its wgen and the texture's upload
        generation then, so two textures over one target don't copy it again on each other's binds */
     struct {
