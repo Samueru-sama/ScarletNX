@@ -16,6 +16,9 @@ typedef enum { GUI_RING_NONE, GUI_RING_LEFT, GUI_RING_RIGHT, GUI_RING_NEAR_TEXT 
 typedef enum { GUI_ALIGN_LEFT, GUI_ALIGN_CENTER, GUI_ALIGN_RIGHT } GuiAlign;
 /* the menus' screens: lines down the page, or boxes side by side, outlined or filled */
 typedef enum { GUI_BOXES_NONE, GUI_BOXES_LINE, GUI_BOXES_FILL } GuiBoxStyle;
+/* the edges drawn along the top and the bottom of a screen in boxes, and the mark repeated along them */
+typedef enum { GUI_EDGES_NONE, GUI_EDGES_TOP, GUI_EDGES_BOTTOM, GUI_EDGES_BOTH } GuiEdges;
+typedef enum { GUI_MARK_DOT, GUI_MARK_DASH, GUI_MARK_DOTS } GuiMark;
 /* the lines that wait on the user: the keys screen's drop line, the ESC line after a run, a run being aborted */
 typedef enum {
     GUI_PROMPT_KEYS,
@@ -57,6 +60,11 @@ typedef struct {
     char marker[16];
     GuiBoxStyle boxes;
     char cursor[16]; /* in the list's margin, beside the focused box */
+    GuiEdges edges;
+    GuiMark mark;
+    uint32_t mark_spacing; /* pixels at 1x from a mark to the next; 0: none */
+    int edge_rule;         /* a line along the edge, a tick between the marks */
+    GuiRgb edge_color;
     char title[GUI_SCREEN_COUNT][64];
     GuiRunLayout run;
     GuiPalette run_colors;  /* the steps screen's own: a loading screen, darker than the menus */

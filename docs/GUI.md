@@ -270,6 +270,15 @@ focus = bar
 boxes = fill
 ; in the list's margin, beside the focused box
 cursor = "> "
+[frame]
+; boxes: the edges drawn along the top and the bottom: none | top | bottom | both
+edges = both
+; the mark repeated along them: dot | dash | dots (three in a triangle), spacing pixels at 1x apart (0: none)
+mark = dots
+spacing = 26
+; a line along the edge, a tick between the marks
+rule = true
+color = #D8D4C4
 [footer]
 style = plain
 rule = true

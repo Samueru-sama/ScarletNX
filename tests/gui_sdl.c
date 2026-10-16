@@ -118,7 +118,8 @@ static void marks(App* app, int first, int last, bool up, bool down) {
     colored_text_on(app, 0, last, down ? "\x1f" : " ", soft, page);
 }
 #ifdef SNX_XDG /* the old-files box's check: only an XDG system has older files to move */
-/* text drawn from pixel x, y in the font's own bytes: its glyphs in color, around them back */
+/* text drawn from pixel x, y in the font's own bytes: its glyphs in color, around them back but on the font's last row,
+   empty, which a box's frame may cover */
 static void text_px_is(App* app, int x0, int y0, const char* text, SDL_Color color, SDL_Color back) {
     SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
     assert(image);
@@ -129,7 +130,7 @@ static void text_px_is(App* app, int x0, int y0, const char* text, SDL_Color col
                 assert(SDL_ReadSurfacePixel(image, x0 + (i * 8 + x) * app->scale, y0 + y * app->scale, &r, &g, &b, &a));
                 bool ink = (gui_vga_font[(unsigned char)text[i] * 16 + y] & (0x80 >> x)) != 0;
                 SDL_Color want = ink ? color : back;
-                assert(r == want.r && g == want.g && b == want.b);
+                assert((y == 15 && !ink) || (r == want.r && g == want.g && b == want.b));
             }
     SDL_DestroySurface(image);
 }
@@ -2156,7 +2157,7 @@ int main(int argc, char** argv) {
         int s, cw, focus, exit_entry;
         SDL_Color dim, page, ink;
         app.theme = *gui_theme_builtin("default");
-        assert(app.theme.boxes == GUI_BOXES_LINE && !app.theme.cursor[0]);
+        assert(app.theme.boxes == GUI_BOXES_LINE && !app.theme.cursor[0] && app.theme.edges == GUI_EDGES_NONE);
         app.menu.selected = GUI_KEYS;
         app.menu.recent_focus = 0;
         app.message[0] = 0;
@@ -2172,10 +2173,10 @@ int main(int argc, char** argv) {
         assert(focus >= 0 && m.list.focus == focus && exit_entry > focus && !m.place.stacked);
         b = list_box(&m.list, focus);
         assert(same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), yellow)); /* framed in the focus colour */
-        text_px_is(&app, b.x + cw / 2, b.y + s, "- Setup device keys", yellow, black);
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Setup device keys", yellow, black);
         b = list_box(&m.list, exit_entry);
         assert(same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), dim)); /* the others in the dim one */
-        text_px_is(&app, b.x + cw / 2, b.y + s, "- Exit", normal, black);
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Exit", normal, black);
         /* the side box: the focus's name over a rule, what it is about and the keys in use; the status box under it */
         r = m.place.side;
         assert(r.x >= m.place.list.x + m.place.list.w && r.h > 0 && m.place.status.y >= r.y + r.h);
@@ -2240,17 +2241,18 @@ int main(int argc, char** argv) {
             assert(app.menu.view == GUI_LOAD_GAMES && !app.browser.selected);
             render(&app);
             games_boxes(&app, &g);
-            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, list_box(&g.list, 0).y + s, "Back [ESC]", yellow,
-                       black); /* the focus, first */
+            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, item_text_y(&app, list_box(&g.list, 0)), "Back [ESC]",
+                       yellow, black); /* the focus, first */
             key(&app, SDLK_DOWN);
             render(&app);
             games_boxes(&app, &g);
             page = games_page(&app);
             assert(app.browser.page_size == page && g.list.count == (int)page + 1 && g.list.shown == g.list.count);
-            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, list_box(&g.list, 0).y + s, "Back [ESC]", normal, black);
+            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, item_text_y(&app, list_box(&g.list, 0)), "Back [ESC]",
+                       normal, black);
             b = list_box(&g.list, 1);
-            text_px_is(&app, b.x + cw / 2, b.y + s, "- ", yellow, black);
-            text_px_is(&app, b.x + cw / 2 + 2 * cw, b.y + s, app.games.names[0], yellow, black);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- ", yellow, black);
+            text_px_is(&app, b.x + cw / 2 + 2 * cw, item_text_y(&app, b), app.games.names[0], yellow, black);
             text_px_is(&app, g.place.side.x + cw, g.place.side.y + 2 * s, app.games.names[0], normal, black);
             text_px_is(&app, g.place.bar.x + 3 * cw, g.place.bar.y + 2 * s, "/", normal, black); /* its path */
             key(&app, SDLK_RIGHT);
@@ -2304,28 +2306,29 @@ int main(int argc, char** argv) {
             form_boxes(&app, &f);
             assert(f.place.side.x > f.place.list.x + f.place.list.w && f.left.count == app.groups + 1);
             b = list_box(&f.left, 0);
-            text_px_is(&app, b.x + cw / 2, b.y + s, "- App", yellow, black);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- App", yellow, black);
             b = list_box(&f.left, app.groups); /* the last row, whole */
-            text_px_is(&app, b.x + cw / 2, b.y + s, "- Reset all to the defaults", normal, black);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Reset all to the defaults", normal, black);
             text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "App", normal, black);
             b = list_box(&f.right, GUI_APP_THEME);
-            text_px_is(&app, b.x + cw / 2, b.y + s, "- Theme", normal, black); /* no focus on the right yet */
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Theme", normal,
+                       black); /* no focus on the right yet */
             for (launch = 0; launch < app.groups && strcmp(app.group_keys[launch].key, "Launch"); ++launch) {}
             assert(launch < app.groups);
             app.editor.row = launch;
             render(&app);
             form_boxes(&app, &f);
             text_px_is(&app, f.place.side.x + cw, f.place.side.y + 2 * s, "Launch", normal, black);
-            text_px_is(&app, list_box(&f.right, 0).x + cw / 2, list_box(&f.right, 0).y + s, "- libgccjit", normal,
-                       black);
+            text_px_is(&app, list_box(&f.right, 0).x + cw / 2, item_text_y(&app, list_box(&f.right, 0)), "- libgccjit",
+                       normal, black);
             key(&app, SDLK_RETURN);
             assert(app.form == GUI_FORM_GROUP && app.group == launch && !app.editor.row);
             render(&app);
             form_boxes(&app, &f);
             b = list_box(&f.left, launch);
-            text_px_is(&app, b.x + cw / 2, b.y + s, "- Launch", pink, black); /* the group open */
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- Launch", pink, black); /* the group open */
             b = list_box(&f.right, 0);
-            text_px_is(&app, b.x + cw / 2, b.y + s, "- libgccjit", yellow, black);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- libgccjit", yellow, black);
             text_px_is(&app, f.place.bar.x + 3 * cw, f.place.bar.y + 2 * s, app.settings.keys[0].about, normal, black);
             /* a click on the second row focuses it, a second click changes it */
             launcher(&app, false);
@@ -2365,7 +2368,7 @@ int main(int argc, char** argv) {
             b = list_box(&f.left, row);
             {
                 int room = (b.w - cw * 3 / 2) / cw, end = b.x + cw / 2 + (room - 2) * cw;
-                text_px_is(&app, end, b.y + s, "e_", yellow, black); /* its end, and the cursor */
+                text_px_is(&app, end, item_text_y(&app, b), "e_", yellow, black); /* its end, and the cursor */
             }
             key(&app, SDLK_ESCAPE);
             key(&app, SDLK_ESCAPE);
@@ -2386,7 +2389,8 @@ int main(int argc, char** argv) {
             render(&app);
             ask_boxes(&app, &r, &choices);
             text_px_is(&app, r.x + cw, r.y + 4 * s, "Exit ScarletNX?", rgb(app.theme.warning), black);
-            text_px_is(&app, list_box(&choices, 0).x + cw / 2, list_box(&choices, 0).y + s, "- Stay", yellow, black);
+            text_px_is(&app, list_box(&choices, 0).x + cw / 2, item_text_y(&app, list_box(&choices, 0)), "- Stay",
+                       yellow, black);
             assert(b.x + b.w < r.x &&
                    same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), (SDL_Color){0x7F, 0x7F, 0, 255}));
             mouse_px(&app, list_box(&choices, 1).x + 4, list_box(&choices, 1).y + 4, false);
@@ -2406,7 +2410,7 @@ int main(int argc, char** argv) {
             {
                 int width, height;
                 area(&app, &width, &height);
-                r = over_rect(&app, width / cw - 6, head_h(&app) + 2 * 16 * s + (16 + 2) * s + 16 * s);
+                r = over_rect(&app, width / cw - 6, head_h(&app) + 2 * 16 * s + item_h(&app) + 16 * s);
                 text_px_is(&app, r.x + cw, r.y + 2 * s, "An older version left these files", normal, black);
                 text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s, "- /old/recent.txt", red, black);
                 text_px_is(&app, r.x + cw, r.y + head_h(&app) + 4 * s + 16 * s, "-> /new/recent.txt", normal, black);
@@ -2478,12 +2482,27 @@ int main(int argc, char** argv) {
         render(&app);
         menu_boxes(&app, &m);
         b = list_box(&m.list, m.list.focus);
-        text_px_is(&app, b.x + cw / 2, b.y + s, "\xfe Setup device keys", page, rgb(app.theme.focus));
-        text_px_is(&app, m.list.at.x, b.y + s, "\x10", rgb(app.theme.focus), page);
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe Setup device keys", page, rgb(app.theme.focus));
+        text_px_is(&app, m.list.at.x, item_text_y(&app, b), "\x10", rgb(app.theme.focus), page);
         b = list_box(&m.list, item_entry(&m, GUI_EXIT));
-        text_px_is(&app, b.x + cw / 2, b.y + s, "\xfe Exit", ink, dim = rgb(app.theme.dim));
+        text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe Exit", ink, dim = rgb(app.theme.dim));
         r = m.place.side;
         text_px_is(&app, r.x + cw, r.y + 2 * s, "Setup device keys", page, ink);
+        /* its edges, top and bottom: a line, a tick between marks, three dots in a triangle 26 pixels (at 1x) apart */
+        {
+            GuiRect top = m.place.edge_top, bottom = m.place.edge_bottom;
+            int step = 26 * s;
+            SDL_Color edge_ink = rgb(app.theme.edge_color);
+            assert(top.y == 0 && top.h == 12 * s && bottom.h == 12 * s && bottom.y + bottom.h == 800);
+            assert(m.place.tabs.y >= top.y + top.h);
+            assert(same_colour(pixel(&app, (float)(top.w / 2 + 3), (float)(top.y + 2 * s)), edge_ink)); /* the line */
+            assert(same_colour(pixel(&app, (float)(step - 1), (float)(top.y + 3 * s)), edge_ink));      /* a tick */
+            assert(same_colour(pixel(&app, (float)(step / 2 - 3 * s), (float)(top.y + 5 * s)), edge_ink));
+            assert(same_colour(pixel(&app, (float)(step / 2 + s), (float)(top.y + 5 * s)), edge_ink));
+            assert(same_colour(pixel(&app, (float)(step / 2 - s), (float)(top.y + 8 * s)), edge_ink));
+            assert(same_colour(pixel(&app, (float)(step / 2 - s), (float)(top.y + 6 * s)), page)); /* between them */
+            assert(same_colour(pixel(&app, (float)(step / 2 - 3 * s), (float)(bottom.y + 5 * s)), edge_ink));
+        }
         /* its title twice the text's size, over its shadow in the dim colour a big pixel down and right */
         r = m.place.title;
         assert(r.h == 2 * 16 * s + 2 * s && r.y + r.h <= m.place.list.y);
@@ -2502,6 +2521,27 @@ int main(int argc, char** argv) {
                 }
             assert(shadowed > 4);
         }
+        /* with its edges, tabs and big title, a 1280x800 window still holds the whole menu: three recent games, the row
+           for the rest and every item */
+        {
+            GuiRecent kept = app.recent;
+            int n;
+            app.recent.count = 4;
+            for (n = 0; n < 4; ++n) {
+                snprintf(app.recent.game[n].name, sizeof app.recent.game[n].name, "Game %d", n);
+                snprintf(app.recent.game[n].path, sizeof app.recent.game[n].path, "/games/Game %d", n);
+                app.recent.game[n].driver = GUI_SWITCH;
+            }
+            app.recent_all = false;
+            app.menu.recent = recent_shown(&app) + recent_more(&app);
+            app.menu.games = true;
+            render(&app);
+            menu_boxes(&app, &m);
+            assert(m.list.count == 1 + 4 + GUI_ITEM_COUNT && m.list.shown == m.list.count);
+            app.recent = kept;
+            app.menu.recent = recent_shown(&app) + recent_more(&app);
+            count_games(&app);
+        }
         /* letters too big for the screen: the list scrolls, the focus in view, an arrow where entries are hidden */
         app.menu.text_size = GUI_TEXT_MAX;
         app.menu.selected = GUI_EXIT;
@@ -2510,7 +2550,8 @@ int main(int argc, char** argv) {
         assert(m.list.shown < m.list.count && m.list.first > 0 && m.list.focus < m.list.first + m.list.shown);
         assert(menu_scrolls(&app));
         b = list_box(&m.list, m.list.first);
-        text_px_is(&app, m.list.at.x + m.list.at.w - 8 * app.scale, b.y + app.scale, "\x1e", rgb(app.theme.soft), page);
+        text_px_is(&app, m.list.at.x + m.list.at.w - 8 * app.scale, item_text_y(&app, b), "\x1e", rgb(app.theme.soft),
+                   page);
         assert(!m.place.stacked);
         /* and on a window too narrow for both, the side box goes under the list */
         assert(SDL_SetWindowSize(app.window, 800, 800));

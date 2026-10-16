@@ -16,7 +16,8 @@ static GuiTheme builtins[SNX_GUI_THEME_COUNT];
 typedef char snx_gui_id_slot[sizeof(((GuiThemes*)0)->ids[0]) == sizeof(((GuiTheme*)0)->id) ? 1 : -1];
 typedef char snx_gui_word_int[sizeof(GuiStyle) == sizeof(int) && sizeof(GuiRunLayout) == sizeof(int) &&
                                       sizeof(GuiRing) == sizeof(int) && sizeof(GuiLineIn) == sizeof(int) &&
-                                      sizeof(GuiAlign) == sizeof(int) && sizeof(GuiBoxStyle) == sizeof(int)
+                                      sizeof(GuiAlign) == sizeof(int) && sizeof(GuiBoxStyle) == sizeof(int) &&
+                                      sizeof(GuiEdges) == sizeof(int) && sizeof(GuiMark) == sizeof(int)
                                   ? 1
                                   : -1];
 
@@ -29,6 +30,8 @@ static const char* const aligns[] = {"left", "center", "right", NULL};
 static const char* const entrances[] = {"none", "typing", "slide", "fade", NULL};
 static const char* const typings[] = {"async", "sync", NULL};
 static const char* const box_styles[] = {"none", "line", "fill", NULL};
+static const char* const edge_words[] = {"none", "top", "bottom", "both", NULL};
+static const char* const marks[] = {"dot", "dash", "dots", NULL};
 #define FIELD(f)                    offsetof(GuiTheme, f), sizeof(((GuiTheme*)0)->f)
 #define TEXT(s, k, f, about)        {s, k, GUI_KEY_TEXT, FIELD(f), NULL, 0, about}
 #define COLOUR(s, k, f, about)      {s, k, GUI_KEY_COLOUR, FIELD(f), NULL, 0, about}
@@ -61,6 +64,11 @@ const GuiThemeKey gui_theme_keys[] = {
     WORD("body", "focus", focus_bar, focuses, "the focused line in the focus colour, or on a band of it"),
     WORD("body", "boxes", boxes, box_styles, "the screen in boxes side by side, outlined or filled; none: lines"),
     TEXT("body", "cursor", cursor, "in the margin, beside the focused box"),
+    WORD("frame", "edges", edges, edge_words, "the edges drawn: none | top | bottom | both"),
+    WORD("frame", "mark", mark, marks, "repeated along them: dot | dash | dots, three in a triangle"),
+    NUMBER("frame", "spacing", mark_spacing, 200, "pixels at 1x from a mark to the next; 0: none"),
+    FLAG("frame", "rule", edge_rule, "a line along the edge, a tick between the marks"),
+    COLOUR("frame", "color", edge_color, "the edges' colour"),
     WORD("footer", "style", footer, styles, "bar: on a band of ink"),
     FLAG("footer", "rule", footer_rule, "a line over the footer"),
     WORD("run", "layout", run, layouts, "steps: the loading screen; the keys below but colours are its"),
@@ -102,6 +110,7 @@ static const char* const sections[][2] = {
     {"colors", "The menus' colours, #RRGGBB."},
     {"head", "The top: a title per screen and the hints under it."},
     {"body", "The menu's lines, or its boxes."},
+    {"frame", "Boxes: the edges drawn along the top and the bottom, a mark repeated along them."},
     {"footer", "The bottom: resource use and the working folder."},
     {"run", "A run: the driver's output as it comes, or a loading screen in its own colours."},
     {"prompt", "A line that waits on the user: framed, placed and blinking when its key is true."},

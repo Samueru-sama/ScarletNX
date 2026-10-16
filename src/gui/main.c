@@ -1037,13 +1037,17 @@ typedef struct {
     GuiRect at;
     int count, focus, margin, arrows, item, pitch, first, shown;
 } GuiList;
+/* a list entry's box: its text under a frame's width, the frame at its foot over the font's last row, which is empty,
+   so many fit; its text's row in it */
+static int item_h(const App* app) { return cell_h(app) + app->scale; }
+static int item_text_y(const App* app, GuiRect b) { return b.y + app->scale; }
 static void list_place(const App* app, GuiList* l, GuiRect at, int count, int focus) {
     int s = app->scale;
     l->at = at;
     l->count = count;
     l->focus = focus;
     l->margin = app->theme.cursor[0] ? ((int)SDL_utf8strlen(app->theme.cursor) * cell_w(app)) : 0;
-    l->item = cell_h(app) + 2 * s;
+    l->item = item_h(app);
     l->pitch = gui_place_pitch(at.h, count, l->item + 2 * s, l->item + 14 * s);
     l->shown = gui_place_list(at.h, l->item, l->pitch, count, focus, &l->first);
     l->arrows = l->shown < count ? cell_w(app) : 0;
@@ -1077,24 +1081,24 @@ static void list_item(App* app, const GuiList* l, int i, const char* label, int 
         fill_rect(app, box_rect(b.x, b.y - 3 * s, b.w, s), t->focus);
         fill_rect(app, box_rect(b.x, b.y + b.h + 2 * s, b.w, s), t->focus);
     }
-    text_in(app, inner(app, b), b.x + cell_w(app) / 2, b.y + s, label,
+    text_in(app, inner(app, b), b.x + cell_w(app) / 2, item_text_y(app, b), label,
             rgb(inverted    ? t->page
                 : activated ? t->active
                 : focused   ? t->focus
                             : t->ink));
-    if (focused && t->cursor[0]) text_in(app, l->at, l->at.x, b.y + s, t->cursor, rgb(t->focus));
+    if (focused && t->cursor[0]) text_in(app, l->at, l->at.x, item_text_y(app, b), t->cursor, rgb(t->focus));
 }
 /* a label between a list's boxes, as "Recent games" */
 static void list_label(App* app, const GuiList* l, int i, const char* label) {
     GuiRect b = list_box(l, i);
-    text_in(app, b, b.x, b.y + app->scale, label, rgb(app->theme.soft));
+    text_in(app, b, b.x, item_text_y(app, b), label, rgb(app->theme.soft));
 }
 /* arrows past the boxes' right edge while entries are hidden above or below them */
 static void list_marks(App* app, const GuiList* l) {
-    int x = l->at.x + l->at.w - cell_w(app), s = app->scale;
-    if (l->first > 0) text_in(app, l->at, x, list_box(l, l->first).y + s, "\x1e", rgb(app->theme.soft));
+    int x = l->at.x + l->at.w - cell_w(app);
+    if (l->first > 0) text_in(app, l->at, x, item_text_y(app, list_box(l, l->first)), "\x1e", rgb(app->theme.soft));
     if (l->first + l->shown < l->count)
-        text_in(app, l->at, x, list_box(l, l->first + l->shown - 1).y + s, "\x1f", rgb(app->theme.soft));
+        text_in(app, l->at, x, item_text_y(app, list_box(l, l->first + l->shown - 1)), "\x1f", rgb(app->theme.soft));
 }
 
 /* The bar at the foot: what the focus is about, or the screen's message, over the screen's keys. keys are "Keys: what
@@ -1256,6 +1260,33 @@ static const char* screen_keys(const App* app, const char* keys, char* out, size
     return out;
 #endif
 }
+/* an edge's band: its rule, the ticks under it and the marks */
+static int edge_h(const App* app) { return 12 * app->scale; }
+/* an edge along r: a line with a tick between the marks when the theme's rule says so, its mark repeated under it
+   spacing pixels (at 1x) apart */
+static void edge(App* app, GuiRect r) {
+    const GuiTheme* t = &app->theme;
+    int s = app->scale, step = (int)t->mark_spacing * s, x;
+    GuiRgb c = t->edge_color;
+    if (!r.h) return;
+    if (t->edge_rule) fill_rect(app, box_rect(r.x, r.y + 2 * s, r.w, s), c);
+    for (x = r.x + step / 2; step && x < r.x + r.w; x += step) {
+        if (t->edge_rule) fill_rect(app, box_rect(x - step / 2 - 2 * s, r.y + 3 * s, 4 * s, 2 * s), c);
+        if (t->mark == GUI_MARK_DOT) fill_rect(app, box_rect(x - s, r.y + 6 * s, 2 * s, 2 * s), c);
+        if (t->mark == GUI_MARK_DASH) fill_rect(app, box_rect(x - 3 * s, r.y + 6 * s, 6 * s, 2 * s), c);
+        if (t->mark == GUI_MARK_DOTS) {
+            fill_rect(app, box_rect(x - 3 * s, r.y + 5 * s, 2 * s, 2 * s), c);
+            fill_rect(app, box_rect(x + s, r.y + 5 * s, 2 * s, 2 * s), c);
+            fill_rect(app, box_rect(x - s, r.y + 8 * s, 2 * s, 2 * s), c);
+        }
+    }
+}
+/* what a screen in boxes draws before its own: the edges, the tabs */
+static void chrome(App* app, const GuiPlace* p) {
+    edge(app, p->edge_top);
+    edge(app, p->edge_bottom);
+    draw_tabs(app, p->tabs);
+}
 /* what a screen has besides its title, list and bar: the status box when the theme has a footer, the tabs when it
    shows them */
 enum { GUI_SHOWS_STATUS = 1, GUI_SHOWS_TABS = 2 };
@@ -1271,6 +1302,8 @@ static void place_screen(App* app, GuiPlace* p, const char* title, const char* k
     in.cw = cell_w(app);
     in.ch = cell_h(app);
     in.tabs = shows & GUI_SHOWS_TABS && app->theme.tabs ? cell_h(app) + 4 * app->scale : 0;
+    in.edge_top = app->theme.edges == GUI_EDGES_TOP || app->theme.edges == GUI_EDGES_BOTH ? edge_h(app) : 0;
+    in.edge_bottom = app->theme.edges == GUI_EDGES_BOTTOM || app->theme.edges == GUI_EDGES_BOTH ? edge_h(app) : 0;
     in.title =
         title[0] ? title_size(app) * cell_h(app) + (app->theme.title_shadow ? title_size(app) * app->scale : 0) : 0;
     in.bar = bar_h(app, width - 2 * cell_w(app), keys);
@@ -1399,7 +1432,7 @@ static void draw_menu_boxed(App* app) {
     int i;
     menu_boxes(app, &m);
     focus = menu_focus(&m);
-    draw_tabs(app, m.place.tabs);
+    chrome(app, &m.place);
     title_box(app, m.place.title, boxed_title(app, menu_screen(app)));
     for (i = m.list.first; i < m.list.first + m.list.shown; ++i) {
         GuiEntry e = m.entry[i];
@@ -1441,7 +1474,7 @@ static int over_box(App* app, GuiRect r, const char* label) {
 }
 /* the question over a run or the menu: the question, its two choices as boxes, the one kept focused */
 static void ask_boxes(App* app, GuiRect* r, GuiList* choices) {
-    int s = app->scale, item = cell_h(app) + 2 * s;
+    int s = app->scale, item = item_h(app);
     *r = over_rect(app, SDL_max((int)SDL_utf8strlen(ask_question(app)), 16), cell_h(app) + 2 * (item + 6 * s) + 12 * s);
     list_place(app, choices,
                box_rect(r->x + cell_w(app), r->y + cell_h(app) + 10 * s, r->w - 2 * cell_w(app), 2 * (item + 6 * s)), 2,
@@ -1466,7 +1499,7 @@ static void ask_boxed(App* app) {
 static void left_boxed(App* app) {
     char old[4200], now[4200], label[64];
     const char* at;
-    int width, height, cols, room, used = 0, shown, i, y, s = app->scale, item = cell_h(app) + 2 * s, more;
+    int width, height, cols, room, used = 0, shown, i, y, s = app->scale, item = item_h(app), more;
     GuiRect r, text;
     GuiList ok;
     SDL_Color failure = rgb(app->theme.failure), ink = rgb(app->theme.ink);
@@ -1536,7 +1569,7 @@ static void draw_games_boxed(App* app) {
     SDL_Color soft = rgb(app->theme.soft), ink = rgb(app->theme.ink);
     int y;
     games_boxes(app, &g);
-    draw_tabs(app, g.place.tabs);
+    chrome(app, &g.place);
     title_box(app, g.place.title, boxed_title(app, GUI_SCREEN_GAMES));
     list_item(app, &g.list, 0, "Back [ESC]", app->browser.selected == 0, false);
     for (i = 0; i < items; ++i) {
@@ -1602,7 +1635,7 @@ typedef struct {
 } GuiPickBoxes;
 static void pick_boxes(App* app, GuiPickBoxes* k) {
     GuiRect r;
-    int item = cell_h(app) + 2 * app->scale;
+    int item = item_h(app);
     char keys[256];
     place_screen(app, &k->place, boxed_title(app, menu_screen(app)), screen_keys(app, SAY_KEYS_HOW, keys, sizeof keys),
                  0, GUI_SHOWS_TABS);
@@ -1620,7 +1653,7 @@ static void draw_pick_boxed(App* app) {
     char line[1100], hints_line[256], *in_use = keys ? keys_in_use(app) : NULL;
     int y;
     pick_boxes(app, &k);
-    draw_tabs(app, k.place.tabs);
+    chrome(app, &k.place);
     title_box(app, k.place.title, boxed_title(app, menu_screen(app)));
     y = pane(app, k.place.list, items[keys ? GUI_KEYS : app->menu.active]);
     r = inner(app, k.place.list);
@@ -1665,6 +1698,7 @@ static void draw_run_boxed(App* app) {
     GuiPromptLine line =
         app->finished ? (app->abnormal_exit ? GUI_PROMPT_FAILED : GUI_PROMPT_DONE) : GUI_PROMPT_ABORTING;
     run_place(app, &p);
+    chrome(app, &p);
     title_box(app, p.title, boxed_title(app, screen(app)));
     y = pane(app, p.list, "Output");
     r = inner(app, p.list);
@@ -2985,7 +3019,7 @@ static void draw_form_boxed(App* app) {
     SDL_SetRenderDrawColor(app->renderer, app->theme.page.r, app->theme.page.g, app->theme.page.b, 255);
     SDL_RenderClear(app->renderer);
     form_boxes(app, &f);
-    draw_tabs(app, f.place.tabs);
+    chrome(app, &f.place);
     title_box(app, f.place.title, form_title(app, title, sizeof title));
     if (theme) {
         labels = form_labels(&app->editor);
