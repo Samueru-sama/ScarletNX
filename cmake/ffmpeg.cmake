@@ -2,9 +2,9 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # FFmpeg's libavcodec, libswresample and libavutil as static libraries (targets FFmpeg::avcodec, FFmpeg::swresample
-# and FFmpeg::avutil), built from the release source in cmake/dependencies.cmake with FFmpeg's own configure and make,
-# which it has instead of a CMake build. Only the decoders NVDEC handles are in (H.264, VP8, VP9), and Opus for hwopus
-# (FFmpeg's Opus decoder resamples its SILK layer with libswresample, which is why that library is in): no programs,
+# and FFmpeg::avutil), built from the pinned Git source in cmake/dependencies.cmake with FFmpeg's own configure and make,
+# which it has instead of a CMake build. H.264 and VP9 are wired to NVDEC; VP8 is built for future support, and Opus
+# for hwopus (FFmpeg's Opus decoder resamples its SILK layer with libswresample, which is why that library is in): no programs,
 # formats, filters, devices, network or autodetected system libraries, so the result needs nothing but libc and builds
 # the same everywhere. All of it is LGPL (no --enable-gpl). It needs a POSIX shell and make (gmake on the BSDs), and
 # NASM for the x86-64 assembly.
@@ -100,7 +100,7 @@ endif()
 
 # Built once for every tree that builds it the same way, when SNX_DEPS_CACHE names a folder (cmake/deps_cache.cmake).
 # The install prefix stays out of the key: FFmpeg only quotes it in its configuration string
-snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_sha256}" "configure: ${snx_ffmpeg_args}"
+snx_deps_cached(ffmpeg snx_ffmpeg_cache "source: ${snx_ffmpeg_commit}" "configure: ${snx_ffmpeg_args}"
                 "nasm: ${snx_ffmpeg_nasm}")
 if(snx_ffmpeg_cache_FOUND)
     set(snx_ffmpeg_prefix "${snx_ffmpeg_cache_DIR}")
@@ -111,9 +111,11 @@ else()
         set(snx_ffmpeg_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
     endif()
     include(ExternalProject)
+    # FFmpeg's configure leaves a src symlink and generated headers in the binary directory. Keep each source commit
+    # in its own directory so changing the pin cannot build against the previous source.
     ExternalProject_Add(ffmpeg_build
         SOURCE_DIR "${snx_ffmpeg_src}"
-        BINARY_DIR "${CMAKE_BINARY_DIR}/ffmpeg-build"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/ffmpeg-build-${snx_ffmpeg_commit}"
         INSTALL_DIR "${snx_ffmpeg_prefix}"
         CONFIGURE_COMMAND "${SNX_FFMPEG_SH}" "${snx_ffmpeg_src}/configure" --prefix=${snx_ffmpeg_prefix}
                           ${snx_ffmpeg_args}

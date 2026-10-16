@@ -25,6 +25,7 @@ static struct {
     u32 n; /* color slots up to the last bound one */
     VkExtent2D ext;
     int open;
+    int srgb_write;
     int zt_ro; /* the depth target is read-only in this pass: draws also sample it */
 } g_rp;
 
@@ -61,17 +62,23 @@ static void read_targets(GpuChannel* ch, Surf** rt, Surf** zt, u32* n) {
     *zt = NULL;
     if (r[0x54E]) {
         u64 za = ((u64)r[0x3F8] << 32) | r[0x3F9];
-        if (za && r[0x48A] && r[0x48B])
-            *zt = vk_rt(za, r[0x48A], r[0x48B], r[0x3FA], r[0x3FB], 1, r[0x48A] * vk_zt_format(r[0x3FA]).bpp);
+        if (za && r[0x48A] && r[0x48B]) {
+            /* ZETA_SIZE's dimension control can force one layer; otherwise its depth is the array size. */
+            u32 layers = r[0x48C] & (1u << 16) ? 1 : r[0x48C] & 0xffff;
+            if (!layers || layers > g_vk.props.limits.maxImageArrayLayers) layers = 1;
+            *zt = vk_zt_array(za, r[0x48A], r[0x48B], r[0x3FA], r[0x3FB], layers, (u64)r[0x3FC] * 4);
+        }
     }
 }
 
 /* opens a rendering pass on these targets, or keeps the open one if it is the same set. zt_ro: the depth target is
    bound read-only, so draws can sample it too (soft particles test against depth they also read) */
-static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
+static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write) {
+    srgb_write = !!srgb_write;
     if (!n && !zt) return 0;
     if (!zt) zt_ro = 0;
-    if (g_rp.open && g_rp.n == n && g_rp.zt == zt && g_rp.zt_ro == zt_ro && !memcmp(g_rp.rt, rt, sizeof g_rp.rt))
+    if (g_rp.open && g_rp.n == n && g_rp.zt == zt && g_rp.zt_ro == zt_ro && g_rp.srgb_write == srgb_write &&
+        !memcmp(g_rp.rt, rt, sizeof g_rp.rt))
         return 1;
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
@@ -85,7 +92,8 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
         vk_surf_use(cb, rt[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-        ca[i].imageView = rt[i]->att;
+        ca[i].imageView = vk_rt_attachment(rt[i], srgb_write);
+        if (!ca[i].imageView) return 0;
         ca[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         if (rt[i]->sw < ext.width) ext.width = rt[i]->sw;
         if (rt[i]->sh < ext.height) ext.height = rt[i]->sh;
@@ -95,6 +103,9 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkImageLayout zl =
         zt_ro ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    /* a read-only depth target keeps its contents: a store would write it at the end of the pass, which the read
+       access vk_surf_use records doesn't cover, and the next barrier wouldn't wait for it */
+    if (zt_ro) za.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
     if (zt) {
         if (zt_ro)
             vk_surf_use(cb, zt, zl,
@@ -128,6 +139,7 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro) {
     g_rp.n = n;
     g_rp.ext = ext;
     g_rp.zt_ro = zt_ro;
+    g_rp.srgb_write = srgb_write;
     g_rp.open = 1;
     return 1;
 }
@@ -186,7 +198,9 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     k.topo_class = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     k.polygon = VK_POLYGON_MODE_FILL;
     k.ncolor = g_rp.n;
-    for (u32 i = 0; i < g_rp.n; i++) k.color[i] = g_rp.rt[i] ? g_rp.rt[i]->f.vk : VK_FORMAT_UNDEFINED;
+    for (u32 i = 0; i < g_rp.n; i++)
+        k.color[i] =
+            g_rp.rt[i] ? (g_rp.srgb_write ? g_rp.rt[i]->f.vk : vk_srgb_as(g_rp.rt[i]->f.vk, 0)) : VK_FORMAT_UNDEFINED;
     k.blend[slot].mask = ((mask & 1) ? VK_COLOR_COMPONENT_R_BIT : 0) | ((mask & 2) ? VK_COLOR_COMPONENT_G_BIT : 0) |
                          ((mask & 4) ? VK_COLOR_COMPONENT_B_BIT : 0) | ((mask & 8) ? VK_COLOR_COMPONENT_A_BIT : 0);
     if (g_rp.zt) {
@@ -206,6 +220,28 @@ static int clear_masked(u32 slot, u32 mask, const float* cc, VkRect2D rect, u32 
     return 1;
 }
 
+/* SNX_GPU_TRACE_TARGET=address[:bytes]: log the clears and draws that write a render target starting in [address,
+   address + bytes) (one byte without a size), to find what produced a wrong target. Read on first use: draws and
+   clears run on the GPU thread */
+static int trace_target(const Surf* s) {
+    static int read;
+    static u64 lo, bytes;
+    if (!read) {
+        read = 1;
+        const char* v = getenv("SNX_GPU_TRACE_TARGET");
+        if (v) {
+            char *end, *size_end = NULL;
+            lo = strtoull(v, &end, 0);
+            bytes = *end == ':' ? strtoull(end + 1, &size_end, 0) : 1;
+            if (end == v || (*end && *end != ':') || (size_end && (*size_end || size_end == end + 1)) || !bytes) {
+                WARN("SNX_GPU_TRACE_TARGET=%s isn't address[:bytes] with a nonzero size (0x for hex): no trace\n", v);
+                bytes = 0;
+            }
+        }
+    }
+    return bytes && s && s->gva >= lo && s->gva - lo < bytes;
+}
+
 /* v: bit 0 depth, 1 stencil, 2-5 the RGBA mask, 6-9 the color slot, 10-20 the layer */
 void vk_render_clear(GpuChannel* ch, u32 v) {
     u32* r = ch->r3d;
@@ -217,7 +253,17 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
     Surf* rt[8];
     Surf* zt;
     u32 n;
-    read_targets(ch, rt, &zt, &n); /* may record uploads: before anything is opened */
+    read_targets(ch, rt, &zt, &n);      /* may record uploads: before anything is opened */
+    for (u32 i = 0; mask && i < n; i++) /* the slot the clear takes is resolved below: every bound one is listed */
+        if (trace_target(rt[i]))
+            LOG_LIMIT(64,
+                      "gpu-trace-target: color clear of slot %u, bound slot %u target=%llx %ux%u mask=%x "
+                      "value=%08x,%08x,%08x,%08x\n",
+                      slot, i, (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, mask, r[0x360], r[0x361], r[0x362],
+                      r[0x363]);
+    if ((v & 3) && trace_target(zt))
+        LOG_LIMIT(64, "gpu-trace-target: clear depth target=%llx %ux%u depth=%d stencil=%d value=%g\n",
+                  (unsigned long long)zt->gva, zt->w, zt->h, v & 1, (v >> 1) & 1, dz);
     if (mask) {
         /* the slot is taken through RT_CONTROL's count and permutation, like draws do. Whether the hardware takes the
            target registers of that index directly isn't settled: the first clear where the two differ is logged */
@@ -225,7 +271,7 @@ void vk_render_clear(GpuChannel* ch, u32 v) {
         if (slot >= (ctl & 15) || ((ctl >> (4 + slot * 3)) & 7) != slot)
             LOG_LIMIT(1, "vulkan: a clear of color slot %u under RT_CONTROL %08x\n", slot, ctl);
     }
-    if (!render_begin(rt, zt, n, 0)) return;
+    if (!render_begin(rt, zt, n, 0, r[0x56E] & 1)) return;
     u32 layers = ~0u;
     for (u32 i = 0; i < g_rp.n; i++)
         if (g_rp.rt[i] && g_rp.rt[i]->layers < layers) layers = g_rp.rt[i]->layers;
@@ -514,7 +560,8 @@ static void tex_resolve(GpuChannel* ch, u32 handle, TexRes* x) {
 
 /* the fragment shader keyed on which of its textures and outputs are integer. The textures it resolves for that are
    kept in res (SH_MAXTEX entries), for stage_set */
-static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
+/* last_out: the generic outputs the stage before rasterization writes */
+static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res, u32 last_out) {
     u32* r = ch->r3d;
     u32 ctl = r[0x487], count = ctl & 15;
     if (count > 8) count = 8;
@@ -528,14 +575,28 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
             if (f.sint) rs |= 1u << i;
         }
     }
-    VkSh* s0 = vk_shader_get(ch, addr, 0, ST_FS, 0, 0, 0, 0, 0);
+    VkSh* s0 = vk_shader_get(ch, addr, 0, ST_FS, 0, 0, 0, 0, 0, 0, 0, 0);
+    u32 unfed;
     if (!s0) return s0;
-    u32 tm = 0, ts = 0;
+    unfed = s0->si.in_mask & ~last_out;
+    u32 tm = 0, ts = 0, dm = 0, df = 0, nd = 0;
     int nt = s0->si.ntex > SH_MAXTEX ? SH_MAXTEX : s0->si.ntex;
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s0->si.tex[i];
-        if (st->shadow) continue;
         tex_resolve(ch, tex_handle(ch, 4, r[0x982], st), &res[i]);
+        if (st->shadow) {
+            /* a depth compare of a color texture compares its first component, which Vulkan's compare samplers
+               can't do on a color image: the shader samples it and compares (the TSC's function, LEQUAL when the
+               TSC has none, as vk_tex_bind_sampler sets) */
+            Surf* t = res[i].t;
+            if (t && !t->f.depth && !t->f.is_int) {
+                u32 func = (res[i].tsc[0] >> 9) & 1 ? (res[i].tsc[0] >> 10) & 7 : 3;
+                dm |= 1u << i;
+                if (nd < SH_DC_COLOR_MAX) df |= func << (3 * nd);
+                nd++;
+            }
+            continue;
+        }
         Surf* t = res[i].t;
         u32 ty = (res[i].tic[0] >> 7) & 7;
         /* a depth target's stencil is an unsigned integer, whatever the surface holds */
@@ -555,8 +616,8 @@ static VkSh* fs_get_keyed(GpuChannel* ch, u64 addr, TexRes* res) {
         Surf* image = vk_tex_from_tic(tic);
         if (image && !!image->f.is_int != !!s0->si.img[i].bindless) rm |= 1u << (8 + i);
     }
-    if (!tm && !rm) return s0;
-    return vk_shader_get(ch, addr, 0, ST_FS, tm, ts, rm, rs, 0);
+    if (!tm && !rm && !dm && !unfed) return s0;
+    return vk_shader_get(ch, addr, 0, ST_FS, tm, ts, rm, rs, 0, dm, df, unfed);
 }
 
 VkImageViewType vk_tex_view_type(const ShTex* st) {
@@ -627,19 +688,26 @@ static int cb_get(const GpuChannel* ch, int stage, int i, u32 sz, VkBuffer* buf,
         u64 off;
     } c[5][18];
     u64 a = ch->cbind[stage][i];
-    /* Pending shader results there land first: the checks below only see guest memory. */
+    int pending;
+    /* Pending compute results there land first. A pending graphics result is newer than the guest memory the checks
+       below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached */
     if (g_cs_any && a) vk_compute_mem_need(a, sz);
-    if (g_gfx_any && a) vk_buf_mem_need(a, sz);
-    if (a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch && c[stage][i].frame == vk_frame_number() &&
-        c[stage][i].sz >= sz && !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
+    pending = g_gfx_any && a && vk_buf_pending(a, sz);
+    if (!pending && a && c[stage][i].a == a && c[stage][i].epoch == g_vk_epoch &&
+        c[stage][i].frame == vk_submit_number() && c[stage][i].sz >= sz &&
+        !gpu_mem_dirty_since(c[stage][i].gw, a, sz)) {
         *buf = c[stage][i].buf;
         *off = c[stage][i].off;
         return 1;
     }
     if (!(cache && a ? vk_buf_get_strict(a, sz, buf, off) : vk_buf_copy(a, sz, buf, off))) return 0;
+    if (pending) {
+        c[stage][i].a = 0;
+        return 1;
+    }
     c[stage][i].a = a;
     c[stage][i].gw = gpu_mem_generation();
-    c[stage][i].frame = vk_frame_number();
+    c[stage][i].frame = vk_submit_number();
     c[stage][i].sz = sz;
     c[stage][i].epoch = g_vk_epoch;
     c[stage][i].buf = *buf;
@@ -652,7 +720,7 @@ static int cb_get(const GpuChannel* ch, int stage, int i, u32 sz, VkBuffer* buf,
 static int frame_consts(VkBuffer* buf, u64* off) {
     static u64 frame = ~0ull, o;
     static VkBuffer b;
-    if (frame != vk_frame_number()) {
+    if (frame != vk_submit_number()) {
         u8* p = vk_stage(64, vk_stage_align(), &b, &o);
         if (!p) return 0;
         float rs[4] = {1 / g_vk_scale, 1 / g_vk_scale, g_vk_scale, 0}, fa[4] = {0, 0, 0, 1};
@@ -660,7 +728,7 @@ static int frame_consts(VkBuffer* buf, u64* off) {
         memcpy(p, rs, 16);
         memcpy(p + 16, fa, 16);
         memcpy(p + 32, ia, 16);
-        frame = vk_frame_number();
+        frame = vk_submit_number();
     }
     *buf = b;
     *off = o;
@@ -935,6 +1003,12 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
             table = 1;
             continue;
         }
+        ShTex plain;
+        if (st->shadow && (s->si.tex_dc_color_mask >> i & 1)) { /* compared in the shader: a plain sampler and view */
+            plain = *st;
+            plain.shadow = 0;
+            st = &plain;
+        }
         u32 handle = tex_handle(ch, stage, tcb, st);
         /* what fs_get_keyed resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
@@ -1102,6 +1176,12 @@ static VkFrontFace front_face_at_viewport(const u32* r, float viewport_height) {
     if (r[0x4EB] & 0x10) cw = !cw;
     return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
+int vk_render_depth_clamp(const u32* r) {
+    /* GeometryClip: Passthrough, FrustumXYZ and FrustumZ clip depth; the remaining modes clamp it. */
+    u32 mode = (r[0x64F] >> 11) & 7;
+    return mode != 1 && mode != 3 && mode != 5;
+}
+
 VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r, vk_render_viewport(r).height); }
 
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
@@ -1113,13 +1193,14 @@ void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
     VkSh *tcs, *tes, *gs, *between[3];
     VkDescriptorSet bset[3];
     if (!count || !instances) return;
+    vk_frame_check();
     u32 initial_first = first, initial_count = count;
     int retries = 0;
 retry:
     vk_buf_writable_abort();
     first = initial_first;
     count = initial_count;
-    u64 setup_frame = vk_frame_number();
+    u64 setup_frame = vk_submit_number();
     /* shaders: VertexB always runs (after VertexA when that is on), the fragment stage when enabled */
     u64 code = ((u64)r[0x582] << 32) | r[0x583];
     u32 attr_int = 0, attr_sint = 0;
@@ -1154,22 +1235,23 @@ retry:
     /* SetUserClipEnable (0x544): a clip distance the program writes clips only when its bit is set, in the last
        stage before rasterization */
     clip = r[0x544] & 0xFF;
-    VkSh* vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0,
-                             0, tes_on || gs_on ? SNX_SH_NOT_LAST : clip);
-    tcs = tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST) : NULL;
-    tes = tes_on
-              ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0, gs_on ? SNX_SH_NOT_LAST : clip)
-              : NULL;
-    gs = gs_on
-             ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]), 0, clip)
-             : NULL;
+    VkSh* vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint, 0, 0,
+                             tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0);
+    tcs = tcs_on ? vk_shader_get(ch, code + r[0x821], 0, ST_TCS, 0, 0, 0, 0, SNX_SH_NOT_LAST, 0, 0, 0) : NULL;
+    tes = tes_on ? vk_shader_get(ch, code + r[0x831], 0, ST_TES, 0, 0, r[0xC8] & 0x333, 0, gs_on ? SNX_SH_NOT_LAST : clip,
+                                 0, 0, 0)
+                 : NULL;
+    gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]), 0, clip,
+                               0, 0, 0)
+               : NULL;
     if ((tcs_on && (!tcs || tcs->failed)) || (tes_on && (!tes || tes->failed)) || (gs_on && (!gs || gs->failed))) {
         g_vk_skipped++;
         return;
     }
     TexRes fres[SH_MAXTEX];
     for (int i = 0; i < SH_MAXTEX; i++) fres[i].have = 0;
-    VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres) : NULL;
+    VkSh* last = gs ? gs : tes ? tes : vs;
+    VkSh* fs = (r[0x850] & 1) ? fs_get_keyed(ch, code + r[0x851], fres, last ? last->si.out_mask : ~0u) : NULL;
     if (!vs || vs->failed || (fs && fs->failed)) {
         g_vk_skipped++;
         return;
@@ -1178,6 +1260,16 @@ retry:
     Surf* zt;
     u32 n;
     read_targets(ch, rt, &zt, &n);
+    for (u32 i = 0; i < n; i++)
+        if (trace_target(rt[i]))
+            LOG_LIMIT(64,
+                      "gpu-trace-target: draw color slot %u target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n", i,
+                      (unsigned long long)rt[i]->gva, rt[i]->w, rt[i]->h, count, indexed,
+                      (unsigned long long)(code + r[0x811]), (unsigned long long)(code + r[0x851]));
+    if (trace_target(zt))
+        LOG_LIMIT(64, "gpu-trace-target: draw depth target=%llx %ux%u count=%u indexed=%d vs=%llx fs=%llx\n",
+                  (unsigned long long)zt->gva, zt->w, zt->h, count, indexed, (unsigned long long)(code + r[0x811]),
+                  (unsigned long long)(code + r[0x851]));
     /* a color target the fragment shader samples but doesn't write (no output for it, or a write mask of 0) is drawn
        without: Tears of the Kingdom's lighting passes keep the whole G-buffer bound while they read some of it, which
        Maxwell allows, and Vulkan can't sample an attachment of the pass */
@@ -1208,7 +1300,7 @@ retry:
         if (cleared_frame != g_vk_present || cleared != zt) {
             cleared_frame = g_vk_present;
             cleared = zt;
-            if (render_begin(rt, zt, 0, 0)) {
+            if (render_begin(rt, zt, 0, 0, r[0x56E] & 1)) {
                 VkClearAttachment a = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT |
                                                      (zt->f.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)};
                 a.clearValue.depthStencil = (VkClearDepthStencilValue){1.0f, 0};
@@ -1224,6 +1316,7 @@ retry:
     memset(&k, 0, sizeof k);
     k.vs = vs->mod;
     k.fs = fs ? fs->mod : VK_NULL_HANDLE;
+    k.depth_clamp = g_vk.feat.depthClamp && vk_render_depth_clamp(r);
     VkPrimitiveTopology topo;
     switch (topology) {
         case 0: topo = VK_PRIMITIVE_TOPOLOGY_POINT_LIST; break;
@@ -1356,7 +1449,7 @@ retry:
     k.ncolor = n;
     for (u32 i = 0; i < n; i++) {
         if (!rt[i]) continue; /* format UNDEFINED, nothing written */
-        k.color[i] = rt[i]->f.vk;
+        k.color[i] = r[0x56E] & 1 ? rt[i]->f.vk : vk_srgb_as(rt[i]->f.vk, 0);
         u32 cm = r[0x3E4] ? r[0x680] : r[0x680 + i];
         k.blend[i].mask = ((cm & 0xF) ? VK_COLOR_COMPONENT_R_BIT : 0) | ((cm & 0xF0) ? VK_COLOR_COMPONENT_G_BIT : 0) |
                           ((cm & 0xF00) ? VK_COLOR_COMPONENT_B_BIT : 0) |
@@ -1393,12 +1486,6 @@ retry:
     if (alias < 0) {
         g_vk_skipped++;
         return;
-    }
-    if (alias) {
-        if (g_cs_any) vk_compute_land();
-        vk_buf_land(); /* a page atlas starts from the completed output of earlier draws */
-        if (setup_frame != vk_frame_number() && ++retries < 4) goto retry;
-        draw_storage_read(ch, &storage, vs, fs); /* landing may have changed storage descriptors in c0 */
     }
     if ((storage.n[0] || storage.n[1]) && !vk_buf_draw_prepare(&storage)) {
         g_vk_skipped++;
@@ -1544,15 +1631,15 @@ retry:
         g_vk_skipped++;
         return;
     }
-    /* A guest read while preparing descriptors can land an older graphics output and submit this frame. Rebuild
-       descriptors and staged inputs in the new frame before recording the draw. */
-    if (setup_frame != vk_frame_number()) {
+    /* A guest read while preparing descriptors can submit and land an older graphics output into memory these
+       descriptors and staged inputs were read from. Rebuild them before recording the draw. */
+    if (setup_frame != vk_submit_number()) {
         draw_images_discard(&images);
         if (++retries < 4) goto retry;
         g_vk_skipped++;
         return;
     }
-    if (!render_begin(rt, zt, n, zt_ro)) {
+    if (!render_begin(rt, zt, n, zt_ro, r[0x56E] & 1)) {
         draw_images_discard(&images);
         return;
     }
@@ -1616,11 +1703,8 @@ retry:
         memcpy(&clamp, &r[0x61F], 4);
         vkCmdSetDepthBias(cb, un, g_vk.feat.depthBiasClamp ? clamp : 0.0f, fac);
     }
-    if (!(r[0x64F] & (1u << 11))) {
-        /* the hardware clamps depth unless bit 11 of 0x64F (ViewVolumeClipControl) is set (Ryujinx), and pipelines
-           are made without depth clamp. The first draw that asks for it is logged */
-        LOG_LIMIT(1, "vulkan: ViewVolumeClipControl %x asks for depth clamp (not done)\n", r[0x64F]);
-    }
+    if (!g_vk.feat.depthClamp && vk_render_depth_clamp(r))
+        LOG_LIMIT(1, "vulkan: depth clamp requested but unavailable on this device\n");
     {
         float bc[4];
         memcpy(bc, &r[0x4C7], 16);

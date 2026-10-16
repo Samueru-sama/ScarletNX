@@ -40,3 +40,8 @@ IPC requests allow 0x300-byte paths excluding NUL. Host limits also apply.
 - RomFS: prefer indexed `romfs.bin`; otherwise synthesize from `romfs/`.
 - Readonly RAM copies: missing system archives become valid empty images at `system/archives/<16-hex-id>.romfs`; OS fallback at
   `fonts/SystemFallback.ttf`. No persistent host copy.
+
+## Shared fonts
+
+Place per-game system-font overrides in `<Game>_data/fonts/FontStandard.ttf` (or `.bfttf`) before starting the game.
+These take priority over the host font fallback. Font substitution can change text weight and spacing.

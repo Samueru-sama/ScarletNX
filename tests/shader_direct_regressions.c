@@ -20,6 +20,7 @@
 static int failures;
 static const char* storage_paths[2];
 static const char* nro_paths[4];
+static const char* dc_color_path;
 static const char* issue126_paths[17];
 static const char* stage_paths[3];
 static const char* query_paths[2];
@@ -28,9 +29,10 @@ static const char* gradient_paths[3];
 static const char* texture_paths[6];
 static const char* arithmetic_path;
 static const char* beyond_paths[3];
-static const char* attribute_paths[3];
+static const char* attribute_paths[6];
 static const char* pexit_path;
-static char* fixture_paths[48];
+static const char* passthrough_paths[6];
+static char* fixture_paths[64];
 static size_t fixture_count;
 
 static const char* fixture_path(const char* directory, const char* name) {
@@ -761,7 +763,7 @@ static int invalid_brx_table(u32 bank, u32 offset, u32* value) {
 static void brx_length(void) {
     u64 code[64] = {0};
     code[10] = 0x001F8000FC0007E0ull;
-    code[11] = 0xef90000000070001ull; /* LDC R1, c[0][0] */
+    code[11] = 0xef94000000070001ull; /* LDC.B32 R1, c[0][0] */
     code[12] = 0xe25000000007010full; /* BRX R1 */
     code[13] = 0xe30000000007000full;
     code[14] = code[10];
@@ -802,6 +804,15 @@ static void brx_length(void) {
     shader_hash((const u8*)code, sizeof code, &len);
     check(len == 16 * 8, "unresolved BRX keeps nonzero instructions beyond an earlier exit");
     g_shader_cb_read = old;
+}
+
+static void invalid_ldc_bank(void) {
+    const u64 ldc = 0xef94000000070d0dull | (31ull << 36);
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(&ldc, 1, ST_FS, &info, &words, 1);
+    check(!code && info.unsupported, "LDC rejects constant buffer banks outside the descriptor set");
+    free(code);
 }
 
 static void nro_shader_modes(void) {
@@ -1361,7 +1372,46 @@ static void eden_forms(void) {
         memset(&info, 0, sizeof info);
         info.rt_int_mask = 3;
         code = shader_to_spirv((const u8*)program, sizeof program, ST_GS, &info, &words, 1, 1, 1, 1);
-        check(!code && !strcmp(info.first_unsupported, "geometry passthrough"), "a passthrough program is refused");
+        check_translated(code, &info, "triangle passthrough translates");
+        if (code) {
+            check(count_opcode(code, words, 218, 0xffffffffu) == 3, "passthrough emits three vertices");
+            check(count_opcode(code, words, 219, 0xffffffffu) == 1, "passthrough ends its primitive");
+            save_fixture(passthrough_paths[0], code, words);
+        }
+        free(code);
+        const u32 counts[] = {1, 2, 4, 6};
+        for (u32 i = 0; i < 4; i++) {
+            memset(&info, 0, sizeof info);
+            info.rt_int_mask = counts[i];
+            memset(info.gp_skip_mask, 0xff, sizeof info.gp_skip_mask);
+            info.gp_skip_mask[0] &= ~(15u << 28); /* position */
+            info.gp_skip_mask[1] &= ~5u; /* only x and z of attribute 0 */
+            code = shader_to_spirv((const u8*)program, sizeof program, ST_GS, &info, &words, 1, 1, 1, 1);
+            check_translated(code, &info, "point, line and adjacency passthrough translate");
+            if (code) {
+                u32 expected = counts[i] == 4 ? 2 : counts[i] == 6 ? 3 : counts[i];
+                check(count_opcode(code, words, 218, 0xffffffffu) == (int)expected,
+                      "adjacency vertices are excluded from passthrough output");
+                check(info.in_mask == 1 && info.gp_skip_mask[1] == ~5u,
+                      "partial passthrough mask is retained and limits inputs");
+                save_fixture(passthrough_paths[i + 1], code, words);
+            }
+            free(code);
+        }
+        program[11] = 0xeff07f800647ff00ull; /* AST Layer, R0: generated per primitive */
+        program[12] = EXIT & ~(7ull << 16); /* conditional exit */
+        program[13] = EXIT;
+        memset(&info, 0, sizeof info);
+        info.rt_int_mask = 3;
+        memset(info.gp_skip_mask, 0xff, sizeof info.gp_skip_mask);
+        info.gp_skip_mask[0] &= ~(15u << 28);
+        code = shader_to_spirv((const u8*)program, sizeof program, ST_GS, &info, &words, 1, 1, 1, 1);
+        check_translated(code, &info, "passthrough preserves generated layer across conditional exits");
+        if (code) {
+            check(has_builtin(code, words, 9), "generated Layer is declared");
+            check(count_opcode(code, words, 218, 0xffffffffu) == 6, "each exit emits a whole triangle");
+            save_fixture(passthrough_paths[5], code, words);
+        }
         free(code);
     }
 }
@@ -1794,6 +1844,47 @@ static void beyond_eden(void) {
     free(code);
 }
 
+/* AL2P keeps byte offsets, including bit 10, and adds the register before an attribute access. */
+static void attribute_pointer(void) {
+    const u64 base = 0xefa070010607ff01ull; /* Mario Golf: AL2P R1, RZ + 0x60, PT */
+    const u64 instructions[] = {mov32i(4, 0x1234),
+                                (base & ~((0xffull << 8) | (0x7ffull << 20))) | (4ull << 8) | (0x460ull << 20)};
+    ShaderInfo info;
+    size_t words = 0;
+    u32* code = translate(instructions, 2, ST_VS, &info, &words, 0);
+    check_translated(code, &info, "AL2P attribute pointer translates");
+    check(code && seeded_register_feeds(code, words, 0x1234, 128, 3) && has_constant(code, words, 0x460),
+          "AL2P adds its source and full eleven-bit byte offset");
+    if (code) save_fixture(attribute_paths[3], code, words);
+    free(code);
+    code = translate(&base, 1, ST_VS, &info, &words, 0);
+    check_translated(code, &info, "AL2P accepts the zero register");
+    free(code);
+    const u64 predicate = base & ~(7ull << 44);
+    code = translate(&predicate, 1, ST_VS, &info, &words, 0);
+    check_refused(code, &info, "AL2P", "AL2P range predicate is not silently discarded");
+    free(code);
+    /* The driver offers a direct CBE export path and ordinary attribute exports. With direct export disabled,
+       its address registers are zero and its stores must not allocate or access a global-buffer descriptor. */
+    const u64 export[] = {
+        0xf0c8000001570008ull, 0xf0c8000001670005ull, 0xf0c8000001770006ull, 0x5c1000000067080aull,
+        0x1c00000008070a0aull, 0x38c0050008070718ull, 0x5c10000000a71804ull, 0xeedc60000007040bull,
+        0x5cc0000000681802ull, 0xeedc600000080201ull,
+    };
+    code = translate(export, sizeof export / sizeof *export, ST_VS, &info, &words, 0);
+    check_translated(code, &info, "disabled direct CBE export translates");
+    check(code && !info.ngbuf, "disabled CBE export does not bind guest global memory");
+    if (code) save_fixture(attribute_paths[4], code, words);
+    free(code);
+    const u64 handles[] = {mov32i(2, 3), 0xefd0000100070200ull, 0xefd1000300070201ull};
+    const u32 sph[3] = {4u << 24, 0, 0};
+    code = translate_stage(handles, 3, ST_TCS, sph, 0, &info, &words);
+    check_translated(code, &info, "ISBERD output-buffer handles translate");
+    check(code && seeded_register_feeds(code, words, 3, 62, 2), "ISBERD preserves the vertex index");
+    if (code) save_fixture(attribute_paths[5], code, words);
+    free(code);
+}
+
 /* A fragment program writing a sample mask and depth after its colour; reading PrimitiveId, SR_THREAD_KILL and
    PIXLD's sample and coverage; and a compute program reading SR_TID packed and the clock's high word */
 static void system_values(void) {
@@ -1942,6 +2033,58 @@ static void unsupported_names_word(void) {
     free(code);
 }
 
+/* a depth-compare sample (TEXS, shadow) of a color texture: the image is declared as color and sampled without a
+   reference, and the shader compares its first component (ShaderInfo.tex_dc_color_mask); a depth texture keeps the
+   compare sample */
+static void dc_color_compare(void) {
+    const u64 texs = 0xD800000000000000ull | (4ull << 53) | (1ull << 36) | (255ull << 28) | (1ull << 20) | 3;
+    u64 code[64] = {0};
+    code[10] = SCHED;
+    code[11] = texs;
+    code[12] = EXIT;
+    for (int color = 0; color < 2; color++) {
+        ShaderInfo info = {0};
+        info.tex_dc_color_mask = (u32)color;
+        info.tex_dc_color_funcs = 4; /* GREATER */
+        size_t words = 0;
+        u32* spv = shader_to_spirv((const u8*)code, sizeof code, ST_FS, &info, &words, 1, 1, 1, 1);
+        check(spv && info.ntex == 1 && info.tex[0].shadow, "a TEXS shadow sample translates");
+        if (!spv) continue;
+        /* OpImageSampleDrefImplicitLod 89, OpImageSampleImplicitLod 87, OpSelect 169 */
+        int dref = count_opcode(spv, words, 89, 0xffffffffu), plain = count_opcode(spv, words, 87, 0xffffffffu),
+            select = count_opcode(spv, words, 169, 0xffffffffu);
+        check(color ? !dref && plain == 1 && select >= 1 : dref == 1 && !plain,
+              color ? "a color texture is sampled plainly and compared in the shader" : "a depth texture keeps Dref");
+        check(!color || info.tex_dc_color_mask == 1, "the translated info keeps the depth-compare key");
+        if (color) save_fixture(dc_color_path, spv, words);
+        free(spv);
+    }
+}
+
+/* A fragment input the stage before rasterization doesn't write (ShaderInfo.in_unfed_mask) isn't declared, so
+   Vulkan's interface matches, and IPA reads it as 0, 0, 0, 1 */
+static void unfed_fragment_input(void) {
+    u64 code[64] = {0};
+    ((u32*)code)[18] = 15;        /* one RGBA output */
+    ((u8*)code)[0x18 + 4] = 0xff; /* generic input 4, all components, perspective */
+    code[10] = SCHED;
+    code[11] = 0xE000000000070000ull | (0xC0ull << 28) | 0xFF00; /* IPA R0, a[0xc0]: input 4's x */
+    code[12] = EXIT;
+    int locations[2] = {0, 0};
+    for (int unfed = 0; unfed < 2; unfed++) {
+        ShaderInfo info = {0};
+        size_t words = 0;
+        info.in_unfed_mask = unfed ? 1u << 4 : 0;
+        u32* spv = shader_to_spirv((const u8*)code, sizeof code, ST_FS, &info, &words, 1, 1, 1, 1);
+        check(spv && !info.unsupported && (info.in_mask >> 4 & 1), "IPA of a generic input translates");
+        if (!spv) continue;
+        locations[unfed] = count_opcode(spv, words, 71, 30); /* OpDecorate ... Location */
+        check(!unfed || info.in_unfed_mask == 1u << 4, "the translated info keeps the unfed-input key");
+        free(spv);
+    }
+    check(locations[1] == locations[0] - 1, "an unfed input isn't declared, and the others still are");
+}
+
 int main(int argc, char** argv) {
     g_shader_clock_scopes = 3; /* Exercise both optional Vulkan clock scopes in offline SPIR-V fixtures. */
     if (argc != 1 && argc != 2) {
@@ -1983,17 +2126,26 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "beyond_%d", i);
             beyond_paths[i] = fixture_path(argv[1], name);
         }
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 6; i++) {
             snprintf(name, sizeof name, "attribute_%d", i);
             attribute_paths[i] = fixture_path(argv[1], name);
         }
         pexit_path = fixture_path(argv[1], "pexit");
-        if (fixture_count != 48) {
+        for (int i = 0; i < 6; i++) {
+            char name[32];
+            snprintf(name, sizeof name, "passthrough_%d", i);
+            passthrough_paths[i] = fixture_path(argv[1], name);
+        }
+        dc_color_path = fixture_path(argv[1], "dc_color");
+        if (fixture_count != 58) {
             fprintf(stderr, "failed to allocate fixture paths\n");
             return 2;
         }
     }
+    dc_color_compare();
+    unfed_fragment_input();
     brx_length();
+    invalid_ldc_bank();
     cbuf_integer_loads();
     unsupported_names_word();
     f2i_modifiers();
@@ -2017,6 +2169,7 @@ int main(int argc, char** argv) {
     arithmetic_forms();
     beyond_eden();
     system_values();
+    attribute_pointer();
     for (size_t i = 0; i < fixture_count; i++) free(fixture_paths[i]);
     return failures ? 1 : 0;
 }

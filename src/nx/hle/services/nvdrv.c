@@ -777,18 +777,17 @@ static u32 ioctl_ctrl(u32 cmd, u8* d, u32 n) {
             memset(d + 0x82, 0, 0x101);
             return 0;
         }
-        case 0x1C: { /* EVENT_SIGNAL: cancel the pending wait and wake the waiter. NVN does this before reusing an event,
-                    ignoring it leaves someone blocked forever */
+        case 0x1C: { /* CLEAR_EVENT_WAIT: cancel the pending fence wait and reset its event. */
             u32 ev;
             memcpy(&ev, d, 4);
             u32 slot = ev & 63;
             nvev_lock();
             if (nv.nvev[slot].ev) {
                 nv.nvev[slot].armed = 0;
-                kevent_signal(nv.nvev[slot].ev);
+                kevent_clear(nv.nvev[slot].ev);
             }
             nvev_unlock();
-            LOG_LIMIT(2, "nvdrv: event %u signaled by the game\n", slot);
+            LOG_LIMIT(2, "nvdrv: event %u wait canceled by the game\n", slot);
             return 0;
         }
         /* EVENT_WAIT and EVENT_WAIT_ASYNC {u32 id, thresh; i32 timeout; u32 value}. NvRmChannelSyncPointWaitTimeout

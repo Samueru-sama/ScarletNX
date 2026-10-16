@@ -34,8 +34,8 @@ part of the result.
   not installed"). If it is missing, ask the user to install it rather than skipping the check.
 - `SNX_VK_VALIDATION=1` makes `src/nx/gpu/vk/device.c` enable the layer with a debug messenger. Errors are logged
   with `WARN` and everything else with `LOG`, each line starting `vulkan validation:`. Count them with
-  `grep -c 'vulkan validation:' games/<Game>.log` and read the distinct ones with
-  `grep 'vulkan validation:' games/<Game>.log | sort | uniq -c | sort -rn | head`. Never print the whole log.
+  `grep -c 'vulkan validation:' games/<id>/<id>.log` and read the distinct ones with
+  `grep 'vulkan validation:' games/<id>/<id>.log | sort | uniq -c | sort -rn | head`. Never print the whole log.
 - The runtime enables only the layer's default checks. Turn on the others per run through the layer's settings
   variables: `VK_KHRONOS_VALIDATION_VALIDATE_SYNC=true` (synchronization validation: missing barriers, hazards
   between the graphics and compute queues), `VK_KHRONOS_VALIDATION_VALIDATE_GPU_BASED=GPU_BASED_GPU_ASSISTED`

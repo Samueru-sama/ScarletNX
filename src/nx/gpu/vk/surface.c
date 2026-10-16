@@ -135,6 +135,24 @@ static Surf* surf_create(u64 gva, u32 w, u32 h, VkFmt f, u32 fkey, u32 bl, u32 b
     return s;
 }
 
+/* SET_SRGB_WRITE selects the attachment view, leaving the image's stored bytes and sampling format intact. */
+VkImageView vk_rt_attachment(Surf* s, int srgb_write) {
+    VkFormat linear = vk_srgb_as(s->f.vk, 0);
+    if (srgb_write || linear == s->f.vk) return s->att;
+    if (!s->att_linear) {
+        VkImageViewUsageCreateInfo usage = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                    .pNext = &usage,
+                                    .image = s->img,
+                                    .viewType = s->type,
+                                    .format = linear,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, s->layers}};
+        VK_OK(vkCreateImageView(g_vk.dev, &vi, NULL, &s->att_linear));
+    }
+    return s->att_linear;
+}
+
 Surf* vk_surf_first(u64 gva) { return g_surfh[hkey(gva)]; }
 void vk_surf_add(Surf* s) {
     u32 k = hkey(s->gva);
@@ -464,6 +482,10 @@ Surf* vk_rt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 pitch, u32 layer
     return rt_create(gva, w, h, fmt, tile, 0, pitch, layers, layer_size, volume);
 }
 
+Surf* vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32 layers, u64 layer_size) {
+    return rt_create(gva, w, h, fmt, tile, 1, w * vk_zt_format(fmt).bpp, layers, layer_size, 0);
+}
+
 void vk_rt_note_read(Surf* s) {
     s->last_used = g_vk_present;
     if (!s->is_rt) return;
@@ -471,7 +493,7 @@ void vk_rt_note_read(Surf* s) {
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
     if (s->gw == gpu_mem_generation()) return;
     if (!gpu_mem_dirty_since(s->gw, s->gva, rt_bytes(s))) {
-        s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check walks less of the write log */
+        s->gw = gpu_mem_generation(); /* still unwritten as of now: the next check asks only about later writes */
         return;
     }
     vk_rt_reload(s->gva);
@@ -502,17 +524,17 @@ Surf* vk_rt_for_cpu(u64 cpu_addr, u32 w, u32 h) {
 /* render targets drawn this frame or the last, for a texture made of them (gpu/vk/texture.c) */
 static Surf** g_drawn;
 static int g_ndrawn, g_capdrawn;
-/* Read backing memory directly: asking gmem_read to land pending output here could submit a draw mid-setup. */
+/* Read backing memory directly: asking gmem_read to land pending output here could submit a draw mid-setup. A run of
+   pages contiguous in host memory is hashed at once, eight bytes at a time (vk_hash) */
 static u64 rt_mem_hash(const Surf* s) {
     u64 h = 1469598103934665603ull;
     u64 size = rt_bytes(s);
     for (u64 o = 0; o < size;) {
-        u64 a = s->gva + o;
-        u64 n = 0x1000 - (a & 0xFFF);
+        u64 a = s->gva + o, cpu = gmmu_translate(a), n = 0x1000 - (a & 0xFFF);
         if (n > size - o) n = size - o;
-        u64 cpu = gmmu_translate(a);
-        const u8* p = cpu ? GP(cpu) : NULL;
-        for (u64 i = 0; i < n; i++) h = (h ^ (p ? p[i] : 0)) * 1099511628211ull;
+        while (cpu && o + n < size && gmmu_translate(a + n) == cpu + n) /* the next page follows in host memory */
+            n += size - o - n < 0x1000 ? size - o - n : 0x1000;
+        h = (h ^ (cpu ? vk_hash(GP(cpu), n) : n)) * 1099511628211ull; /* an unmapped page counts as its length */
         o += n;
     }
     return h;
@@ -522,7 +544,10 @@ void vk_rt_drawn(Surf* s) {
        Keep that first baseline until the next present instead of scanning the whole target on every draw. */
     if (!s->draw_wseen || s->drawn_at != g_vk_present) {
         u64 size = rt_bytes(s);
-        s->draw_has_hash = vk_written_since(gmem_ptr_untracked(s->gva, size), size, 0) < 0;
+        /* without write tracking, a hash of the whole target: only for one a texture takes pixels from (feeds_tex),
+           where it is the one answer vk_rt_drawn_fresh has. Hashing every target on its first draw of each present
+           took most of the GPU thread (FreeBSD, Linux before 6.7) */
+        s->draw_has_hash = vk_written_since(gmem_ptr_untracked(s->gva, size), size, 0) < 0 && s->feeds_tex;
         if (s->draw_has_hash) s->draw_hash = rt_mem_hash(s);
         s->draw_wseen = vk_ww_now();
         s->draw_gw = gpu_mem_generation();
@@ -548,7 +573,14 @@ int vk_rt_drawn_fresh(Surf* s) {
     if (!s->draw_wseen || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || gpu_mem_dirty_since(s->draw_gw, s->gva, size))
         return 0;
     if (s->draw_has_hash) return rt_mem_hash(s) == s->draw_hash;
-    return vk_written_since(gmem_ptr_untracked(s->gva, size), size, s->draw_wseen) == 0;
+    int written = vk_written_since(gmem_ptr_untracked(s->gva, size), size, s->draw_wseen);
+    if (written < 0) {
+        /* no write tracking, and no baseline yet: the target's pixels are taken this once, as the GPU's writes to its
+           memory are known and the game's own seldom land in a target it draws to. Its next baselines are hashed */
+        s->feeds_tex = 1;
+        return 1;
+    }
+    return written == 0;
 }
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     int n = 0;
@@ -582,7 +614,7 @@ static void surf_free(Surf* s) {
             break;
         }
     for (int i = 0; i < s->nsv; i++) vk_defer_image(VK_NULL_HANDLE, VK_NULL_HANDLE, s->sv[i].v, VK_NULL_HANDLE);
-    vk_defer_image(s->img, s->mem, s->att, VK_NULL_HANDLE);
+    vk_defer_image(s->img, s->mem, s->att, s->att_linear);
     free(s);
 }
 void vk_surf_evict(u32 before) {

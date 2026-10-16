@@ -86,7 +86,7 @@ struct snx_recompiled {
     GuestFn* dispatch; /* (pc - code_lo) >> 2 -> function, NULL for the interpreter */
     GuestFn interp;    /* the module's interpreter entry */
     uint64_t code_lo, code_hi;
-    size_t functions, fallbacks;
+    size_t functions;
 };
 
 static void fail(struct snx_recompiler* r, const char* fmt, ...) {
@@ -199,8 +199,16 @@ static void default_sev(void) {}
 static void default_wfe(CPU* c) { (void)c; }
 static void default_poll(CPU* c) { (void)c; }
 
+/* RtAPI.miss, generated code's fallback for a pc its table leaves empty (SNX_ABI 8): the interpreter of the module the
+   CPU is bound to, which load_descriptor keeps in front of the dispatch table */
+static void default_miss(CPU* c, uint64_t pc) {
+    const struct snx_recompiled* m = (const struct snx_recompiled*)((void* const*)c->disp)[-1];
+    m->interp(c, pc);
+}
+
 void snx_runtime_defaults(RtAPI* rt) {
     memset(rt, 0, sizeof(*rt));
+    rt->miss = default_miss;
     rt->note_hint = default_note_hint;
     rt->ticks = default_ticks;
     rt->fpcr_changed = default_fpcr_changed;
@@ -422,16 +430,21 @@ static void unload_image(struct snx_recompiled* m) {
 /* the dispatch table from the descriptor; the interpreter entry comes from a lookup of a pc the table leaves empty */
 static int load_descriptor(struct snx_recompiler* r, struct snx_recompiled* m, const Descriptor* d) {
     size_t i, slots;
+    void** block;
     if (!d || d->abi != SNX_ABI) {
         fail(r, "the recompiled module's descriptor is missing or of another ABI");
         return -1;
     }
     slots = (size_t)((m->code_hi - m->code_lo + 3) / 4);
-    m->dispatch = (GuestFn*)calloc(slots ? slots : 1, sizeof(*m->dispatch));
-    if (!m->dispatch) {
+    /* one slot more, in front of the table: the module, for default_miss to find from cpu->disp. Generated code only
+       indexes the table from its start */
+    block = (void**)calloc(slots + 1, sizeof(void*));
+    if (!block) {
         fail(r, "out of memory for the dispatch table (%lu entries)", (unsigned long)slots);
         return -1;
     }
+    block[0] = m;
+    m->dispatch = (GuestFn*)(block + 1);
     for (i = 0; i < d->count; ++i) {
         uint64_t a = d->addresses[i];
         if (a < m->code_lo || a >= m->code_hi || (a & 3)) continue;
@@ -451,7 +464,6 @@ typedef struct {
     size_t first, last; /* functions */
     unsigned char* object;
     size_t size;
-    unsigned long fallbacks;
 } Unit;
 
 typedef struct {
@@ -503,7 +515,6 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     ir = snx_ir_new(name, q->r->opt, error, error_size);
     if (!ir) return -1;
     for (i = u->first; i < u->last; ++i) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
-    u->fallbacks = ir->fallbacks;
     if (q->r->keep_ir && save_ir(ir, q->r->keep_ir, name)) {
         snprintf(error, error_size, "cannot save the IR of %s in %s", name, q->r->keep_ir);
         rc = -1;
@@ -594,12 +605,12 @@ static void run_queue(Queue* q, unsigned jobs) {
     free(threads);
 }
 
-/* the descriptor as IR: constant tables, and DESCRIPTOR_SYMBOL filling the Descriptor and pointing the runtime
-   library's snx_interp_entry at its interpreter */
+/* the descriptor as IR: constant tables, and DESCRIPTOR_SYMBOL filling the Descriptor, with the runtime library's
+   interpreter (generated code's misses go to RtAPI.miss since SNX_ABI 8, which default_miss sends there) */
 static int llvm_descriptor(SnxIr* ir, const SnxCodegen* codegen, char* error, size_t error_size) {
     Entry* e;
     size_t count, n, i;
-    LLVMValueRef *values, addresses, functions, desc, interp, entry, fn;
+    LLVMValueRef *values, addresses, functions, desc, interp, fn;
     LLVMTypeRef t_addresses, t_functions;
     LLVMBasicBlockRef block;
     e = entries(codegen, &count);
@@ -637,14 +648,11 @@ static int llvm_descriptor(SnxIr* ir, const SnxCodegen* codegen, char* error, si
     LLVMSetAlignment(desc, 8);
     interp = LLVMAddFunction(ir->mod, "snx_interp", ir->t_guest); /* rtlib.c */
     LLVMSetVisibility(interp, LLVMHiddenVisibility);
-    entry = LLVMAddGlobal(ir->mod, ir->t_ptr, "snx_interp_entry"); /* rtlib.c */
-    LLVMSetVisibility(entry, LLVMHiddenVisibility);
     fn = LLVMAddFunction(ir->mod, DESCRIPTOR_SYMBOL, LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
     if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
     ir->fn = fn;
     block = LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry");
     LLVMPositionBuilderAtEnd(ir->b, block);
-    ir_store(ir, interp, entry);
 #define FIELD(member, value)                                                                                           \
     do {                                                                                                               \
         LLVMValueRef index__ = ir_i64(ir, offsetof(Descriptor, member));                                               \
@@ -733,7 +741,6 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         fail(r, "LLVM backend: %s", q.error);
         goto done;
     }
-    for (i = 0; i < count; ++i) m->fallbacks += q.units[i].fallbacks;
     ir = snx_ir_new("module", r->opt, error, sizeof(error));
     if (!ir || llvm_descriptor(ir, codegen, error, sizeof(error)) ||
         (r->keep_ir && save_ir(ir, r->keep_ir, "module")) ||
@@ -805,7 +812,7 @@ static int jit_descriptor(SnxJit* jit, const SnxCodegen* codegen, char* error, s
     size_t count, n, i;
     gcc_jit_rvalue **values, *interp_address, *base;
     gcc_jit_type *t_addresses, *t_functions, *t_desc;
-    gcc_jit_lvalue *addresses, *functions, *desc, *interp_entry;
+    gcc_jit_lvalue *addresses, *functions, *desc;
     gcc_jit_function *interp, *fn;
     gcc_jit_param* params[2];
     gcc_jit_block* block;
@@ -845,14 +852,12 @@ static int jit_descriptor(SnxJit* jit, const SnxCodegen* codegen, char* error, s
     params[0] = gcc_jit_context_new_param(x, NULL, jit->t_ptr, "c");
     params[1] = gcc_jit_context_new_param(x, NULL, jit->t_u64, "e");
     interp = gcc_jit_context_new_function(x, NULL, GCC_JIT_FUNCTION_IMPORTED, jit->t_void, "snx_interp", 2, params, 0);
-    interp_entry = gcc_jit_context_new_global(x, NULL, GCC_JIT_GLOBAL_IMPORTED, jit->t_guest_ptr, "snx_interp_entry");
     interp_address = gcc_jit_context_new_cast(x, NULL, gcc_jit_function_get_address(interp, NULL), jit->t_guest_ptr);
     fn = gcc_jit_context_new_function(x, NULL, GCC_JIT_FUNCTION_EXPORTED, jit->t_ptr, DESCRIPTOR_SYMBOL, 0, NULL, 0);
     jit->fn = fn;
     block = gcc_jit_function_new_block(fn, "entry");
     jit->block = block;
     base = gcc_jit_lvalue_get_address(desc, NULL);
-    gcc_jit_block_add_assignment(block, NULL, interp_entry, interp_address);
 #define FIELD(member, type, value)                                                                                     \
     gcc_jit_block_add_assignment(block, NULL, jit_at(jit, base, offsetof(Descriptor, member), type), value)
     FIELD(abi, jit->t_u32, jit_u32(jit, SNX_ABI));
@@ -923,7 +928,6 @@ static int recompile_gccjit(struct snx_recompiler* r, struct snx_recompiled* m, 
         fail(r, "%s", u.error);
         goto done;
     }
-    m->fallbacks += u.fallbacks;
     /* the descriptor, linked by GCC's driver with the chunks and the runtime library, and loaded by libgccjit */
     jit = snx_jit_new(r->opt);
     if (!jit) {
@@ -1025,13 +1029,12 @@ struct snx_recompiled* snx_recompile_ranges(struct snx_recompiler* r, const stru
         snx_recompiled_free(m);
         return NULL;
     }
-    if (m->fallbacks) report(r, "%lu instructions run through the interpreter step\n", (unsigned long)m->fallbacks);
     return m;
 }
 
 void snx_recompiled_free(struct snx_recompiled* m) {
     if (!m) return;
-    free(m->dispatch);
+    if (m->dispatch) free((void**)m->dispatch - 1); /* load_descriptor's block, with the module in front */
 #ifdef SNX_WITH_GCCJIT
     if (m->jit_result) gcc_jit_result_release((gcc_jit_result*)m->jit_result);
 #endif
@@ -1045,10 +1048,13 @@ void snx_recompiled_range(const struct snx_recompiled* m, uint64_t* code_lo, uin
 }
 
 size_t snx_recompiled_functions(const struct snx_recompiled* m) { return m->functions; }
-size_t snx_recompiled_fallbacks(const struct snx_recompiled* m) { return m->fallbacks; }
+size_t snx_recompiled_fallbacks(const struct snx_recompiled* m) {
+    (void)m;
+    return 0;
+}
 
 int snx_recompiled_bind(struct snx_recompiled* m, CPU* cpu) {
-    if (!cpu->rt || !cpu->rt->svc || !cpu->rt->undef || !cpu->rt->brk) return -1;
+    if (!cpu->rt || !cpu->rt->svc || !cpu->rt->undef || !cpu->rt->brk || !cpu->rt->miss) return -1;
     cpu->disp = m->dispatch;
     cpu->code_lo = m->code_lo;
     cpu->code_hi = m->code_hi;

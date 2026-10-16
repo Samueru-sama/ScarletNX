@@ -86,6 +86,7 @@ static void execute_module(const char* path, const unsigned char* image, int int
     memset(&cpu, 0, sizeof(cpu));
     memset(&rt, 0, sizeof(rt));
     rt.undef = undefined;
+    rt.miss = mod->interp; /* the runtime's cpu_fallback=interp */
     cpu.rt = &rt;
     cpu.code_lo = mod->code_lo;
     cpu.code_hi = mod->code_hi;

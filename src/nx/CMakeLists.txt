@@ -19,7 +19,7 @@ target_compile_options(snx_nx_flags INTERFACE -fno-strict-aliasing
 target_compile_definitions(snx_nx_flags INTERFACE VK_NO_PROTOTYPES)
 target_link_libraries(snx_nx_flags INTERFACE Vulkan::Headers)
 target_include_directories(snx_nx_flags BEFORE INTERFACE "${volk_SOURCE_DIR}"
-                                                "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+                                                "${VulkanMemoryAllocator_SOURCE_DIR}/include" "${renderdoc_app_SOURCE_DIR}")
 
 function(snx_component name)
     add_library(snx_${name} OBJECT ${ARGN})
@@ -27,7 +27,7 @@ function(snx_component name)
 endfunction()
 
 snx_component(core runtime/main.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c
-              runtime/ini.c runtime/startup.c runtime/gdbstub.c runtime/present.c)
+              runtime/ini.c runtime/startup.c runtime/gdbstub.c runtime/present.c runtime/guest_jit.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4)
 snx_component(kernel hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c hle/kernel/ipc.c)
@@ -44,11 +44,11 @@ snx_swipc(snx_hle ROOT "${CMAKE_CURRENT_SOURCE_DIR}" FILES
           hle/services/vi.swipc hle/services/nvdrv.swipc hle/services/network/bsd.swipc
           hle/services/network/dns.swipc hle/services/network/nifm.swipc hle/services/network/ssl.swipc
           hle/filesystem/fs.swipc)
-snx_component(video gpu/video/host1x.c gpu/video/nvdec.c gpu/video/vic.c)
+snx_component(video gpu/video/host1x.c gpu/video/nvdec.c gpu/video/vp9_rebuild.cpp gpu/video/vic.c)
 target_link_libraries(snx_video PRIVATE FFmpeg::avcodec)
 # hwopus (hle/services/audio.c) decodes Opus with FFmpeg too
 target_link_libraries(snx_hle PRIVATE FFmpeg::avcodec OpenSSL::SSL)
-snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/maxwell3d.c gpu/renderer.c)
+snx_component(gpu gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c gpu/maxwell/fermi2d.c gpu/maxwell/dma.c gpu/maxwell/write_pages.c gpu/maxwell/maxwell3d.c gpu/renderer.c)
 
 include("${PROJECT_SOURCE_DIR}/cmake/controls_atlas.cmake")
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
@@ -66,8 +66,8 @@ snx_component(platform ${platform})
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/spirv_emit.c)
 snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/cmd.c gpu/vk/format.c gpu/vk/surface.c gpu/vk/texture.c
-                 gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/compute.c
-                 gpu/vk/astc.c gpu/vk/ui.c gpu/texture/etc2.c gpu/vk/vma.cpp "${volk_SOURCE_DIR}/volk.c")
+                 gpu/vk/buffer.c gpu/vk/writeback.c gpu/vk/pipeline.c gpu/vk/render.c gpu/vk/release.c gpu/vk/compute.c gpu/vk/renderdoc.c
+                 gpu/vk/astc.c gpu/vk/ui.c gpu/texture/etc2.c gpu/texture/depth.c gpu/vk/vma.cpp "${volk_SOURCE_DIR}/volk.c")
 set(components core kernel hle video gpu platform shader vk)
 # third-party code (vma.cpp is VMA's implementation)
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" gpu/vk/vma.cpp PROPERTIES COMPILE_OPTIONS -w)

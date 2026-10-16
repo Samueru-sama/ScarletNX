@@ -43,6 +43,14 @@ syscalls, ELF execution, filesystem scope, and differential testing.
 
 ## Recompiler + module ABI
 
+The module ABI is now 8: `RtAPI.miss` handles addresses absent from the dispatch table, whose slots are read
+atomically. Existing game modules must be recompiled. On supported ELF hosts, `cpu_fallback=jit` compiles missed
+code in background threads while the interpreter runs it; `cpu_fallback=interp` keeps interpretation only.
+`src/nx/runtime/guest_jit.c` connects the runtime to `llvm/jit_service.c`. Loaded NRO text is registered with the
+service and removed before unmapping, so runtime-loaded gameplay code can be compiled too. ELF object loading
+and module linking share relocation code in `elf_object.c`. The JIT service tests cover concurrent misses,
+background publication, and NRO unload/remap.
+
 NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
 `work/<Game>/{exefs,romfs}` -> `games/<id>/`: `<id>[.exe]`, `<id>_code.{so,dll}`, `<id>_data/`:
 
@@ -117,7 +125,7 @@ bump `SNX_ABI` for ABI changes. Version mismatches reject loading.
 | `hle/kernel/`, `hle/svc/`, `memory/` | Objects, threads, sync, SVC, Switch memory, IPC |
 | `hle/services/`, `hle/filesystem/` | Services, nvdrv, guest filesystem services |
 | `gpu/` and `gpu/maxwell/` | GPFIFO, Maxwell engine implementation, shaders, Vulkan renderer |
-| `gpu/video/` | host1x, NVDEC/FFmpeg, VIC |
+| `gpu/video/` | host1x, NVDEC H.264 and VP9 decoding through FFmpeg, VIC |
 | `runtime/platform/` | Host APIs, SDL3/headless, input, screenshots, timed exit |
 
 ### Guest exec

@@ -283,7 +283,7 @@ static VkSh* g_shh[1024];
    by write tracking since then, or else by the hash of its code */
 typedef struct {
     u64 gva, gva_a, gw;
-    u32 mask[5], epoch, wseen;
+    u32 mask[16], epoch, wseen;
     int stage;
     VkSh* s;
 } ShA;
@@ -308,13 +308,15 @@ static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
     return code_hash(gva, len, &hash) && hash == qh;
 }
 
-VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask, u32 rt_int,
-                    u32 rt_sint, u32 clip) {
+VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u32 int_mask, u32 sint_mask,
+                    u32 rt_int, u32 rt_sint, u32 clip, u32 dc_color, u32 dc_funcs, u32 unfed) {
     g_sh_ch = ch;
-    g_sh_bind = stage <= ST_FS ? stage : 0; /* the bindings are by stage */
-    u32 mask[5] = {int_mask, sint_mask, rt_int, rt_sint, clip};
+    g_sh_bind = stage <= ST_FS ? stage : 0;
+    u32 mask[16] = {int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs, unfed};
+    if (stage == ST_GS && ch) memcpy(mask + 8, ch->r3d + 0x490, 8 * sizeof(u32));
     u32 mix = int_mask * 0x9E3779B1u ^ sint_mask * 0x85EBCA6Bu ^ rt_int * 0x27D4EB2Fu ^ rt_sint * 0x165667B1u ^
-              clip * 0x61C88647u;
+              clip * 0x61C88647u ^ dc_color * 0x2545F491u ^ dc_funcs * 0x9E3779B9u ^ unfed * 0x3C6EF372u;
+    if (stage == ST_GS) mix ^= (u32)vk_hash(mask + 8, 8 * sizeof(u32));
     ShA* set = &g_sha[(u32)((gva >> 6) ^ (gva >> 18) ^ (gva_a >> 4) ^ mix ^ ((u32)stage << 11)) & 4094];
     ShA* ca = NULL;
     for (int w = 0; w < 2 && !ca; w++)
@@ -397,11 +399,15 @@ VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u32 int
             s->si.tex_sint_mask = sint_mask;
             s->si.rt_int_mask = rt_int;
             s->si.rt_sint_mask = rt_sint;
+            s->si.tex_dc_color_mask = dc_color;
+            s->si.tex_dc_color_funcs = dc_funcs;
+            s->si.in_unfed_mask = unfed;
         } else {
             s->si.attr_int_mask = int_mask;
             s->si.attr_sint_mask = sint_mask;
             s->si.rt_int_mask = rt_int; /* the tessellation or geometry primitive */
             s->si.clip_enable = clip;
+            memcpy(s->si.gp_skip_mask, mask + 8, sizeof s->si.gp_skip_mask);
         }
         if (vk_corpus_dir()) shader_corpus_save(vk_corpus_dir(), code, mlen, 0x10000, stage, &s->si, h ^ mix);
         size_t nw = 0;
@@ -541,6 +547,7 @@ static VkPipeline pipe_create(const PipeKey* k) {
                                                  .topology = (VkPrimitiveTopology)k->topo_class};
     VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .depthClampEnable = k->depth_clamp,
                                                  .polygonMode = (VkPolygonMode)k->polygon,
                                                  .lineWidth = 1.0f};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -598,16 +605,18 @@ static VkPipeline pipe_create(const PipeKey* k) {
                             VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE,
                             VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE,
                             VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
-                            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE,
                             VK_DYNAMIC_STATE_LINE_WIDTH,
                             VK_DYNAMIC_STATE_DEPTH_BIAS,
                             VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
                             VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
                             VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-                            VK_DYNAMIC_STATE_DEPTH_BOUNDS};
+                            VK_DYNAMIC_STATE_DEPTH_BOUNDS,
+                            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE};
+    /* the stride is set by vkCmdBindVertexBuffers2, which a draw without vertex buffers never calls: a pipeline without
+       bindings leaves it out (it is last) */
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                           .dynamicStateCount = sizeof dyn / sizeof dyn[0],
+                                           .dynamicStateCount = sizeof dyn / sizeof dyn[0] - (k->nbind ? 0 : 1),
                                            .pDynamicStates = dyn};
     VkFormat cf[8];
     for (u32 i = 0; i < k->ncolor; i++) cf[i] = (VkFormat)k->color[i];

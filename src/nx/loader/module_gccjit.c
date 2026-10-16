@@ -35,7 +35,7 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
     gcc_jit_rvalue **values, *interp_address, *index, *e;
     gcc_jit_type *t_fns, *t_u32s, *t_addrs, *t_ptrs, *t_info, *t_mods, *t_id, *t_mod, *t_cstr;
     gcc_jit_field* fields[12];
-    gcc_jit_lvalue *fns, *ent_off, *ent_fn, *ent_addr, *ent_ptr, *mods, *mod, *interp_entry, *loop_i;
+    gcc_jit_lvalue *fns, *ent_off, *ent_fn, *ent_addr, *ent_ptr, *mods, *mod, *loop_i;
     gcc_jit_function *interp, *fn;
     gcc_jit_block *start, *head, *body, *done;
     gcc_jit_param* interp_params[2];
@@ -122,7 +122,6 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
     interp_params[1] = gcc_jit_context_new_param(x, NULL, jit->t_u64, "e");
     interp = gcc_jit_context_new_function(x, NULL, GCC_JIT_FUNCTION_IMPORTED, jit->t_void, "snx_interp", 2,
                                           interp_params, 0);
-    interp_entry = gcc_jit_context_new_global(x, NULL, GCC_JIT_GLOBAL_IMPORTED, jit->t_guest_ptr, "snx_interp_entry");
     interp_address = gcc_jit_context_new_cast(x, NULL, gcc_jit_function_get_address(interp, NULL), jit->t_guest_ptr);
     /* SNX_EXPORT const SnxModule* snx_module(void) */
     fn = gcc_jit_context_new_function(x, NULL, GCC_JIT_FUNCTION_EXPORTED, jit->t_ptr, "snx_module", 0, NULL, 0);
@@ -157,11 +156,11 @@ static int emit_module(SnxJit* jit, const SnxCodegen* codegen, const SnxCodegenO
                                          x, NULL, gcc_jit_lvalue_as_rvalue(ent_fn), index)))));
     gcc_jit_block_add_assignment_op(body, NULL, loop_i, GCC_JIT_BINARY_OP_PLUS, jit_u32(jit, 1));
     gcc_jit_block_end_with_jump(body, NULL, head);
-    /* snx_interp_entry=snx_interp; MOD.abi=...; ... return &MOD; */
+    /* MOD.abi=...; ... return &MOD; MOD.interp is the interpreter the runtime's RtAPI.miss runs with
+       cpu_fallback=interp */
     {
         gcc_jit_rvalue* base = gcc_jit_lvalue_get_address(mod, NULL);
         jit->block = done;
-        gcc_jit_block_add_assignment(done, NULL, interp_entry, interp_address);
 #define FIELD(member, type, value)                                                                                     \
     gcc_jit_block_add_assignment(done, NULL, jit_at(jit, base, offsetof(SnxModule, member), type), value)
         FIELD(abi, jit->t_u32, jit_u32(jit, options->abi));
@@ -218,6 +217,7 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
     if (!options->interp_only &&
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
         return -1;
+    codegen.hook_direct_calls = options->hook_direct_calls;
     dir = snx_temp_dir(NULL);
     if (!dir) {
         snx_codegen_free(&codegen);

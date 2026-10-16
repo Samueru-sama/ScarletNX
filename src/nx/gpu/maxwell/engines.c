@@ -58,7 +58,6 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
     u64 addr = ((u64)(r[base] & 0xFF) << 32) | r[base + 1];
     u32 seq = r[base + 2];
     u32 op = v & 3;
-    if (op != 1) gpu_signal_point();
     if (op == 0) { /* release */
         fake_report_mark(addr, 0);
         if (((v >> 4) & 1) && !((v >> 28) & 1)) { /* the size is bit 28: does bit 4 alone mean one word? */
@@ -66,10 +65,10 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
                       (unsigned long long)addr);
         }
         if (((v >> 4) & 1) || ((v >> 28) & 1))
-            gmem_w32(addr, seq);
+            gpu_release_write(addr, &seq, 4);
         else {
             u64 q[2] = {seq, gpu_ticks()};
-            gmem_write(addr, q, 16);
+            gpu_release_write(addr, q, 16);
         }
     } else if (op == 1) {
         /* acquire: COMPARISON (bit 16) is EQ (0) or GE (1). From a macro, the wait starts once the macro has run */
@@ -82,11 +81,12 @@ void query_get(GpuChannel* ch, u32* r, int base, u32 v) {
             val = draws * (sel == 1 ? 3 : 1000);
         }
         fake_report_mark(addr, sel != 0);
-        if ((v >> 28) & 1)
-            gmem_w32(addr, (u32)val);
-        else {
+        if ((v >> 28) & 1) {
+            u32 w32 = (u32)val;
+            gpu_release_write(addr, &w32, 4);
+        } else {
             u64 q[2] = {val, gpu_ticks()};
-            gmem_write(addr, q, 16);
+            gpu_release_write(addr, q, 16);
         }
     }
 }
@@ -181,10 +181,14 @@ void maxwell3d_method(GpuChannel* ch, u32 m, u32 v, int last) {
     }
     m &= 0xFFF;
     u32 raw = v;
-    if (ch->r3d_shadow_mode <= 1)
-        ch->r3d_shadow[m] = v;
-    else if (ch->r3d_shadow_mode == 3)
-        v = ch->r3d_shadow[m];
+    /* Puller/macro-control methods below 0x80 and WINDOW_ORIGIN (0x4EB) bypass shadow replay. */
+    if (m >= 0x80) {
+        if (ch->r3d_shadow_mode <= 1) {
+            ch->r3d_shadow[m] = v;
+            ch->r3d_shadow_valid[m] = 1;
+        } else if (ch->r3d_shadow_mode == 3 && ch->r3d_shadow_valid[m] && m != 0x4EB)
+            v = ch->r3d_shadow[m];
+    }
     if (g_pd.on) { /* keep accumulating only for BEGIN(next instance), END, ranges, or writes that don't change a reg */
         int keep;
         switch (m) {

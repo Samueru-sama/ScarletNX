@@ -16,7 +16,6 @@ int g_verbose;
 PMutex g_klock = PMUTEX_INIT;
 const Renderer* g_renderer;
 const RtAPI g_rtapi;
-GuestFn snx_interp_entry;
 __thread void* tls_thread;
 void fatal(const char* fmt, ...) {
     va_list a;

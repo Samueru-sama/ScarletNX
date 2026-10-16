@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # The third-party libraries, fetched at configure time with CPM.cmake (https://github.com/cpm-cmake/CPM.cmake). Each
-# package is pinned to a release archive and its SHA-256, and downloaded once into CPM_SOURCE_CACHE (.cache/cpm in the
-# repository by default, shared by every build folder). Configuring offline works once the cache is filled.
+# package is pinned to a release archive and its SHA-256, or a Git commit, and downloaded once into CPM_SOURCE_CACHE
+# (.cache/cpm in the repository by default, shared by every build folder). Configuring offline works once the cache is
+# filled.
 #
 # Bumping a package: change its version, URL and hash together, the hash taken from the release asset's digest or from
-# a download checked by hand, never from what the next configure happens to fetch (snx-build skill).
+# a download checked by hand, never from what the next configure happens to fetch (snx-build skill). For a Git source,
+# pin the full commit ID and use it in the built dependency cache key.
 #
 # Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPM's PATCHES, which
 # patches only what CPM itself downloads into the cache.
@@ -72,10 +74,10 @@ endif()
 # Extraction-only and tools-only builds do not contain the NX runtime or its graphics/media dependencies.
 if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT SNX_HACTOOL_ONLY)
     # FFmpeg builds with its own configure and make, which cmake/ffmpeg.cmake runs
-    set(snx_ffmpeg_sha256 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e)
-    CPMAddPackage(NAME FFmpeg VERSION 9.0.2
-                  URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
-                  URL_HASH SHA256=${snx_ffmpeg_sha256}
+    set(snx_ffmpeg_commit 0b19c65afeed73ce7498ae7faa8fe95530b8a6ab)
+    CPMAddPackage(NAME FFmpeg
+                  GIT_REPOSITORY https://git.ffmpeg.org/ffmpeg.git
+                  GIT_TAG ${snx_ffmpeg_commit}
                   DOWNLOAD_ONLY YES)
     include("${CMAKE_SOURCE_DIR}/cmake/ffmpeg.cmake")
 
@@ -92,6 +94,11 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT SNX_HACTOOL_ONLY)
                   URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.4.0.tar.gz
                   URL_HASH SHA256=822aa850c6ce77346ae96a8a1d351d52e77e85929f35363849a0a4e638e0a2a1
                   DOWNLOAD_ONLY YES)
+    # RenderDoc's in-application API, one header (SNX_RENDERDOC, gpu/vk/renderdoc.c), from the release tag
+    CPMAddPackage(NAME renderdoc_app VERSION 1.46
+                  URL https://raw.githubusercontent.com/baldurk/renderdoc/v1.46/renderdoc/api/app/renderdoc_app.h
+                  URL_HASH SHA256=b7005e7dc34c3635046868bbd76d81b9b055aede0f56daa0bd39fedee0639ffb
+                  DOWNLOAD_ONLY YES DOWNLOAD_NO_EXTRACT YES)
 endif()
 
 set(SNX_SDL3_FROM_SOURCE OFF)

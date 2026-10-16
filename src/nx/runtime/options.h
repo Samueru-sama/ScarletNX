@@ -35,6 +35,10 @@ extern int g_opt_diag, g_opt_shadows, g_opt_prof;
    console's UnknownCommandId (hle/kernel/ipc.c's stub_ok, sm's stand-in for a service there isn't) */
 extern int g_opt_auto_stub_ipc;
 extern int g_opt_network; /* network: 1 = the game is online through the host (hle/services/network) */
+/* cpu_fallback: what runs guest code the game module has no function for (RtAPI.miss, runtime/guest_jit.c). Startup only */
+enum { CPU_FALLBACK_INTERP, CPU_FALLBACK_JIT };
+extern int g_opt_cpu_fallback;
+extern int g_opt_jit_threads; /* jit_threads: compile threads for cpu_fallback=jit, 0 by the CPUs. Startup only */
 extern float g_opt_resf;
 extern int g_opt_vsync; /* vsync: 1 = presents wait for the display's refresh (FIFO) */
 extern int g_opt_aniso; /* anisotropy: 0 = the game's, else at least that much for mipmapped 2D textures */

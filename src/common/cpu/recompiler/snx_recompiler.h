@@ -83,7 +83,8 @@ SNX_RECOMPILER_API int snx_recompiler_set_keep_ir(struct snx_recompiler* r, cons
 typedef void (*snx_svc_call64)(CPU* cpu, uint32_t imm);
 
 /* Fills every hook of an RtAPI with a default the generated code can call: ticks counts a monotonic clock at the
-   console's 19.2 MHz, fpcr_changed, sev, wfe, poll and note_hint do nothing. svc, undef and brk are set to NULL: the
+   console's 19.2 MHz, fpcr_changed, sev, wfe, poll and note_hint do nothing, miss runs the interpreter of the module
+   the CPU is bound to (snx_recompiled_bind) for a pc it has no function for. svc, undef and brk are set to NULL: the
    caller supplies all three (snx_recompiled_bind refuses a CPU whose table lacks one). brk(cpu, pc, imm) is called
    with cpu->pc at the instruction and the host function returns right after, so a handler that wants the run to end
    sets cpu->pc to the stop address. undef(cpu, pc, word) is called the same way for an instruction word that decodes
@@ -118,11 +119,13 @@ SNX_RECOMPILER_API struct snx_recompiled* snx_recompile_ranges(struct snx_recomp
 SNX_RECOMPILER_API void snx_recompiled_free(struct snx_recompiled* m);
 /* The guest address range the module's dispatch table covers (code_lo inclusive, code_hi exclusive) */
 SNX_RECOMPILER_API void snx_recompiled_range(const struct snx_recompiled* m, uint64_t* code_lo, uint64_t* code_hi);
-/* Functions recompiled, and instructions the backend left to the interpreter's step (unimplemented patterns) */
+/* Functions recompiled, and instructions without an emitter: always 0, as a module with one fails to build (kept so
+   callers of earlier versions still link) */
 SNX_RECOMPILER_API size_t snx_recompiled_functions(const struct snx_recompiled* m);
 SNX_RECOMPILER_API size_t snx_recompiled_fallbacks(const struct snx_recompiled* m);
 /* Points cpu at the module: its dispatch table and code range (cpu->disp, code_lo, code_hi). cpu->mem and cpu->rt
-   are the caller's and must be set before, cpu->rt with svc, undef and brk. 0, or -1 when cpu->rt lacks a hook */
+   are the caller's and must be set before, cpu->rt with svc, undef, brk and miss (snx_runtime_defaults' miss runs the
+   bound module's interpreter). 0, or -1 when cpu->rt lacks a hook */
 SNX_RECOMPILER_API int snx_recompiled_bind(struct snx_recompiled* m, CPU* cpu);
 /* The host function for guest address pc: the recompiled function (also for a pc inside one, at a leader), or the
    module's interpreter for any other pc. Never NULL */

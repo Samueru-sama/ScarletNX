@@ -38,6 +38,7 @@ u64 bl_offset(u32 x_bytes, u32 y, u32 z, u32 width_bytes, u32 height, u32 bh_log
     return 0;
 }
 void gpu_signal_point(void) {}
+void gpu_release_write(u64 gva, const void* data, u32 len) { (void)gva, (void)data, (void)len; }
 u64 guest_ns(void) { return 0; }
 void gpu_park(GpuChannel* ch, u32 kind, u64 addr, u32 val, int geq) {
     (void)ch, (void)kind, (void)addr, (void)val, (void)geq;

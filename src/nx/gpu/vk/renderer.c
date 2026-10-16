@@ -154,12 +154,7 @@ static void vkr_before_syncwait(void) {
     vk_gfx_image_land();
     vk_compute_land();
 }
-static void vkr_stream_incr(u32 id) {
-    vk_buf_land();
-    vk_gfx_image_land();
-    vk_compute_land();
-    syncpt_incr(id);
-}
+static void vkr_stream_incr(u32 id) { vk_release_incr(id); }
 
 /* ------------------------------------------------------------ presenting */
 /* the frame from memory when no render target holds it (the game drew it on the CPU, or a video frame) */
@@ -260,7 +255,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
     int recreate = 0;
     if (shown && (src || !game) && (g_vk.swapchain || (!tried && vk_swapchain_create(srgb)))) {
         VkCommandBuffer cb = vk_cmd(); /* waits for this frame slot, so its acquire semaphore is free */
-        VkSemaphore acq = g_acquired[vk_frame_number() % VK_FRAMES];
+        VkSemaphore acq = g_acquired[vk_frame_id() % VK_FRAMES];
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
            Every image still on the display or queued for it (FIFO behind) leaves this frame unshown */
         VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, &idx);
@@ -336,14 +331,18 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game) {
         vk_tex_frame();
         vk_buf_frame();
         if (g_vk_present % 600 == 0) {
-            LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped\n",
+            LOG("vulkan: %llu draws, %llu skipped; %llu dispatches in %llu batches (%llu ms waiting), %llu skipped; "
+                "%llu finishes (%llu ms)\n",
                 (unsigned long long)g_vk_drawn, (unsigned long long)g_vk_skipped, (unsigned long long)g_vk_dispatches,
                 (unsigned long long)g_vk_cs_batches, (unsigned long long)(g_vk_cs_wait_ns / 1000000),
-                (unsigned long long)g_vk_cs_skipped);
+                (unsigned long long)g_vk_cs_skipped, (unsigned long long)g_vk_finishes,
+                (unsigned long long)(g_vk_finish_ns / 1000000));
         }
     }
     /* Offscreen frames still submit and advance the frame ring. g_last remains available for readback. */
     vk_submit(wait, VK_PIPELINE_STAGE_2_CLEAR_BIT, signal);
+    if (game) vk_renderdoc_present(g_vk_present);
+    vk_frame_next(); /* every show used this frame's slot and acquire semaphore, the menu's own too */
     if (signal) {
         VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                .waitSemaphoreCount = 1,
@@ -452,6 +451,7 @@ static u64 surf_save(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, const c
         vmaDestroyImage(g_vk.vma, tmp, tmem);
         return hash;
     }
+    vk_render_end(); /* the blit, the copy and their barriers can't be recorded inside a rendering pass */
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
                 VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -523,6 +523,9 @@ const Renderer vk_renderer = {
     .gfx_mem_need = vkr_gfx_mem_need,
     .before_syncwait = vkr_before_syncwait,
     .stream_incr = vkr_stream_incr,
+    .release_write = vk_release_write,
+    .release_need = vk_release_need,
+    .release_queued = vk_release_queued,
     .present_buffer = vkr_present_buffer,
     .screenshot = vkr_screenshot,
     .refresh = vkr_refresh,

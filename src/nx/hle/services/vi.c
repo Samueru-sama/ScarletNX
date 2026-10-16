@@ -30,7 +30,7 @@ typedef struct {
     u8 raw[0x16C];
     u32 rawsize;
     int queued;    /* held: dequeued by the game, or queued and not shown yet */
-    u32 gen;       /* counts dequeues, so a late present doesn't free the slot again after a forced release */
+    u32 gen;       /* counts dequeues, so an earlier present does not free the slot */
     i32 crop[4];   /* the part of the buffer shown (left, top, right, bottom); all 0 for the whole buffer */
     u32 transform; /* the queued frame's Android buffer transform, retained with its crop */
 } Slot;
@@ -224,10 +224,8 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
             return 0;
         }
         case 3: { /* DEQUEUE_BUFFER */
-            /* a slot is held from DEQUEUE until its frame is shown or cancelled. With every buffer held this waits
-               for one; when the wait times out the holds are dropped, which hands out a buffer the game may still draw
-               into or the GPU thread may still show. The log says when that happens, with the slots held. First the
-               last frame's turn on the display is waited out, without vi's lock */
+            /* Held until its frame is shown or cancelled; never recycle a buffer still in use.
+               Wait out the display interval first, without vi's lock. */
             pm_lock(&vi.lock);
             u32 pace = vi.interval;
             pm_unlock(&vi.lock);
@@ -250,9 +248,6 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                         break;
                     }
                 if (k >= 0) break;
-                /* a slot comes free when the GPU thread shows its frame. If none does for a second, the GPU thread
-                   is far behind (long waits in a stream, pipeline compiles) or stuck: free them all rather than hang
-                   the game. Its late presents don't free the slots again (gen) */
                 if (pc_wait(&vi.free_cv, &vi.lock, 1000000000)) {
                     u64 held = 0;
                     nused = 0;
@@ -268,9 +263,8 @@ static int binder_transact(u32 id, u32 code, PR* in, PW* out) {
                         return 0;
                     }
                     WARN_LIMIT(
-                        8, "binder: DEQUEUE_BUFFER found all %d buffers held (slots %llx) for 1 s: releasing them\n",
+                        8, "binder: DEQUEUE_BUFFER found all %d buffers held (slots %llx) for 1 s: still waiting\n",
                         nused, (unsigned long long)held);
-                    for (int i = 0; i < 64; i++) vi.slots[i].queued = 0;
                 }
             }
             vi.slots[k].queued = 1;

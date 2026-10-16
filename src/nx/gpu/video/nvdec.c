@@ -2,10 +2,10 @@
    Licensed under the Apache License 2.0. See LICENSE.apache and NOTICE;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
-/* NVDEC: H.264 decoding with FFmpeg's libavcodec. The game passes no SPS or PPS: they are rebuilt from the picture
-   setup struct (nvdec_h264_pic_s, its iova in register 0x404). Each NVDEC channel has its own decoder, and each
-   picture goes into the output surface its job names, where VIC reads it */
+/* NVDEC: H.264 and VP9 decoding with FFmpeg's libavcodec. The guest passes frame bodies and separate picture setups.
+   Each NVDEC channel has its own decoder, and each picture goes into the output surface its job names for VIC. */
 #include "nx/gpu/video/host1x_int.h"
+#include "nx/gpu/video/vp9_rebuild.h"
 #ifndef SNX_NO_H264
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
@@ -180,6 +180,7 @@ typedef struct {
 struct NvdecCtx {
 #ifndef SNX_NO_H264
     AVCodecContext* dec;
+    u32 app;
     AVPacket* pkt;
     AVFrame* frame; /* FFmpeg's output, dropped */
     AVFrame* cur;   /* a reference to the buffer of the picture the decoder started last */
@@ -189,6 +190,7 @@ struct NvdecCtx {
     /* SPS + PPS as last sent: full scaling lists with emulation prevention bytes come to about 800 */
     u8 last_hdr[1024];
     u32 last_hdr_n;
+    SnxVp9Builder* vp9;
 #endif
     int fail; /* the decoder could not be opened */
 };
@@ -204,6 +206,7 @@ void nvdec_free(NvdecCtx* d) {
     av_packet_free(&d->pkt);
     av_frame_free(&d->frame);
     av_frame_free(&d->cur);
+    snx_vp9_free(d->vp9);
     free(d->buf);
 #endif
     free(d);
@@ -240,7 +243,7 @@ static int get_buf(AVCodecContext* c, AVFrame* f, int flags) {
     return r;
 }
 #endif
-static int dec_open(NvdecCtx* d) {
+static int dec_open(NvdecCtx* d, u32 app) {
 #ifdef SNX_NO_H264
     if (!d->fail) {
         d->fail = 1;
@@ -248,14 +251,28 @@ static int dec_open(NvdecCtx* d) {
     }
     return 0;
 #else
-    if (d->dec) return 1;
+    if (d->dec && d->app == app) return 1;
     if (d->fail) return 0;
+    if (app != 3 && app != 9) {
+        LOG_LIMIT(4, "video: NVDEC job for codec %u skipped, only H.264 (3) and VP9 (9) are decoded\n", app);
+        return 0;
+    }
+    if (d->dec) {
+        avcodec_free_context(&d->dec);
+        av_packet_free(&d->pkt);
+        av_frame_free(&d->frame);
+        av_frame_free(&d->cur);
+        snx_vp9_free(d->vp9);
+        d->vp9 = NULL;
+        d->last_hdr_n = 0;
+    }
     ffmpeg_log_init();
-    const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    const AVCodec* codec = avcodec_find_decoder(app == 3 ? AV_CODEC_ID_H264 : AV_CODEC_ID_VP9);
     d->dec = codec ? avcodec_alloc_context3(codec) : NULL;
     d->pkt = av_packet_alloc();
     d->frame = av_frame_alloc();
     d->cur = av_frame_alloc();
+    if (app == 9) d->vp9 = snx_vp9_new();
     if (d->dec) {
         /* one thread: the picture is complete when avcodec_send_packet returns, as NVDEC's is when the job ends
            (frame threading would still be decoding it) */
@@ -263,16 +280,20 @@ static int dec_open(NvdecCtx* d) {
         d->dec->opaque = d;
         d->dec->get_buffer2 = get_buf;
     }
-    if (!d->dec || !d->pkt || !d->frame || !d->cur || avcodec_open2(d->dec, codec, NULL) < 0) {
+    if (!d->dec || !d->pkt || !d->frame || !d->cur || (app == 9 && !d->vp9) || avcodec_open2(d->dec, codec, NULL) < 0) {
         d->fail = 1;
         avcodec_free_context(&d->dec);
         av_packet_free(&d->pkt);
         av_frame_free(&d->frame);
         av_frame_free(&d->cur);
-        LOG_LIMIT(1, "video: the FFmpeg H.264 decoder could not be opened\n");
+        snx_vp9_free(d->vp9);
+        d->vp9 = NULL;
+        LOG_LIMIT(1, "video: the FFmpeg %s decoder could not be opened\n", app == 3 ? "H.264" : "VP9");
         return 0;
     }
-    LOG_LIMIT(1, "video: H.264 decoder ready (FFmpeg %s, NVDEC jobs are decoded on the CPU)\n", av_version_info());
+    d->app = app;
+    LOG_LIMIT(2, "video: %s decoder ready (FFmpeg %s, NVDEC jobs are decoded on the CPU)\n", app == 3 ? "H.264" : "VP9",
+              av_version_info());
     return 1;
 #endif
 }
@@ -335,20 +356,90 @@ static void put_status(const u32* r, u32 mbs, int failed) {
     u32 v[4] = {failed ? 0 : mbs, failed ? mbs : 0, 100000, failed ? 1 : 0};
     memcpy(sp, v, 16);
 }
+#ifndef SNX_NO_H264
+static void vp9_execute(NvdecCtx* d, const u32* r) {
+    /* NVDEC VP9's setup is 0x100 bytes at 0x404; its entropy table is at method 0x170 (byte offset 0x5C0). The frame body at 0x408 lacks
+       the VP9 uncompressed and probability headers, which snx_vp9_compose reconstructs. Surface slot 3 is current. */
+    u64 ps_iova = (u64)r[0x404 / 4] << 8, probs_iova = (u64)r[0x5C0 / 4] << 8;
+    u8* ps = iova_ptr(ps_iova, 0x100);
+    u8* probs = iova_ptr(probs_iova, 0xEA0);
+    if (!ps || !probs) {
+        LOG_LIMIT(4, "video: VP9 picture setup or probability table not mapped (%llx, %llx)\n",
+                  (unsigned long long)ps_iova, (unsigned long long)probs_iova);
+        put_status(r, 0, 1);
+        return;
+    }
+    u32 len = rd32(ps, 0x30), w = (u32)ps[0x60] | ((u32)ps[0x61] << 8), h = (u32)ps[0x62] | ((u32)ps[0x63] << 8);
+    u32 mbs = ((w + 15) / 16) * ((h + 15) / 16);
+    u8* body = len && len <= (16u << 20) ? iova_ptr((u64)r[0x408 / 4] << 8, len) : NULL;
+    if (!body) {
+        LOG_LIMIT(4, "video: VP9 frame body not mapped or invalid (%u bytes)\n", len);
+        put_status(r, mbs, 1);
+        return;
+    }
+    SnxVp9Frame packet;
+    if (!snx_vp9_compose(d->vp9, ps, probs, body, len, r, &packet)) {
+        LOG_LIMIT(4, "video: VP9 frame setup or body invalid, job skipped\n");
+        put_status(r, mbs, 1);
+        return;
+    }
+    u32 need = packet.size + AV_INPUT_BUFFER_PADDING_SIZE;
+    if (need < packet.size || d->bcap < need) {
+        u8* nb = need >= packet.size ? realloc(d->buf, need) : NULL;
+        if (!nb) {
+            WARN("video: out of memory for a %u byte VP9 packet\n", packet.size);
+            put_status(r, mbs, 1);
+            return;
+        }
+        d->buf = nb;
+        d->bcap = need;
+    }
+    memcpy(d->buf, packet.data, packet.size);
+    memset(d->buf + packet.size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    d->pkt->data = d->buf;
+    d->pkt->size = (int)packet.size;
+    d->cur_new = 0;
+    int err = avcodec_send_packet(d->dec, d->pkt);
+    while (avcodec_receive_frame(d->dec, d->frame) == 0) av_frame_unref(d->frame);
+    PicOut pt = {0};
+    pt.luma = packet.luma;
+    pt.chroma = packet.chroma;
+    pt.pitch_y = packet.pitch_y;
+    pt.pitch_c = packet.pitch_c;
+    pt.bh = ((packet.layout >> 2) & 7) + 1;
+    pt.w = packet.width;
+    pt.h = packet.height;
+    int wrote = 0;
+    if (d->cur_new && d->cur->buf[0]) {
+        if (packet.layout & 3)
+            LOG_LIMIT(2, "video: VP9 output tile format %u is not handled\n", packet.layout & 3);
+        else if (!pt.luma || !pt.chroma)
+            LOG_LIMIT(4, "video: VP9 output surface has no address\n");
+        else
+            wrote = write_pic(d->cur, &pt);
+    }
+    put_status(r, mbs, err < 0);
+    {
+        static u32 jobs;
+        jobs++;
+        if (jobs <= 4 || jobs % 120 == 0)
+            LOG("video: VP9 job %u: %ux%u, %u body bytes, decode %s, surface %s (luma %llx)\n", jobs, w, h, len,
+                err < 0 ? "failed" : "ok", wrote ? "written" : "not written", (unsigned long long)pt.luma);
+    }
+}
+#endif
 void nvdec_execute(NvdecCtx* d, const u32* r) {
-    if (!dec_open(d)) {
+    u32 app = r[0x200 / 4];
+    if (!dec_open(d, app)) {
         put_status(r, 0, 1);
         return;
     }
 #ifndef SNX_NO_H264
-    /* SET_APPLICATION_ID (register 0x200) names the codec: 3 is H.264, which the game's TVMR library writes before
-       every H.264 job (VP8 is 5, HEVC 7, VP9 9). Anything else fed to the H.264 decoder would only be garbage */
-    u32 app = r[0x200 / 4];
-    if (app != 3) {
-        LOG_LIMIT(4, "video: NVDEC job for codec %u skipped, only H.264 (3) is decoded\n", app);
-        put_status(r, 0, 1);
+    if (app == 9) {
+        vp9_execute(d, r);
         return;
     }
+    /* SET_APPLICATION_ID (register 0x200) is 3 for H.264, which the game's TVMR library writes before each job. */
     u64 ps_iova = (u64)r[0x404 / 4] << 8, bs_iova = (u64)r[0x408 / 4] << 8;
     u8* ps = iova_ptr(ps_iova, 0x300);
     if (!ps) {
@@ -378,7 +469,7 @@ void nvdec_execute(NvdecCtx* d, const u32* r) {
     }
     /* the largest packet is the headers, a 3 byte start code and the bitstream: rewriting length prefixes as start
        codes keeps the size */
-    u32 need = hn + slen + 8;
+    u32 need = hn + slen + 8 + AV_INPUT_BUFFER_PADDING_SIZE;
     if (d->bcap < need) {
         u8* nb = realloc(d->buf, need);
         if (!nb) {
@@ -430,6 +521,7 @@ void nvdec_execute(NvdecCtx* d, const u32* r) {
             o += slen;
         }
     }
+    memset(buf + o, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     /* err < 0 when the decoder rejected the job: the status the game reads says so */
     d->pkt->data = buf;
     d->pkt->size = (int)o;

@@ -27,7 +27,7 @@ that real hardware wouldn't. A fix without that is a guess.
 - **game address** is the guest address that faulted. Find which register (or register plus offset) it is: that is
   the bad pointer.
 - A crash in the runtime itself prints `in the runtime itself (exe offset +OFF)`. The presets build with symbols:
-  `addr2line -e build/default/scarletnx -f -C -i 0xOFF` (the build that was deployed).
+  `addr2line -e build/scarletnx -f -C -i 0xOFF` (the build that was deployed).
 - `svcBreak` means the SDK's own assert failed. The interesting code is the caller's check, just before the
   `svc #0x26`.
 

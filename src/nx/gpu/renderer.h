@@ -34,6 +34,12 @@ typedef struct Renderer {
     void (*gfx_mem_need)(u64 a, u64 n);
     void (*before_syncwait)(void); /* the stream is about to wait on a syncpoint: flush everything in flight */
     void (*stream_incr)(u32 id);   /* a syncpoint increment in the stream, after everything before it is done */
+    /* a semaphore or report the game can poll: len bytes written at gva once everything before it is done (it may
+       happen later, in order with the other releases). NULL: written now, after landing everything */
+    void (*release_write)(u64 gva, const void* data, u32 len);
+    /* the stream reads or writes [a, a + n): a release still waiting to write there happens first */
+    void (*release_need)(u64 a, u64 n);
+    u32 (*release_queued)(u32 id); /* increments of syncpoint id waiting to happen */
     /* presenting a guest framebuffer */
     /* crop: the part shown (left, top, right, bottom), all 0 for the whole buffer */
     /* transform: Android buffer flags, bit 0 horizontal flip and bit 1 vertical flip */
