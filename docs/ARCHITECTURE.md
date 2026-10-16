@@ -69,6 +69,9 @@ NX tooling under `src/nx/runtime/driver/` and `src/nx/loader/`:
   fields, SIMD a lane at a time, no host intrinsics: GCC picks the instructions with `-march=native`). Guest
   accesses are relaxed atomics (libgccjit 14 drops volatile on dereferences); `src/nx/loader/module_gccjit.c`
   compiles each chunk to an object and lets GCC's driver link the module with the chunks and the runtime library.
+  libgccjit compiles one context at a time per process (GCC's state is global, behind one lock), so
+  `gccjit/jit_units.c` compiles the chunks `--jobs` at a time in processes of their own (one after another in the
+  recompiler's process with one job, and on Windows, which has no `fork`).
   `llvm_differential --gccjit` (also failing on any `snx_step` fallback) and `llvm_module` check it against the
   other backends. On `llvm_bench` it matches LLVM on integer, FP and calls; SIMD is several times slower (scalar
   lanes, GCC's SLP vectorizer off: it packs scalar code's CPU fields into vectors).

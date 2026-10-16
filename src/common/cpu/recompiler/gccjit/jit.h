@@ -53,6 +53,33 @@ gcc_jit_function* snx_jit_guest_function(SnxJit* jit, SnxU64 address, int define
 void snx_jit_emit(SnxJit* jit, SnxCodegen* codegen, const SnxFunction* function);
 /* u64 name(CPU* c): one instruction, as snx_a64_static_step returns (tests) */
 gcc_jit_function* snx_jit_static_step(SnxJit* jit, SnxU32 word, SnxU64 pc, const char* name);
+/* asks GCC's driver what -march=native is here, once: snx_jit_new does on first use */
+void snx_jit_host(void);
+
+/* ---- code units (jit_units.c) ----
+   Unit i is the functions [bounds[i], bounds[i + 1]) in a context of its own, compiled to the object file objects[i].
+   libgccjit compiles one context at a time per process (GCC's state is global, behind one lock), so units compile
+   jobs at a time in processes of their own; with one job, or on Windows, one after another in this one */
+typedef struct SnxJitUnits {
+    SnxCodegen* codegen;
+    const size_t* bounds;
+    char* const* objects;
+    size_t count;
+    char opt;            /* -O letter */
+    unsigned jobs;       /* 0: one per CPU */
+    const char* keep_ir; /* when set, each unit's libgccjit dump is saved there as code_NNN.c */
+    /* after each unit, as they finish; finished counts them */
+    void (*done)(const struct SnxJitUnits* units, size_t unit, size_t finished, double seconds);
+    void* user;
+    unsigned long fallbacks; /* every unit's */
+    char error[1024];
+} SnxJitUnits;
+/* 0, or -1 with units->error naming the first unit that failed, once the others running have ended */
+int snx_jit_compile_units(SnxJitUnits* units);
+/* gcc_jit_context_compile_to_file and gcc_jit_context_compile under the lock units' processes are forked under: a
+   process forked while another thread is inside libgccjit would start with GCC's lock held. NULL or the first error */
+const char* snx_jit_compile_to_file(SnxJit* jit, enum gcc_jit_output_kind kind, const char* path);
+gcc_jit_result* snx_jit_compile(SnxJit* jit);
 
 /* ---- instructions (jit_a64.c, jit_fp.c, jit_simd.c), as ir.h's ---- */
 /* The body of a PLAIN instruction; 0 when no emitter covers the pattern: the caller then calls snx_step */

@@ -66,7 +66,8 @@ SNX_RECOMPILER_API unsigned snx_recompiler_abi(void);
 SNX_RECOMPILER_API const char* snx_recompiler_error(const struct snx_recompiler* r);
 /* The -O letter the generated code is optimized at: '0', '1', '2' (the default), '3', 's' or 'z' */
 SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r, char opt);
-/* Host threads compiling code units at once (LLVM); 0, the default, uses one per processor */
+/* Code units compiled at once: host threads with LLVM, child processes with libgccjit (one compile per process); 0,
+   the default, uses one per processor */
 SNX_RECOMPILER_API void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
 /* Progress lines on stdout, as the scarletnx command prints them; off by default */
 SNX_RECOMPILER_API void snx_recompiler_set_verbose(struct snx_recompiler* r, int verbose);

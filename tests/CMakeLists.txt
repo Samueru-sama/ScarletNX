@@ -332,6 +332,9 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME nightly_notes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_notes_test.py")
 endif()
 
+# a package patched in the build tree from the cache's copy as released (cmake/patched_copy.cmake)
+add_test(NAME patched_copy COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/patched-copy-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/patched_copy_test.cmake")
 # the dependency cache's keys and how a build is published to it (cmake/deps_cache.cmake)
 add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/deps-cache-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/deps_cache_test.cmake")
@@ -502,6 +505,11 @@ if(TARGET snx_jit)
     set_tests_properties(gccjit_differential PROPERTIES TIMEOUT 900)
     add_test(NAME native_recompiler_gcc COMMAND snx_recompiler_test
         $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" "${CMAKE_C_COMPILER}" gcc)
+    # code units in this process and in processes of their own (gccjit/jit_units.c)
+    add_executable(snx-test-gccjit-units gccjit_units.c)
+    snx_test_target(snx-test-gccjit-units 11)
+    target_link_libraries(snx-test-gccjit-units PRIVATE snx_jit)
+    add_test(NAME gccjit_units COMMAND snx-test-gccjit-units)
 endif()
 add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}"
     "${CMAKE_C_COMPILER}" ${snx_extra_backends})

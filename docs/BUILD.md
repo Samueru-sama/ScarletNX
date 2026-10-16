@@ -26,8 +26,8 @@ Run from checkout root. [Extract/AOT/run](USAGE.md) · [Tests/diagnostics](DEVEL
 Install dependencies before configuring. The default preset uses **Ninja** and **Clang/Clang++**.
 FFmpeg also uses **GNU make** and, on x86-64, **NASM**, and OpenSSL uses **Perl** and GNU make. These tools are not
 downloaded by CMake.
-CPM patches hactool with `patch`, which `build-essential`, `base-devel` and FreeBSD's base system include;
-Fedora lists it below.
+The build patches its copy of hactool with `patch`, which `build-essential`, `base-devel` and FreeBSD's base
+system include; Fedora lists it below.
 
 ### Debian / Ubuntu
 
@@ -180,6 +180,8 @@ Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `gam
 matching `Game_code.so/.dll`; no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](DEVELOPMENT.md).
 
 CPM: [SHA-256-pinned sources](../cmake/dependencies.cmake), shared `.cache/cpm` cache, offline configure when populated.
+The cache holds each package as released, so one filled by hand (a Flatpak manifest's sources, a distribution's
+offline build) works: hactool's patches go on a copy in the build tree.
 Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 uses CPM's system-package discovery with a pinned static
 source fallback. Use `-DCPM_DOWNLOAD_SDL3=ON` to request the bundled source build.
 

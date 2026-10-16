@@ -6,6 +6,9 @@
 #
 # Bumping a package: change its version, URL and hash together, the hash taken from the release asset's digest or from
 # a download checked by hand, never from what the next configure happens to fetch (snx-build skill).
+#
+# Patching a package: snx_patched_copy (cmake/patched_copy.cmake) on a copy in the build tree, never CPM's PATCHES, which
+# patches only what CPM itself downloads into the cache.
 
 set(CPM_VERSION 0.43.2)
 set(CPM_HASH 49a3bef91ceb65bb66d57255e12d1ffd22abc2f6408fa9fe4534c544a2f232aa)
@@ -116,23 +119,14 @@ if((SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND NOT SNX_HACTOOL_ONLY) OR SNX_BUILD_G
 endif()
 
 # hactool runs on the machine doing the extraction (--extract), so a cross build leaves it out, but for Android, where
-# the phone extracts its own dumps. CPM applies the decrypted-container patch and the OpenSSL one with patch(1) once,
-# when it unpacks hactool. The cache key holds the archive and the patches' contents: CPM's default key holds their
-# paths instead, so an edited patch would reuse the copy patched before
+# the phone extracts its own dumps. The cache keeps it as released; cmake/hactool.cmake applies the decrypted-container
+# patch and the OpenSSL one to a copy in the build tree
 if((SNX_BUILD_NX OR SNX_HACTOOL_ONLY) AND NOT SNX_TOOLS_ONLY AND (NOT CMAKE_CROSSCOMPILING OR ANDROID))
-    set(hactool_sha256 f7148daad624ba909f5ae253210734b1a0ce19e89a7914b6cf71401f7134ebbc)
     set(hactool_patch "${CMAKE_SOURCE_DIR}/cmake/hactool-decrypted.patch")
     set(hactool_openssl_patch "${CMAKE_SOURCE_DIR}/cmake/hactool-openssl.patch")
-    file(SHA256 "${hactool_patch}" hactool_patch_sha256)
-    file(SHA256 "${hactool_openssl_patch}" hactool_openssl_patch_sha256)
-    string(SUBSTRING "${hactool_sha256}" 0 16 hactool_key)
-    string(SUBSTRING "${hactool_patch_sha256}" 0 16 hactool_patch_key)
-    string(SUBSTRING "${hactool_openssl_patch_sha256}" 0 16 hactool_openssl_patch_key)
     CPMAddPackage(NAME hactool VERSION 1.4.0.13
                   URL https://github.com/SciresM/hactool/archive/1d64a83450e025622f3468c28fc4164dad2c5ef6.tar.gz
-                  URL_HASH SHA256=${hactool_sha256}
-                  PATCHES "${hactool_patch}" "${hactool_openssl_patch}"
-                  CUSTOM_CACHE_KEY "${hactool_key}-${hactool_patch_key}-${hactool_openssl_patch_key}"
+                  URL_HASH SHA256=f7148daad624ba909f5ae253210734b1a0ce19e89a7914b6cf71401f7134ebbc
                   DOWNLOAD_ONLY YES)
     include("${CMAKE_SOURCE_DIR}/cmake/hactool.cmake")
 endif()

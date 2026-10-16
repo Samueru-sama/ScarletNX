@@ -806,9 +806,9 @@ done:
 /* ---- the libgccjit backend ---- */
 
 #ifdef SNX_WITH_GCCJIT
-/* module_gccjit.c's structure: one context per chunk, compiled to an object file (libgccjit compiles one context at
-   a time), then the descriptor in a last context whose in-memory compilation links the chunks and the runtime library
-   with GCC's driver and loads the result */
+/* module_gccjit.c's structure: one context per chunk, compiled to an object file (jobs at a time, jit_units.c), then
+   the descriptor in a last context whose in-memory compilation links the chunks and the runtime library with GCC's
+   driver and loads the result */
 static int jit_descriptor(SnxJit* jit, const SnxCodegen* codegen, char* error, size_t error_size) {
     gcc_jit_context* x = jit->ctx;
     Entry* e;
@@ -875,10 +875,17 @@ static int jit_descriptor(SnxJit* jit, const SnxCodegen* codegen, char* error, s
     return 0;
 }
 
+static void jit_unit_done(const SnxJitUnits* units, size_t unit, size_t finished, double seconds) {
+    report((struct snx_recompiler*)units->user, "  compiled unit %lu/%lu: functions %lu-%lu (%.1f s)\n",
+           (unsigned long)finished, (unsigned long)units->count, (unsigned long)units->bounds[unit],
+           (unsigned long)units->bounds[unit + 1], seconds);
+}
+
 static int recompile_gccjit(struct snx_recompiler* r, struct snx_recompiled* m, SnxCodegen* codegen) {
+    SnxJitUnits u;
     SnxJit* jit = NULL;
     gcc_jit_result* result = NULL;
-    size_t *units = NULL, count = 0, i, j;
+    size_t *units = NULL, count = 0, i;
     char *dir = NULL, *rtlib = NULL, **objects = NULL, error[1024];
     const char* message;
     int rc = -1;
@@ -904,39 +911,27 @@ static int recompile_gccjit(struct snx_recompiler* r, struct snx_recompiled* m, 
         fail(r, "out of memory");
         goto done;
     }
-    report(r, "libgccjit: %lu code unit%s and the descriptor\n", (unsigned long)count, count == 1 ? "" : "s");
     for (i = 0; i < count; ++i) {
-        char name[32], *file;
-        double start = snx_seconds();
-        snprintf(name, sizeof(name), "code_%03lu", (unsigned long)i);
-        jit = snx_jit_new(r->opt);
-        if (!jit) {
-            fail(r, "out of memory");
-            goto done;
-        }
-        for (j = units[i]; j < units[i + 1]; ++j) snx_jit_guest_function(jit, codegen->functions[j].start, 1);
-        for (j = units[i]; j < units[i + 1]; ++j) snx_jit_emit(jit, codegen, &codegen->functions[j]);
-        if (r->keep_ir) {
-            char *c_name = snx_format("%s.c", name), *path = snx_path_join(r->keep_ir, c_name);
-            gcc_jit_context_dump_to_file(jit->ctx, path, 0);
-            free(c_name);
-            free(path);
-        }
-        file = snx_format("%s.o", name);
-        objects[i] = snx_path_join(dir, file);
-        free(file);
-        gcc_jit_context_compile_to_file(jit->ctx, GCC_JIT_OUTPUT_KIND_OBJECT_FILE, objects[i]);
-        message = snx_jit_error(jit);
-        if (message) {
-            fail(r, "libgccjit (%s): %s", name, message);
-            goto done;
-        }
-        m->fallbacks += jit->fallbacks;
-        snx_jit_free(jit);
-        jit = NULL;
-        report(r, "  compiled unit %lu/%lu: functions %lu-%lu (%.1f s)\n", (unsigned long)(i + 1), (unsigned long)count,
-               (unsigned long)units[i], (unsigned long)units[i + 1], snx_seconds() - start);
+        char name[32];
+        snprintf(name, sizeof(name), "code_%03lu.o", (unsigned long)i);
+        objects[i] = snx_path_join(dir, name);
     }
+    report(r, "libgccjit: %lu code unit%s and the descriptor\n", (unsigned long)count, count == 1 ? "" : "s");
+    memset(&u, 0, sizeof(u));
+    u.codegen = codegen;
+    u.bounds = units;
+    u.objects = objects;
+    u.count = count;
+    u.opt = r->opt;
+    u.jobs = r->jobs;
+    u.keep_ir = r->keep_ir;
+    u.done = jit_unit_done;
+    u.user = r;
+    if (snx_jit_compile_units(&u)) {
+        fail(r, "%s", u.error);
+        goto done;
+    }
+    m->fallbacks += u.fallbacks;
     /* the descriptor, linked by GCC's driver with the chunks and the runtime library, and loaded by libgccjit */
     jit = snx_jit_new(r->opt);
     if (!jit) {
@@ -954,7 +949,7 @@ static int recompile_gccjit(struct snx_recompiler* r, struct snx_recompiled* m, 
     }
     gcc_jit_context_add_driver_option(jit->ctx, rtlib);
     for (i = 0; i < count; ++i) gcc_jit_context_add_driver_option(jit->ctx, objects[i]);
-    result = gcc_jit_context_compile(jit->ctx);
+    result = snx_jit_compile(jit);
     message = snx_jit_error(jit);
     if (message || !result) {
         fail(r, "libgccjit (module): %s", message ? message : "no result");

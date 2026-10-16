@@ -77,7 +77,8 @@ snx_recompiler_free(r);
 the recommended one) or `SNX_RECOMPILER_FLAG_GCCJIT` (libgccjit, for hosts LLVM has no
 code generator for). `snx_recompiler_has` tells which the build and the host support.
 The recompiler also takes the `-O` level (`snx_recompiler_set_optimization`, `2` by
-default), the number of threads compiling code units (`snx_recompiler_set_jobs`),
+default), how many code units compile at once (`snx_recompiler_set_jobs`: threads
+with LLVM; with libgccjit, which compiles one at a time per process, child processes),
 progress lines (`snx_recompiler_set_verbose`) and a folder to save the generated
 code's text in (`snx_recompiler_set_keep_ir`).
 

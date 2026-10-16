@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The game module through libgccjit (--backend=gcc), for DEC Alpha EV67 hosts, where LLVM has no backend; elsewhere
    --backend=llvm is the one to use. module_llvm.c's structure: chunks of whole functions, each a context compiled
-   to an object file, then the module descriptor in a last context that GCC's driver links into the shared library
-   with the chunks and the runtime library (rtlib.c). */
+   to an object file (--jobs at a time, jit_units.c), then the module descriptor in a last context that GCC's driver
+   links into the shared library with the chunks and the runtime library (rtlib.c). */
 #include "module_llvm.h"
 
 #ifndef SNX_WITH_GCCJIT
@@ -197,14 +197,22 @@ static int failed(SnxJit* jit, const char* what) {
     return 1;
 }
 
+static void unit_done(const SnxJitUnits* units, size_t unit, size_t finished, double seconds) {
+    char name[32], *label = snx_chunk_label(units->codegen, units->bounds[unit], units->bounds[unit + 1]);
+    sprintf(name, "code_%03lu", (unsigned long)unit);
+    snx_report_unit(finished, units->count + 1, name, label, 0, seconds); /* + the descriptor */
+    free(label);
+}
+
 int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
     SnxCodegen codegen;
+    SnxJitUnits units;
     SnxJit* jit = NULL;
-    size_t first, last, count, limit, i, units = 0, total, entry_count = 0;
-    unsigned long fallbacks = 0;
+    size_t first, last, count, limit, i, n = 0, entry_count = 0, *bounds;
     char *dir = NULL, *rtlib = NULL, *tmp = NULL, **objects = NULL, error[1024];
     int rc = -1;
     memset(&codegen, 0, sizeof(codegen));
+    memset(&units, 0, sizeof(units));
     if (!loaded->module_count) return snx_error("No modules to generate");
     if (!options->interp_only &&
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet))
@@ -221,49 +229,32 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
         goto done;
     }
     limit = options->chunk_instrs ? options->chunk_instrs : SNX_CHUNK_INSTRUCTIONS;
-    objects = (char**)snx_alloc((codegen.function_count + 1) * sizeof(*objects));
+    /* the object files' paths, then the units' bounds: one block, which snx_free_strings frees */
+    objects = (char**)snx_alloc((codegen.function_count + 1) * (sizeof(*objects) + sizeof(*bounds)));
+    bounds = (size_t*)(objects + codegen.function_count + 1);
     for (first = 0; first < codegen.function_count; first = last) {
+        char name[32];
         last = first;
         count = 0;
         do { count += codegen.functions[last++].count; } while (last < codegen.function_count && count < limit);
-        ++units;
+        sprintf(name, "code_%03lu.o", (unsigned long)n);
+        objects[n] = snx_path_join(dir, name);
+        bounds[n++] = first;
     }
-    total = units;
+    bounds[n] = codegen.function_count;
     if (!options->quiet)
-        printf("libgccjit: %lu code unit%s and the module descriptor\n", (unsigned long)total, total == 1 ? "" : "s");
-    /* one context per chunk, compiled to an object file (libgccjit compiles one context at a time) */
-    units = 0;
-    for (first = 0; first < codegen.function_count; first = last) {
-        char name[32], *file;
-        double start = snx_seconds();
-        last = first;
-        count = 0;
-        do { count += codegen.functions[last++].count; } while (last < codegen.function_count && count < limit);
-        jit = snx_jit_new(build->opt);
-        for (i = first; i < last; ++i) snx_jit_guest_function(jit, codegen.functions[i].start, 1);
-        for (i = first; i < last; ++i) snx_jit_emit(jit, &codegen, &codegen.functions[i]);
-        sprintf(name, "code_%03lu", (unsigned long)units);
-        if (build->keep_ir) {
-            char* c_name = snx_format("%s.c", name);
-            char* path = snx_path_join(build->keep_ir, c_name);
-            gcc_jit_context_dump_to_file(jit->ctx, path, 0);
-            free(c_name);
-            free(path);
-        }
-        file = snx_format("%s.o", name);
-        objects[units] = snx_path_join(dir, file);
-        free(file);
-        gcc_jit_context_compile_to_file(jit->ctx, GCC_JIT_OUTPUT_KIND_OBJECT_FILE, objects[units]);
-        ++units;
-        if (failed(jit, name)) goto done;
-        fallbacks += jit->fallbacks;
-        snx_jit_free(jit);
-        jit = NULL;
-        if (!options->quiet) {
-            char* label = snx_chunk_label(&codegen, first, last);
-            snx_report_unit(units, total + 1, name, label, 0, snx_seconds() - start); /* + the descriptor */
-            free(label);
-        }
+        printf("libgccjit: %lu code unit%s and the module descriptor\n", (unsigned long)n, n == 1 ? "" : "s");
+    units.codegen = &codegen;
+    units.bounds = bounds;
+    units.objects = objects;
+    units.count = n;
+    units.opt = build->opt;
+    units.jobs = build->jobs;
+    units.keep_ir = build->keep_ir;
+    if (!options->quiet) units.done = unit_done;
+    if (snx_jit_compile_units(&units)) {
+        snx_error("%s", units.error);
+        goto done;
     }
     /* the descriptor, linked by GCC's driver with the chunks and the runtime library */
     jit = snx_jit_new(build->opt);
@@ -277,9 +268,9 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
         free(path);
     }
     gcc_jit_context_add_driver_option(jit->ctx, rtlib);
-    for (i = 0; i < units; ++i) gcc_jit_context_add_driver_option(jit->ctx, objects[i]);
+    for (i = 0; i < n; ++i) gcc_jit_context_add_driver_option(jit->ctx, objects[i]);
     tmp = snx_format("%s.tmp", build->output);
-    gcc_jit_context_compile_to_file(jit->ctx, GCC_JIT_OUTPUT_KIND_DYNAMIC_LIBRARY, tmp);
+    snx_jit_compile_to_file(jit, GCC_JIT_OUTPUT_KIND_DYNAMIC_LIBRARY, tmp);
     if (failed(jit, "module")) goto done;
     if (snx_replace(tmp, build->output)) {
         snx_error("Linking failed: cannot write %s", build->output);
@@ -288,7 +279,7 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
     if (!options->quiet) {
         printf("libgccjit module: %.1f MB, %lu entries\n", (double)snx_file_size(build->output) / 1000000.0,
                (unsigned long)entry_count);
-        if (fallbacks) printf("libgccjit: %lu instructions run through the interpreter step\n", fallbacks);
+        if (units.fallbacks) printf("libgccjit: %lu instructions run through the interpreter step\n", units.fallbacks);
         puts("note: libgccjit is the backend for DEC Alpha EV67 hosts; elsewhere --backend=llvm (the default) is "
              "the recommended one");
     }
@@ -296,7 +287,7 @@ int snx_build_module_gccjit(SnxProgram* loaded, const SnxCodegenOptions* options
 done:
     snx_jit_free(jit);
     if (tmp && snx_is_file(tmp)) snx_remove_tree(tmp);
-    if (objects) snx_free_strings(objects, units);
+    if (objects) snx_free_strings(objects, n);
     if (dir) snx_remove_tree(dir);
     free(dir);
     free(rtlib);
