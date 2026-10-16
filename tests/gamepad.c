@@ -4,7 +4,10 @@
    a trigger or a stick gives the game and the game's menu, on the common layouts, with the window's focus or without,
    and a fifth pad taking the place of one that goes */
 #include "runtime/platform/gamepad.h"
+#include "runtime/options.h"
+#include "runtime/platform/plat.h"
 #include <SDL3/SDL.h>
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -13,6 +16,11 @@ void logf_(int lvl, const char* fmt, ...) {
     (void)lvl;
     (void)fmt;
 }
+void pm_lock(PMutex* m) { (void)m; }
+void pm_unlock(PMutex* m) { (void)m; }
+/* the game's .ini: the last setting stored */
+static char stored[64];
+void ini_set(const char* k, const char* v) { snprintf(stored, sizeof stored, "%s=%s", k, v); }
 
 static int checks;
 #define CHECK(e)                                                                                                       \
@@ -217,12 +225,29 @@ int main(void) {
     CHECK(s[0] <= -32767 && s[1] == 0);
     sticks(pro, 0, 0, s);
 
-    /* four are read; a fifth takes the place of one that goes */
+    /* four are read; a fifth takes the place of one that goes, and the game's menu names them */
     fifth = attach(SWITCH);
     CHECK(with(fifth, SDL_GAMEPAD_BUTTON_EAST) == 0);
+    CHECK(gamepad_name(3) && !strcmp(gamepad_name(3), SDL_GetJoystickName(cube)) && !gamepad_name(4));
     SDL_DetachVirtualJoystick(SDL_GetJoystickID(sony));
     pump();
     CHECK(with(fifth, SDL_GAMEPAD_BUTTON_EAST) == A);
+    CHECK(!strcmp(gamepad_name(0), SDL_GetJoystickName(xbox)) && !strcmp(gamepad_name(2), SDL_GetJoystickName(fifth)));
+    SDL_DetachVirtualJoystick(SDL_GetJoystickID(pro));
+    pump();
+    CHECK(!strcmp(gamepad_name(1), SDL_GetJoystickName(fifth)) && !gamepad_name(3));
+
+    /* the game's menu changes a setting and keeps it */
+    gamepad_config()->deadzone = 35;
+    gamepad_store(&gamepad_config()->deadzone);
+    CHECK(!strcmp(stored, "gamepad_deadzone=35"));
+    gamepad_config()->labels = 0;
+    gamepad_store(&gamepad_config()->labels);
+    CHECK(!strcmp(stored, "gamepad_buttons=0"));
+    gamepad_config()->background = 1; /* applied at once */
+    gamepad_store(&gamepad_config()->background);
+    CHECK(!strcmp(stored, "gamepad_background=1") &&
+          SDL_GetHintBoolean(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, false));
 
     SDL_DestroyWindow(w);
     SDL_Quit();

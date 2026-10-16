@@ -19,6 +19,17 @@ u64 gamepad_button(u32 id, int button);
 /* the vibration the game sent its left and right devices (hid.h's PadState.rumble), played on every gamepad that can:
    called each frame */
 void gamepad_rumble(u32 left, u32 right);
+/* the settings, kept in the game's .ini; the game's menu changes them under ui_lock */
+typedef struct {
+    int labels;     /* A, B, X and Y: 1 as their labels say, 0 where they sit on the console's controller */
+    int deadzone;   /* the sticks', in percent of their travel */
+    int rumble;     /* the vibration's strength in percent, 0 for none */
+    int background; /* 1: they play while the game's window is not focused */
+} SnxGamepadConfig;
+SnxGamepadConfig* gamepad_config(void);
+void gamepad_store(const int* setting); /* one of gamepad_config()'s, to the .ini, and applied */
+/* the open gamepads' names, from 0 on: NULL past the last. Under ui_lock */
+const char* gamepad_name(int i);
 extern const IniOpt g_gamepad_ini[];                 /* the settings, keys gamepad_* */
 int gamepad_ini(const char* key, const char* value); /* a key of the game's .ini: applied, 1; not one of these, 0 */
 

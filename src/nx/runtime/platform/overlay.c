@@ -3,13 +3,16 @@
 #include "runtime/platform/overlay.h"
 #include "runtime/platform/backend.h"
 #include "runtime/platform/fatal_screen.h"
+#include "runtime/platform/gamepad.h"
 #include "runtime/platform/vpad.h"
 #include "gui_theme_colors.h"
 #include <stdio.h>
 #include <string.h>
 
 enum { FIRST = 3, VISIBLE = OVERLAY_ROWS - FIRST - 1 }; /* the items' first row, and how many show at once */
-enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS };
+enum { PAGE_MAIN, PAGE_CONTROLS, PAGE_BUTTONS, PAGE_PADS };
+enum { M_CONTROLS, M_PADS, M_EXIT, M_COUNT };                           /* the first page's items */
+enum { P_LABELS, P_DEADZONE, P_RUMBLE, P_BACKGROUND, P_BACK, P_COUNT }; /* the gamepads' page's */
 /* the controls page's items */
 enum {
     C_SHOW,
@@ -39,7 +42,12 @@ static int shown, page, focus, top; /* top: the first item showing */
 #define LIGHT                    SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_PAGE, 0xFFu)
 #define FAILURE                  SNX_OVERLAY_RGBA(SNX_GUI_THEME_YORHA_FAILURE, 0xFFu)
 
-static int items(void) { return page == PAGE_MAIN ? 2 : page == PAGE_CONTROLS ? C_COUNT : SNX_VPAD_COUNT + 2; }
+static int items(void) {
+    return page == PAGE_MAIN       ? M_COUNT
+           : page == PAGE_CONTROLS ? C_COUNT
+           : page == PAGE_PADS     ? P_COUNT
+                                   : SNX_VPAD_COUNT + 2;
+}
 static void page_open(int p) {
     page = p;
     focus = top = 0;
@@ -62,8 +70,21 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
     const SnxVpadConfig* v = vpad_config();
     *value = 0;
     if (page == PAGE_MAIN) {
-        snprintf(text, size, "%s", i ? "Exit" : "On-screen controls");
-        if (!i) snprintf(value, vsize, ">");
+        static const char* const main_items[M_COUNT] = {"On-screen controls", "Controllers", "Exit"};
+        snprintf(text, size, "%s", main_items[i]);
+        if (i != M_EXIT) snprintf(value, vsize, ">");
+        return;
+    }
+    if (page == PAGE_PADS) {
+        static const char* const pads[P_COUNT] = {"A B X Y", "Stick dead zone", "Vibration", "Background input",
+                                                  "Back"};
+        const SnxGamepadConfig* g = gamepad_config();
+        snprintf(text, size, "%s", pads[i]);
+        if (i == P_LABELS) snprintf(value, vsize, "%s", g->labels ? "By label" : "By position");
+        if (i == P_DEADZONE) snprintf(value, vsize, "< %d%% >", g->deadzone);
+        if (i == P_RUMBLE && g->rumble) snprintf(value, vsize, "< %d%% >", g->rumble);
+        if (i == P_RUMBLE && !g->rumble) snprintf(value, vsize, "< Off >");
+        if (i == P_BACKGROUND) snprintf(value, vsize, "%s", g->background ? "On" : "Off");
         return;
     }
     if (page == PAGE_BUTTONS) {
@@ -90,13 +111,32 @@ static void flip(int* v) {
     *v = !*v;
     vpad_store(v);
 }
+static void flip_pad(int* v) {
+    *v = !*v;
+    gamepad_store(v);
+}
 /* the item i done, or its value stepped (step -1 or 1; 0 for a select) */
 static int act(int i, int step) {
     SnxVpadConfig* v = vpad_config();
     if (page == PAGE_MAIN) {
         if (step) return OVERLAY_NONE;
-        if (i == 1) return OVERLAY_EXIT;
-        page_open(PAGE_CONTROLS);
+        if (i == M_EXIT) return OVERLAY_EXIT;
+        page_open(i == M_PADS ? PAGE_PADS : PAGE_CONTROLS);
+        return OVERLAY_NONE;
+    }
+    if (page == PAGE_PADS) {
+        SnxGamepadConfig* g = gamepad_config();
+        if (i == P_BACK) {
+            if (!step) overlay_back();
+            return OVERLAY_NONE;
+        }
+        if (i == P_LABELS || i == P_BACKGROUND) {
+            flip_pad(i == P_LABELS ? &g->labels : &g->background);
+        } else { /* a select steps up, as a tap on the right arrow */
+            int* n = i == P_DEADZONE ? &g->deadzone : &g->rumble;
+            *n = clamp(*n + (step ? step : 1) * (i == P_DEADZONE ? 5 : 10), 0, i == P_DEADZONE ? 90 : 100);
+            gamepad_store(n);
+        }
         return OVERLAY_NONE;
     }
     if (page == PAGE_BUTTONS) {
@@ -178,12 +218,14 @@ void overlay_side(int step) {
     if (page != PAGE_MAIN) act(focus, step);
 }
 int overlay_back(void) {
+    int from = page;
     if (page == PAGE_MAIN) return OVERLAY_CLOSE;
     if (page == PAGE_BUTTONS) {
         page_open(PAGE_CONTROLS);
         focus = C_BUTTONS;
     } else {
         page_open(PAGE_MAIN);
+        focus = from == PAGE_PADS ? M_PADS : M_CONTROLS;
     }
     keep_in_view();
     return OVERLAY_NONE;
@@ -199,14 +241,28 @@ int overlay_tap(float x, float y, int sw, int sh) {
     if (row < 0 || row >= VISIBLE || i >= items()) return OVERLAY_NONE;
     focus = i;
     /* a value's arrows: the left half of its last ten columns steps it down */
-    if (page == PAGE_CONTROLS && (i == C_SCALE || i == C_OPACITY)) return act(i, col < OVERLAY_COLS - 5 ? -1 : 1);
+    if ((page == PAGE_CONTROLS && (i == C_SCALE || i == C_OPACITY)) ||
+        (page == PAGE_PADS && (i == P_DEADZONE || i == P_RUMBLE)))
+        return act(i, col < OVERLAY_COLS - 5 ? -1 : 1);
     return act(i, 0);
 }
+/* the gamepads' page's second row: the first one connected by name, and how many more */
+static const char* pads_hint(char* out, size_t size) {
+    int more = 0;
+    if (!gamepad_name(0)) return "None connected.";
+    while (gamepad_name(more + 1)) ++more;
+    if (more)
+        snprintf(out, size, "%.27s and %d more", gamepad_name(0), more);
+    else
+        snprintf(out, size, "%s", gamepad_name(0));
+    return out;
+}
 void overlay_draw(SnxUiList* l, int sw, int sh) {
-    static const char* const titles[] = {"SCARLETNX  /  MENU", "SCARLETNX  /  CONTROLS", "SCARLETNX  /  BUTTONS"};
+    static const char* const titles[] = {"SCARLETNX  /  MENU", "SCARLETNX  /  CONTROLS", "SCARLETNX  /  BUTTONS",
+                                         "SCARLETNX  /  CONTROLLERS"};
     static const char* const hints[] = {"Back or Home: back to the game.", "Back: the menu.",
                                         "Tap one to show or hide it."};
-    char text[OVERLAY_COLS + 1], value[OVERLAY_COLS + 1];
+    char text[OVERLAY_COLS + 1], value[OVERLAY_COLS + 1], pads[OVERLAY_COLS - 1];
     int px, py, s, row, n = items();
     float cw, ch;
     if (!shown) return;
@@ -216,7 +272,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh) {
     ui_fill(l, (float)px, (float)py, cw * OVERLAY_COLS, ch * (float)rows(), PAGE_RGBA);
     ui_fill(l, (float)px, (float)py, cw * OVERLAY_COLS, ch, INK);
     ui_text(l, (float)px + cw, (float)py, s, titles[page], LIGHT);
-    ui_text(l, (float)px + cw, (float)py + ch, s, hints[page], SOFT);
+    ui_text(l, (float)px + cw, (float)py + ch, s, page == PAGE_PADS ? pads_hint(pads, sizeof pads) : hints[page], SOFT);
     for (row = 0; row < VISIBLE && top + row < n; ++row) {
         int i = top + row, on = i == focus;
         float y = (float)py + ch * (float)(FIRST + row);

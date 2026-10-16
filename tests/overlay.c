@@ -4,6 +4,7 @@
    and ui.c's atlas and text */
 #include "runtime/platform/overlay.h"
 #include "runtime/platform/backend.h"
+#include "runtime/platform/gamepad.h"
 #include "runtime/platform/vpad.h"
 #include "runtime/platform/controls_atlas.h"
 #include "runtime/platform/plat.h"
@@ -19,6 +20,13 @@ void pm_unlock(PMutex* m) { (void)m; }
 static int touch = 1;
 int backend_touch_mode(void) { return touch; }
 void backend_touch_set(int mode) { touch = mode; }
+/* and the gamepads' settings and names, as backend/gamepad.c keeps them */
+static SnxGamepadConfig pads = {1, 20, 100, 0};
+static const int* pad_stored;
+static const char* pad_names[3];
+SnxGamepadConfig* gamepad_config(void) { return &pads; }
+void gamepad_store(const int* setting) { pad_stored = setting; }
+const char* gamepad_name(int i) { return i >= 0 && i < 3 ? pad_names[i] : NULL; }
 static char stored[64];
 static void store(const char* key, const char* value) {
     (void)value;
@@ -66,11 +74,11 @@ int main(void) {
     overlay_toggle();
     assert(overlay_shown());
     /* half the screen at most, in whole steps, in the middle: a phone held wide, a small window. The page is as
-       tall as its items (two here, under three rows of head, over a blank one), at the scale of the tallest page */
+       tall as its items (three here, under three rows of head, over a blank one), at the scale of the tallest page */
     overlay_place(SW, SH, &px, &py, &s);
-    assert(s == 2 && px == (SW - 640) / 2 && py == (SH - 6 * 32) / 2);
-    overlay_place(500, 100, &x, &y, &sc);
-    assert(sc == 1 && x == 90 && y == 2);
+    assert(s == 2 && px == (SW - 640) / 2 && py == (SH - 7 * 32) / 2);
+    overlay_place(500, 120, &x, &y, &sc);
+    assert(sc == 1 && x == 90 && y == 4);
     /* a phone's display scale: the Poco F8 (408 dpi, 2510x1156) and the Pixel 9 (420 dpi) at 3x, where half the
        picture gave 2x; a 4K picture at 100% keeps the 4x half of it gives */
     overlay_set_display_scale(408.0f / 160);
@@ -85,16 +93,16 @@ int main(void) {
 
     /* the first page: the title on a band of ink, the items under it, the focused one on a band */
     draw();
-    assert(list.q[0].w == 640 && list.q[0].h == 6 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
-    assert(text_at(38, 3, ">")); /* a page under it */
+    assert(list.q[0].w == 640 && list.q[0].h == 7 * 32 && list.q[1].rgba == ink && list.q[1].h == 32);
+    assert(text_at(38, 3, ">") && text_at(38, 4, ">")); /* a page under each */
     assert(text_at(1, 0, "SCARLETNX  /  MENU") && text_at(1, 3, "\xFE On-screen controls") &&
-           text_at(1, 4, "\xFE Exit"));
+           text_at(1, 4, "\xFE Controllers") && text_at(1, 5, "\xFE Exit"));
     /* a tap on Exit exits; on the title, nothing; outside the panel, it closes */
-    assert(tap(1, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
+    assert(tap(2, 3) == OVERLAY_EXIT && tap(-3, 3) == OVERLAY_NONE);
     assert(overlay_tap(5.0f, 5.0f, SW, SH) == OVERLAY_CLOSE);
     /* the focus goes round, from Exit to the first item and back over the top; Back from here closes */
     overlay_move(1);
-    overlay_move(-3);
+    overlay_move(-4);
     assert(overlay_select() == OVERLAY_EXIT && overlay_back() == OVERLAY_CLOSE);
 
     /* the controls' page: each setting shown with its value, changed and kept */
@@ -163,6 +171,61 @@ int main(void) {
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  CONTROLS"));
     assert(overlay_back() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  MENU"));
+
+    /* the controllers' page: the ones connected, A B X Y by label or position, the dead zone by fives, the
+       vibration by tens down to Off and the background input, each kept */
+    assert(tap(1, 3) == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  CONTROLLERS") && text_at(1, 1, "None connected."));
+    assert(list.q[0].h == 9 * 32 && text_at(1, 3, "\xFE A B X Y") && text_at(31, 3, "By label"));
+    tap(0, 3);
+    assert(!pads.labels && pad_stored == &pads.labels);
+    draw();
+    assert(text_at(28, 3, "By position"));
+    overlay_side(1);
+    assert(pads.labels);
+    draw();
+    assert(text_at(32, 4, "< 20% >"));
+    tap(1, 38);
+    assert(pads.deadzone == 25 && pad_stored == &pads.deadzone);
+    tap(1, 31);
+    tap(1, 31);
+    assert(pads.deadzone == 15);
+    for (x = 0; x < 20; ++x) tap(1, 38);
+    assert(pads.deadzone == 90);
+    pads.deadzone = 20;
+    for (x = 0; x < 10; ++x) tap(2, 31);
+    assert(pads.rumble == 0 && pad_stored == &pads.rumble);
+    draw();
+    assert(text_at(32, 5, "< Off >"));
+    assert(overlay_select() == OVERLAY_NONE && pads.rumble == 10); /* the focus is on it: a select steps up */
+    pads.rumble = 100;
+    draw();
+    assert(text_at(1, 6, "\xFE Background input") && text_at(36, 6, "Off"));
+    tap(3, 3);
+    assert(pads.background && pad_stored == &pads.background);
+    draw();
+    assert(text_at(37, 6, "On"));
+    tap(3, 3);
+    assert(!pads.background);
+    pad_names[0] = "Xbox Wireless Controller";
+    draw();
+    assert(text_at(1, 1, "Xbox Wireless Controller") && !text_at(26, 1, "and"));
+    pad_names[1] = "Pro Controller";
+    pad_names[2] = "A controller with a very long name indeed";
+    draw();
+    assert(text_at(1, 1, "Xbox Wireless Controller and 2 more"));
+    pad_names[0] = pad_names[2];
+    draw();
+    assert(text_at(1, 1, "A controller with a very lo and 2 more"));
+    /* Back, on its item or the key, comes up to the controllers' item */
+    assert(tap(4, 3) == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE);
+    draw();
+    assert(text_at(1, 0, "SCARLETNX  /  CONTROLLERS") && overlay_back() == OVERLAY_NONE);
     draw();
     assert(text_at(1, 0, "SCARLETNX  /  MENU"));
     /* closed, it draws nothing; opened again, its first page */

@@ -269,7 +269,8 @@ renderer does not render splitters, voice biquad filters, or the delay, reverb a
 
 SDL gamepads take A, B, X and Y as their labels say (`gamepad_buttons=0`: by Switch positions), with the sticks'
 dead zone in `gamepad_deadzone` and the game's vibration as strong as `gamepad_rumble` (both in percent), and with
-`gamepad_background=1` still play while the window is not focused; pads + keyboard share one guest controller.
+`gamepad_background=1` still play while the window is not focused; the game's menu (Home, F2) sets them under
+*Controllers*, which names the pads connected. Pads + keyboard share one guest controller.
 
 | Keyboard | Switch |
 | --- | --- |

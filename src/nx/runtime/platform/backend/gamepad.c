@@ -3,14 +3,16 @@
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    This fork's changes are under GPL-3.0-or-later, the license of the fork as a whole (LICENSE). */
 #include "runtime/platform/gamepad.h"
+#include "runtime/options.h"
 #include "runtime/platform/log.h"
+#include "runtime/platform/ui.h"
 #include <SDL3/SDL.h>
 #include <math.h>
+#include <stdio.h>
 
 static SDL_Gamepad* g_pads[SNX_GAMEPADS];
-static struct {
-    int labels, deadzone, rumble, background;
-} g_cfg = {1, 20, 100, 0};
+static char g_names[SNX_GAMEPADS][64]; /* theirs, for the game's menu, which the renderer draws on its thread */
+static SnxGamepadConfig g_cfg = {1, 20, 100, 0};
 
 /* SDL drops a gamepad's presses while no window of the program has the focus, unless told otherwise; set before it
    starts its gamepads (the .ini is read first), and at once on a change */
@@ -35,6 +37,23 @@ int gamepad_ini(const char* key, const char* value) {
     if (o) ini_read(o, value);
     return o != NULL;
 }
+SnxGamepadConfig* gamepad_config(void) { return &g_cfg; }
+void gamepad_store(const int* setting) {
+    const IniOpt* o;
+    char v[16];
+    for (o = g_gamepad_ini; o->key; o++)
+        if (o->var == setting) {
+            ini_format(o, v, sizeof v);
+            ini_set(o->key, v);
+            if (o->set) o->set(o, v);
+        }
+}
+const char* gamepad_name(int i) {
+    int k;
+    for (k = 0; k < SNX_GAMEPADS; k++)
+        if (g_names[k][0] && !i--) return g_names[k];
+    return NULL;
+}
 
 static int is_open(SDL_JoystickID id) {
     int i;
@@ -48,9 +67,13 @@ void gamepad_open(u32 id) {
     for (i = 0; i < SNX_GAMEPADS; i++)
         if (!g_pads[i]) {
             g_pads[i] = SDL_OpenGamepad(id);
-            if (g_pads[i])
-                LOG("input: gamepad %s (%s)\n", SDL_GetGamepadName(g_pads[i]),
-                    SDL_GetGamepadStringForType(SDL_GetGamepadType(g_pads[i])));
+            if (!g_pads[i]) return;
+            LOG("input: gamepad %s (%s)\n", SDL_GetGamepadName(g_pads[i]),
+                SDL_GetGamepadStringForType(SDL_GetGamepadType(g_pads[i])));
+            ui_lock();
+            snprintf(g_names[i], sizeof g_names[i], "%s",
+                     SDL_GetGamepadName(g_pads[i]) ? SDL_GetGamepadName(g_pads[i]) : "Gamepad");
+            ui_unlock();
             return;
         }
 }
@@ -61,6 +84,9 @@ void gamepad_close(u32 id) {
         if (g_pads[i] && SDL_GetGamepadID(g_pads[i]) == id) {
             SDL_CloseGamepad(g_pads[i]);
             g_pads[i] = NULL;
+            ui_lock();
+            g_names[i][0] = 0;
+            ui_unlock();
         }
     /* a fifth pad connected while four were open takes the free place */
     ids = SDL_GetGamepads(&n);
