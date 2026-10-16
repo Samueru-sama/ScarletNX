@@ -330,16 +330,17 @@ char* gui_drop_path(const char* text, bool text_drop) {
 }
 char* gui_document_path(const char* uri) {
     static const char storage[] = "content://com.android.externalstorage.documents/document/";
+    static const char tree[] = "content://com.android.externalstorage.documents/tree/"; /* a folder */
     static const char downloads[] = "content://com.android.providers.downloads.documents/document/";
-    int download = !strncmp(uri, downloads, sizeof downloads - 1);
+    int download = !strncmp(uri, downloads, sizeof downloads - 1), folder = !strncmp(uri, tree, sizeof tree - 1);
     const char* id_text;
     char *id, *colon, *path = NULL;
     size_t n;
-    if (!download && strncmp(uri, storage, sizeof storage - 1)) /* other systems' pickers: a path or a file:// URI */
+    if (!download && !folder && strncmp(uri, storage, sizeof storage - 1)) /* other systems' pickers: a path, file:// */
         return !strstr(uri, "://")           ? gui_drop_path(uri, false)
                : !strncmp(uri, "file://", 7) ? gui_drop_path(uri, true)
                                              : NULL;
-    id_text = uri + (download ? sizeof downloads : sizeof storage) - 1;
+    id_text = uri + (download ? sizeof downloads : folder ? sizeof tree : sizeof storage) - 1;
     id = decoded(id_text, strlen(id_text), true);
     colon = id ? strchr(id, ':') : NULL;
     if (colon && download && !strncmp(id, "raw:/", 5)) { /* a download by path; "msf:12" is by number */

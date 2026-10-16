@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "android.h"
+#include "model.h"
 #include <SDL3/SDL.h>
 #include <dlfcn.h>
 #include <jni.h>
@@ -120,6 +121,32 @@ int gui_android_share(const char* path, char* message, size_t size) {
     return ok;
 }
 int gui_android_background(char* message, size_t size) { return call("toBack", "()V", NULL, message, size); }
+
+static SDL_DialogFileCallback folder_done;
+static void* folder_data;
+int gui_android_pick_folder(SDL_DialogFileCallback done, void* data, char* message, size_t size) {
+    folder_done = done;
+    folder_data = data;
+    return call("pickFolder", "()V", NULL, message, size);
+}
+/* MainActivity's answer from the picker: the tree's URI as UTF-8, NULL for none picked */
+JNIEXPORT void JNICALL Java_org_scarletnx_MainActivity_folderPicked(JNIEnv* env, jclass activity, jbyteArray uri);
+JNIEXPORT void JNICALL Java_org_scarletnx_MainActivity_folderPicked(JNIEnv* env, jclass activity, jbyteArray uri) {
+    const char* list[2] = {NULL, NULL};
+    char *text = NULL, *path = NULL;
+    jsize n = uri ? (*env)->GetArrayLength(env, uri) : 0;
+    (void)activity;
+    if (!folder_done) return;
+    if (uri && (text = (char*)malloc((size_t)n + 1))) {
+        (*env)->GetByteArrayRegion(env, uri, 0, n, (jbyte*)text);
+        text[n] = 0;
+        path = gui_document_path(text);
+        list[0] = path ? path : text;
+    }
+    folder_done(folder_data, list, -1);
+    free(path);
+    free(text);
+}
 
 /* text as a byte[], which MainActivity reads as UTF-8: NewStringUTF aborts on anything else than modified UTF-8 */
 static jbyteArray bytes(JNIEnv* env, const char* text) {

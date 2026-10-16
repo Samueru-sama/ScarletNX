@@ -1563,7 +1563,16 @@ static void open_folders(App* app, int row) {
 }
 static void open_folder_picker(App* app) {
     if (!app->picked_folder) app->picked_folder = SDL_RegisterEvents(1);
-    if (app->picked_folder) SDL_ShowOpenFolderDialog(folder_picked, &app->picked_folder, app->window, NULL, false);
+    if (!app->picked_folder) return;
+#ifdef SDL_PLATFORM_ANDROID
+    { /* SDL has no folder picker there: the system's own, through the app */
+        char message[sizeof app->editor.note - 40];
+        if (!gui_android_pick_folder(folder_picked, &app->picked_folder, message, sizeof message))
+            snprintf(app->editor.note, sizeof app->editor.note, "The folder picker could not open: %s", message);
+    }
+#else
+    SDL_ShowOpenFolderDialog(folder_picked, &app->picked_folder, app->window, NULL, false);
+#endif
 }
 /* Select on a folder's row: once arms it, twice takes it off; games/ stays */
 static void folder_select(App* app, int row) {

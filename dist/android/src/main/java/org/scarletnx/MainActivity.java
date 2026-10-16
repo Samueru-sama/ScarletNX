@@ -27,7 +27,7 @@ import org.libsdl.app.SDLSurface;
 /** The menu: scarletnx-gui, as libmain.so */
 public class MainActivity extends SDLActivity {
     /** past the request codes SDL counts up from 0 */
-    private static final int ASKED_NOTIFICATIONS = 0x10000, ASKED_BATTERY = 0x10001;
+    private static final int ASKED_NOTIFICATIONS = 0x10000, ASKED_BATTERY = 0x10001, PICKED_FOLDER = 0x10002;
 
     @Override
     protected String[] getLibraries() {
@@ -120,7 +120,19 @@ public class MainActivity extends SDLActivity {
     protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
         if (code == ASKED_BATTERY) askBackground();
+        if (code == PICKED_FOLDER) {
+            Uri tree = result == RESULT_OK && data != null ? data.getData() : null;
+            folderPicked(tree != null ? tree.toString().getBytes(StandardCharsets.UTF_8) : null);
+        }
     }
+
+    /** src/gui/android.c: the system's folder picker, SDL having none here; its answer goes to folderPicked */
+    public void pickFolder() {
+        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), PICKED_FOLDER);
+    }
+
+    /** src/gui/android.c: the folder picked, its tree's URI as UTF-8; null for none */
+    private static native void folderPicked(byte[] uri);
 
     /** src/gui/android.c: the saved log, as a file, to the app the user picks */
     public void share(String path) {

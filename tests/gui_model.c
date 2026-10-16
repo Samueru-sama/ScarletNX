@@ -196,6 +196,17 @@ int main(void) {
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%zz"));
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary%3A%00.xci"));
     assert(!gui_document_path("content://com.android.externalstorage.documents/document/primary"));
+    /* a folder its folder picker gave: a tree of the device's storage, its root too, or a card's; Downloads' has none */
+    path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3AGames%2FSwitch");
+    assert(path && !strcmp(path, "/storage/emulated/0/Games/Switch"));
+    free(path);
+    path = gui_document_path("content://com.android.externalstorage.documents/tree/primary%3A");
+    assert(path && !strcmp(path, "/storage/emulated/0/"));
+    free(path);
+    path = gui_document_path("content://com.android.externalstorage.documents/tree/1A2B-3C4D%3Agames");
+    assert(path && !strcmp(path, "/storage/1A2B-3C4D/games"));
+    free(path);
+    assert(!gui_document_path("content://com.android.providers.downloads.documents/tree/downloads"));
     path = gui_document_path("file:///tmp/a%20b.nro");
     assert(path && !strcmp(path, "/tmp/a b.nro"));
     free(path);

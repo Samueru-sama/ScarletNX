@@ -4,6 +4,7 @@
 #ifndef SNX_GUI_ANDROID_H
 #define SNX_GUI_ANDROID_H
 #include <stddef.h>
+#include <SDL3/SDL_dialog.h>
 
 /* The app's own files as HOME, for the keys (.switch/), and the working folder: the shared storage's ScarletNX, which
    the user sees, else those files until the app may write there */
@@ -14,6 +15,10 @@ const char* gui_android_folder(void);
 /* The file under a picked document without a path (Downloads' own list, Recent): what its descriptor opens, when that
    is a file on the device's storage; NULL else. Owned */
 char* gui_android_document_file(const char* uri);
+/* The system's folder picker, as SDL has none on Android: done gets the folder's path, or the tree the picker gave
+   when it is no folder of the device's storage, or an empty list when none was picked, as an SDL dialog calls back
+   (from the app's main thread); 0 with message when it cannot open */
+int gui_android_pick_folder(SDL_DialogFileCallback done, void* data, char* message, size_t size);
 /* The folder of the app's native libraries, where the driver is (libscarletnx-run.so); NULL when unknown */
 const char* gui_android_libraries(void);
 /* Runs the runtime with argv in the app's game activity, a process of its own; 0 with message when it cannot */

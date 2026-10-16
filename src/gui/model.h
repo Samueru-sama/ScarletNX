@@ -85,7 +85,8 @@ void gui_console_feed(GuiConsole* console, const char* data, size_t size);
 /* SDL_DROP_FILE is already a path. DROP_TEXT/clipboard may contain a quoted path
    or a local file:// URI. Returns owned UTF-8, never shell-expanded. */
 char* gui_drop_path(const char* text, bool text_drop);
-/* The path of a file a picker chose: on Android a document of the device's storage, or a download it names by path,
-   NULL for any other (an app's, a cloud's); elsewhere the path or file:// URI it gave. Owned. */
+/* The path of a file or folder a picker chose: on Android a document or a folder (a tree) of the device's storage, or a
+   download it names by path, NULL for any other (an app's, a cloud's); elsewhere the path or file:// URI it gave.
+   Owned. */
 char* gui_document_path(const char* uri);
 #endif
