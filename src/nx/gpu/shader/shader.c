@@ -143,7 +143,9 @@ static int brx_table_load(const u64* w, u32 i, u32 n, u32 ra) {
             op->id == O_EXIT || op->id == O_KIL || op->id == O_SYNC || op->id == O_BRK || op->id == O_CONT)
             return -1;
         if (!shader_writes_reg(w[j], op->id, ra)) continue;
-        if (op->id != O_LDC || B(w[j], 0, 8) != ra || B(w[j], 16, 3) != 7 || B(w[j], 19, 1)) return -1;
+        /* a 32-bit load (size 4): the table holds word offsets, and another size would read them wrongly */
+        if (op->id != O_LDC || B(w[j], 0, 8) != ra || B(w[j], 48, 3) != 4 || B(w[j], 16, 3) != 7 || B(w[j], 19, 1))
+            return -1;
         for (k = 11; k < n; k++) { /* no other path enters between the load and the jump */
             const Op* flow;
             u32 t;

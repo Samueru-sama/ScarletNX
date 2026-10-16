@@ -270,7 +270,7 @@ type, range and help, tab-separated.
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `docked` | `0` | `1` is TV mode, `0` handheld mode (1280x720) |
+| `docked` | `1` | `1` is TV mode, `0` handheld mode (1280x720) |
 | `fullscreen` | `0` | `1` starts fullscreen, except in timed test runs (`--seconds`, `--frames`). `-f` or `--fullscreen=0` sets it for one run. F11 or Alt+Enter switches without changing it |
 | `language` | `1` | The game's language, English (US). The `.ini` lists the others, `0` to `17`. One the runtime doesn't know is English (US) |
 | `resolution` | `1` | Internal 3D scale, `0.25` to `4`: `1` native, `2` double, `0.75` and `0.5` faster |

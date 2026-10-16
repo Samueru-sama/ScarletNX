@@ -26,12 +26,14 @@
 
 int g_opt_diag = 0;
 int g_opt_auto_stub_ipc = 1;
-int g_opt_docked = 0, g_opt_lang = 1, g_opt_fps = SNX_FPS_GAME, g_opt_fullscreen = 0;
+int g_opt_docked = 1, g_opt_lang = 1, g_opt_fps = SNX_FPS_GAME, g_opt_fullscreen = 0;
 float g_opt_resf = 1.0f;
 int g_opt_shadows = 1;
 int g_opt_vsync = 1, g_opt_aniso = 0;
 int g_opt_prof = 0;
 int g_opt_network = 0;
+int g_opt_cpu_fallback = CPU_FALLBACK_JIT;
+int g_opt_jit_threads;
 /* the variables above hold until ini_open, which applies the file's values, or the tables' defaults for keys it
    lacks (the logging before it needs g_verbose's) */
 /* everything we read, so the rewrite keeps unknown keys. A value is under INI_LINE bytes */
@@ -119,9 +121,15 @@ static void heap_max_set(const IniOpt* o, const char* v) {
     if (end == v || mb != mb) return;
     g_heap_max = mb < 1 ? 0 : mb < (double)(HEAP_SIZE >> 20) ? (u64)mb << 20 : HEAP_SIZE;
 }
+/* cpu_fallback: interp, or the JIT for anything else. The miss path is chosen before any guest thread runs
+   (runtime/guest_jit.c) */
+static void cpu_fallback_set(const IniOpt* o, const char* v) {
+    (void)o;
+    g_opt_cpu_fallback = word_is(v, "interp") ? CPU_FALLBACK_INTERP : CPU_FALLBACK_JIT;
+}
 /* the settings this file reads; the platform's (backend.h, vpad.h) are written with them */
 static const IniOpt INI_DISPLAY[] = {
-    {"docked", "0", "1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)", INI_INT, INI_STARTUP,
+    {"docked", "1", "1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)", INI_INT, INI_STARTUP,
      &g_opt_docked, 0, 1, NULL, NULL, NULL, 0, 0},
     {"fullscreen", "0",
      "1 = start in fullscreen (not in timed test runs). -f or --fullscreen=0 sets it for one run.\n"
@@ -160,8 +168,16 @@ static const IniOpt INI_PERF[] = {
      "   Games that run out of memory on 3.2 GB, like Tears of the Kingdom, need 6",
      INI_INT, INI_STARTUP, &g_opt_mem_gb, 0, 8, NULL, NULL, NULL, 0, 0},
     {"heap_max_mb", "0", "The most heap the game can allocate, in MB: 0 = as much as the memory allows", INI_TEXT,
-     INI_STARTUP, NULL, 0, 0, heap_max_set, NULL, NULL, 0, 0},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0}};
+     INI_STARTUP, NULL, 0, 0, heap_max_set},
+    {"cpu_fallback", "jit",
+     "Game code the recompiler missed: jit = compiled in the background, the interpreter running it until then,\n"
+     ";   interp = the interpreter only. Where the JIT can't start (Windows for now) the interpreter runs it",
+     INI_TEXT, INI_STARTUP, NULL, 0, 0, cpu_fallback_set},
+    {"jit_threads", "0",
+     "Threads compiling for cpu_fallback=jit: 0 = every CPU the game may use but two (at most 8). They yield to the\n"
+     ";   game",
+     INI_INT, INI_STARTUP, &g_opt_jit_threads, 0, 8, NULL}, /* SNX_JIT_THREADS */
+    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL}};
 static const IniOpt INI_NETWORK[] = {
     {"network", "0",
      "1 = host networking. Known Nintendo service domains are blocked by the resolver, not by an IP firewall.\n;   0 = "

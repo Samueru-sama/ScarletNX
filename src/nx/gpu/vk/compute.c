@@ -49,10 +49,28 @@ static u64 g_out_lo = ~0ull, g_out_hi;
 
 static VkCommandPool g_cpool;
 static VkCommandBuffer g_ccb;
-static VkFence g_cfence;
 static VkDescriptorPool g_dpool;
 static int g_recording, g_landing;
-static int g_inflight; /* submitted, results not landed yet */
+static int g_inflight; /* submitted and waited for in cs_land, results not landed yet */
+/* Submitted batches whose results haven't landed, oldest first. A batch is submitted when it is full, or when a
+   release, a draw or a reader needs its results, and lands when something needs them: the release thread once the
+   batch is done, or a reader now. Landing each at its submit (with a fence wait) was 4 waits a frame in TotK. Each
+   keeps its command buffer, descriptor pool, arena and original bytes until it lands; the current batch (the globals
+   above) records into others meanwhile. */
+typedef struct {
+    VkCommandBuffer cb;
+    VkDescriptorPool dpool;
+    VkBuffer ar;
+    VmaAllocation ar_mem;
+    u8* ar_ptr;
+    u8* org;
+    u64 ar_cap, org_cap, cval, lo, hi;
+    CsOut out[256];
+    int nout, gfx;
+} CsBatch;
+#define CS_PENDING 3
+static CsBatch g_pend[CS_PENDING];
+static u32 g_phead, g_ptail; /* batches put aside, landed */
 /* draws can read results on the GPU before they land (vk_compute_gpu_src): the batch signals g_vk_csem, the next
    graphics submit waits for g_vk_cs_wait_value, and the arena they read stays alive until that frame is done */
 VkSemaphore g_vk_csem;
@@ -85,8 +103,6 @@ static void cs_init(void) {
                                       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                                       .commandBufferCount = 1};
     VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &g_ccb));
-    VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VK_OK(vkCreateFence(g_vk.dev, &fci, NULL, &g_cfence));
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
     VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
@@ -117,14 +133,22 @@ static void arena_retire(void) {
         memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
         g_nretired--;
     }
-    g_retired[g_nretired++] = (typeof(g_retired[0])){g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_number()};
+    g_retired[g_nretired++] = (typeof(g_retired[0])){g_ar, g_ar_mem, g_ar_ptr, g_ar_cap, vk_frame_id()};
     g_ar = VK_NULL_HANDLE;
 }
+/* the original bytes beside the arena, as big as it: batches put aside swap theirs with the current one's */
+static int org_fit(void) {
+    if (g_org_cap >= g_ar_cap) return 1;
+    free(g_org);
+    g_org = malloc(g_ar_cap);
+    g_org_cap = g_org ? g_ar_cap : 0;
+    return g_org != NULL;
+}
 static int arena_fit(u64 need) {
-    if (g_ar && g_ar_used <= g_ar_cap && need <= g_ar_cap - g_ar_used && g_ar_cap >= g_ar_want) return 1;
+    if (g_ar && g_ar_used <= g_ar_cap && need <= g_ar_cap - g_ar_used && g_ar_cap >= g_ar_want) return org_fit();
     vk_cmd(); /* frames older than VK_FRAMES are done once the current one has started */
     for (int i = 0; i < g_nretired; i++)
-        if (g_retired[i].frame + VK_FRAMES <= vk_frame_number() && g_retired[i].cap >= need &&
+        if (g_retired[i].frame + VK_FRAMES <= vk_frame_id() && g_retired[i].cap >= need &&
             g_retired[i].cap >= g_ar_want) {
             if (g_ar) vk_defer_buffer(g_ar, g_ar_mem);
             g_ar = g_retired[i].b;
@@ -132,7 +156,7 @@ static int arena_fit(u64 need) {
             g_ar_ptr = g_retired[i].p;
             g_ar_cap = g_retired[i].cap;
             g_retired[i] = g_retired[--g_nretired];
-            return 1;
+            return org_fit();
         }
     if (g_ar) vk_defer_buffer(g_ar, g_ar_mem); /* draws may still read it */
     u64 cap = g_ar_want;
@@ -156,12 +180,7 @@ static int arena_fit(u64 need) {
     if (!VK_OK(vmaCreateBuffer(g_vk.vma, &bci, &aci, &g_ar, &g_ar_mem, &info))) return 0;
     g_ar_ptr = info.pMappedData;
     g_ar_cap = cap;
-    if (g_org_cap < cap) {
-        free(g_org);
-        g_org = malloc(cap);
-        g_org_cap = g_org ? cap : 0;
-    }
-    return g_org != NULL;
+    return org_fit();
 }
 static u64 arena_alloc(u64 size) {
     u64 al = vk_stage_align(), at = (g_ar_used + al - 1) & ~(al - 1);
@@ -184,30 +203,133 @@ static void cs_submit(void) {
                         .pCommandBufferInfos = &c,
                         .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
-    VkResult r = vkQueueSubmit2(g_vk.compute, 1, &si, g_cfence);
+    VkResult r = vkQueueSubmit2(g_vk.compute, 1, &si, VK_NULL_HANDLE);
     if (r == VK_ERROR_DEVICE_LOST) fatal("vulkan: the GPU device was lost (driver reset or crash)");
     g_recording = 0;
-    g_inflight = VK_OK(r);
-    if (!g_inflight) g_cval--; /* never signaled: draws don't wait for it, landing doesn't wait for the fence */
-}
-/* submits the batch if it isn't yet, waits for it, and lands its results */
-static void cs_land(void) {
-    if ((!g_recording && !g_inflight) || g_landing) return;
-    g_landing = 1;
-    u64 t0 = plat_ns();
-    cs_submit();
-    if (g_inflight) {
-        VK_OK(vkWaitForFences(g_vk.dev, 1, &g_cfence, VK_TRUE, UINT64_MAX));
-        VK_OK(vkResetFences(g_vk.dev, 1, &g_cfence));
+    g_inflight = 1;
+    if (!VK_OK(r)) { /* never signaled by the GPU: the host signals it, so waits for it end */
+        VkSemaphoreSignalInfo ss = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = g_vk_csem, .value = g_cval};
+        VK_OK(vkSignalSemaphore(g_vk.dev, &ss));
     }
+}
+static void cs_wait(u64 value) {
+    VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                              .semaphoreCount = 1,
+                              .pSemaphores = &g_vk_csem,
+                              .pValues = &value};
+    u64 t0 = plat_ns();
+    VK_OK(vkWaitSemaphores(g_vk.dev, &wi, UINT64_MAX));
     g_vk_cs_wait_ns += plat_ns() - t0;
-    vmaInvalidateAllocation(g_vk.vma, g_ar_mem, 0, VK_WHOLE_SIZE);
+}
+/* the arena's results that changed, into guest memory, after its batch is done */
+static void cs_write_back(VmaAllocation mem, const u8* ar, const u8* org, const CsOut* out, int nout) {
+    vmaInvalidateAllocation(g_vk.vma, mem, 0, VK_WHOLE_SIZE);
+    for (int i = 0; i < nout; i++) vk_write_changed(out[i].addr, ar + out[i].off, org + out[i].off, out[i].size);
+}
+/* an arena whose batch has landed: draws that read it may still run (gfx), so it waits for their frame like the
+   arenas draws read; one they didn't read is free now */
+static void cs_arena_done(VkBuffer b, VmaAllocation m, u8* p, u64 cap, int gfx) {
+    if (g_nretired == 8) { /* full: the oldest goes for good */
+        vk_defer_buffer(g_retired[0].b, g_retired[0].m);
+        memmove(g_retired, g_retired + 1, sizeof g_retired[0] * 7);
+        g_nretired--;
+    }
+    g_retired[g_nretired++] = (typeof(g_retired[0])){
+        b, m, p, cap, gfx || vk_frame_id() < VK_FRAMES ? vk_frame_id() : vk_frame_id() - VK_FRAMES};
+}
+static void cs_any_update(void) {
+    int any = g_nout > 0;
+    for (u32 i = g_ptail; i != g_phead && !any; i++) any = g_pend[i % CS_PENDING].nout > 0;
+    g_cs_any = any;
+}
+/* the oldest batch put aside lands: it is done once g_vk_csem reaches its value */
+static void cs_land_oldest(void) {
+    CsBatch* b = &g_pend[g_ptail % CS_PENDING];
+    int was = g_landing;
+    cs_wait(b->cval);
+    g_landing = 1;
+    cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
+    g_landing = was;
+    vkResetDescriptorPool(g_vk.dev, b->dpool, 0);
+    cs_arena_done(b->ar, b->ar_mem, b->ar_ptr, b->ar_cap, b->gfx);
+    b->ar = VK_NULL_HANDLE;
+    b->nout = 0;
+    g_ptail++;
+    g_vk_cs_batches++;
+    cs_any_update();
+}
+/* submits the current batch and puts it aside to land later; the next batch records into the slot's command buffer
+   and pool and a fresh arena */
+static void cs_put_aside(void) {
+    CsBatch* b;
+    VkCommandBuffer cb;
+    VkDescriptorPool dp;
+    u8* org;
+    u64 org_cap;
+    if (!g_recording) return;
+    cs_submit();
+    if (g_phead - g_ptail == CS_PENDING) cs_land_oldest();
+    b = &g_pend[g_phead % CS_PENDING];
+    if (!b->cb) { /* first use of the slot: its own command buffer and pool for the batch that follows */
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                          .commandPool = g_cpool,
+                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                          .commandBufferCount = 1};
+        VkDescriptorPoolSize sz[VK_POOL_TYPES];
+        VkDescriptorPoolCreateInfo dci = {0};
+        VK_OK(vkAllocateCommandBuffers(g_vk.dev, &ai, &b->cb));
+        vk_pool_sizes(sz, 1024);
+        dci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dci.maxSets = 1024;
+        dci.poolSizeCount = VK_POOL_TYPES;
+        dci.pPoolSizes = sz;
+        VK_OK(vkCreateDescriptorPool(g_vk.dev, &dci, NULL, &b->dpool));
+    }
+    cb = b->cb;
+    dp = b->dpool;
+    org = b->org;
+    org_cap = b->org_cap;
+    b->cb = g_ccb;
+    b->dpool = g_dpool;
+    b->ar = g_ar;
+    b->ar_mem = g_ar_mem;
+    b->ar_ptr = g_ar_ptr;
+    b->ar_cap = g_ar_cap;
+    b->org = g_org;
+    b->org_cap = g_org_cap;
+    b->cval = g_cval;
+    b->gfx = g_ar_gfx;
+    memcpy(b->out, g_out, (size_t)g_nout * sizeof g_out[0]);
+    b->nout = g_nout;
+    b->lo = g_out_lo;
+    b->hi = g_out_hi;
+    g_phead++;
+    g_ccb = cb;
+    g_dpool = dp;
+    g_org = org;
+    g_org_cap = org_cap;
+    g_ar = VK_NULL_HANDLE; /* arena_fit gives the next batch one */
+    g_ar_cap = g_ar_used = 0;
+    g_nout = 0;
+    g_out_lo = ~0ull;
+    g_out_hi = 0;
+    g_ar_gfx = 0;
     g_inflight = 0;
-    for (int i = 0; i < g_nout; i++)
-        vk_write_changed(g_out[i].addr, g_ar_ptr + g_out[i].off, g_org + g_out[i].off, g_out[i].size);
+    cs_any_update();
+}
+/* every batch lands, the current one submitted and waited for */
+static void cs_land(void) {
+    if (g_landing) return;
+    while (g_ptail != g_phead) cs_land_oldest();
+    if (!g_recording && !g_inflight) return;
+    g_landing = 1;
+    cs_submit();
+    cs_wait(g_cval);
+    g_inflight = 0;
+    cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
     /* only now: until the results are in memory, readers on other threads wait for this landing in
        vk_compute_mem_need */
-    g_cs_any = 0;
     g_nout = 0;
     g_out_lo = ~0ull;
     g_out_hi = 0;
@@ -219,19 +341,22 @@ static void cs_land(void) {
     }
     g_vk_cs_batches++;
     g_landing = 0;
+    cs_any_update();
 }
 
 /* A descriptor can fail after its inputs were copied into the arena. No command references those inputs yet. */
 static void cs_abandon_binding(u8* originals[8]) {
+    vk_buf_writable_abort(); /* a deferred dispatch's outputs, not recorded */
     for (int i = 0; i < 8; i++) free(originals[i]);
     if (g_recording || g_inflight) return;
     g_ar_used = 0;
     vkResetDescriptorPool(g_vk.dev, g_dpool, 0);
 }
-/* a draw reads [gva, gva + len), which one pending result covers: it reads it from the arena, after the batch. Any
-   other overlap lands the results now, so the caller's caches see them in memory */
+/* a draw reads [gva, gva + len), which one pending result covers: it reads it from the batch's arena, after the
+   batch. Any other overlap lands the results now, so the caller's caches see them in memory */
 int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
-    if (!g_cs_any || g_landing || gva >= g_out_hi || gva + len <= g_out_lo) return 0;
+    u32 k;
+    if (!g_cs_any || g_landing) return 0;
     for (int i = 0; i < g_nout; i++) {
         CsOut* o = &g_out[i];
         if (gva >= o->addr + o->size || o->addr >= gva + len) continue;
@@ -240,19 +365,54 @@ int vk_compute_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
             cs_land();
             return 0;
         }
-        cs_submit();
         g_ar_gfx = 1;
+        cs_put_aside();
+        o = &g_pend[(g_phead - 1) % CS_PENDING].out[i];
         g_vk_cs_wait_value = g_cval;
-        *buf = g_ar;
+        *buf = g_pend[(g_phead - 1) % CS_PENDING].ar;
         *off = o->off + (gva - o->addr);
         return 1;
+    }
+    for (k = g_ptail; k != g_phead; k++) {
+        CsBatch* b = &g_pend[k % CS_PENDING];
+        if (gva >= b->hi || gva + len <= b->lo) continue;
+        for (int i = 0; i < b->nout; i++) {
+            CsOut* o = &b->out[i];
+            if (gva >= o->addr + o->size || o->addr >= gva + len) continue;
+            if (gva < o->addr || gva + len > o->addr + o->size ||
+                ((o->off + (gva - o->addr)) & (vk_stage_align() - 1))) {
+                cs_land();
+                return 0;
+            }
+            b->gfx = 1;
+            if (g_vk_cs_wait_value < b->cval) g_vk_cs_wait_value = b->cval;
+            *buf = b->ar;
+            *off = o->off + (gva - o->addr);
+            return 1;
+        }
     }
     return 0;
 }
 void vk_compute_land(void) {
-    if (!g_recording && !g_inflight) return;
+    if (!g_recording && !g_inflight && g_ptail == g_phead) return;
     vk_lock();
     cs_land();
+    vk_unlock();
+}
+u64 vk_compute_put_aside(void) {
+    u64 gate = 0;
+    vk_lock();
+    if (g_nout) cs_put_aside();
+    if (g_ptail != g_phead) gate = g_pend[(g_phead - 1) % CS_PENDING].cval;
+    vk_unlock();
+    return gate;
+}
+void vk_compute_wait(u64 value) {
+    if (value) cs_wait(value);
+}
+void vk_compute_land_through(u64 value) {
+    vk_lock();
+    while (g_ptail != g_phead && g_pend[g_ptail % CS_PENDING].cval <= value) cs_land_oldest();
     vk_unlock();
 }
 /* the front end writes guest memory (size > 0) or reaches a point the game can observe (size 0) */
@@ -264,15 +424,30 @@ void vk_compute_before_write(u64 gva, u64 size) {
 }
 /* a read of guest memory: results for it have to be there first. Called from any thread that reads guest memory while
    g_cs_any is set: the pending results are looked at under vk_lock, which recording and landing them hold, so a
-   reader waits for a landing in progress on another thread. The landing thread itself passes (g_landing) */
+   reader waits for a landing in progress on another thread. The landing thread itself passes (g_landing). A result of
+   a batch put aside lands that batch and those before it */
 void vk_compute_mem_need(u64 a, u64 n) {
+    u32 k, last = g_ptail;
+    int found = 0;
     vk_lock();
-    if (!g_landing && a < g_out_hi && a + n > g_out_lo)
-        for (int i = 0; i < g_nout; i++)
-            if (a < g_out[i].addr + g_out[i].size && g_out[i].addr < a + n) {
-                cs_land();
-                break;
-            }
+    if (!g_landing) {
+        for (k = g_ptail; k != g_phead; k++) {
+            const CsBatch* b = &g_pend[k % CS_PENDING];
+            if (a >= b->hi || a + n <= b->lo) continue;
+            for (int i = 0; i < b->nout && !(found && last == k + 1); i++)
+                if (a < b->out[i].addr + b->out[i].size && b->out[i].addr < a + n) {
+                    found = 1;
+                    last = k + 1;
+                }
+        }
+        while (found && g_ptail != last) cs_land_oldest();
+        if (a < g_out_hi && a + n > g_out_lo)
+            for (int i = 0; i < g_nout; i++)
+                if (a < g_out[i].addr + g_out[i].size && g_out[i].addr < a + n) {
+                    cs_land();
+                    break;
+                }
+    }
     vk_unlock();
 }
 
@@ -415,6 +590,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     u64 tic_key_base;
     CsBufImg bimg[8] = {0};
     int i;
+    vk_frame_check();
     if (!gx || !gy || !gz || !lx || !ly || !lz) return;
     const VkPhysicalDeviceLimits* lim = &g_vk.props.limits;
     if (gx > lim->maxComputeWorkGroupCount[0] || gy > lim->maxComputeWorkGroupCount[1] ||
@@ -453,9 +629,25 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     if (!p || fe->addr != pa || fe->epoch != g_vk_epoch || fe->lx != lx || fe->ly != ly || fe->lz != lz ||
         fe->shm != shm || !vk_cb_reads_hold(&p->cbr, cs_cb_read)) {
         static u8 code_buf[0x10000 + 80]; /* compute programs have no header: 80 zero bytes stand in for one */
+        u32 code_size = 0x10000;
+        /* NVN puts a header with its program size 0x100 bytes before compute code. Bounded by it, a BRX whose
+           targets aren't resolved can't scan into the unrelated programs that follow in the same window. Other
+           clients keep the whole window. */
+        if (pa >= 0x100) {
+            const u8* header = gmem_ptr_untracked(pa - 0x100, 8);
+            if (header) {
+                u32 magic, declared;
+                memcpy(&magic, header, sizeof magic);
+                memcpy(&declared, header + 4, sizeof declared);
+                if (magic == 0x12345679 && declared >= 0x80 && declared <= 0x10000 && !(declared & 7) &&
+                    gmem_ptr_untracked(pa, declared))
+                    code_size = declared;
+            }
+        }
         CsKey unkeyed = {0, 0, 0};
         memset(code_buf, 0, 80);
-        gmem_read_code(pa, code_buf + 80, 0x10000);
+        gmem_read_code(pa, code_buf + 80, code_size);
+        memset(code_buf + 80 + code_size, 0, 0x10000 - code_size);
         p = cs_pipe(code_buf, lx, ly, lz, shm, unkeyed);
         *fe = (typeof(fc[0])){pa, g_vk_epoch, lx, ly, lz, shm, p};
     }
@@ -548,8 +740,16 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     }
     need += sizeof(i32) * 320 + vk_stage_align(); /* optional format data */
     /* dispatches that read textures run on the graphics queue, after what was recorded before them. Inputs that
-       pending results overlap land those first, before anything is put in the arena */
-    int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0;
+       pending compute results overlap land those first, before anything is put in the arena */
+    int gfx = p->si.ntex > 0 || p->si.nimg > 0, overlap = 0, storage_images = 0, retries = 0;
+    /* so does one whose storage buffers a draw's pending result covers: on the graphics queue, after that draw, it
+       reads the result on the GPU instead of the compute queue waiting for it to land (TotK: three a frame) */
+    for (i = 0; i < ng && !gfx; i++) gfx = sa[i] && vk_buf_pending(sa[i], ss[i]);
+    for (i = 0; i < p->si.nimg; i++) storage_images |= p->si.img[i].type != 1;
+    /* A graphics-queue dispatch without storage images binds like a draw: staged inputs, results pending in staging
+       (buffer.c's GfxOut), landed when the guest needs them or once their submit is done. Landing each one at once
+       took a vk_finish per dispatch, about 9 a frame in TotK. Storage images still land at once (vk_surf_flush) */
+    int deferred = gfx && !storage_images;
     /* a read-only input inside a pending result of this batch is read from the arena on the GPU, after a barrier
        (multi-pass skinning reads what the pass before wrote); any other overlap lands the results first */
     i64 chain[16];
@@ -564,22 +764,41 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
                 overlap = 1;
         }
     }
-    if (g_recording && g_ar_used + need > g_ar_cap && g_ar_want < (64ull << 20))
-        g_ar_want *= 2; /* fewer, bigger batches */
-    if (gfx || overlap || g_inflight || g_nout + ng > 256 || g_ar_used + need > g_ar_cap) {
-        cs_land();
-        for (int i = 0; i < ng; i++) chain[i] = -1; /* the results are in memory now */
+    if (deferred)
+        for (int i = 0; i < ng; i++) chain[i] = -1; /* inputs come through vk_buf_get, which finds pending results */
+    else {
+        if (g_recording && g_ar_used + need > g_ar_cap && g_ar_want < (64ull << 20))
+            g_ar_want *= 2; /* fewer, bigger batches */
+        if (gfx || overlap || g_inflight) {
+            cs_land();
+            for (int i = 0; i < ng; i++) chain[i] = -1; /* the results are in memory now */
+        } else if (g_nout + ng > 256 || g_ar_used + need > g_ar_cap) {
+            cs_put_aside(); /* full: it runs while the next one records, and lands when its results are needed */
+            for (int i = 0; i < ng; i++) chain[i] = -1; /* a new arena */
+        }
+        if (!g_recording && !arena_fit(need)) return;
     }
-    if (!g_recording && !arena_fit(need)) return;
 
     VkDescriptorSet set;
-    VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                       .descriptorPool = g_dpool,
-                                       .descriptorSetCount = 1,
-                                       .pSetLayouts = &g_vk_dslayout[shader_vk_set(ST_CS)]};
-    if (vkAllocateDescriptorSets(g_vk.dev, &dai, &set) != VK_SUCCESS) {
-        cs_land();
-        if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) return;
+    u64 setup_sub;
+rebind:
+    setup_sub = vk_submit_number();
+    if (deferred) {
+        vk_buf_writable_abort();
+        set = vk_desc_alloc(g_vk_dslayout[shader_vk_set(ST_CS)]);
+        if (!set) {
+            g_vk_cs_skipped++;
+            return;
+        }
+    } else {
+        VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                           .descriptorPool = g_dpool,
+                                           .descriptorSetCount = 1,
+                                           .pSetLayouts = &g_vk_dslayout[shader_vk_set(ST_CS)]};
+        if (vkAllocateDescriptorSets(g_vk.dev, &dai, &set) != VK_SUCCESS) {
+            cs_land();
+            if (!VK_OK(vkAllocateDescriptorSets(g_vk.dev, &dai, &set))) return;
+        }
     }
     VkWriteDescriptorSet w[80];
     VkDescriptorBufferInfo bi[80];
@@ -587,6 +806,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     Surf* images[8] = {0};
     u8* originals[8] = {0};
     VkBufferView bufimg_view[8] = {0};
+    VkBuffer bufimg_buf[8] = {0};
     u64 bufimg_off[8] = {0};
     u32 nw = 0;
     for (int i = 0; i < 8; i++)
@@ -598,11 +818,23 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             range = (range + 15) & ~15u;
             if (!range) range = 16;
             if (range > g_vk.props.limits.maxUniformBufferRange) range = g_vk.props.limits.maxUniformBufferRange;
-            u64 o = arena_alloc(range);
             u32 n = g_cbn[i] < range ? g_cbn[i] : range;
-            memcpy(g_ar_ptr + o, g_cb[i], n);
-            memset(g_ar_ptr + o + n, 0, range - n);
-            bi[nw] = (VkDescriptorBufferInfo){g_ar, o, range};
+            VkBuffer cbuf = g_ar;
+            u64 o;
+            u8* dst;
+            if (deferred) {
+                dst = vk_stage(range, vk_stage_align(), &cbuf, &o);
+                if (!dst) {
+                    g_vk_cs_skipped++;
+                    return;
+                }
+            } else {
+                o = arena_alloc(range);
+                dst = g_ar_ptr + o;
+            }
+            memcpy(dst, g_cb[i], n);
+            memset(dst + n, 0, range - n);
+            bi[nw] = (VkDescriptorBufferInfo){cbuf, o, range};
             w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstSet = set,
                                            .dstBinding = SNX_VKB_CB + i,
@@ -614,15 +846,31 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     u64 so[16];
     int chained = 0;
     for (int i = 0; i < ng; i++) {
-        if (chain[i] >= 0) chained = 1;
-        u64 o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
-        if (chain[i] >= 0)
-            ; /* written by an earlier dispatch of the batch, read in place */
-        else if (sa[i])
-            gmem_read(sa[i], g_ar_ptr + o, ss[i]);
-        else
-            memset(g_ar_ptr + o, 0, ss[i]);
-        bi[nw] = (VkDescriptorBufferInfo){g_ar, o, ss[i]};
+        VkBuffer sbuf = g_ar;
+        u64 o;
+        if (deferred) {
+            /* written: a pending result of its own, from its original bytes; read: the bytes draws would read,
+               which may be an earlier draw's or dispatch's result on the GPU */
+            int ok = (p->si.gbuf_wmask >> i) & 1 ? vk_buf_copy_writable(sa[i], ss[i], &sbuf, &o)
+                     : sa[i]                     ? vk_buf_get_strict(sa[i], ss[i], &sbuf, &o)
+                                                 : vk_buf_copy(0, ss[i], &sbuf, &o);
+            if (!ok) {
+                vk_buf_writable_abort();
+                g_vk_cs_skipped++;
+                return;
+            }
+            so[i] = o;
+        } else {
+            if (chain[i] >= 0) chained = 1;
+            o = so[i] = chain[i] >= 0 ? (u64)chain[i] : arena_alloc(ss[i]);
+            if (chain[i] >= 0)
+                ; /* written by an earlier dispatch of the batch, read in place */
+            else if (sa[i])
+                gmem_read(sa[i], g_ar_ptr + o, ss[i]);
+            else
+                memset(g_ar_ptr + o, 0, ss[i]);
+        }
+        bi[nw] = (VkDescriptorBufferInfo){sbuf, o, ss[i]};
         w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                        .dstSet = set,
                                        .dstBinding = SNX_VKB_SSBO + i,
@@ -763,20 +1011,30 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
                 if (bufimg_view[k] && bimg[k].gva == bimg[i].gva) alias = k;
             if (alias >= 0) {
                 bufimg_off[i] = bufimg_off[alias];
+                bufimg_buf[i] = bufimg_buf[alias];
                 if (bimg[i].bytes > bimg[alias].bytes) bimg[i].bytes = bimg[alias].bytes;
+            } else if (deferred) { /* a pending result, like a written storage buffer */
+                if (!vk_buf_copy_writable(bimg[i].gva, (u32)bimg[i].bytes, &bufimg_buf[i], &bufimg_off[i])) {
+                    for (k = 0; k < i; k++)
+                        if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
+                    g_vk_cs_skipped++;
+                    cs_abandon_binding(originals);
+                    return;
+                }
             } else {
                 bufimg_off[i] = arena_alloc(bimg[i].bytes);
+                bufimg_buf[i] = g_ar;
                 gmem_read(bimg[i].gva, g_ar_ptr + bufimg_off[i], bimg[i].bytes);
             }
             memset(&vci, 0, sizeof vci);
             vci.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
-            vci.buffer = g_ar;
+            vci.buffer = bufimg_buf[i];
             vci.format = bimg[i].fmt;
             vci.offset = bufimg_off[i];
             vci.range = bimg[i].bytes;
             if (!VK_OK(vkCreateBufferView(g_vk.dev, &vci, NULL, &bufimg_view[i]))) {
                 for (k = 0; k < i; k++)
-                    if (bufimg_view[k]) vkDestroyBufferView(g_vk.dev, bufimg_view[k], NULL);
+                    if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]); /* a draw may still use the set */
                 g_vk_cs_skipped++;
                 cs_abandon_binding(originals);
                 return;
@@ -791,9 +1049,24 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             nw++;
         }
         if (fmt_used) {
-            u64 o = arena_alloc(sizeof fmt);
-            memcpy(g_ar_ptr + o, fmt, sizeof fmt);
-            bi[nw] = (VkDescriptorBufferInfo){g_ar, o, sizeof fmt};
+            VkBuffer fbuf = g_ar;
+            u64 o;
+            u8* dst;
+            if (deferred) {
+                dst = vk_stage(sizeof fmt, vk_stage_align(), &fbuf, &o);
+                if (!dst) {
+                    for (i = 0; i < p->si.nimg && i < 8; i++)
+                        if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
+                    g_vk_cs_skipped++;
+                    cs_abandon_binding(originals);
+                    return;
+                }
+            } else {
+                o = arena_alloc(sizeof fmt);
+                dst = g_ar_ptr + o;
+            }
+            memcpy(dst, fmt, sizeof fmt);
+            bi[nw] = (VkDescriptorBufferInfo){fbuf, o, sizeof fmt};
             w[nw] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                            .dstSet = set,
                                            .dstBinding = SNX_VKB_FMT,
@@ -803,8 +1076,20 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             nw++;
         }
     }
+    /* reading an input landed results and submitted: what was read before may be stale, as in a draw's setup */
+    if (deferred && setup_sub != vk_submit_number()) {
+        for (i = 0; i < p->si.nimg && i < 8; i++)
+            if (bufimg_view[i]) {
+                vk_defer_buffer_view(bufimg_view[i]);
+                bufimg_view[i] = VK_NULL_HANDLE;
+            }
+        vk_buf_writable_abort();
+        if (++retries < 4) goto rebind;
+        g_vk_cs_skipped++;
+        return;
+    }
     /* the outputs, once every input is read (an input can alias another storage buffer's output) */
-    for (int i = 0; i < ng; i++)
+    for (int i = 0; i < ng && !deferred; i++)
         if (((p->si.gbuf_wmask >> i) & 1) && sa[i]) {
             memcpy(g_org + so[i], g_ar_ptr + so[i], ss[i]);
             g_out[g_nout++] = (CsOut){sa[i], so[i], ss[i]};
@@ -812,7 +1097,7 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
             if (sa[i] + ss[i] > g_out_hi) g_out_hi = sa[i] + ss[i];
         }
     /* buffer images land like storage buffers: only the bytes the dispatch changed are written back */
-    for (i = 0; i < p->si.nimg && i < 8; i++) {
+    for (i = 0; i < p->si.nimg && i < 8 && !deferred; i++) {
         int alias = 0;
         int k;
         for (k = 0; k < i; k++) alias |= bufimg_view[k] && bufimg_off[k] == bufimg_off[i];
@@ -852,6 +1137,14 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p->p);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_vk_playout, 0, 1, &set, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
+    if (deferred) {
+        /* pending from here: the submit copies them where the host reads them (vk_buf_host_barrier) */
+        vk_buf_writable_commit();
+        for (i = 0; i < p->si.nimg && i < 8; i++)
+            if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
+        g_vk_dispatches++;
+        return;
+    }
     /* results visible to the host */
     VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                            .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -892,5 +1185,5 @@ void vk_dispatch(GpuChannel* ch, const u32* q, u64 code) {
         g_landing = 0;
         return;
     }
-    g_cs_any = g_nout > 0;
+    cs_any_update();
 }

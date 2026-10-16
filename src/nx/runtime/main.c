@@ -10,6 +10,7 @@
 #include "nx/runtime/loader.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/gdbstub.h"
+#include "nx/runtime/guest_jit.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
@@ -30,7 +31,6 @@
 
 const SnxModule* g_mod;
 GuestFn* g_disp;
-GuestFn snx_interp_entry;
 char g_datadir[1024], g_exename[256], g_exedir[1024], g_confdir[1024], g_statedir[1024], g_cachedir[1024];
 volatile int g_quit;
 int g_frames;
@@ -134,7 +134,6 @@ static void build_dispatch(void) {
         u64 a = g_mod->entry_addr[i];
         if (a >= g_code_lo && a < g_code_hi) g_disp[(a - g_code_lo) / 4] = g_mod->entry_fn[i];
     }
-    snx_interp_entry = g_mod->interp;
 }
 
 static void services_init(void) {
@@ -232,6 +231,21 @@ static int is_dump(const char* path) {
     return 0;
 }
 
+void snx_save_before_exit(void) {
+    static PMutex lock = PMUTEX_INIT;
+    static int done;
+    pm_lock(&lock);
+    if (!done) {
+        done = 1;
+        save_hints();
+        /* the process ends without shutting the renderer down, so it saves what it keeps across runs (the pipeline
+           cache) here */
+        if (g_renderer && g_renderer->save) g_renderer->save();
+        jit_report();
+    }
+    pm_unlock(&lock);
+}
+
 int snx_main(int argc, char** argv) {
     int startup = snx_startup_options(argc, argv);
     if (startup) return startup;
@@ -308,6 +322,7 @@ int snx_main(int argc, char** argv) {
     load_hints();
     if (loader_load()) fatal("Could not load the game executables from %sexefs/", g_datadir);
     kernel_load_symbols();
+    jit_init();
     read_npdm();
     services_init();
     romfs_init();
@@ -372,10 +387,7 @@ int snx_main(int argc, char** argv) {
             next = now;
     }
     ini_poll(1); /* what changed in the game since the last poll (F4, the menu) is saved: it runs once a second */
-    save_hints();
-    /* the process ends without shutting the renderer down, so it saves what it keeps across runs (the pipeline cache)
-       here */
-    if (g_renderer && g_renderer->save) g_renderer->save();
+    snx_save_before_exit();
     LOG("Exit.\n");
     plat_exit_now(0); /* the guest threads are still running: they aren't joined */
 }

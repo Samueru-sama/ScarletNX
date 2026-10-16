@@ -69,13 +69,18 @@ static LLVMValueRef call_dynamic(SnxIr* ir, LLVMValueRef target) {
     return LLVMBuildCall2(B, ir->t_guest, function, args, 2, "");
 }
 
-/* call(): F_target(c,target) when the target is a recompiled function, CALLDYN(target) otherwise; tail: then return */
+/* call(): F_target(c,target) when the target is a recompiled function and direct calls aren't hooked
+   (--hook-direct-calls), CALLDYN(target) otherwise; tail: then return. The runtime JIT also calls the AOT module's
+   functions directly, at the host addresses ir->direct gives (jit_service.c) */
 static void call(SnxIr* ir, const SnxCodegen* codegen, SnxU64 target, int tail) {
     LLVMValueRef args[2], site;
+    SnxU64 host = 0;
     args[0] = ir->c;
     args[1] = ir_i64(ir, target);
-    if (snx_codegen_function(codegen, target))
+    if (snx_codegen_function(codegen, target) && !codegen->hook_direct_calls)
         site = LLVMBuildCall2(B, ir->t_guest, snx_ir_guest_function(ir, target), args, 2, "");
+    else if (!codegen->hook_direct_calls && ir->direct && (host = ir->direct(ir->direct_user, target)) != 0)
+        site = LLVMBuildCall2(B, ir->t_guest, LLVMConstIntToPtr(ir_i64(ir, host), ir->t_ptr), args, 2, "");
     else
         site = call_dynamic(ir, args[1]);
     if (tail) must_tail(ir, site);
@@ -153,19 +158,13 @@ static void brk(SnxIr* ir, SnxU64 pc, LLVMValueRef imm) {
     ir_rt_call(ir, ir_rt_brk(), ir->t_void, params, args, 3);
 }
 
-/* The body of a PLAIN instruction; without an emitter, the interpreter's step function runs it */
+/* The body of a PLAIN instruction. One without an emitter is noted, and snx_ir_object refuses the module */
 static void plain(SnxIr* ir, SnxU32 word, SnxU64 pc, const SnxA64Case* instruction) {
-    LLVMTypeRef params[3];
-    LLVMValueRef args[3];
     if (snx_ir_plain(ir, word, pc, instruction)) return;
-    params[0] = ir->t_ptr;
-    params[1] = ir->t_i32;
-    params[2] = ir->t_i64;
-    args[0] = ir->c;
-    args[1] = ir_i32(ir, word);
-    args[2] = ir_i64(ir, pc);
-    ir_call(ir, ir_extern(ir, "snx_step", ir->t_i64, params, 3), args, 3);
-    ++ir->fallbacks;
+    if (!ir->fallbacks++) {
+        ir->fallback_word = word;
+        ir->fallback_pc = pc;
+    }
 }
 
 void snx_ir_emit(SnxIr* ir, SnxCodegen* codegen, const SnxFunction* function) {

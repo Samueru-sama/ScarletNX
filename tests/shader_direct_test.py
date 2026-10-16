@@ -38,6 +38,7 @@ def main():
         nro_ms = Path(directory) / 'nro_ms.spv'
         nro_ms_array = Path(directory) / 'nro_ms_array.spv'
         nro_exchange = Path(directory) / 'nro_exchange.spv'
+        dc_color = Path(directory) / 'dc_color.spv'
         issue126 = tuple(Path(directory) / f'issue126_{i}.spv' for i in range(17))
         stages = tuple(Path(directory) / f'stage_{i}.spv' for i in range(3))
         queries = tuple(Path(directory) / f'query_{i}.spv' for i in range(2))
@@ -46,7 +47,7 @@ def main():
         textures = tuple(Path(directory) / f'texture_{i}.spv' for i in range(6))
         arithmetic = Path(directory) / 'arithmetic.spv'
         beyond = tuple(Path(directory) / f'beyond_{i}.spv' for i in range(3))
-        attributes = tuple(Path(directory) / f'attribute_{i}.spv' for i in range(3))
+        attributes = tuple(Path(directory) / f'attribute_{i}.spv' for i in range(6))
         pexit = Path(directory) / 'pexit.spv'
         subprocess.run(
             [args.generator, str(path), str(vertex), str(abs_fragment), str(stack_fragment), str(subgroup)], check=True
@@ -58,6 +59,7 @@ def main():
             nro_ms,
             nro_ms_array,
             nro_exchange,
+            dc_color,
             *issue126,
             *stages,
             *queries,
@@ -68,6 +70,7 @@ def main():
             *beyond,
             *attributes,
             pexit,
+            *(Path(directory) / f'passthrough_{i}.spv' for i in range(6)),
         )
         subprocess.run([args.regressions, directory], check=True)
         for fixture in (path, vertex, abs_fragment, stack_fragment, subgroup, *fixtures):
@@ -82,6 +85,9 @@ def main():
         exchange_code = disassemble(args.disassembler, nro_exchange)
         if exchange_code.count('OpAccessChain %_ptr_Workgroup_uint') < 4 or exchange_code.count('OpLoad %uint') < 4:
             raise AssertionError('64-bit shared exchange must access both words')
+        dc_code = subprocess.run([args.disassembler, str(dc_color)], check=True, capture_output=True, text=True).stdout
+        if 'Dref' in dc_code or 'OpFOrdGreaterThan' not in dc_code or 'OpSelect %float' not in dc_code:
+            raise AssertionError('a depth compare of a color texture must sample it and compare in the shader')
         gradient_code = [disassemble(args.disassembler, fixture) for fixture in gradients]
         if not any(
             'OpImageSampleExplicitLod' in line and 'Grad|ConstOffset' in line for line in gradient_code[0].splitlines()

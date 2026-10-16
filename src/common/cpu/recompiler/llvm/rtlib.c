@@ -4,14 +4,15 @@
    interpreter, and the C library functions LLVM lowers memory
    intrinsics to. It is compiled once, when the recompiler is built, with the project's Clang and the flags
    toolchain.c gives generated C (-march=native: build == host == target), and linked into each
-   module by link_elf.c / link_coff.c. The modules import nothing, so they need no dynamic symbol resolution */
+   module by link_elf.c / link_coff.c. The modules import nothing, so they need no dynamic symbol resolution.
+   It has no writable globals (a miss goes to RtAPI.miss), so the runtime JIT loads a copy of its own into the code
+   arena (jit_service.c) without anything being kept twice */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/aarch64/cpu_helpers.c"
 
-GuestFn snx_interp_entry;
-
 /* snx-rtlib-gen writes the interpreter module.c holds (snx_a64_interp) with external linkage, so the module IR can
-   point MOD.interp at it, and the step function (snx_a64_interp step mode) */
+   point MOD.interp at it. The step function (snx_a64_interp step mode) is no longer here: every pattern has an IR
+   emitter, and the tests that compare against it generate their own */
 #include "rtlib_interp.inc"
 
 /* LLVM turns large or variable copies into these calls, and Clang does inside cpu_helpers.c. no_builtin keeps the

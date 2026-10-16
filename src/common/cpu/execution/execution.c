@@ -89,7 +89,8 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         fputs("(CPU* RESTRICT c,u64 e);\n", file);
     }
     snx_a64_interp_checked(file);
-    fputs("GuestFn snx_interp_entry=snx_interp;\n", file);
+    /* the interpreter, for the runtime's RtAPI.miss (snx_execution_interpret) */
+    fputs("SNX_EXPORT void snx_interpret(CPU*c,u64 pc){snx_interp(c,pc);}\n", file);
     for (i = 0; i < codegen.function_count; ++i) snx_codegen_emit(file, &codegen, &codegen.functions[i]);
     fputs("typedef struct{u64 address;GuestFn function;} ExecutionEntry;\nstatic const ExecutionEntry entries[]={",
           file);
@@ -156,6 +157,7 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         get_entries = (EntriesFn)(void*)GetProcAddress((HMODULE)e->module, "snx_entries");
         e->entry = (GuestFn)(void*)GetProcAddress((HMODULE)e->module, "snx_execute");
         e->set_fetch = (void (*)(SnxFetchFn))(void*)GetProcAddress((HMODULE)e->module, "snx_set_fetch");
+        e->interp = (GuestFn)(void*)GetProcAddress((HMODULE)e->module, "snx_interpret");
     } else
         get_entries = NULL;
 #else
@@ -164,10 +166,11 @@ int snx_execution_compile(SnxExecution* e, const SnxExecRange* ranges, size_t co
         get_entries = (EntriesFn)dlsym(e->module, "snx_entries");
         e->entry = (GuestFn)dlsym(e->module, "snx_execute");
         e->set_fetch = (void (*)(SnxFetchFn))dlsym(e->module, "snx_set_fetch");
+        e->interp = (GuestFn)dlsym(e->module, "snx_interpret");
     } else
         get_entries = NULL;
 #endif
-    if (!get_entries || !e->entry) {
+    if (!get_entries || !e->entry || !e->interp) {
         snprintf(error, error_size, "cannot load generated module");
         goto done;
     }

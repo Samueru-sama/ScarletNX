@@ -42,12 +42,13 @@ u64 guest_ns(void) { return 0; }
 void compute_method(GpuChannel* ch, u32 m, u32 v, int last) { (void)ch, (void)m, (void)v, (void)last; }
 void kepler_i2m_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
 void fermi2d_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
-void dma_method(GpuChannel* ch, u32 m, u32 v) { (void)ch, (void)m, (void)v; }
 
 static pthread_mutex_t seen_lk = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t seen_cv = PTHREAD_COND_INITIALIZER;
 static u32 seen[32]; /* the marks, in the order the renderer got them */
 static u32 nseen;
+static u32* rewrite_on_clear;
+static u32 rewrite_value;
 static void see(u32 v) {
     pthread_mutex_lock(&seen_lk);
     if (nseen < 32) seen[nseen++] = v;
@@ -56,6 +57,10 @@ static void see(u32 v) {
 }
 static void record_clear(GpuChannel* ch, u32 v) {
     (void)ch;
+    if (rewrite_on_clear) {
+        *rewrite_on_clear = rewrite_value;
+        rewrite_on_clear = NULL;
+    }
     see(v);
 }
 static void no_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
@@ -66,6 +71,7 @@ static void no_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 co
 static int epochs; /* mem_may_have_changed calls */
 static void new_epoch(void) { __atomic_add_fetch(&epochs, 1, __ATOMIC_SEQ_CST); }
 static void nothing(void) {}
+static void no_surface(u64 addr) { (void)addr; }
 
 static u32 syncpt[SYNCPT_IDS];
 u32 syncpt_read(u32 id) { return id < SYNCPT_IDS ? __atomic_load_n(&syncpt[id], __ATOMIC_SEQ_CST) : 0; }
@@ -80,6 +86,8 @@ static const Renderer stand_in = {.name = "stand-in",
                                   .clear = record_clear,
                                   .draw = no_draw,
                                   .before_syncwait = nothing,
+                                  .rt_flush = no_surface,
+                                  .rt_reload = no_surface,
                                   .stream_incr = syncpt_incr};
 const Renderer* g_renderer = &stand_in;
 
@@ -216,6 +224,51 @@ int main(void) {
         free(fw);
     }
 
+    /* Executing an entry can change its backing memory. The fetched commands must stay intact, including for a
+       contiguous mapping that could otherwise be read through a live guest pointer. */
+    u32 fetched[] = {imm(CLEAR, 41), imm(CLEAR, 42)};
+    u64 fetched_entry = push(fetched, 2);
+    u32* backing = (u32*)(g_mem + (fetched_entry & 0xFFFFFFFFFCull));
+    rewrite_value = imm(CLEAR, 99);
+    rewrite_on_clear = backing + 1;
+    submit1(fetched_entry, 20);
+    wait_marks(2);
+    const u32 fetched_order[] = {41, 42};
+    expect(marks_are(fetched_order, 2), "entry execution uses the fetched commands after backing memory changes");
+    expect(backing[1] == rewrite_value, "the first command changed the second command's backing memory");
+    forget_marks();
+
+    /* Commands before SYNC are fetched at submission; the SYNC entry and everything after it see writes
+       made before execution. A parked stream holds both kinds safely until its semaphore is released. */
+    for (u32 deferred = 0; deferred < 2; deferred++) {
+        cpu_store(SEM, 0);
+        u64 entries[3] = {sem_then(SEM, 1, 4, 50), mark(51), mark(52)};
+        if (deferred) entries[1] |= 1ull << 63;
+        submit(entries, 3, 20);
+        cpu_store(entries[1] & 0xfffffffffcull, imm(CLEAR, 61));
+        cpu_store(entries[2] & 0xfffffffffcull, imm(CLEAR, 62));
+        cpu_store(SEM, 1);
+        wait_marks(3);
+        u32 expected[] = {50, deferred ? 61 : 51, deferred ? 62 : 52};
+        expect(marks_are(expected, 3), "GPFIFO SYNC controls command prefetch through the rest of the submission");
+        forget_marks();
+    }
+    cpu_store(SEM, 0);
+
+    /* Reaching SYNC resumes prefetch up to the next SYNC. Executing the first command may release memory
+       the CPU immediately reuses; a later fetched entry survives, while a second SYNC sees the new bytes. */
+    for (u32 barrier = 0; barrier < 2; barrier++) {
+        u64 entries[2] = {mark(71) | (1ull << 63), mark(72)};
+        if (barrier) entries[1] |= 1ull << 63;
+        rewrite_value = imm(CLEAR, 99);
+        rewrite_on_clear = (u32*)(g_mem + (entries[1] & 0xfffffffffcull));
+        submit(entries, 2, 20);
+        wait_marks(2);
+        const u32 expected[] = {71, barrier ? 99 : 72};
+        expect(marks_are(expected, 2), "prefetch resumes at SYNC and stops at the next SYNC");
+        forget_marks();
+    }
+
     /* channel 21's job waits for SEM to reach 1 (a mark after it, a second entry with another), its next job and a
        call naming it come after; channel 22's job, queued last, releases it (op 2, bit 24: one word) */
     u64 a[2] = {sem_then(SEM, 1, 4, 0xA1), mark(0xA2)};
@@ -342,6 +395,24 @@ int main(void) {
         forget_marks();
     }
 
+    /* A queued DMA upload keeps CPU staging bytes, but GPU writes after submission supersede that snapshot.
+       The preceding job holds execution while the submitting CPU reuses the staging allocation. */
+    for (int gpu_write = 0; gpu_write < 2; gpu_write++) {
+        cpu_store(SEM + 64, 0);
+        cpu_store(0x9000, 0x11223344);
+        submit1(sem_then(SEM + 64, 1, 1, 0x910), 30);
+        u32 copy[] = {inc(0x100, 7) | (4u << 13), 0, 0x9000, 0, 0x9100, 4, 4, 4,
+                      imm(0xC0, 0x180) | (4u << 13), imm(CLEAR, 0x911)};
+        submit1(push(copy, sizeof copy / sizeof copy[0]), 30);
+        if (gpu_write) gmem_w32(0x9000, 0x55667788);
+        else cpu_store(0x9000, 0x55667788);
+        cpu_store(SEM + 64, 1);
+        wait_marks(2);
+        expect(marks_are((u32[]){0x910, 0x911}, 2), "DMA follows the channel's earlier wait");
+        expect(gmem_r32(0x9100) == (gpu_write ? 0x55667788 : 0x11223344),
+               "DMA snapshots CPU staging but respects later GPU writes");
+        forget_marks();
+    }
     expect(!warned, "no wait timed out");
 
     /* a report acquire nothing releases goes on after its 1 s, with a warning */

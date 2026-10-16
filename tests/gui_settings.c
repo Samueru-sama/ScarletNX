@@ -13,7 +13,7 @@
 /* as scarletnx --settings prints them, and a line of something else, an older runtime's of seven fields, values with
    one missing its word, a Windows line end and no last one */
 static const char list[] =
-    "Display\tdocked\t0\tint\t0\t1\t1 = TV mode\t\t0=0|1=1\n"
+    "Display\tdocked\t1\tint\t0\t1\t1 = TV mode\t\t0=0|1=1\n"
     "Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\r\n"
     "Display\tlanguage\t1\tint\t-2.14748e+09\t2.14748e+09\tGame language: 0 Japanese\t\t\n"
     "Graphics\tresolution\t1\tfloat\t0.25\t4\tInternal 3D resolution\t\t\n"

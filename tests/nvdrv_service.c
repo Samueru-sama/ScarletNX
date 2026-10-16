@@ -344,6 +344,29 @@ static void test_ctrl_syncpoints(u32 ctrl) {
     CHECK(nv_ioctl1(ctrl, EVENT_UNREG, 4) == 0 && !nv.nvev[9].armed);
     put(0, 40);
     CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !nv.nvev[9].ev->signaled);
+    /* Canceling a timed-out wait must not report an unfinished fence as complete. Reusing the event
+       must still wait for the new threshold, and cancellation also clears a previously signaled event. */
+    put(0, 10);
+    CHECK(nv_ioctl1(ctrl, EVENT_REG, 4) == 0);
+    put(0, 40);
+    put(4, 4);
+    put(8, 100);
+    put(12, 10);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && nv.nvev[10].armed);
+    put(0, 10);
+    CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0);
+    CHECK(!nv.nvev[10].armed && !nv.nvev[10].ev->signaled && syncpt_read(40) == 2);
+    put(0, 40);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && !nv.nvev[10].ev->signaled);
+    put(0, 40);
+    put(4, 4);
+    put(8, 100);
+    put(12, 10);
+    CHECK(nv_ioctl1(ctrl, EVENT_WAIT_AS, 16) == 5 && !nv.nvev[10].ev->signaled);
+    put(0, 40);
+    CHECK(nv_ioctl1(ctrl, SYNCPT_INCR, 4) == 0 && nv.nvev[10].ev->signaled);
+    put(0, 10);
+    CHECK(nv_ioctl1(ctrl, 0xC004001Cu, 4) == 0 && !nv.nvev[10].ev->signaled);
 }
 
 /* Ioctl3 (12): ctrl-gpu's GET_CHARACTERISTICS writes the characteristics to the inline output, B1 or C1 */

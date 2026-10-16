@@ -5,7 +5,7 @@
    backend's (snx_ir_static_step, compiled and linked by the backend itself) run from the same random CPU state and
    guest memory; registers, flags, FP state, the exclusive monitor, memory, the returned pc and the runtime callbacks
    must all match.
-     llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--quiet]
+     llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--quiet] [--portable]
    --match keeps patterns whose name starts with NAME. */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -32,6 +32,7 @@ typedef StepFn* (*TableFn)(void);
 
 #define MEMORY_SIZE 0x220000u
 #define PC_BASE     0x100000u
+#define DIRECTED    51u /* words directed() makes per round */
 
 static u64 seed = 0x9E3779B97F4A7C15ull;
 static u64 next_random(void) {
@@ -117,14 +118,15 @@ static u64 special64(void) {
     return next_random();
 }
 
-/* floats at the edges of the LLVM backend's FP fast paths: exponents 0, 1, 2, precision+1..3, the top, and small
-   integers and products that round or not */
+/* floats at the edges of the LLVM backend's FP fast paths: exponents 0, 1, 2, precision+1..3, the top, signed
+   zeros, and small integers and products that round or not */
 static u32 edge32(void) {
     static const u32 exponents[] = {0, 1, 2, 3, 24, 25, 26, 27, 100, 127, 128, 150, 200, 252, 253, 254, 255};
     u64 r = next_random();
     u32 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
     u32 m =
         (r >> 8) & 7 ? (u32)(r >> 20) & 0x7FFFFF : (u32)((r >> 20) & 7) << 20; /* sometimes few bits: exact results */
+    if (r % 6 == 0) return (u32)((r >> 40) & 1) << 31;
     return (u32)((r >> 40) & 1) << 31 | e << 23 | m;
 }
 static u64 edge64(void) {
@@ -132,6 +134,7 @@ static u64 edge64(void) {
     u64 r = next_random(), r2 = next_random();
     u64 e = exponents[r % (sizeof(exponents) / sizeof(exponents[0]))];
     u64 m = (r >> 8) & 7 ? r2 & 0xFFFFFFFFFFFFFull : (r2 & 7) << 49;
+    if (r2 % 6 == 0) return ((r >> 40) & 1) << 63;
     return ((r >> 40) & 1) << 63 | e << 52 | m;
 }
 static u64 fp_value(void) {
@@ -139,6 +142,62 @@ static u64 fp_value(void) {
     if (r % 4 == 0) return (u64)edge32() << 32 | edge32();
     if (r % 4 == 1) return edge64();
     return special64();
+}
+
+/* for SCVTF/UCVTF and FCVT*: two 32-bit lanes or one 64-bit lane of integers near the precision limits of float and
+   double (exact up to 2^24 and 2^53, rounded beyond) or small, or of floats near the integer ranges' ends and
+   halfway values, a few units in the last place either side, of either sign */
+static u64 conversion_edge(void) {
+    static const u32 floats[] = {
+        0x4B800000u /* 2^24 */, 0x4F000000u /* 2^31 */, 0x4F800000u /* 2^32 */, 0x5F000000u /* 2^63 */,
+        0x5F800000u /* 2^64 */, 0x3F000000u /* 0.5 */,  0x3FC00000u /* 1.5 */,  0x40200000u /* 2.5 */};
+    static const u64 doubles[] = {0x4340000000000000ull /* 2^53 */, 0x41E0000000000000ull /* 2^31 */,
+                                  0x41F0000000000000ull /* 2^32 */, 0x43E0000000000000ull /* 2^63 */,
+                                  0x43F0000000000000ull /* 2^64 */, 0x3FE0000000000000ull /* 0.5 */,
+                                  0x3FF8000000000000ull /* 1.5 */,  0x4004000000000000ull /* 2.5 */};
+    u64 r = next_random(), k = next_random(), lane[2];
+    unsigned i;
+    if (r % 4 == 1) { /* one 64-bit integer */
+        u64 v = (r >> 8) & 1 ? ((u64)1 << 53) + (k % 5) - 2 : k % 4096;
+        return (r >> 9) & 1 ? 0 - v : v;
+    }
+    if (r % 4 == 3) /* one double */
+        return ((r >> 9) & 1) << 63 | (doubles[(r >> 10) % 8] + (k % 5) - 2);
+    for (i = 0; i < 2; ++i, k >>= 16) {
+        u32 v;
+        if (r % 4 == 0) { /* 32-bit integers */
+            v = (k >> 3) & 1 ? (1u << 24) + (u32)(k % 5) - 2 : (u32)(k >> 4) % 4096;
+            if ((k >> 15) & 1) v = 0 - v;
+        } else /* floats */
+            v = (u32)((k >> 15) & 1) << 31 | (floats[(k >> 4) % 8] + (u32)(k % 5) - 2);
+        lane[i] = v;
+    }
+    return lane[1] << 32 | lane[0];
+}
+
+/* for FCVTN and FCVTXN: two doubles or four floats (as the word's sz says) whose exponents, rebiased, are mostly the
+   narrower format's smallest and largest normal ones (the fast path's bounds) and now and then just outside them,
+   with dropped bits at or around half an ulp, or a fraction of all ones that rounds up into the next exponent */
+static u64 narrow_edge(unsigned doubles) {
+    static const u32 exponents64[] = {897, 898, 1149, 1150, 897, 898, 1150, 1150, 896, 1151},
+                     exponents32[] = {113, 114, 141, 142, 113, 114, 142, 142, 112, 143};
+    u64 k = next_random(), lane[2];
+    unsigned i, n = doubles ? 1 : 2, shift = doubles ? 29 : 13, mantissa = doubles ? 52 : 23;
+    for (i = 0; i < n; ++i, k >>= 16) {
+        u64 low = (u64)1 << (shift - 1), fraction;
+        switch (k % 6) {
+            case 0: fraction = 0; break;
+            case 1: fraction = low; break;
+            case 2: fraction = low + 1; break;
+            case 3: fraction = low - 1; break;
+            case 4: fraction = ((u64)1 << mantissa) - 1; break;
+            default: fraction = next_random() & (((u64)1 << mantissa) - 1); break;
+        }
+        if ((k >> 3) % 2 && k % 6 != 4) fraction ^= (next_random() << shift) & (((u64)1 << mantissa) - 1);
+        lane[i] = ((k >> 4) & 1) << (doubles ? 63 : 31) |
+                  (u64)(doubles ? exponents64[(k >> 5) % 10] : exponents32[(k >> 5) % 10]) << mantissa | fraction;
+    }
+    return doubles ? lane[0] : lane[1] << 32 | lane[0];
 }
 
 static void random_state(CPU* c, unsigned char* memory, const Word* w) {
@@ -150,11 +209,51 @@ static void random_state(CPU* c, unsigned char* memory, const Word* w) {
         c->v[i].d[0] = fp_value();
         c->v[i].d[1] = fp_value();
     }
+    {
+        /* the instruction's own FP operands (Rn, Rm, Ra) now and then: Rm or Ra a copy of Rn or its negation lane
+           by lane, for sums that cancel exactly; a register of zeros of random signs, so every lane's product has a
+           zero operand, or two, for FMAX/FMIN's +0/-0 ties; and a vector whose lanes need different checks: 1*1 is exact, and 0x3F800001 * 0x01800001
+           is inexact with an FMA residual that underflows to zero */
+        static const u64 negations[] = {0, 0x8000000080000000ull, 0x8000000000000000ull};
+        unsigned rn = (w->word >> 5) & 31, rm = (w->word >> 16) & 31, ra = (w->word >> 10) & 31;
+        u64 r = next_random(), negate = negations[(r >> 8) % 3];
+        if (r % 4 == 0) {
+            c->v[rm].d[0] = c->v[rn].d[0] ^ negate;
+            c->v[rm].d[1] = c->v[rn].d[1] ^ negate;
+        }
+        if ((r >> 16) % 8 == 0) {
+            c->v[ra].d[0] = c->v[rn].d[0] ^ negate;
+            c->v[ra].d[1] = c->v[rn].d[1] ^ negate;
+        }
+        if ((r >> 24) % 12 == 0) {
+            V128* zero = &c->v[(r >> 32) % 2 ? rm : rn];
+            zero->d[0] = next_random() & 0x8000000080000000ull;
+            zero->d[1] = next_random() & 0x8000000080000000ull;
+            if ((r >> 34) % 2) {
+                zero = &c->v[(r >> 32) % 2 ? rn : rm];
+                zero->d[0] = next_random() & 0x8000000080000000ull;
+                zero->d[1] = next_random() & 0x8000000080000000ull;
+            }
+        }
+        if ((r >> 40) % 24 == 0) {
+            c->v[rn].d[0] = c->v[rn].d[1] = 0x3F8000013F800000ull;
+            c->v[rm].d[0] = c->v[rm].d[1] = 0x018000013F800000ull;
+        }
+        if ((r >> 48) % 4 == 0) {
+            c->v[rn].d[0] = conversion_edge();
+            c->v[rn].d[1] = conversion_edge();
+        }
+        if ((w->word & 0x8F3FFC00UL) == 0x0E216800UL && (r >> 52) % 4) { /* two-register misc 0x16: FCVTN, FCVTXN */
+            c->v[rn].d[0] = narrow_edge((w->word >> 22) & 1);
+            c->v[rn].d[1] = narrow_edge((w->word >> 22) & 1);
+        }
+    }
     c->n = next_random() & 1;
     c->z = next_random() & 1;
     c->cf = next_random() & 1;
     c->vf = next_random() & 1;
     c->fpcr = fpcr[next_random() % 8] | (next_random() % 2 ? (u32)(next_random() & 0x07C00000u) : 0);
+    if ((w->word & 0x8F3FFC00UL) == 0x0E216800UL && next_random() % 2) c->fpcr &= ~(3u << 22); /* FCVTN: RNE */
     c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0xF800009Fu);
     c->tpidr = next_random();
     c->tpidrro = next_random();
@@ -265,20 +364,21 @@ static size_t generate(const SnxA64Pattern* p, size_t index, size_t want, Word* 
 /* snx_a64_fast_simd's encodings, which random fields rarely produce: 3-same logical/FP/ADD, FP by element, DUP/INS/
    UMOV, MOVI #0 and MOV (ORR Vd,Vn,Vn), with random operands */
 static size_t directed(const char* match, size_t want, Word* out) {
-    static const SnxU32 same_ops[] = {3, 0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1F}, element_ops[] = {1, 5, 9},
-                        copy_ops[] = {0, 1, 3, 7};
+    static const SnxU32 same_ops[] = {3, 0x10, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F},
+                        element_ops[] = {1, 5, 9}, copy_ops[] = {0, 1, 3, 7}, fp_ops[] = {0x18, 0x1A, 0x1C, 0x1D, 0x1E};
+    const size_t nsame = sizeof(same_ops) / sizeof(same_ops[0]);
     size_t got = 0, i;
     if (match && strncmp("SIMD", match, strlen(match) < 4 ? strlen(match) : 4)) return 0;
     for (i = 0; i < want; ++i) {
-        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[20];
+        SnxU32 r = (SnxU32)next_random(), n = (r >> 5) & 31, words[DIRECTED];
         unsigned k;
         words[0] = 0x2F00E400UL | (r & 31) | ((r >> 9) & 1) << 30;
         words[1] = 0x0EA01C00UL | ((r >> 10) & 1) << 30 | n << 16 | n << 5 | (r & 31);
-        words[2] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % 7] << 11;
+        words[2] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % nsame] << 11;
         words[3] = ((r & ~0x9F00F400UL) | (next_random() % 2 ? 0x5F000000UL : 0x0F000000UL) | 0x00800000UL) |
                    element_ops[next_random() % 3] << 12;
         words[4] = ((r & ~0x9FE0FC00UL) | 0x0E000400UL) | copy_ops[next_random() % 4] << 11;
-        words[5] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % 7] << 11 | 0x40000000UL;
+        words[5] = ((r & ~0x9F20FC00UL) | 0x0E200400UL) | same_ops[next_random() % nsame] << 11 | 0x40000000UL;
         /* snx_ir_more_simd: LD1/ST1 (1-4 registers), LD1R and lanes, CNT/NOT/RBIT, PMULL 1Q, MOVI family, UZP/TRN/ZIP,
            EXT, AES */
         words[6] = (r & 0x40C0001FUL) | 0x0C000000UL | (SnxU32)(next_random() % 2) << 23 |
@@ -301,7 +401,83 @@ static size_t directed(const char* match, size_t want, Word* out) {
             (r & 0x40DF07FFUL) | 0x0E200400UL | (SnxU32)(next_random() % 6) << 11 | (SnxU32)(next_random() % 2) << 29;
         words[18] = (r & 0x40DF03FFUL) | 0x2E201C00UL | (1u + (SnxU32)(next_random() % 3)) << 22;
         words[19] = (r & 0x40DF03FFUL) | 0x2E605800UL; /* RBIT */
-        for (k = 0; k < 20; ++k) {
+        /* FP three-same beyond fast_simd (FADDP, FMAX/FMIN and NM, pairwise, FCMEQ/GE/GT, FACGE/GT) and the FP
+           compares against #0.0 (2-reg misc 0x0C-0x0E), with random Q, U and sz */
+        words[20] = (r & 0x60DF03FFUL) | 0x0E200400UL | fp_ops[next_random() % 5] << 11;
+        words[21] = (r & 0x604003FFUL) | 0x0EA00800UL | (0x0Cu + (SnxU32)(next_random() % 3)) << 12;
+        /* FP two-register misc, vector and scalar: FCVT[NPMZA][SU], SCVTF/UCVTF, FRECPE/FRSQRTE, FSQRT (k = U:o2:op);
+           three-same FABD, FMULX, FRECPS, FRSQRTS (U:o2:op), vector and scalar; SCVTF/UCVTF/FCVTZS/FCVTZU fixed
+           point (shift by immediate, 32 or 64-bit lanes), vector and scalar */
+        {
+            static const SnxU32 misc[] = {0x1A, 0x1B, 0x1C, 0x1D, 0x3A, 0x3B, 0x3D, 0x5A,
+                                          0x5B, 0x5C, 0x5D, 0x7A, 0x7B, 0x7D, 0x7F},
+                                steps[] = {0x7A, 0x1B, 0x1F, 0x3F};
+            SnxU32 m = misc[next_random() % 15], t = steps[next_random() % 4], f = next_random() % 2 ? 0x1C : 0x1F;
+            m = (m >> 6) << 29 | ((m >> 5) & 1) << 23 | (m & 31) << 12;
+            t = (t >> 6) << 29 | ((t >> 5) & 1) << 23 | (t & 31) << 11;
+            words[22] = (r & 0x404003FFUL) | 0x0E200800UL | m;
+            words[23] = (r & 0x004003FFUL) | 0x5E200800UL | m;
+            words[24] = (r & 0x405F03FFUL) | 0x0E200400UL | t;
+            words[25] = (r & 0x005F03FFUL) | 0x5E200400UL | t;
+            words[26] = (r & 0x607F03FFUL) | 0x0F200400UL | f << 11;
+            words[27] = (r & 0x207F03FFUL) | 0x5F200400UL | f << 11;
+        }
+        /* the integer and data-movement rest: scalar DUP, SMOV, TBL/TBX (1-4 registers), LD2-4/ST2-4 (multiple
+           structures), every single-structure form, three-different, integer two-register misc, across lanes, scalar
+           pairwise, by element (vector and scalar), the shifts by immediate beyond words[15] (vector and scalar), the
+           register shifts, SHSUB and SQDMULH/SQRDMULH, the scalar three-same integer ops, the scalar integer
+           two-register misc and three-different ops, and PMUL/PMULL on bytes */
+        {
+            static const unsigned char misc[] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x07,
+                                                 0x08, 0x09, 0x0A, 0x0B, 0x12, 0x13, 0x14},
+                                       across[] = {0x03, 0x0A, 0x1A, 0x1B, 0x0C, 0x0F},
+                                       pairwise[] = {0x1B, 0x0D, 0x0C, 0x0F},
+                                       element[] = {0, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13},
+                                       shifts[] = {0x04, 0x06, 0x0C, 0x0E, 0x10, 0x11, 0x12, 0x13},
+                                       scalar_shifts[] = {0x00, 0x02, 0x04, 0x06, 0x08, 0x0A,
+                                                          0x0C, 0x0E, 0x10, 0x11, 0x12, 0x13},
+                                       scalar_misc[] = {0x03, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x12, 0x14},
+                                       same[] = {0x04, 0x08, 0x09, 0x0A, 0x0B, 0x16},
+                                       scalar_same[] = {0x01, 0x05, 0x06, 0x07, 0x08, 0x09,
+                                                        0x0A, 0x0B, 0x10, 0x11, 0x16};
+            SnxU32 immh = 1u << (19 + (SnxU32)(next_random() % 4));
+            words[28] = (r & 0x001F03FFUL) | 0x5E000400UL;
+            words[29] = (r & 0x401F03FFUL) | 0x0E002C00UL;
+            words[30] = (r & 0x401F73FFUL) | 0x0E000000UL;
+            words[31] = (r & 0x40C0001FUL) | 0x0C000000UL | (SnxU32)(next_random() % 2) << 23 |
+                        (SnxU32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16 |
+                        (SnxU32) "\x00\x04\x08"[next_random() % 3] << 12 | ((r >> 10) & 3) << 10 | ((r >> 5) & 31) << 5;
+            words[32] = (r & 0x40FFFFFFUL & ~0x001F0000UL) | 0x0D000000UL |
+                        (SnxU32)(next_random() % 2 ? 31 : (r >> 16) & 31) << 16;
+            words[33] = (r & 0x60DFF3FFUL) | 0x0E200000UL;
+            words[34] = (r & 0x60C003FFUL) | 0x0E200800UL | (SnxU32)misc[next_random() % sizeof(misc)] << 12;
+            words[35] = (r & 0x60C003FFUL) | 0x0E300800UL | (SnxU32)across[next_random() % sizeof(across)] << 12;
+            words[36] = (r & 0x20C003FFUL) | 0x5E300800UL | (SnxU32)pairwise[next_random() % sizeof(pairwise)] << 12;
+            words[37] = (r & 0x60FF0BFFUL) | 0x0F000000UL | (SnxU32)element[next_random() % sizeof(element)] << 12 |
+                        (next_random() % 2 ? 0x50000000UL : 0);
+            words[38] = (r & 0x6007FBFFUL & ~0x0000F800UL) | 0x0F000400UL |
+                        (SnxU32)shifts[next_random() % sizeof(shifts)] << 11 | immh;
+            words[39] = (r & 0x2007FBFFUL & ~0x0000F800UL) | 0x5F000400UL |
+                        (SnxU32)scalar_shifts[next_random() % sizeof(scalar_shifts)] << 11 |
+                        (next_random() % 2 ? 1u << 22 : immh);
+            words[40] = (r & 0x60DF07FFUL) | 0x0E200400UL | (SnxU32)same[next_random() % sizeof(same)] << 11;
+            words[41] =
+                (r & 0x20DF07FFUL) | 0x5E200400UL | (SnxU32)scalar_same[next_random() % sizeof(scalar_same)] << 11;
+            words[42] =
+                (r & 0x20C003FFUL) | 0x5E200800UL | (SnxU32)scalar_misc[next_random() % sizeof(scalar_misc)] << 12;
+            words[43] = (r & 0x00DF03FFUL) | 0x5E200000UL | (SnxU32) "\x09\x0B\x0D"[next_random() % 3] << 12;
+            words[44] = (r & 0x401F03FFUL) | (next_random() % 2 ? 0x2E209C00UL : 0x0E20E000UL); /* PMUL, PMULL 8B */
+        }
+        /* the scalar FP compares (FCMEQ, FCMGE, FCMGT, FACGE, FACGT and against #0.0), FCVTN/FCVTXN (vector, with Q
+           the "2" forms, and scalar), SHA1C/P/M, SHA1SU0, SHA256H/H2, SHA256SU1 (three registers, op 7 unallocated)
+           and SHA1H, SHA1SU1, SHA256SU0 (two, op 3 unallocated), with random U, sz and o2 */
+        words[45] = (r & 0x20DF03FFUL) | 0x5E200400UL | (0x1Cu + (SnxU32)(next_random() % 2)) << 11;
+        words[46] = (r & 0x204003FFUL) | 0x5EA00800UL | (0x0Cu + (SnxU32)(next_random() % 3)) << 12;
+        words[47] = (r & 0x604003FFUL) | 0x0E216800UL;
+        words[48] = (r & 0x204003FFUL) | 0x5E216800UL | (next_random() % 4 ? 0x20400000UL : 0);
+        words[49] = (r & 0x001F03FFUL) | 0x5E000000UL | (SnxU32)(next_random() % 8) << 12;
+        words[50] = (r & 0x000003FFUL) | 0x5E280800UL | (SnxU32)(next_random() % 4) << 12;
+        for (k = 0; k < DIRECTED; ++k) {
             const SnxA64Case* c = snx_a64_decode(words[k]);
             if (c->kind != SNX_FLOW_PLAIN) continue;
             out[got].word = words[k];
@@ -371,7 +547,7 @@ int main(int argc, char** argv) {
     TableFn table_p, table_l;
     StepFn *steps_p, *steps_l;
     RtAPI rt;
-    int quiet = 0, a, gccjit = 0, march;
+    int quiet = 0, a, gccjit = 0, march, portable = 0;
 #ifdef SNX_TEST_GCCJIT
     TableFn table_g = NULL;
 #endif
@@ -381,7 +557,7 @@ int main(int argc, char** argv) {
     char* c_native;
     unsigned long fallbacks, gccjit_fallbacks = 0;
     if (argc < 3) {
-        fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N]\n",
+        fputs("usage: llvm_differential CLANG REPO [--match NAME] [--per-case N] [--simd N] [--states N] [--seed N] [--portable]\n",
               stderr);
         return 2;
     }
@@ -392,6 +568,8 @@ int main(int argc, char** argv) {
             quiet = 1;
         else if (!strcmp(argv[a], "--gccjit"))
             gccjit = 1;
+        else if (!strcmp(argv[a], "--portable"))
+            portable = 1;
         else if (a + 1 < argc && !strcmp(argv[a], "--match"))
             match = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "--per-case"))
@@ -419,7 +597,7 @@ int main(int argc, char** argv) {
             count += generate(p, k, want, words + count);
         }
     }
-    words = (Word*)snx_realloc(words, (count + 20 * per_simd) * sizeof(*words));
+    words = (Word*)snx_realloc(words, (count + DIRECTED * per_simd) * sizeof(*words));
     count += directed(match, per_simd, words + count);
     if (!count) return snx_error("no words to test");
     dir = snx_temp_dir(NULL);
@@ -429,7 +607,7 @@ int main(int argc, char** argv) {
     /* the reference: snx_a64_static_step's C for each word, compiled by Clang with the flags generated C had */
     f = snx_fopen(c_path, "wb");
     fputs(
-        "#include \"cpu.h\"\n#include \"cpu_helpers.c\"\nGuestFn snx_interp_entry;\ntypedef u64 (*StepFnPtr)(CPU*);\n",
+        "#include \"cpu.h\"\n#include \"cpu_helpers.c\"\ntypedef u64 (*StepFnPtr)(CPU*);\n",
         f);
     for (i = 0; i < count; ++i) {
         char name[32];
@@ -482,6 +660,11 @@ int main(int argc, char** argv) {
     if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
     ir = snx_ir_new("steps", '2', error, sizeof(error));
     if (!ir) return snx_error("%s", error);
+    if (portable) {
+        static SnxIrFeatures plain_x86; /* x86-64, none of its extensions */
+        plain_x86.x86 = ir->features->x86;
+        ir->features = &plain_x86;
+    }
     {
         LLVMValueRef *fns = (LLVMValueRef*)snx_alloc(count * sizeof(*fns)), table, getter;
         LLVMTypeRef type = LLVMArrayType(ir->t_ptr, (unsigned)count);

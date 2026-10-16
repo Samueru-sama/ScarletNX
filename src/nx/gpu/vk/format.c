@@ -5,6 +5,7 @@
    render target can be copied to and from guest memory as is. */
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/vk/vk.h"
+#include <string.h>
 
 /* whether optimal-tiling images of a format have these features, asked of the device once per format */
 static int has_features(VkFormat f, VkFormatFeatureFlags need) {
@@ -259,20 +260,27 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
         case 0x45: return TA(10, 10, srgb);
         case 0x54: return TA(12, 10, srgb);
         case 0x46: return TA(12, 12, srgb);
-        /* depth: sampled from render targets. From memory they aren't loaded yet (their packing differs from
-           Vulkan's buffer layout for depth copies). R24G8 and R8G24 are a D24S8 target's two parts as color
-           components, depth in 24 bits and stencil in 8: vk_tic_reads_stencil says which a header samples. */
+        /* depth and stencil, four bytes a texel in guest memory whatever the host depth format's size (texture.c
+           unpacks each by where its depth bits are). G8R24 and G24R8 are a D24S8 target's two parts as color
+           components, depth in 24 bits and stencil in 8: vk_tic_reads_stencil says which a header samples */
         case 0x0D:
         case 0x0E:
         case 0x29:
         case 0x2A:
         case 0x2B: {
             VkFmt r = vk_zt_format(0x14);
+            r.bpp = 4;
             r.raw = 0;
+            r.bpp = 4; /* guest texel size, even when the host uses D32F/S8 */
+            r.conv = f == 0x0E || f == 0x29 ? VKC_S8D24 : f == 0x2A ? VKC_D24X8 : VKC_D24S8;
             return r;
         }
         case 0x2F: return vk_zt_format(0x0A);
-        case 0x30: return vk_zt_format(0x19); /* Zf32X24S8 (0x19 itself is EAC) */
+        case 0x30: {
+            VkFmt r = vk_zt_format(0x19); /* Zf32X24S8 (0x19 itself is EAC) */
+            r.conv = VKC_D32S8;
+            return r;
+        }
         case 0x3A: return vk_zt_format(0x13);
     }
 #undef PICK
@@ -280,6 +288,26 @@ VkFmt vk_tic_format(u32 w0, int srgb) {
     if (first_time(said, f)) WARN("vulkan: unsupported texture format %x, header word 0 %08x (not drawn)\n", f, w0);
     VkFmt r = {0};
     return r;
+}
+
+/* Depth-aspect copies use four bytes per texel (D24 in the low 24 bits, or float32), stencil copies one byte. */
+void vk_depth_unpack(const VkFmt* f, const u8* src, u64 pixels, u8* depth, u8* stencil) {
+    for (u64 i = 0; i < pixels; i++) {
+        u32 v;
+        memcpy(&v, src + i * f->bpp, 4);
+        if (f->conv == VKC_D32S8) {
+            memcpy(depth + i * 4, &v, 4);
+            stencil[i] = src[i * f->bpp + 4];
+        } else {
+            u32 z = f->conv == VKC_S8D24 ? v >> 8 : v & 0xFFFFFF;
+            stencil[i] = f->conv == VKC_D24X8 ? 0 : f->conv == VKC_S8D24 ? v & 0xFF : v >> 24;
+            if (f->vk == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+                float value = (float)z / 16777215.0f;
+                memcpy(depth + i * 4, &value, 4);
+            } else
+                memcpy(depth + i * 4, &z, 4);
+        }
+    }
 }
 
 VkFormat vk_srgb_as(VkFormat f, int srgb) {

@@ -3,8 +3,8 @@
 /* The libgccjit backend (--backend=gcc), for hosts LLVM doesn't generate code for (DEC Alpha EV67); elsewhere the
    LLVM backend is the one to use. It mirrors the LLVM backend: the control flow of ir_codegen.c (labels, the D_
    dispatch, required tail calls, CALLDYN, BL's return check, polls on backward branches) and instruction bodies that
-   build the C of a64_templates.inc for a constant word (jit_a64.c, jit_fp.c, jit_simd.c). Patterns without an
-   emitter call the interpreter's snx_step, in the runtime library.
+   build the C of a64_templates.inc for a constant word (jit_a64.c, jit_fp.c, jit_simd.c). Every pattern has an
+   emitter: an instruction without one fails its unit (snx_jit_error).
    Nothing here is specific to a host: SIMD is written lane by lane, as the templates' C is, for GCC's vectorizer, and
    host instructions only come from GCC's code generator with -march=native (build == host == target). */
 #ifndef SNX_RECOMPILER_GCCJIT_JIT_H
@@ -23,7 +23,6 @@ typedef struct SnxJit {
     gcc_jit_type *t_void, *t_ptr, *t_char_ptr, *t_bool, *t_int, *t_guest, *t_guest_ptr;
     gcc_jit_type *t_u8, *t_u16, *t_u32, *t_u64, *t_u128, *t_s8, *t_s16, *t_s32, *t_s64, *t_s128, *t_f32, *t_f64;
     gcc_jit_function* lookup; /* snx_lookup */
-    gcc_jit_lvalue* interp_entry;
     /* out-of-line functions of the runtime library and GCC builtins, declared on first use */
     SnxJitExtern externs[64];
     size_t extern_count;
@@ -39,14 +38,18 @@ typedef struct SnxJit {
     gcc_jit_rvalue *c, *M;
     gcc_jit_block* block; /* NULL after a terminator, until the next label */
     unsigned long names;
-    /* PLAIN instructions emitted as a call to snx_step, for patterns without an emitter */
+    /* PLAIN instructions no emitter covers, the first of them, and the error that names it: snx_jit_error reports
+       it, so the unit fails (every pattern has an emitter, and the interpreter's step function is gone) */
     unsigned long fallbacks;
+    SnxU32 fallback_word;
+    SnxU64 fallback_pc;
+    char fallback_error[160];
 } SnxJit;
 
 /* opt: the -O letter */
 SnxJit* snx_jit_new(char opt);
 void snx_jit_free(SnxJit* jit);
-/* NULL, or the context's first error */
+/* NULL, or the first instruction without an emitter, or the context's first error */
 const char* snx_jit_error(SnxJit* jit);
 
 /* F_<address>: exported (defined in this context) when define, imported otherwise; declare defined ones first */
@@ -83,7 +86,7 @@ const char* snx_jit_compile_to_file(SnxJit* jit, enum gcc_jit_output_kind kind, 
 gcc_jit_result* snx_jit_compile(SnxJit* jit);
 
 /* ---- instructions (jit_a64.c, jit_fp.c, jit_simd.c), as ir.h's ---- */
-/* The body of a PLAIN instruction; 0 when no emitter covers the pattern: the caller then calls snx_step */
+/* The body of a PLAIN instruction; 0 when no emitter covers the pattern: the unit then fails (SnxJit.fallbacks) */
 int snx_jit_plain(SnxJit* jit, SnxU32 word, SnxU64 pc, const SnxA64Case* instruction);
 /* the bool condition of BC, the u64 target of BR/BLR/RET, the u32 immediate of SVC/BRK */
 gcc_jit_rvalue* snx_jit_flow_operand(SnxJit* jit, SnxU32 word, SnxU64 pc, const SnxA64Case* instruction);
@@ -110,6 +113,44 @@ void jit_fp_join(SnxJit* jit, gcc_jit_block* join);
 /* snx_fp_binary/snx_fp_fma(c, ...) */
 gcc_jit_rvalue* jit_fp_binary(SnxJit* jit, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width, unsigned op);
 gcc_jit_rvalue* jit_fp_fma(SnxJit* jit, gcc_jit_rvalue* add, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width);
+/* ir_fp_minmax_fast's FMAX/FMIN without a NaN (or a denormal under FZ), a lane at a time; inexact is NULL */
+void jit_fp_minmax_fast(SnxJit* jit, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a, gcc_jit_rvalue* const* b,
+                        unsigned minimum, SnxJitFpFast* out);
+/* snx_fp_minmax(c, a, b, width, minimum, numeric) */
+gcc_jit_rvalue* jit_fp_minmax(SnxJit* jit, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width, unsigned minimum,
+                              unsigned numeric);
+/* the AdvSIMD compares' lane masks (simd.c's fcmpmask): a == b, a >= b, a > b, a <= b, a < b */
+enum { SNX_JIT_CMP_EQ, SNX_JIT_CMP_GE, SNX_JIT_CMP_GT, SNX_JIT_CMP_LE, SNX_JIT_CMP_LT };
+/* ir_fp_compare_fast's masks under the same guard; inexact is NULL */
+void jit_fp_compare_fast(SnxJit* jit, unsigned cmp, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a,
+                         gcc_jit_rvalue* const* b, SnxJitFpFast* out);
+/* one lane through snx_fp_compare, signalling for all but EQ: all ones (uN) or zero */
+gcc_jit_rvalue* jit_fp_compare_mask(SnxJit* jit, unsigned cmp, gcc_jit_rvalue* a, gcc_jit_rvalue* b, unsigned width);
+/* ir_fp_from_int_fast's SCVTF/UCVTF of integers (the low integer bits of each v) scaled by 2^-fbits; inexact is
+   NULL */
+void jit_fp_from_int_fast(SnxJit* jit, unsigned width, unsigned lanes, gcc_jit_rvalue* const* v, unsigned integer,
+                          unsigned uns, unsigned fbits, SnxJitFpFast* out);
+/* ir_fp_to_int_fast's FCVT[NPMZA][SU], results uN of the integer's width; 0 when the host can't round inline */
+int jit_fp_to_int_fast(SnxJit* jit, unsigned width, unsigned lanes, gcc_jit_rvalue* const* bits, unsigned integer,
+                       unsigned uns, unsigned rm, unsigned fbits, SnxJitFpFast* out);
+/* ir_fp_estimate_fast's FRECPE (rsqrt 0) or FRSQRTE (1) estimate; inexact is NULL */
+void jit_fp_estimate_fast(SnxJit* jit, unsigned rsqrt, unsigned width, unsigned lanes, gcc_jit_rvalue* const* bits,
+                          SnxJitFpFast* out);
+/* ir_fp_step_fast's FRECPS (rsqrt 0) or FRSQRTS (1) */
+void jit_fp_step_fast(SnxJit* jit, unsigned rsqrt, unsigned width, unsigned lanes, gcc_jit_rvalue* const* a,
+                      gcc_jit_rvalue* const* b, SnxJitFpFast* out);
+/* ir_fp_narrow_fast's FCVTN (odd 0) or FCVTXN (odd 1) of float lanes of from bits to half that width (values
+   u(from/2)) */
+void jit_fp_narrow_fast(SnxJit* jit, unsigned from, unsigned lanes, gcc_jit_rvalue* const* bits, unsigned odd,
+                        SnxJitFpFast* out);
+/* one lane through snx_fp_convert from from bits to half that width, rounded per FPCR or (odd) to odd (result u64) */
+gcc_jit_rvalue* jit_fp_narrow(SnxJit* jit, gcc_jit_rvalue* bits, unsigned from, unsigned odd);
+/* one lane through snx_fp_unary, snx_fp_to_int and snx_fp_from_int (result u64) */
+gcc_jit_rvalue* jit_fp_unary(SnxJit* jit, gcc_jit_rvalue* bits, unsigned width, unsigned op);
+gcc_jit_rvalue* jit_fp_to_int(SnxJit* jit, gcc_jit_rvalue* bits, unsigned fp, unsigned integer, unsigned uns,
+                              unsigned fbits, unsigned rm);
+gcc_jit_rvalue* jit_fp_from_int(SnxJit* jit, gcc_jit_rvalue* bits, unsigned integer, unsigned fp, unsigned uns,
+                                unsigned fbits);
 
 /* ---- building blocks (jit.c) ----
    Values follow the C's evaluation order: anything that reads memory or calls is assigned to a fresh local where it

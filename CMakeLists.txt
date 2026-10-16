@@ -155,6 +155,12 @@ install(FILES "${OpenSSL_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/OpenSS
 # lib/LICENSE is the library's BSD-2-Clause. The top-level LICENSE covers the rest of LZ4 (GPL-2.0-or-later), none
 # of which is built here
 install(FILES "${lz4_SOURCE_DIR}/lib/LICENSE" DESTINATION ${licenses}/lz4)
+# RenderDoc's API header carries its license in the leading comment.
+file(READ "${renderdoc_app_SOURCE_DIR}/renderdoc_app.h" renderdoc_app)
+string(FIND "${renderdoc_app}" "*/" renderdoc_app_end)
+string(SUBSTRING "${renderdoc_app}" 0 ${renderdoc_app_end} renderdoc_app)
+file(WRITE "${CMAKE_BINARY_DIR}/renderdoc_app-LICENSE.txt" "${renderdoc_app}*/\n")
+install(FILES "${CMAKE_BINARY_DIR}/renderdoc_app-LICENSE.txt" DESTINATION ${licenses}/renderdoc_app RENAME LICENSE.txt)
 if(SNX_SDL3_FROM_SOURCE)
     install(FILES "${SDL3_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/SDL3)
 endif()

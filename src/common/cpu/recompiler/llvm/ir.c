@@ -86,9 +86,19 @@ SnxIr* snx_ir_new_target(const char* name, char opt, const char* target_triple, 
         free(ir);
         return NULL;
     }
-    /* -march=native -mtune=native, -fPIC (toolchain.c) */
-    cpu = target_triple ? LLVMCreateMessage("x86-64") : LLVMGetHostCPUName();
-    features = target_triple ? LLVMCreateMessage("+cx16") : LLVMGetHostCPUFeatures();
+    /* -march=native -mtune=native, -fPIC (toolchain.c). Another triple gets its baseline: x86-64 with CMPXCHG16B as
+       rtlib is built, anything else (AArch64) the generic CPU, since an x86 CPU name crashes another target's
+       instruction selection */
+    if (!target_triple) {
+        cpu = LLVMGetHostCPUName();
+        features = LLVMGetHostCPUFeatures();
+    } else if (!strncmp(triple, "x86_64", 6)) {
+        cpu = LLVMCreateMessage("x86-64");
+        features = LLVMCreateMessage("+cx16");
+    } else {
+        cpu = LLVMCreateMessage("generic");
+        features = LLVMCreateMessage("");
+    }
     ir->tm =
         LLVMCreateTargetMachine(target, triple, cpu, features, codegen_level(opt), LLVMRelocPIC, LLVMCodeModelDefault);
 #ifdef __ANDROID__
@@ -156,6 +166,14 @@ int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char*
     LLVMMemoryBufferRef buffer;
     *data = NULL;
     *size = 0;
+    if (ir->fallbacks) {
+        size_t index;
+        const SnxA64Pattern* pattern = snx_a64_case_pattern(snx_a64_decode(ir->fallback_word), &index);
+        snprintf(error, error_size, "no IR emitter for %s (%08lx at %llx), %lu instruction%s in all",
+                 pattern ? pattern->name : "?", (unsigned long)ir->fallback_word, (unsigned long long)ir->fallback_pc,
+                 ir->fallbacks, ir->fallbacks == 1 ? "" : "s");
+        return -1;
+    }
     if (LLVMVerifyModule(ir->mod, LLVMReturnStatusAction, &message)) {
         snprintf(error, error_size, "invalid IR: %.900s", message ? message : "");
         LLVMDisposeMessage(message);
@@ -403,6 +421,7 @@ size_t ir_rt_brk(void) { return offsetof(RtAPI, brk); }
 size_t ir_rt_sev(void) { return offsetof(RtAPI, sev); }
 size_t ir_rt_wfe(void) { return offsetof(RtAPI, wfe); }
 size_t ir_rt_poll(void) { return offsetof(RtAPI, poll); }
+size_t ir_rt_miss(void) { return offsetof(RtAPI, miss); }
 size_t ir_off_poll(void) { return offsetof(CPU, poll); }
 
 LLVMValueRef ir_rt_call(SnxIr* ir, size_t offset, LLVMTypeRef ret, LLVMTypeRef* params, LLVMValueRef* args,
@@ -472,9 +491,19 @@ void ir_argmem(SnxIr* ir, LLVMValueRef function) { memory_effects(ir, function, 
 
 LLVMBasicBlockRef ir_block(SnxIr* ir, const char* name) { return LLVMAppendBasicBlockInContext(ir->ctx, ir->fn, name); }
 
+/* A local of the C ({ V128 r; ... } in the instruction's block) as an alloca of the whole function, zeroed where it is
+   made. Without that, SROA reads the local's previous contents wherever the first write leaves part of it (a lane,
+   r.s[i]=...) or has another type than the one SROA gives the local (a <16 x i8> store into a local it makes
+   <4 x i32>), and mem2reg then carries the local around the whole function: a PHI per local in every block that
+   joins paths (labels, the dispatch, loop heads). Tears of the Kingdom's large functions got 1388 PHIs in each such
+   block, which InstCombine compares pairwise, for hours per code unit. The zeroing is a copy from a constant because
+   SROA turns a copy of the whole local into a store of its own type, while a store or memset of another vector type
+   loads the old value again. Every emitter writes all of a local before reading it, so the zero folds away */
 LLVMValueRef ir_local(SnxIr* ir, LLVMTypeRef type) {
     LLVMBasicBlockRef here = LLVMGetInsertBlock(ir->b), entry = LLVMGetEntryBasicBlock(ir->fn);
-    LLVMValueRef first = LLVMGetFirstInstruction(entry), slot;
+    LLVMValueRef first = LLVMGetFirstInstruction(entry), slot, zero;
+    unsigned long size = (unsigned long)LLVMABISizeOfType(LLVMGetModuleDataLayout(ir->mod), type);
+    char name[32];
     if (first)
         LLVMPositionBuilderBefore(ir->b, first);
     else
@@ -482,6 +511,17 @@ LLVMValueRef ir_local(SnxIr* ir, LLVMTypeRef type) {
     slot = LLVMBuildAlloca(ir->b, type, "");
     LLVMSetAlignment(slot, 8);
     LLVMPositionBuilderAtEnd(ir->b, here);
+    sprintf(name, "snx_zero%lu", size); /* one per size in each module */
+    zero = LLVMGetNamedGlobal(ir->mod, name);
+    if (!zero) {
+        LLVMTypeRef bytes = LLVMArrayType(ir->t_i8, (unsigned)size);
+        zero = LLVMAddGlobal(ir->mod, bytes, name);
+        LLVMSetLinkage(zero, LLVMPrivateLinkage);
+        LLVMSetUnnamedAddress(zero, LLVMGlobalUnnamedAddr);
+        LLVMSetGlobalConstant(zero, 1);
+        LLVMSetInitializer(zero, LLVMConstNull(bytes));
+    }
+    LLVMBuildMemCpy(ir->b, slot, 8, zero, 1, ir_i64(ir, (SnxU64)size));
     return slot;
 }
 
@@ -986,7 +1026,7 @@ static void build_stxp(SnxIr* ir, LLVMValueRef function) {
 }
 /* snx_lookup(c,pc) */
 static void build_lookup(SnxIr* ir, LLVMValueRef function) {
-    LLVMValueRef pc = P(1), lo, hi, o, inside, f, index, entry;
+    LLVMValueRef pc = P(1), lo, hi, o, inside, f, index, slot;
     LLVMBasicBlockRef table = ir_block(ir, "table"), found = ir_block(ir, "found"), none = ir_block(ir, "none");
     ir->c = P(0);
     lo = ir_cpu_load(ir, ir->t_i64, offsetof(CPU, code_lo));
@@ -997,18 +1037,20 @@ static void build_lookup(SnxIr* ir, LLVMValueRef function) {
     LLVMBuildCondBr(B, inside, table, none);
     LLVMPositionBuilderAtEnd(B, table);
     index = LLVMBuildLShr(B, o, ir_i64(ir, 2), "");
-    f = ir_load(ir, ir->t_ptr,
-                LLVMBuildGEP2(B, ir->t_ptr, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, disp)), &index, 1, ""));
+    /* __atomic_load_n(&c->disp[o>>2],__ATOMIC_RELAXED): the runtime JIT fills slots while this runs (cpu.h) */
+    slot = LLVMBuildGEP2(B, ir->t_ptr, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, disp)), &index, 1, "");
+    f = LLVMBuildLoad2(B, ir->t_ptr, slot, "");
+    LLVMSetOrdering(f, LLVMAtomicOrderingMonotonic);
+    LLVMSetAlignment(f, sizeof(void*));
     LLVMBuildCondBr(B, LLVMBuildIsNotNull(B, f, ""), found, none);
     LLVMPositionBuilderAtEnd(B, found);
     LLVMBuildRet(B, f);
     LLVMPositionBuilderAtEnd(B, none);
-    entry = LLVMGetNamedGlobal(ir->mod, "snx_interp_entry");
-    if (!entry) {
-        entry = LLVMAddGlobal(ir->mod, ir->t_ptr, "snx_interp_entry");
-        LLVMSetVisibility(entry, LLVMHiddenVisibility);
-    }
-    LLVMBuildRet(B, ir_load(ir, ir->t_ptr, entry));
+    /* c->rt->miss */
+    index = ir_i64(ir, ir_rt_miss());
+    LLVMBuildRet(
+        B, ir_load(ir, ir->t_ptr,
+                   LLVMBuildInBoundsGEP2(B, ir->t_i8, ir_cpu_load(ir, ir->t_ptr, offsetof(CPU, rt)), &index, 1, "")));
 }
 /* dc_zva(M,a): memset(MP(a & ~63), 0, 64) */
 static void build_dc_zva(SnxIr* ir, LLVMValueRef function) {

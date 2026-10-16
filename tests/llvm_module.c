@@ -97,6 +97,7 @@ static int run(const char* path, const unsigned char* image, int interp, Run* ou
     rt.svc = svc;
     rt.undef = undefined;
     rt.poll = on_poll;
+    rt.miss = mod->interp;
     calls = &out->calls;
     current = out;
     memory = (unsigned char*)calloc(1, (size_t)mod->mods[0].base + MEMORY);
