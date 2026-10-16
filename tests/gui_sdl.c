@@ -1813,8 +1813,11 @@ int main(int argc, char** argv) {
                 pixel(&app, (col + cols * 76.0f / 80) * 8 * app.scale, (prow + rows * 12.5f / 25) * 16 * app.scale),
                 night));
             assert(same_colour(pixel(&app, 4, (app.rows - 3) * 16.0f * app.scale + 8), black)); /* under its rows */
-            /* Tab, or a tap on the preview: a run in the theme, then the menu again */
+            /* Ctrl+P, or a tap on the preview: a run in the theme, then the menu again; Tab, which goes to the next
+               screen, keeps a theme not saved, saying so */
             key(&app, SDLK_TAB);
+            assert(app.editing && app.form == GUI_FORM_THEME && !strncmp(app.editor.note, "Not saved: ", 11));
+            key_with(&app, SDLK_P, SDL_KMOD_LCTRL);
             assert(app.editor.preview == GUI_SCREEN_COMPILING);
             render(&app);
             mouse(&app, col + 2, prow + 2, true);
@@ -2153,10 +2156,10 @@ int main(int argc, char** argv) {
         assert(focus >= 0 && m.list.focus == focus && exit_entry > focus && !m.place.stacked);
         b = list_box(&m.list, focus);
         assert(same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), yellow)); /* framed in the focus colour */
-        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "- Setup device keys", yellow, black);
+        text_px_is(&app, b.x + cw / 2, b.y + s, "- Setup device keys", yellow, black);
         b = list_box(&m.list, exit_entry);
         assert(same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), dim)); /* the others in the dim one */
-        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "- Exit", normal, black);
+        text_px_is(&app, b.x + cw / 2, b.y + s, "- Exit", normal, black);
         /* the side box: the focus's name over a rule, what it is about and the keys in use; the status box under it */
         r = m.place.side;
         assert(r.x >= m.place.list.x + m.place.list.w && r.h > 0 && m.place.status.y >= r.y + r.h);
@@ -2166,8 +2169,34 @@ int main(int argc, char** argv) {
         /* the bar: what the focus is about, then the keys against its right edge, each key in the focus colour */
         r = m.place.bar;
         text_px_is(&app, r.x + 3 * cw, r.y + 2 * s, "Installs prod.keys", normal, black);
-        text_px_is(&app, r.x + r.w - cw - 8 * cw, r.y + 2 * s + 16 * s, "ESC", yellow, black);
-        text_px_is(&app, r.x + r.w - cw - 4 * cw, r.y + 2 * s + 16 * s, "exit", normal, black);
+        text_px_is(&app, r.x + r.w - cw - 20 * cw, r.y + 2 * s + 16 * s, "ESC", yellow, black);
+        text_px_is(&app, r.x + r.w - cw - 16 * cw, r.y + 2 * s + 16 * s, "exit", normal, black);
+        text_px_is(&app, r.x + r.w - cw - 10 * cw, r.y + 2 * s + 16 * s, "Tab", yellow, black);
+        /* the screens as tabs over it all, the one shown framed in the focus colour */
+        r = m.place.tabs;
+        assert(r.h && r.y + r.h <= m.place.list.y);
+        text_px_is(&app, tab_rect(&app, r, GUI_TAB_MENU).x + cw, r.y + 2 * s, "Menu", yellow, black);
+        text_px_is(&app, tab_rect(&app, r, GUI_TAB_GAMES).x + cw, r.y + 2 * s, "Games", normal, black);
+        assert(same_colour(pixel(&app, (float)tab_rect(&app, r, GUI_TAB_MENU).x, (float)(r.y + r.h / 2)), yellow));
+        /* Tab goes round them, Shift+Tab back; a click on one opens it, as a pad's shoulders do (screen_tab) */
+        key(&app, SDLK_TAB);
+        assert(app.menu.view == GUI_LOAD_GAMES && !app.editing);
+        key(&app, SDLK_TAB);
+        assert(app.editing && app.form == GUI_FORM_SETTINGS);
+        key(&app, SDLK_TAB);
+        assert(!app.editing && app.menu.view == GUI_LOAD_NONE);
+        key_with(&app, SDLK_TAB, SDL_KMOD_LSHIFT);
+        assert(app.editing && app.form == GUI_FORM_SETTINGS);
+        screen_tab(&app, -1);
+        assert(!app.editing && app.menu.view == GUI_LOAD_GAMES);
+        render(&app);
+        r = tab_rect(&app, m.place.tabs, GUI_TAB_MENU);
+        mouse_px(&app, r.x + 4, r.y + 4, true);
+        assert(!app.editing && app.menu.view == GUI_LOAD_NONE);
+        app.menu.selected = GUI_KEYS;
+        app.menu.recent_focus = 0;
+        render(&app);
+        r = m.place.bar;
         /* the screen's message takes the bar's first row, a failure's in its colour */
         snprintf(app.message, sizeof app.message, "Program ended abnormally (status 7).");
         app.abnormal_exit = true;
@@ -2198,11 +2227,10 @@ int main(int argc, char** argv) {
             games_boxes(&app, &g);
             page = games_page(&app);
             assert(app.browser.page_size == page && g.list.count == (int)page + 1 && g.list.shown == g.list.count);
-            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, list_box(&g.list, 0).y + 2 * s, "Back [ESC]", normal,
-                       black);
+            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, list_box(&g.list, 0).y + s, "Back [ESC]", normal, black);
             b = list_box(&g.list, 1);
-            text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "- ", yellow, black);
-            text_px_is(&app, b.x + cw / 2 + 2 * cw, b.y + 2 * s, app.games.names[0], yellow, black);
+            text_px_is(&app, b.x + cw / 2, b.y + s, "- ", yellow, black);
+            text_px_is(&app, b.x + cw / 2 + 2 * cw, b.y + s, app.games.names[0], yellow, black);
             text_px_is(&app, g.place.side.x + cw, g.place.side.y + 2 * s, app.games.names[0], normal, black);
             text_px_is(&app, g.place.bar.x + 3 * cw, g.place.bar.y + 2 * s, "/", normal, black); /* its path */
             key(&app, SDLK_RIGHT);
@@ -2253,10 +2281,10 @@ int main(int argc, char** argv) {
         render(&app);
         menu_boxes(&app, &m);
         b = list_box(&m.list, m.list.focus);
-        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "\xfe Setup device keys", page, rgb(app.theme.focus));
-        text_px_is(&app, m.list.at.x, b.y + 2 * s, "\x10", rgb(app.theme.focus), page);
+        text_px_is(&app, b.x + cw / 2, b.y + s, "\xfe Setup device keys", page, rgb(app.theme.focus));
+        text_px_is(&app, m.list.at.x, b.y + s, "\x10", rgb(app.theme.focus), page);
         b = list_box(&m.list, item_entry(&m, GUI_EXIT));
-        text_px_is(&app, b.x + cw / 2, b.y + 2 * s, "\xfe Exit", ink, dim = rgb(app.theme.dim));
+        text_px_is(&app, b.x + cw / 2, b.y + s, "\xfe Exit", ink, dim = rgb(app.theme.dim));
         r = m.place.side;
         text_px_is(&app, r.x + cw, r.y + 2 * s, "Setup device keys", page, ink);
         /* letters too big for the screen: the list scrolls, the focus in view, an arrow where entries are hidden */
@@ -2267,8 +2295,7 @@ int main(int argc, char** argv) {
         assert(m.list.shown < m.list.count && m.list.first > 0 && m.list.focus < m.list.first + m.list.shown);
         assert(menu_scrolls(&app));
         b = list_box(&m.list, m.list.first);
-        text_px_is(&app, m.list.at.x + m.list.at.w - 8 * app.scale, b.y + 2 * app.scale, "\x1e", rgb(app.theme.soft),
-                   page);
+        text_px_is(&app, m.list.at.x + m.list.at.w - 8 * app.scale, b.y + app.scale, "\x1e", rgb(app.theme.soft), page);
         assert(!m.place.stacked);
         /* and on a window too narrow for both, the side box goes under the list */
         assert(SDL_SetWindowSize(app.window, 800, 800));

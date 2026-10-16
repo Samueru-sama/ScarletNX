@@ -49,6 +49,7 @@ const GuiThemeKey gui_theme_keys[] = {
     COLOUR("colors", "added", added, "a diff's added lines, as failure its removed ones; no screen uses it yet"),
     WORD("head", "style", head, styles, "bar: the title on a band of ink; none: no title and no hints"),
     FLAG("head", "rule", head_rule, "a line under the head"),
+    FLAG("head", "tabs", tabs, "boxes: the menu, Games and the Settings as tabs over the title"),
     TEXT("head", "menu", title[GUI_SCREEN_MENU], "the menu's title"),
     TEXT("head", "games", title[GUI_SCREEN_GAMES], "the games/ list's title"),
     TEXT("head", "keys", title[GUI_SCREEN_KEYS], "the keys screen's title"),

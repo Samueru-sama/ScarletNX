@@ -24,7 +24,7 @@ static void sound(const GuiPlace* p, int width, int height) {
 }
 
 int main(void) {
-    GuiPlaceIn in = {1280, 800, 16, 32, 24, 24, 1, 64, 72, 34, 96};
+    GuiPlaceIn in = {1280, 800, 16, 32, 24, 24, 40, 64, 72, 34, 96};
     GuiPlace p;
     int first;
     /* a computer's window: the edges on the whole width, the rest a column in from either side, top to bottom tabs,
@@ -33,8 +33,8 @@ int main(void) {
     sound(&p, 1280, 800);
     assert(p.edge_top.y == 0 && p.edge_top.w == 1280 && p.edge_top.h == 24);
     assert(p.edge_bottom.y == 776 && p.edge_bottom.h == 24);
-    assert(p.tabs.x == 16 && p.tabs.w == 1248 && p.tabs.y == 24 + 16 && p.tabs.h == 32);
-    assert(p.title.y == p.tabs.y + 32 + 16 && p.title.h == 64);
+    assert(p.tabs.x == 16 && p.tabs.w == 1248 && p.tabs.y == 24 + 16 && p.tabs.h == 40);
+    assert(p.title.y == p.tabs.y + 40 + 16 && p.title.h == 64);
     assert(p.list.y == p.title.y + 64 + 16 && p.list.x == 16 && p.list.w == 34 * 16);
     assert(!p.stacked && p.side.y == p.list.y && p.side.x == p.list.x + p.list.w + 16);
     assert(p.side.x + p.side.w == 1280 - 16);
@@ -57,7 +57,7 @@ int main(void) {
     /* a phone held upright: too narrow for the list and a side box of GUI_PLACE_SIDE_MIN columns, so the side box goes
        under the list, the status box under it */
     {
-        GuiPlaceIn phone = {720, 1500, 24, 48, 36, 36, 1, 96, 120, 20, 144};
+        GuiPlaceIn phone = {720, 1500, 24, 48, 36, 36, 56, 96, 120, 20, 144};
         assert(720 / 24 - 2 < 20 + 1 + GUI_PLACE_SIDE_MIN);
         gui_place(&phone, &p);
         sound(&p, 720, 1500);
@@ -72,7 +72,7 @@ int main(void) {
     assert(p.status.h == p.list.h / 2 && p.side.h == p.list.h - p.status.h - 16);
     /* a window too small for its bar: boxes of no size, never of a negative one */
     {
-        GuiPlaceIn tiny = {100, 60, 8, 16, 24, 24, 1, 32, 72, 10, 16};
+        GuiPlaceIn tiny = {100, 60, 8, 16, 24, 24, 20, 32, 72, 10, 16};
         gui_place(&tiny, &p);
         assert(p.list.h == 0 && p.list.w >= 0 && p.side.w >= 0 && p.status.h == 0);
     }

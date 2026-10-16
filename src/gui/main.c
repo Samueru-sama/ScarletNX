@@ -1024,8 +1024,8 @@ static void list_place(const App* app, GuiList* l, GuiRect at, int count, int fo
     l->count = count;
     l->focus = focus;
     l->margin = app->theme.cursor[0] ? ((int)SDL_utf8strlen(app->theme.cursor) * cell_w(app)) : 0;
-    l->item = cell_h(app) + 4 * s;
-    l->pitch = gui_place_pitch(at.h, count, l->item + 4 * s, l->item + 12 * s);
+    l->item = cell_h(app) + 2 * s;
+    l->pitch = gui_place_pitch(at.h, count, l->item + 2 * s, l->item + 14 * s);
     l->shown = gui_place_list(at.h, l->item, l->pitch, count, focus, &l->first);
     l->arrows = l->shown < count ? cell_w(app) : 0;
 }
@@ -1054,28 +1054,28 @@ static void list_item(App* app, const GuiList* l, int i, const char* label, int 
     else if (filled)
         fill_rect(app, b, t->dim);
     if (!inverted && (!filled || focused)) outline(app, b, focused ? t->focus : t->dim);
-    if (focused && filled) {
+    if (focused && filled && l->pitch - l->item >= 6 * s) { /* where the gap has room for them */
         fill_rect(app, box_rect(b.x, b.y - 3 * s, b.w, s), t->focus);
         fill_rect(app, box_rect(b.x, b.y + b.h + 2 * s, b.w, s), t->focus);
     }
-    text_in(app, inner(app, b), b.x + cell_w(app) / 2, b.y + 2 * s, label,
+    text_in(app, inner(app, b), b.x + cell_w(app) / 2, b.y + s, label,
             rgb(inverted    ? t->page
                 : activated ? t->active
                 : focused   ? t->focus
                             : t->ink));
-    if (focused && t->cursor[0]) text_in(app, l->at, l->at.x, b.y + 2 * s, t->cursor, rgb(t->focus));
+    if (focused && t->cursor[0]) text_in(app, l->at, l->at.x, b.y + s, t->cursor, rgb(t->focus));
 }
 /* a label between a list's boxes, as "Recent games" */
 static void list_label(App* app, const GuiList* l, int i, const char* label) {
     GuiRect b = list_box(l, i);
-    text_in(app, b, b.x, b.y + 2 * app->scale, label, rgb(app->theme.soft));
+    text_in(app, b, b.x, b.y + app->scale, label, rgb(app->theme.soft));
 }
 /* arrows past the boxes' right edge while entries are hidden above or below them */
 static void list_marks(App* app, const GuiList* l) {
     int x = l->at.x + l->at.w - cell_w(app), s = app->scale;
-    if (l->first > 0) text_in(app, l->at, x, list_box(l, l->first).y + 2 * s, "\x1e", rgb(app->theme.soft));
+    if (l->first > 0) text_in(app, l->at, x, list_box(l, l->first).y + s, "\x1e", rgb(app->theme.soft));
     if (l->first + l->shown < l->count)
-        text_in(app, l->at, x, list_box(l, l->first + l->shown - 1).y + 2 * s, "\x1f", rgb(app->theme.soft));
+        text_in(app, l->at, x, list_box(l, l->first + l->shown - 1).y + s, "\x1f", rgb(app->theme.soft));
 }
 
 /* The bar at the foot: what the focus is about, or the screen's message, over the screen's keys. keys are "Keys: what
@@ -1180,8 +1180,50 @@ static int status_rows(App* app, int width, GuiRect r, int y, int draw) {
     return rows;
 }
 
-/* a screen's boxes: its title, the bar for its keys, a list asking for list_cols columns (0: one box, the whole
-   width), and with status the status box, when the theme has a footer */
+/* the screens the tabs go round, Tab and Shift+Tab or a click on one: the menu, Games and the Settings */
+enum { GUI_TAB_MENU, GUI_TAB_GAMES, GUI_TAB_SETTINGS, GUI_TABS };
+static const char* const tab_names[GUI_TABS] = {"Menu", "Games", "Settings"};
+static int tab_shown(const App* app) {
+    if (app->editing) return GUI_TAB_SETTINGS;
+    return app->menu.view == GUI_LOAD_GAMES ? GUI_TAB_GAMES : GUI_TAB_MENU;
+}
+static GuiRect tab_rect(const App* app, GuiRect row, int i) {
+    int x = row.x, k;
+    for (k = 0; k < i; ++k) x += ((int)strlen(tab_names[k]) + 3) * cell_w(app);
+    return box_rect(x, row.y, ((int)strlen(tab_names[i]) + 2) * cell_w(app), row.h);
+}
+/* the tabs, the one shown as the focused box is, over a rule */
+static void draw_tabs(App* app, GuiRect row) {
+    const GuiTheme* t = &app->theme;
+    int i, s = app->scale, shown = tab_shown(app);
+    if (!row.h) return;
+    for (i = 0; i < GUI_TABS; ++i) {
+        GuiRect r = tab_rect(app, row, i);
+        int on = i == shown, inverted = on && t->focus_bar;
+        if (inverted)
+            fill_rect(app, r, t->focus);
+        else if (t->boxes == GUI_BOXES_FILL)
+            fill_rect(app, r, t->dim);
+        if (!inverted && (t->boxes == GUI_BOXES_LINE || on)) outline(app, r, on ? t->focus : t->dim);
+        text_in(app, r, r.x + cell_w(app), r.y + 2 * s, tab_names[i], rgb(inverted ? t->page : on ? t->focus : t->ink));
+    }
+    fill_rect(app, box_rect(row.x, row.y + row.h + cell_h(app) / 4 - s / 2, row.w, s), t->dim);
+}
+/* a screen's keys, Tab's after them where the tabs show */
+static const char* screen_keys(const App* app, const char* keys, char* out, size_t size) {
+#ifdef SDL_PLATFORM_ANDROID
+    (void)app;
+    (void)out;
+    (void)size;
+    return keys; /* a tap on a tab */
+#else
+    if (!app->theme.tabs) return keys;
+    snprintf(out, size, "%s Tab: screen.", keys);
+    return out;
+#endif
+}
+/* a screen's boxes: the tabs when the theme shows them, its title, the bar for its keys, a list asking for list_cols
+   columns (0: one box, the whole width), and with status the status box, when the theme has a footer */
 static void place_screen(App* app, GuiPlace* p, const char* title, const char* keys, int list_cols, int status) {
     GuiPlaceIn in;
     int width, height;
@@ -1191,6 +1233,7 @@ static void place_screen(App* app, GuiPlace* p, const char* title, const char* k
     in.height = height;
     in.cw = cell_w(app);
     in.ch = cell_h(app);
+    in.tabs = app->theme.tabs ? cell_h(app) + 4 * app->scale : 0;
     in.title = title[0] ? cell_h(app) : 0;
     in.bar = bar_h(app, width - 2 * cell_w(app), keys);
     in.list_cols = list_cols ? SDL_min(SDL_max(list_cols, 20), SDL_max(20, (width / cell_w(app) - 2) / 2)) : 0;
@@ -1253,7 +1296,7 @@ static const char* entry_about(const App* app, GuiEntry e) {
 }
 static void menu_boxes(App* app, GuiMenuBoxes* m) {
     int count = 0, focus = 0, i, longest = 0;
-    char label[160];
+    char label[160], keys[256];
     if (app->recent.count) m->entry[count++] = (GuiEntry){GUI_ENTRY_LABEL, 0};
     for (i = 0; i < app->menu.recent; ++i) {
         if (app->menu.recent_focus == i + 1) focus = count;
@@ -1268,7 +1311,7 @@ static void menu_boxes(App* app, GuiMenuBoxes* m) {
         entry_label(app, m->entry[i], label, sizeof label);
         longest = SDL_max(longest, (int)SDL_utf8strlen(label));
     }
-    place_screen(app, &m->place, boxed_title(app, menu_screen(app)), SAY_MENU_KEYS,
+    place_screen(app, &m->place, boxed_title(app, menu_screen(app)), screen_keys(app, SAY_MENU_KEYS, keys, sizeof keys),
                  longest + 2 + (int)SDL_utf8strlen(app->theme.cursor), 1);
     list_place(app, &m->list, m->place.list, count, focus);
 }
@@ -1314,10 +1357,11 @@ static void menu_side(App* app, const GuiMenuBoxes* m) {
 static void draw_menu_boxed(App* app) {
     GuiMenuBoxes m;
     GuiEntry focus;
-    char label[160];
+    char label[160], keys[256];
     int i;
     menu_boxes(app, &m);
     focus = menu_focus(&m);
+    draw_tabs(app, m.place.tabs);
     title_box(app, m.place.title, boxed_title(app, menu_screen(app)));
     for (i = m.list.first; i < m.list.first + m.list.shown; ++i) {
         GuiEntry e = m.entry[i];
@@ -1331,7 +1375,7 @@ static void draw_menu_boxed(App* app) {
     list_marks(app, &m.list);
     menu_side(app, &m);
     status_box(app, m.place.status);
-    bar_for(app, m.place.bar, entry_about(app, focus), SAY_MENU_KEYS);
+    bar_for(app, m.place.bar, entry_about(app, focus), screen_keys(app, SAY_MENU_KEYS, keys, sizeof keys));
 }
 /* the games' screen in boxes: Back, then a page of the games, as many as the list's box holds */
 typedef struct {
@@ -1342,8 +1386,9 @@ typedef struct {
 static void games_place(App* app, GuiPlace* p) {
     size_t i;
     int longest = 10;
+    char keys[256];
     for (i = 0; i < app->games.count; ++i) longest = SDL_max(longest, (int)SDL_utf8strlen(app->games.names[i]));
-    place_screen(app, p, boxed_title(app, GUI_SCREEN_GAMES), SAY_GAMES,
+    place_screen(app, p, boxed_title(app, GUI_SCREEN_GAMES), screen_keys(app, SAY_GAMES, keys, sizeof keys),
                  longest + 2 + (int)SDL_utf8strlen(app->theme.marker) + (int)SDL_utf8strlen(app->theme.cursor), 1);
 }
 /* the games a page of the boxed list holds: those that fit under Back */
@@ -1362,12 +1407,13 @@ static void games_boxes(App* app, GuiGamesBoxes* g) {
 static void draw_games_boxed(App* app) {
     GuiGamesBoxes g;
     GuiRect r;
-    char label[400], line[1100];
+    char label[400], line[1100], keys[256];
     const char* about;
     size_t i, items = gui_browser_items(&app->browser);
     SDL_Color soft = rgb(app->theme.soft), ink = rgb(app->theme.ink);
     int y;
     games_boxes(app, &g);
+    draw_tabs(app, g.place.tabs);
     title_box(app, g.place.title, boxed_title(app, GUI_SCREEN_GAMES));
     list_item(app, &g.list, 0, "Back [ESC]", false, app->browser.selected == 0);
     for (i = 0; i < items; ++i) {
@@ -1406,7 +1452,7 @@ static void draw_games_boxed(App* app) {
     list_marks(app, &g.list);
     status_box(app, g.place.status);
     about = app->browser.selected ? app->games.paths[g.start + app->browser.selected - 1] : "Back to the menu";
-    bar_for(app, g.place.bar, about, SAY_GAMES);
+    bar_for(app, g.place.bar, about, screen_keys(app, SAY_GAMES, keys, sizeof keys));
 }
 /* a line that waits on the user, at pixel row y of r: plain at its left, or framed, placed and blinking as the theme's
    prompt says */
@@ -1433,8 +1479,10 @@ typedef struct {
 } GuiPickBoxes;
 static void pick_boxes(App* app, GuiPickBoxes* k) {
     GuiRect r;
-    int item = cell_h(app) + 4 * app->scale;
-    place_screen(app, &k->place, boxed_title(app, menu_screen(app)), SAY_KEYS_HOW, 0, 0);
+    int item = cell_h(app) + 2 * app->scale;
+    char keys[256];
+    place_screen(app, &k->place, boxed_title(app, menu_screen(app)), screen_keys(app, SAY_KEYS_HOW, keys, sizeof keys),
+                 0, 0);
     r = inner(app, k->place.list);
     list_place(
         app, &k->back,
@@ -1446,9 +1494,10 @@ static void draw_pick_boxed(App* app) {
     GuiPickBoxes k;
     GuiRect r;
     bool keys = app->menu.view == GUI_LOAD_KEYS;
-    char line[1100], *in_use = keys ? keys_in_use(app) : NULL;
+    char line[1100], hints_line[256], *in_use = keys ? keys_in_use(app) : NULL;
     int y;
     pick_boxes(app, &k);
+    draw_tabs(app, k.place.tabs);
     title_box(app, k.place.title, boxed_title(app, menu_screen(app)));
     y = pane(app, k.place.list, items[keys ? GUI_KEYS : app->menu.active]);
     r = inner(app, k.place.list);
@@ -1470,7 +1519,7 @@ static void draw_pick_boxed(App* app) {
               rgb(app->theme.focus));
     list_item(app, &k.back, 0, "Back [ESC]", false, false); /* nothing to move to: ESC's */
     snprintf(line, sizeof line, "%s: " SAY_PICK_BOX, items[keys ? GUI_KEYS : app->menu.active]);
-    bar_for(app, k.place.bar, line, SAY_KEYS_HOW);
+    bar_for(app, k.place.bar, line, screen_keys(app, SAY_KEYS_HOW, hints_line, sizeof hints_line));
 }
 /* the menu's screen or a run's, in app->theme, on the render target as it is */
 static void draw_screen(App* app) {
@@ -1783,7 +1832,7 @@ static void render_preview(App* app) {
     box.w = (float)(cols * 8 * app->scale);
     box.h = (float)(rows * 16 * app->scale);
     SDL_RenderTexture(app->renderer, app->preview, NULL, &box);
-    text(app, col, row + rows, run ? "Preview: a run (Tab: the menu)" : "Preview: the menu (Tab: a run)",
+    text(app, col, row + rows, run ? "Preview: a run (Ctrl+P: the menu)" : "Preview: the menu (Ctrl+P: a run)",
          rgb(app->theme.soft));
 }
 /* the editor's rows between rows 4 and the last three, as many as fit */
@@ -1874,6 +1923,7 @@ static void render_editor(App* app) {
     render_preview(app);
 }
 static bool menu_key_of(const SDL_KeyboardEvent* k, GuiKey* key);
+static void screen_tab(App* app, int step);
 /* the editor on the theme the menu shows: a folder of themes/ keeps its file's extras and its name, a built-in is
    saved as a new theme */
 static void open_editor(App* app) {
@@ -2585,7 +2635,11 @@ static void editor_input(App* app, const SDL_Event* e) {
         SDL_free(clipboard);
         return;
     }
-    if (app->form == GUI_FORM_THEME && e->key.key == SDLK_TAB && !e->key.repeat) {
+    if (e->key.key == SDLK_TAB && !e->key.repeat && !app->editor.typing) {
+        screen_tab(app, e->key.mod & SDL_KMOD_SHIFT ? -1 : 1);
+        return;
+    }
+    if (app->form == GUI_FORM_THEME && e->key.key == SDLK_P && (e->key.mod & SDL_KMOD_CTRL) && !e->key.repeat) {
         app->editor.preview = app->editor.preview == GUI_SCREEN_MENU ? GUI_SCREEN_COMPILING : GUI_SCREEN_MENU;
         app->preview_since = 0;
         return;
@@ -3153,6 +3207,35 @@ static void list_games(App* app) {
     app->browser.count = app->games.count;
     layout(app);
 }
+/* the screen a tab opens: the menu, Games or the Settings. A theme edited and not saved keeps its screen, the note
+   saying why */
+static void go_tab(App* app, int tab) {
+    if (app->editing) {
+        if (app->editor.typing || tab == GUI_TAB_SETTINGS) return;
+        if (app->form == GUI_FORM_THEME && app->editor.dirty) {
+            snprintf(app->editor.note, sizeof app->editor.note,
+                     "Not saved: Ctrl+S saves it, ESC twice leaves without it");
+            return;
+        }
+        keep_settings(app);
+        leave_editor(app);
+        app->theme_from_app = false;
+    }
+    if (tab == tab_shown(app)) return;
+    app->message[0] = 0;
+    app->menu.view = tab == GUI_TAB_GAMES ? GUI_LOAD_GAMES : GUI_LOAD_NONE;
+    if (tab == GUI_TAB_GAMES)
+        list_games(app);
+    else if (tab == GUI_TAB_SETTINGS)
+        open_settings(app);
+    else if (app->menu.games)
+        app->menu.selected = GUI_GAMES; /* back from it, as its Back does */
+}
+/* the tab step tabs from the one shown, round the three: Tab and Shift+Tab, a pad's shoulders */
+static void screen_tab(App* app, int step) {
+    if (app->menu.running || app->finished || app->confirm.shown || app->splash) return;
+    go_tab(app, ((tab_shown(app) + step) % GUI_TABS + GUI_TABS) % GUI_TABS);
+}
 static void menu_key(App* app, GuiKey key) {
     GuiLoadView before = app->menu.view; /* the screen this key was pressed on */
     if (app->finished) {
@@ -3248,11 +3331,27 @@ static void ask_pointer(App* app, float x, float y, bool click) {
     } else if (click && (x < (float)col || x >= (float)(col + cols) || y < (float)row || y >= (float)(row + 6)))
         gui_confirm_key(&app->confirm, GUI_CANCEL);
 }
+/* the tab at pixel x, y, -1 for none */
+static int tab_hit(App* app, float x, float y) {
+    GuiPlace p;
+    int i;
+    if (!app->theme.tabs) return -1;
+    place_screen(app, &p, "", "", 0, 0);
+    for (i = 0; i < GUI_TABS; ++i) {
+        GuiRect r = tab_rect(app, p.tabs, i);
+        if (x >= (float)r.x && x < (float)(r.x + r.w) && y >= (float)r.y && y < (float)(r.y + r.h)) return i;
+    }
+    return -1;
+}
 /* the pointer on a screen in boxes, at pixel x, y: the box under it takes the focus, and a click selects it; on the
    screen a file is picked on, a click on the box the waiting line is in opens the picker */
 static void boxed_pointer(App* app, float x, float y, bool click, bool touch) {
     GuiMenuBoxes m;
     int i;
+    if ((i = tab_hit(app, x, y)) >= 0) {
+        if (click) go_tab(app, i);
+        return;
+    }
     if (app->menu.view == GUI_LOAD_GAMES) {
         GuiGamesBoxes g;
         games_boxes(app, &g);
@@ -3635,6 +3734,10 @@ static void event(App* app, const SDL_Event* e) {
         char* clipboard = SDL_GetClipboardText();
         drop(app, clipboard, true);
         SDL_free(clipboard);
+        return;
+    }
+    if (e->key.key == SDLK_TAB && !e->key.repeat) {
+        screen_tab(app, e->key.mod & SDL_KMOD_SHIFT ? -1 : 1);
         return;
     }
     if (menu_key_of(&e->key, &key)) menu_key(app, key);

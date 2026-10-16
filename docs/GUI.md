@@ -17,6 +17,8 @@ The window's title tells which build it is, as `ScarletNX <branch> <commit> (<co
 build of a detached checkout outside CI says `detached`, and both read `unknown` outside a git checkout. A game's window carries the same line after the game's name.
 
 - Up/Down and Left/Right move the yellow focus, wrapping at the ends.
+- Tab and Shift+Tab go round the menu, Games and the Settings, which a theme in boxes shows as tabs over
+  the title (`[head] tabs`); a click on a tab opens it. A theme edited and not saved keeps its screen.
 - A list with rows out of sight (the menu with big letters, `games/`'s pages, the Settings, the theme
   editor) shows an arrow in its left margin, up on its first row and down on its last, in the soft colour.
 - Moving the mouse over an item focuses it in yellow without activating it.
@@ -88,7 +90,7 @@ build of a detached checkout outside CI says `detached`, and both read `unknown`
 - Settings > App's **Theme** switches to the next theme, or the one before: the built-in Default
   and YoRHa, then each folder of `themes/` (see [Themes](#themes)). It lasts for the session.
 - Settings > App's **Theme editor** edits the current theme: a row per `theme.ini` key, and beside them a
-  preview of the menu or a run (Tab switches). Left/Right change a word, a switch or a
+  preview of the menu or a run (Ctrl+P, or a click on it, switches). Left/Right change a word, a switch or a
   number, Enter types a colour, a text or a number.
   Save (Ctrl+S) writes `themes/<folder>/theme.ini` in the data folder and switches to it;
   a built-in is saved as a new theme, `mytheme` until renamed. ESC leaves, asking first if

@@ -14,7 +14,7 @@ typedef struct {
     int width, height;         /* the area */
     int cw, ch;                /* a cell of the text */
     int edge_top, edge_bottom; /* the drawn edges' heights, 0 for none */
-    int tabs;                  /* a row of tabs over the title */
+    int tabs;                  /* the row of tabs over the title's height, 0 for none */
     int title;                 /* the title's height, 0 for none */
     int bar;                   /* the bar's height, 0 for none */
     int list_cols;             /* the columns the list asks for; 0: one box, the whole width */

@@ -19,8 +19,8 @@ void gui_place(const GuiPlaceIn* in, GuiPlace* out) {
     out->edge_bottom = rect(0, in->height - in->edge_bottom, in->width, in->edge_bottom);
     y = in->edge_top + gap;
     if (in->tabs) {
-        out->tabs = rect(mx, y, width, in->ch);
-        y += in->ch + gap;
+        out->tabs = rect(mx, y, width, in->tabs);
+        y += in->tabs + gap;
     }
     if (in->title) {
         out->title = rect(mx, y, width, in->title);
