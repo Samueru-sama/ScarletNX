@@ -7,31 +7,33 @@ description: "Build the ScarletNX runtime and recompile games correctly, avoidin
 
 ## Order
 
-1. `cmake --preset default && cmake --build --preset default`, into `build/default`. The configure fetches the
+1. `cmake --preset default -B build && cmake --build build`, into `build/` as the docs have it (without `-B` the
+   preset builds into `build/default`). The configure fetches the
    third-party packages (`cmake/dependencies.cmake`) into `.cache/cpm` the first time, so a fresh clone needs the
    network once. They build in the same tree as the runtime: hactool from our own CMake script (`cmake/hactool.cmake`, since
    its own is a Makefile), FFmpeg with its own configure and make run by `cmake/ffmpeg.cmake` (logs in
-   `build/default/ffmpeg_build-prefix/src/ffmpeg_build-stamp/`), the others through their CMake.
+   `build/ffmpeg_build-prefix/src/ffmpeg_build-stamp/`), the others through their CMake.
    Clang only: any other compiler stops the configure. FFmpeg is required by the NX runtime. Configure also stops when
    the FFmpeg source path (the checkout, or `CPM_SOURCE_CACHE`) has a space in it, since FFmpeg's configure can't
    build from one, and on x86-64 when NASM is missing (below). On Windows, `scripts\bootstrap.ps1` downloads the
    toolchain (llvm-mingw, CMake, Ninja, NASM, Python, and w64devkit for the sh and GNU make FFmpeg needs) into
    `deps\tools` once, and `. scripts\env.ps1` puts it on PATH in a new PowerShell window. Windows' default execution
    policy runs no scripts, so run `Set-ExecutionPolicy -Scope Process Bypass` in that window first.
-2. `build/default/hactool` is what `build/default/scarletnx -x Game.xci` runs (the driver builds that target when it is missing).
-3. The build's last step copies the runtime to `games/<Game>` for every `games/<Game>_code.so`. That is the binary
-   that runs. The build prints `Runtime deployed to ...` for each: no line means no game got the new runtime.
+2. `build/hactool` is what `build/scarletnx -x Game.xci` runs (the driver builds that target when it is missing).
+3. The build's last step copies the runtime to `games/<id>/<id>` for every `games/<id>/<id>_code.so`, and to
+   `games/<Game>` for an older version's `games/<Game>_code.so` (`cmake/deploy.cmake`). That is the binary that runs.
+   The build prints `Runtime deployed to ...` for each: no line means no game got the new runtime.
 
 ## Silent failures
 
 | What happens | Why | What to do |
 | --- | --- | --- |
-| Movies stay black, the log says no H.264 decoder | A runtime built some other way than CMake (upstream's recompiler had its own build) drops the H.264 decoder without a word | Build the runtime with CMake (`build/default/scarletnx -r` also does), which includes FFmpeg. |
+| Movies stay black, the log says no H.264 decoder | A runtime built some other way than CMake (upstream's recompiler had its own build) drops the H.264 decoder without a word | Build the runtime with CMake (`build/scarletnx -r` also does), which includes FFmpeg. |
 | The configure stops with "NASM was not found" | FFmpeg's x86-64 assembly needs NASM, and a build without it decodes movies several times slower, so it is never dropped silently | Install `nasm`. `-DSNX_FFMPEG_ASM=OFF` builds FFmpeg without its assembly on purpose (slower movies). |
 | A fix has no effect | The game ran an old runtime: the build didn't deploy (no `_code.so` in `games/` yet), or the game was already running | Check the deploy lines. On Linux a running game keeps its old copy (the deploy renames over it). On Windows a running `.exe` can't be replaced, so stop the game before building. |
 | Two build folders disagree on what is deployed | Every build folder with `SNX_DEPLOY` on deploys to the same `games/` | The last build wins. Configure extra folders with `-DSNX_DEPLOY=OFF`. The recompiler builds its runtime in `build/native-recomp` or `build/win64-recomp` with deployment off (`src/nx/runtime/driver/toolchain.c`). |
 | A test binary next to the game was overwritten | The deploy targets every `*_code.so` in `games/`, symlinks included | Keep A/B copies outside `games/`, or don't build while they exist. |
-| A new warning goes unnoticed | The runtime builds with Clang's default warnings only (the third-party packages and the generated game module build with `-w`), and a warning doesn't stop the build | Check a changed file with more warnings on: take the file's line from `build/default/compile_commands.json` and run it with `-Wall -Wextra -fsyntax-only`. Fix what comes from the change. |
+| A new warning goes unnoticed | The runtime builds with Clang's default warnings only (the third-party packages and the generated game module build with `-w`), and a warning doesn't stop the build | Check a changed file with more warnings on: take the file's line from `build/compile_commands.json` and run it with `-Wall -Wextra -fsyntax-only`. Fix what comes from the change. |
 | Game crashes at startup with "recompiled code is from another ScarletNX version" | The game module was built against another `SNX_ABI` (`src/common/cpu/aarch64/cpu.h`) | Recompile the game. |
 
 ## The Vulkan renderer
@@ -43,7 +45,7 @@ with Vulkan. The interface is the `Renderer` table in `gpu/renderer.h`, which `v
 `g_renderer->draw(...)` and so on.
 
 The build also makes `snx-shaderc`. A translator change is checked on a shader corpus before rendering: record one
-with `SNX_SHADER_CORPUS=dir`, then run `build/default/snx-shaderc dir --validate` (`spirv-val` on PATH). Use `--out`
+with `SNX_SHADER_CORPUS=dir`, then run `build/snx-shaderc dir --validate` (`spirv-val` on PATH). Use `--out`
 to save direct SPIR-V modules for disassembly or comparison between builds. A corpus is the game's own shaders: keep it
 under `games/` or in the scratchpad, never in a tracked folder of the repo. `SNX_VK_VALIDATION=1`
 turns on the Khronos validation layer when it is installed (Arch: `vulkan-validation-layers`, which the user
@@ -71,12 +73,12 @@ The Windows runtime is the SDL3 backend with the Vulkan renderer, as on Linux: `
 cmake --build --preset windows-cross` (SDL3 is then a CPM package, linked statically).
 
 To run a Windows build, use Wine with a game module built for Windows, kept out of `games/`:
-- `build/default/scarletnx -r work/Catherine Catherine --outdir build/wingame --target win64
-  --cc x86_64-w64-mingw32-clang --runtime build/windows-cross/scarletnx.exe`. Make `build/wingame/Catherine_data/romfs` a symlink to the Linux copy
-  first, or it copies 13 GB.
+- The module comes from a Windows `scarletnx.exe -r`, with `--outdir build/wingame`: the recompiler builds modules
+  for the host it runs on only, and the Linux one refuses `--target win64` (`src/nx/runtime/driver/recompile.c`).
+  Make `build/wingame/<id>/<id>_data/romfs` a symlink to the Linux copy first, or it copies 13 GB.
 - Use a prefix of its own, made without the Mono and Gecko installers, which otherwise wait for a click with nothing
   on screen: `WINEPREFIX=$PWD/build/wineprefix WINEDLLOVERRIDES="mscoree,mshtml=" WINEDEBUG=-all wineboot -i`, and
-  the same variables for `wine Catherine.exe --seconds=20 --shot=shot`. The log is `Catherine.log` next to it.
+  the same variables for `wine <id>.exe --seconds=20 --shot=shot` in `build/wingame/<id>/`. The log is `<id>.log` next to it.
 - What works under Wine 11.19 here: the SDL3 backend with Vulkan.
 
 ## When the game module must be recompiled
@@ -86,11 +88,11 @@ Only when generated code or its contract changes: `src/common/cpu/recompiler/`, 
 the files under `src/common/cpu/aarch64/helpers/`. Other runtime changes normally need a runtime rebuild only. The runtime
 only checks `SNX_ABI`: a module built before an ABI change that kept it still loads and runs the old code, and a
 bump makes the runtime refuse every module built before it. A recompile of
-Catherine takes several minutes. A successful recompile removes its temporary objects; `--keep-c` retains generated C
-under `<outdir>/<Game>_build/` for inspection.
+Catherine takes several minutes. A successful recompile removes its temporary objects. `--keep-ir` keeps the
+generated code (LLVM IR, libgccjit dumps) in `<outdir>/<id>/<id>_build/` for inspection.
 
 ```bash
-build/default/scarletnx -r work/Catherine Catherine          # runtime and game module, both with Clang
+build/scarletnx -r work/Catherine          # runtime and game module, both with Clang, into games/<id>/
 ```
 
 `scarletnx -r` uses the LLVM backend (`--backend=gcc`, libgccjit, is for DEC Alpha EV67 hosts). Its objects aren't

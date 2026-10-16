@@ -293,19 +293,19 @@ List each fix: `file:line` — what changed.
 
 ### 6. Build Verification
 
-Build, run the tests (`ctest` in `build/default`: the generator, the services' and the filesystem's fixtures, the recompiler's differential tests and more), and run the game through the scenes the changes affect (`snx-build` and `snx-run` skills). If any fails, treat each error as CRITICAL, fix, rebuild. Do not proceed until all are green.
+Build, run the tests (`ctest --test-dir build`: the generator, the services' and the filesystem's fixtures, the recompiler's differential tests and more), and run the game through the scenes the changes affect (`snx-build` and `snx-run` skills). If any fails, treat each error as CRITICAL, fix, rebuild. Do not proceed until all are green.
 
 ```bash
-cmake --preset default && cmake --build --preset default
-(cd build/default && ctest)
+cmake --preset default -B build && cmake --build build
+ctest --test-dir build
 scripts/format.sh --check
-tools/run_game.py Catherine --runs 3 --dump work/Catherine
+tools/run_game.py <id> --runs 3 --dump work/Catherine
 ```
 
-- The runtime builds with Clang's default warnings, and only `missing-prototypes` and `missing-variable-declarations` fail the build (the tests build with `-Wall -Wextra -Werror`), so a clean-looking runtime build says little. Build a changed file once with more warnings on (its line from `build/default/compile_commands.json`, with `-Wall -Wextra -fsyntax-only`) and check none come from the change.
+- The runtime builds with Clang's default warnings, and only `missing-prototypes` and `missing-variable-declarations` fail the build (the tests build with `-Wall -Wextra -Werror`), so a clean-looking runtime build says little. Build a changed file once with more warnings on (its line from `build/compile_commands.json`, with `-Wall -Wextra -fsyntax-only`) and check none come from the change.
 - A fix for a crash or a race is run until the evidence is statistical: the crash rate before and after, with the run counts, goes in the commit message.
-- Memory-safety fixes also get an AddressSanitizer build and a run. The runtime links as C++ (VMA), so the flag goes on the C, C++ and link lines, and the build stays out of `games/`: `cmake --preset default -B build/asan -DSNX_DEPLOY=OFF -DCMAKE_C_FLAGS=-fsanitize=address -DCMAKE_CXX_FLAGS=-fsanitize=address -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address && cmake --build build/asan`, then from `games/`: `../build/asan/scarletnx --game=Catherine --seconds=60`.
-- The game module only needs recompiling (`build/default/scarletnx -r work/<Game> <Game>`) when `src/common/cpu/recompiler/` (codegen and both backends), `src/common/cpu/aarch64/` (templates and the ABI), `src/nx/loader/`, or the module's flags in `src/nx/runtime/driver/toolchain.c` changed.
+- Memory-safety fixes also get an AddressSanitizer build and a run. The runtime links as C++ (VMA), so the flag goes on the C, C++ and link lines, and the build stays out of `games/`: `cmake --preset default -B build/asan -DSNX_DEPLOY=OFF -DCMAKE_C_FLAGS=-fsanitize=address -DCMAKE_CXX_FLAGS=-fsanitize=address -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address && cmake --build build/asan`, then from `games/<id>/`: `../../build/asan/scarletnx --game=<id> --seconds=60`.
+- The game module only needs recompiling (`build/scarletnx -r work/<Game>`) when `src/common/cpu/recompiler/` (codegen and both backends), `src/common/cpu/aarch64/` (templates and the ABI), `src/nx/loader/`, or the module's flags in `src/nx/runtime/driver/toolchain.c` changed.
 
 ### 7. Diff Review Before Commit
 
@@ -459,7 +459,7 @@ ast-grep --pattern 'FunctionName($$$)' --lang c src
 grep -rnw 'FunctionName' src tests tools scripts cmake
 ```
 
-- **Zero callers** → either remove the function, or document the call path preserving it (e.g., reached through a dispatch table like `svc_register`, the `Renderer` table in `gpu/renderer.h`, or the generated code's calls into `src/common/cpu/aarch64/cpu_helpers.c`). A service's handler has no caller in the sources: its caller is the dispatcher generated into `build/<preset>/src/nx/snx_hle-swipc/` from the `.swipc`, so check the command is declared there instead. A function that this audit is the first to grep for callers is a function nobody else verified is used.
+- **Zero callers** → either remove the function, or document the call path preserving it (e.g., reached through a dispatch table like `svc_register`, the `Renderer` table in `gpu/renderer.h`, or the generated code's calls into `src/common/cpu/aarch64/cpu_helpers.c`). A service's handler has no caller in the sources: its caller is the dispatcher generated into `build/src/nx/snx_hle-swipc/` from the `.swipc`, so check the command is declared there instead. A function that this audit is the first to grep for callers is a function nobody else verified is used.
 - **Only self-callers (tests + the definition site)** → flag for likely-dead status; verify the test isn't the sole reason the function exists.
 
 This step is mandatory on every pass — dead code accumulates between passes when fixes remove the last caller of a helper without removing the helper.
