@@ -615,6 +615,8 @@ static int menu_event(const SDL_Event* e) {
             case 1ull << 1: overlay_do(overlay_back()); break;
             default: break;
         }
+    } else if (e->type == SDL_EVENT_MOUSE_WHEEL) { /* a notch up is a row up, as the system turns the wheel */
+        overlay_scroll(-e->wheel.integer_y);
     } else if (e->type == SDL_EVENT_FINGER_DOWN) {
         g_tap_finger = finger_id(&e->tfinger);
     } else if (e->type == SDL_EVENT_FINGER_UP) {

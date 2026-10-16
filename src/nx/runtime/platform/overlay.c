@@ -214,6 +214,10 @@ void overlay_move(int rows) {
     focus = ((focus + rows) % n + n) % n;
     keep_in_view();
 }
+void overlay_scroll(int rows) {
+    focus = clamp(focus + rows, 0, items() - 1);
+    keep_in_view();
+}
 void overlay_side(int step) {
     if (page != PAGE_MAIN) act(focus, step);
 }

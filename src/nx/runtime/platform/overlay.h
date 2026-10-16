@@ -18,10 +18,11 @@ void overlay_toggle(void);
 void overlay_set_display_scale(float scale);
 /* where the panel goes on a picture of sw x sh pixels: its corner and the whole number it is scaled by */
 void overlay_place(int sw, int sh, int* x, int* y, int* scale);
-int overlay_select(void);    /* the focused item's action: a page, a setting changed, or an OVERLAY_ for the caller */
-void overlay_move(int rows); /* the focus up (-1) or down (1), round the page */
-void overlay_side(int step); /* the focused setting down (-1) or up (1) */
-int overlay_back(void);      /* the page above; OVERLAY_CLOSE from the first */
+int overlay_select(void);      /* the focused item's action: a page, a setting changed, or an OVERLAY_ for the caller */
+void overlay_move(int rows);   /* the focus up (-1) or down (1), round the page */
+void overlay_scroll(int rows); /* the mouse's wheel: the same, stopping at the ends */
+void overlay_side(int step);   /* the focused setting down (-1) or up (1) */
+int overlay_back(void);        /* the page above; OVERLAY_CLOSE from the first */
 /* a tap at x, y on a picture of sw x sh: what it did, OVERLAY_CLOSE outside the panel */
 int overlay_tap(float x, float y, int sw, int sh);
 void overlay_draw(SnxUiList* l, int sw, int sh);

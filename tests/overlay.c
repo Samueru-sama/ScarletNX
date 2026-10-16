@@ -166,6 +166,12 @@ int main(void) {
     overlay_move(-1); /* round to Back, at the bottom */
     draw();
     assert(text_at(1, 3 + 11, "\xFE Back") && text_at(39, 3, "\x18") && !text_at(39, 14, "\x19"));
+    /* the wheel stops at the ends: up past All, and down past Back, where Back still goes up a page */
+    overlay_scroll(-20);
+    draw();
+    assert(text_at(1, 3, "\xFE All") && !text_at(39, 3, "\x18") && text_at(39, 14, "\x19"));
+    overlay_scroll(20);
+    overlay_scroll(1);
     /* Back on it, and the key Back, go up a page each */
     assert(overlay_select() == OVERLAY_NONE);
     draw();
