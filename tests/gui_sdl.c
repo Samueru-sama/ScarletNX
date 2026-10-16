@@ -3359,6 +3359,7 @@ int main(int argc, char** argv) {
         b = list_box(&f.left, app.groups);
         text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe Reset all to the defaults", rgb(app.theme.page),
                    rgb(app.theme.focus));
+        assert(!gui_editor_rows(f.rows) && !f.right.shown); /* no rows beside it: not a theme's Folder and Save */
         for (row = 0; row < app.groups && strcmp(app.group_keys[row].key, "Display"); ++row) {}
         app.editor.row = row;
         key(&app, SDLK_RETURN);

@@ -936,6 +936,8 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
         } else if (g < app->groups)
             gui_editor_form(&f->peek, app->settings.keys + app->group_first[g], app->group_rows[g],
                             app->settings.values, NULL);
+        else /* Reset all: a form of no rows, where an editor of none would be a theme's (its folder and Save) */
+            gui_editor_form(&f->peek, NULL, 0, &app->app_form, NULL);
         f->peek.flat = true;
         f->peek.row = -1;
         f->rows = &f->peek;
