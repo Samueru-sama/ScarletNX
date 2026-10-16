@@ -1415,7 +1415,7 @@ static void draw_games_boxed(App* app) {
     games_boxes(app, &g);
     draw_tabs(app, g.place.tabs);
     title_box(app, g.place.title, boxed_title(app, GUI_SCREEN_GAMES));
-    list_item(app, &g.list, 0, "Back [ESC]", false, app->browser.selected == 0);
+    list_item(app, &g.list, 0, "Back [ESC]", app->browser.selected == 0, false);
     for (i = 0; i < items; ++i) {
         snprintf(label, sizeof label, "%s%s", app->theme.marker, app->games.names[g.start + i]);
         list_item(app, &g.list, 1 + (int)i, label, app->browser.selected == i + 1,

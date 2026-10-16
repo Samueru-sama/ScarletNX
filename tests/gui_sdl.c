@@ -2222,6 +2222,10 @@ int main(int argc, char** argv) {
             assert(app.menu.games && app.games_total > 12);
             key(&app, SDLK_RETURN);
             assert(app.menu.view == GUI_LOAD_GAMES && !app.browser.selected);
+            render(&app);
+            games_boxes(&app, &g);
+            text_px_is(&app, list_box(&g.list, 0).x + cw / 2, list_box(&g.list, 0).y + s, "Back [ESC]", yellow,
+                       black); /* the focus, first */
             key(&app, SDLK_DOWN);
             render(&app);
             games_boxes(&app, &g);
