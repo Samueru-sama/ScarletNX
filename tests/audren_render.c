@@ -1599,6 +1599,45 @@ int main(void) {
     }
     art_rev = 4;
 
+    /* REV15's float-biquad voice input grows to 0x188 while its output stays 0x10. An old stride reads six extra
+       voices in Tomodachi Life's 96-voice update and rejects the guest's correctly sized output buffer. */
+    {
+        u8 vi15[0x40 + 0x10 + 0x20 + 0x70 + 0x188 + 0x10] = {0};
+        u8 vo15[0x130] = {0};
+        u8* v = vi15 + 0x40 + 0x10 + 0x20 + 0x70;
+        u32 rev15 = (u32)'R' | (u32)'E' << 8 | (u32)'V' << 16 | (u32)'?' << 24;
+        reset();
+        w32(vi15, 0, rev15);
+        w32(vi15, 4, 0x10);
+        w32(vi15, 8, 0x20);
+        w32(vi15, 12, 0x188);
+        w32(vi15, 16, 0x70);
+        w32(vi15, 32, 0x10);
+        w32(vi15, 60, sizeof vi15);
+        w8(v, 8, 1);
+        w8(v, 9, 1);
+        w8(v, 0xB, SNX_AUDREN_PCM16);
+        w32(v, 0xC, SNX_ART_RATE);
+        w32(v, 0x18, 1);
+        wf(v, 0x1C, 1.0f);
+        wf(v, 0x20, 0.5f);
+        w8(v, 0x24, 1);
+        wf(v, 0x28, 0.75f);
+        wf(v, 0x2C, 0.25f);
+        wf(v, 0x34, -0.5f);
+        w8(v, 0x176, 2);
+        int rc = audren_state_update(st, vi15, sizeof vi15, vo15, sizeof vo15);
+        CHECK(rc == 0, "REV15 update returned %d", rc);
+        CHECK(rd32(vo15 + 12) == 0x10 && rd32(vo15 + 60) == sizeof vo15,
+              "REV15 voice output sizes %u/%u", rd32(vo15 + 12), rd32(vo15 + 60));
+        CHECK(st->voice[0].in_use && st->voice[0].format == SNX_AUDREN_PCM16 && st->voice[0].quality == 2 &&
+                  st->voice[0].volume == 0.5f,
+              "REV15 voice fields were shifted");
+        CHECK(st->voice[0].bq_on[0] && st->voice[0].bq_b[0][0] == 12288 && st->voice[0].bq_b[0][1] == 4096 &&
+                  st->voice[0].bq_a[0][0] == -8192,
+              "REV15 float biquad conversion failed");
+    }
+
     printf("%u checks, %u failed\n", checks, failures);
     audren_state_free(st);
     free(g_mem);

@@ -395,7 +395,9 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
                    (unsigned long long)need, (unsigned long long)is);
         return -41;
     }
-    u32 npools = ih[2] / 0x20, nres = ih[4] / 0x70, nvoices = ih[3] / 0x170, neff = ih[5] / 0xC0, nmix = ih[6] / 0x930,
+    /* REV15 extends each voice input with two float biquads (Eden InfoUpdater::UpdateVoices). The output stays 0x10. */
+    u32 voice_stride = revn >= 15 ? 0x188 : 0x170;
+    u32 npools = ih[2] / 0x20, nres = ih[4] / 0x70, nvoices = ih[3] / voice_stride, neff = ih[5] / 0xC0, nmix = ih[6] / 0x930,
         nsinks = ih[7] / 0x140;
     int eff_v2 = revn >= 9;
     u32 o_mp = npools * 0x10, o_vo = nvoices * 0x10, o_ef = neff * (eff_v2 ? 0x90 : 0x10), o_sk = nsinks * 0x20,
@@ -451,8 +453,33 @@ int audren_state_update(ARState* s, const u8* in, u64 is, u8* out, u64 os) {
         c->in_use = r[0x64];
         if (c->in_use) memcpy(c->mix, r + 4, sizeof c->mix);
     }
-    for (u32 i = 0; i < nvoices; i++)
-        if (i < s->nvoices) update_voice(s, &s->voice[i], voices + i * 0x170, q + i * 0x10);
+    for (u32 i = 0; i < nvoices; i++) {
+        if (i >= s->nvoices) continue;
+        const u8* vi = voices + i * voice_stride;
+        if (revn >= 15) {
+            u8 legacy[0x170];
+            memcpy(legacy, vi, 0x24);
+            /* The two 0x18-byte float biquads replace the two 0xC-byte Q14 biquads. */
+            for (u32 f = 0; f < 2; f++) {
+                const u8* src = vi + 0x24 + f * 0x18;
+                u8* dst = legacy + 0x24 + f * 0xC;
+                memset(dst, 0, 0xC);
+                dst[0] = src[0];
+                for (u32 k = 0; k < 3; k++) {
+                    i16 coeff = sat16(rdf(src + 4 + k * 4) * 16384.0f);
+                    memcpy(dst + 2 + k * 2, &coeff, 2);
+                }
+                for (u32 k = 0; k < 2; k++) {
+                    i16 coeff = sat16(rdf(src + 16 + k * 4) * 16384.0f);
+                    memcpy(dst + 8 + k * 2, &coeff, 2);
+                }
+            }
+            memcpy(legacy + 0x3C, vi + 0x54, sizeof legacy - 0x3C);
+            update_voice(s, &s->voice[i], legacy, q + i * 0x10);
+        } else {
+            update_voice(s, &s->voice[i], vi, q + i * 0x10);
+        }
+    }
     q += o_vo;
     /* effects: type 0, is_new 1, enabled 2, mix 4, process order 0x18, the type's parameters from 0x20. Out:
        Used(3) while enabled, Removed(4) */
