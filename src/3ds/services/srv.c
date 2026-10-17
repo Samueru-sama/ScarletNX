@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors
    SRV wire commands/results referenced against Azahar service/sm/{srv.cpp,sm.h}. */
 #include "3ds/runtime/internal.h"
+#include "3ds/services/dsp.h"
 #include "services/srv.swipc.inc"
 #include <string.h>
 static uint32_t snx_ctr_srv_RegisterClient(SnxCtrIpc* c, uint32_t process) {
@@ -24,6 +25,12 @@ static uint32_t snx_ctr_srv_GetServiceHandle(SnxCtrIpc* c, const uint8_t* name, 
     if (length == 8 && !memcmp(name, "ptm:sysm", 8)) return snx_ctr_session_create(p, SNX_CTR_SERVICE_PTM, session);
     if (length == 8 && !memcmp(name, "hid:USER", 8)) return snx_ctr_session_create(p, SNX_CTR_SERVICE_HID, session);
     if (length == 8 && !memcmp(name, "gsp::Gpu", 8)) return snx_ctr_session_create(p, SNX_CTR_SERVICE_GSP, session);
+    if (length == 5 && (!memcmp(name, "cfg:u", 5) || !memcmp(name, "cfg:s", 5) || !memcmp(name, "cfg:i", 5)))
+        return snx_ctr_session_create(p, SNX_CTR_SERVICE_CFG, session);
+    if (length == 8 && !memcmp(name, "dsp::DSP", 8)) {
+        uint32_t result = snx_ctr_dsp_open(p);
+        return result ? result : snx_ctr_session_create(p, SNX_CTR_SERVICE_DSP, session);
+    }
     if (flags & 1) return 0xd0406401u;
     /* This endpoint is genuinely absent. Waiting for its registration cannot
        complete in the current single-process/no-scheduler kernel. */

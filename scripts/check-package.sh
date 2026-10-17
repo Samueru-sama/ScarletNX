@@ -6,7 +6,7 @@
 # (.github/workflows/build.yml): in the build jobs the checkout is where the package looks for it, and hides what an
 # installed copy lacks.
 #
-#   scripts/check-package.sh dist/ScarletNX-x86_64.AppImage
+#   scripts/check-package.sh dist/ScarletNX-linux-x86_64.AppImage
 #   scripts/check-package.sh stage/bin/scarletnx.exe
 #
 # --backend=gcc must build and run the game with the package's own libgccjit, as and ld.

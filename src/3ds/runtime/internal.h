@@ -101,6 +101,14 @@ typedef struct {
     } transfer;
     struct SnxCtrPica* pica; /* the PICA command processor, made on the first SubmitCmdList (gpu/pica.h) */
 } SnxCtrGsp;
+/* dsp::DSP: the HLE DSP (audio/dsp.h) and the events the application registered for its interrupts */
+typedef struct {
+    struct SnxCtrDsp* core;    /* made at the first dsp::DSP session */
+    uint32_t interrupt[2 + 8]; /* event objects (retained): interrupts 0 and 1, then one per pipe */
+    uint32_t semaphore;        /* the semaphore event (retained), made at its first GetSemaphoreEventHandle */
+    uint16_t semaphore_mask;
+    uint64_t next_frame_ns; /* host monotonic deadline of the next audio frame */
+} SnxCtrDspService;
 struct SnxCtrProcess {
     SnxCtrRomfs* romfs; /* runtime-owned immutable host filesystem view */
     FsTree* tree;       /* the shared NX-style tree: romfs/exefs read-only, sdmc read-write */
@@ -122,6 +130,7 @@ struct SnxCtrProcess {
     CtrSelfArchive self_archives[CTR_SELF_ARCHIVES];
     uint64_t archive_sequence;
     SnxCtrGsp gsp;
+    SnxCtrDspService dsp;
     uint64_t svc_count;
     unsigned char physical_owner[];
 };

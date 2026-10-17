@@ -92,11 +92,13 @@ check(
             'closed pr head',
             'gone branch',
             'copy',
+            'tag',
         ]
     ),
 )
 check('why for a closed pull request', got.get('closed pr'), 'pull request #180 is closed')
 check('why for a gone branch', got.get('gone branch'), 'its branch is gone')
+check("why for a tag's", got.get('tag'), "a tag's")
 check('why for a replaced entry', got.get('old ccache'), 'replaced by ccache-linux-x86_64-200-1')
 check('nothing deleted twice', len(doomed), len(got))
 # a listing of nothing but main's newest entries leaves them all

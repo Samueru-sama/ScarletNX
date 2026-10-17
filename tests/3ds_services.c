@@ -168,6 +168,27 @@ int main(void) {
         request(p, config, 2);
         send(p, ptm, SNX_CTR_SVC_RETURN, 0);
         assert(!get(p, 1));
+        /* cfg: GetConfig of the sound output mode (libctru's ndsp reads it), stereo, into a writable mapped buffer.
+           All three names are served, as Azahar does; another block stops */
+        uint32_t cfg = endpoint(p, srv, "cfg:i");
+        put(p, 0x300000, 0xffffffffu);
+        uint32_t sound[] = {0x10082, 1, 0x70001, 1 << 4 | 0xc, 0x300000};
+        request(p, sound, 5);
+        send(p, cfg, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 0) == 0x10042 && !get(p, 1) && get(p, 2) == (1 << 4 | 0xc) && get(p, 3) == 0x300000);
+        unsigned char mode = 0;
+        assert(snx_ctr_read_ram(p->space, 0x300000, &mode, 1) == SNX_CTR_MEM_OK && mode == 1);
+        sound[1] = 4;
+        sound[3] = 4 << 4 | 0xc;
+        request(p, sound, 5);
+        send(p, cfg, SNX_CTR_SVC_RETURN, 0);
+        assert(get(p, 1) == 0xd90103ec); /* InvalidSize */
+        sound[1] = 1;
+        sound[2] = 0x50005;
+        sound[3] = 1 << 4 | 0xc;
+        request(p, sound, 5);
+        send(p, cfg, SNX_CTR_SVC_UNSUPPORTED, 0);
+        assert(!snx_ctr_handle_close(p, cfg) && endpoint(p, srv, "cfg:u") && endpoint(p, srv, "cfg:s"));
         uint32_t hid = endpoint(p, srv, "hid:USER"), hid_args[] = {0xa0000};
         n = 0;
         while (n < CTR_HANDLES && !snx_ctr_handle_add(p, snx_ctr_handle_object(p, srv), &duplicates[n])) ++n;
@@ -217,6 +238,6 @@ int main(void) {
         assert(get(p, 0) == 0x80c0040 && get(p, 1) == 0xc8804464); /* no configured RomFS backing */
         snx_ctr_process_free(p);
     }
-    puts("APT startup, real lock/events, grouped handles, checked buffers, PTM/HID and absent-SD behavior passed");
+    puts("APT startup, real lock/events, grouped handles, checked buffers, PTM/cfg/HID and absent-SD behavior passed");
     return 0;
 }

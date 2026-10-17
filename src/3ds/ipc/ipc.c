@@ -11,6 +11,8 @@
 #include "services/ptm.swipc.h"
 #include "services/hid.swipc.h"
 #include "3ds/services/gsp.h"
+#include "3ds/services/dsp.h"
+#include "3ds/services/cfg.h"
 #include <string.h>
 
 static uint32_t load32(const unsigned char* b) {
@@ -61,7 +63,8 @@ void snx_ctr_ipc_output_handle(SnxCtrIpc* c, uint32_t word, uint32_t handle) {
 uint32_t snx_ctr_session_create(SnxCtrProcess* p, uint32_t service, uint32_t* out) {
     *out = 0;
     if (service != SNX_CTR_SERVICE_SRV && service != SNX_CTR_SERVICE_FS && service != SNX_CTR_SERVICE_APT &&
-        service != SNX_CTR_SERVICE_PTM && service != SNX_CTR_SERVICE_HID && service != SNX_CTR_SERVICE_GSP)
+        service != SNX_CTR_SERVICE_PTM && service != SNX_CTR_SERVICE_HID && service != SNX_CTR_SERVICE_GSP &&
+        service != SNX_CTR_SERVICE_DSP && service != SNX_CTR_SERVICE_CFG)
         return 0xe0e01bf4u;
     unsigned count = 0;
     for (unsigned i = 1; i < CTR_OBJECTS; ++i)
@@ -109,7 +112,10 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
             bool mapped_supported =
                 (mapped_service == SNX_CTR_SERVICE_FILE && c->in[0] == 0x080200c2 && (d & 15) == 12) ||
                 (mapped_service == SNX_CTR_SERVICE_FILE && c->in[0] == 0x08030102 && (d & 15) == 10) ||
-                (mapped_service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080d0144 && ((d & 15) == 10 || (d & 15) == 12));
+                (mapped_service == SNX_CTR_SERVICE_FS && c->in[0] == 0x080d0144 &&
+                 ((d & 15) == 10 || (d & 15) == 12)) ||
+                (mapped_service == SNX_CTR_SERVICE_DSP && c->in[0] == 0x001100c2 && (d & 15) == 10) ||
+                (mapped_service == SNX_CTR_SERVICE_CFG && c->in[0] == 0x00010082 && (d & 15) == 12);
             unsupported = unsupported || !mapped_supported;
         } else if ((d & 1023) == 2 || (d & 15) == 4 || (d & 15) == 6) {
             payload = 1;
@@ -129,6 +135,7 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
                                c->in[0] == 0x080b0102) &&
                               ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802)) ||
                              (service == SNX_CTR_SERVICE_GSP && (c->in[0] == 0x00010082 || c->in[0] == 0x00020084)) ||
+                             (service == SNX_CTR_SERVICE_DSP && c->in[0] == 0x000d0082 && (d & 0x3fff) == 0x402) ||
                              (service == SNX_CTR_SERVICE_FS && c->in[0] == 0x08030204 &&
                               ((d & 0x3fff) == 2 || (d & 0x3fff) == 0x802));
             unsupported = unsupported || !supported;
@@ -142,9 +149,12 @@ static unsigned translation(SnxCtrIpc* c, uint32_t normal, uint32_t translated) 
             uint32_t service = c->process->objects[c->object].type == CTR_OBJ_SESSION
                                    ? c->process->objects[c->object].data.session.service
                                    : SNX_CTR_SERVICE_FILE;
-            bool supported = service == SNX_CTR_SERVICE_GSP && !(d & 0x03ffffffu) && payload == 1 &&
-                             (c->in[0] == 0x00130042 || c->in[0] == 0x00150042 || c->in[0] == 0x00160042 ||
-                              c->in[0] == 0x00080082 || c->in[0] == 0x00090082);
+            bool supported = !(d & 0x03ffffffu) && payload == 1 &&
+                             ((service == SNX_CTR_SERVICE_GSP &&
+                               (c->in[0] == 0x00130042 || c->in[0] == 0x00150042 || c->in[0] == 0x00160042 ||
+                                c->in[0] == 0x00080082 || c->in[0] == 0x00090082)) ||
+                              (service == SNX_CTR_SERVICE_DSP &&
+                               (c->in[0] == 0x00130082 || c->in[0] == 0x00140082 || c->in[0] == 0x00150082)));
             if (supported && c->in[position] && !c->handle_in[0])
                 c->handle_in[0] = c->in[position];
             else if (supported && c->in[position])
@@ -201,6 +211,8 @@ SnxCtrSvcResult snx_ctr_ipc_send(SnxCtrProcess* p, uint32_t handle, uint32_t* re
         case SNX_CTR_SERVICE_PTM: snx_ctr_ptm_dispatch(&c); break;
         case SNX_CTR_SERVICE_HID: snx_ctr_hid_dispatch(&c); break;
         case SNX_CTR_SERVICE_GSP: snx_ctr_gsp_dispatch(&c); break;
+        case SNX_CTR_SERVICE_DSP: snx_ctr_dsp_dispatch(&c); break;
+        case SNX_CTR_SERVICE_CFG: snx_ctr_cfg_dispatch(&c); break;
         default: return SNX_CTR_SVC_UNSUPPORTED;
     }
     if (c.state == SNX_CTR_IPC_UNSUPPORTED) return SNX_CTR_SVC_UNSUPPORTED;

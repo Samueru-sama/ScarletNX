@@ -191,6 +191,26 @@ PPM snapshots land in `<output>/frames` in every mode. Without a display the
 window path is unavailable and frames are only recorded; without a Vulkan
 device the presenter reports unavailability and no frame is fabricated.
 
+Audio runs on a high-level DSP (`src/3ds/audio/`, ported from Azahar's HLE audio core):
+dsp::DSP (`services/dsp.c`) takes the application's pipe writes, interrupt events, the
+semaphore and component loads. Initialize answers on the audio pipe with the DSP RAM
+addresses of the shared structures, and from then on every 160-sample frame (4.889 ms,
+paced by the host clock like the vblank) reads the region the application finished,
+plays the 24 sources' buffers out of FCRAM (PCM8, PCM16 and GC-ADPCM; no interpolation
+or linear, polyphase playing as linear as in Azahar), applies their simple and biquad
+filters and gain ramps, mixes the three intermediate mixes with the aux buses and delay
+effects, writes the statuses and final samples into the other region and raises the
+audio pipe's interrupt. Reverb, the limiter, the compressor and surround output are
+stubs in Azahar too. The binary pipe's AAC decoder is not ported: a request on it stops
+the run and names it. Frames play on the default device through SDL3 and their first two
+minutes are recorded to `<output>/audio.wav`. libctru's ndsp loads
+`sdmc:/3ds/dspfirm.cdc` and leaves audio off without it, so a stand-in header goes there
+when the title's SD has none: the HLE DSP never runs the component, and a dumped file is
+used as it is. cfg:u, cfg:s and cfg:i (`services/cfg.c`) answer GetConfig for the sound
+output mode (stereo, Azahar's default), which ndsp reads, and stop on any other block.
+With the software renderer below full speed, the audio has gaps after rendered frames:
+the guest's mixing threads get no time while a frame renders.
+
 See [CTR IPC](CTR-IPC.md) for the strict generator subset, descriptor/permission
 checks, quotas, malformed-request policy, tests and unimplemented operations.
 Unknown SVCs still stop explicitly. No service/device success is fabricated.
@@ -372,6 +392,11 @@ The software pipeline ports `video_core/shader/shader_interpreter.cpp`,
 and `video_core/texture/{texture_decode,etc1}.cpp` (GPL-2.0-or-later), with the shader
 instruction encoding of nihstro's `shader_bytecode.h` (BSD-3-Clause, notice kept in
 `gpu/shader.c`).
+Stage 4's HLE DSP ports Azahar at `a4b335e`: `audio_core/hle/{hle,source,mixers,filter,effects}.cpp`,
+the layouts of `audio_core/hle/shared_memory.h`, `audio_core/{codec,interpolate}.cpp`, and
+`core/hle/service/dsp/dsp_dsp.cpp`, with the sound output mode block of
+`core/hle/service/cfg/{cfg,cfg_defaults}.cpp` (GPL-2.0-or-later). The wire forms are
+checked against libctru's `services/dsp.c` and `services/cfgu.c`.
 Stage 3a references GPL-2.0-or-later `core/hle/ipc.h`, `kernel/hle_ipc.cpp`,
 `kernel/svc.cpp`, `service/sm/{srv.cpp,sm.h}` and `service/fs/fs_user.cpp` at that
 revision for wire/result/initialization facts. Its new C transport/services and

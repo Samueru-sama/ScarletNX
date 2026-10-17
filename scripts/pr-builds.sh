@@ -21,10 +21,10 @@ if [ -z "$print" ] && [ "$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)" != "$
     echo "$sha is no longer the head of #$pr: its comment stays"
     exit 0
 fi
-# every artifact but the APK's halves, which only the job that packs the APK takes
+# every artifact but the APK's halves (-stage), which only the job that packs the APK takes
 artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100")
 links=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run/artifacts" '
-    .artifacts | map(select((.expired | not) and (.name | startswith("android-stage-") | not))) | sort_by(.name)[] |
+    .artifacts | map(select((.expired | not) and (.name | endswith("-stage") | not))) | sort_by(.name)[] |
     "- [\(.name)](\($url)/\(.id)), \(.size_in_bytes / 1048576 | floor) MiB"' <<<"$artifacts")
 until=$(jq -r '[.artifacts[].expires_at] | min // empty | .[:10]' <<<"$artifacts")
 needs=${NEEDS:-}

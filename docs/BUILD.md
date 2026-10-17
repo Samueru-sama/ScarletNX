@@ -363,13 +363,13 @@ cmake --preset default -B build/appimage -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX
 cmake --build build/appimage &&
 cmake --install build/appimage &&
 GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
-# -> dist/ScarletNX-<arch>.AppImage
+# -> dist/ScarletNX-linux-<arch>.AppImage
 ```
 
 It carries libgccjit and the `as` and `ld` of the same Arch (an older binutils' `as` can't read what it writes), so
 `--backend=gcc` needs nothing from the system.
 
-[Nightly AppImages](https://github.com/scarletnx/ScarletNX/releases/tag/nightly), x86_64 and aarch64 · [Launch](USAGE.md).
+[Nightly AppImages](https://github.com/scarletnx/nightly/releases/latest), x86_64 and aarch64 · [Launch](USAGE.md).
 
 A pull request's own builds are linked from a comment on it once CI has built them.
 

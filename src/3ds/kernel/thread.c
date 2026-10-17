@@ -4,6 +4,7 @@
    SVC register layout from Azahar kernel/svc_wrapper.h (revision in 3DS.md). */
 #include "3ds/runtime/internal.h"
 #include "3ds/services/gsp.h"
+#include "3ds/services/dsp.h"
 #include "common/utilities/common.h"
 #include <string.h>
 #if defined(_WIN32)
@@ -204,9 +205,10 @@ static void sleep_until(uint64_t deadline) {
 #endif
 }
 /* The highest-priority runnable thread, the current one among equals. Time is part of it: a thread in SleepThread
-   is runnable again at its deadline, and the display's vblank is delivered when due, which wakes the threads
-   waiting on GSP's interrupt events. When no thread can run but a deadline or a vblank is ahead, the host sleeps
-   until the first of them; only a process with nothing left to wake for is blocked. */
+   is runnable again at its deadline, and the display's vblank and the DSP's audio frame are delivered when due,
+   which wakes the threads waiting on GSP's and the DSP's interrupt events. When no thread can run but a deadline, a
+   vblank or a frame is ahead, the host sleeps until the first of them; only a process with nothing left to wake for
+   is blocked. */
 bool snx_ctr_schedule(SnxCtrProcess* p) {
     /* The current thread's registers go to its context first: a vblank already due wakes the threads waiting on
        GSP's events, the current one included, by editing their saved contexts, and the thread chosen below always
@@ -218,6 +220,7 @@ bool snx_ctr_schedule(SnxCtrProcess* p) {
     for (;;) {
         uint64_t now = now_ns(), earliest = UINT64_MAX;
         if (p->gsp.shared_object && now >= p->gsp.next_vblank_ns) snx_ctr_gsp_vblank(p);
+        if (p->dsp.core && now >= p->dsp.next_frame_ns) snx_ctr_dsp_frame(p, now);
         uint32_t next = 0;
         for (uint32_t i = 1; i < CTR_OBJECTS; ++i) {
             if (p->objects[i].type != CTR_OBJ_THREAD) continue;
@@ -243,6 +246,7 @@ bool snx_ctr_schedule(SnxCtrProcess* p) {
         }
         uint64_t deadline = earliest;
         if (p->gsp.shared_object && p->gsp.next_vblank_ns < deadline) deadline = p->gsp.next_vblank_ns;
+        if (p->dsp.core && p->dsp.next_frame_ns < deadline) deadline = p->dsp.next_frame_ns;
         if (deadline == UINT64_MAX) return false;
         exclusive = 0;
         sleep_until(deadline);

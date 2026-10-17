@@ -42,6 +42,8 @@ def plan(caches, open_prs, branches):
             doomed.append((cache, f'pull request #{pull.group(1)} is closed'))
         elif ref.startswith('refs/heads/') and ref[len('refs/heads/') :] not in branches:
             doomed.append((cache, 'its branch is gone'))
+        elif ref.startswith('refs/tags/'):  # a version's build reads main's: what it saves no later run reads
+            doomed.append((cache, "a tag's"))
         else:
             families.setdefault((ref, cache.get('version'), family(cache['key'])), []).append(cache)
     for entries in families.values():

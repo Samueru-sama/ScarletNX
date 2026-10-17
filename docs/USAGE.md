@@ -212,15 +212,15 @@ The NX runtime includes SDL3 even when running headless; headless mode skips vid
 ## AppImage / display
 
 ```sh
-chmod +x ScarletNX-x86_64.AppImage
-./ScarletNX-x86_64.AppImage --game=games/Game
+chmod +x ScarletNX-linux-x86_64.AppImage
+./ScarletNX-linux-x86_64.AppImage --game=games/Game
 SDL_VIDEO_DRIVER=x11 games/Game/Game
 ```
 
-On an ARM64 machine the image is `ScarletNX-aarch64.AppImage`.
+On an ARM64 machine the image is `ScarletNX-linux-aarch64.AppImage`.
 `--game` selects the game's folder, its `Game_code.so` and `Game_data/`; or name the image `games/Game/Game.AppImage`
 to load the files beside it.
-The AppImage also prepares dumps: `./ScarletNX-x86_64.AppImage Game.nsp`, in the folder [Folders](#folders) names,
+The AppImage also prepares dumps: `./ScarletNX-linux-x86_64.AppImage Game.nsp`, in the folder [Folders](#folders) names,
 and each game gets a copy of the AppImage (on Windows, of `scarletnx.exe` and the DLLs next to it).
 X11 bypasses Wayland. [Licenses](CREDITS.md).
 

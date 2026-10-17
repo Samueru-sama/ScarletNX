@@ -180,6 +180,12 @@ if(TARGET snx_ctr_board)
             snx_test_target(snx-test-3ds-pica 11)
             target_link_libraries(snx-test-3ds-pica PRIVATE snx_ctr_gpu m)
             add_test(NAME 3ds_pica COMMAND snx-test-3ds-pica)
+            # the HLE DSP and dsp::DSP: pipes, regions, sources, mixing, decoding, the service as ndsp drives it
+            add_executable(snx-test-3ds-dsp 3ds_dsp.c)
+            snx_test_target(snx-test-3ds-dsp 11)
+            target_compile_options(snx-test-3ds-dsp PRIVATE -UNDEBUG)
+            target_link_libraries(snx-test-3ds-dsp PRIVATE snx_ctr_process)
+            add_test(NAME 3ds_dsp COMMAND snx-test-3ds-dsp)
     # No Vulkan loader/ICD: presentation cannot run here; the probe skips, never fakes a frame.
     set_tests_properties(3ds_gsp_gpu PROPERTIES SKIP_RETURN_CODE 77)
             add_test(NAME ctr_swipc_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ctr_swipc.py"
@@ -529,6 +535,12 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
     # the nightly release's title and notes (scripts/nightly-notes.py)
     add_test(NAME nightly_notes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_notes_test.py")
+    # the builds published as releases and on Discord (scripts/publish-builds.py), against fakes. Where publish.yml
+    # runs it, Linux: the fake gh is a script Windows does not run by its name
+    if(NOT WIN32)
+        add_test(NAME publish_builds
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/publish_builds_test.py")
+    endif()
 endif()
 
 # a package patched in the build tree from the cache's copy as released (cmake/patched_copy.cmake)

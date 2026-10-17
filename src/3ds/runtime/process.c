@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/runtime/internal.h"
 #include "3ds/gpu/pica.h"
+#include "3ds/services/dsp.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -62,6 +63,7 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     free(p->gsp.regs);
     if (p->gsp.pica) snx_ctr_pica_free(p->gsp.pica);
     free(p->gsp.pica);
+    snx_ctr_dsp_close(p);
     snx_ctr_romfs_free(p->romfs);
     if (p->tree) {
         fs_tree_destroy(p->tree);
@@ -206,6 +208,7 @@ bool snx_ctr_process_mount_fs(SnxCtrProcess* p, const char* directory) {
         return false;
     }
     p->sd = sd;
+    snx_ctr_dsp_component_file(p);
     return true;
 }
 /* HLE shared pages come from board FCRAM past the application pool, outside

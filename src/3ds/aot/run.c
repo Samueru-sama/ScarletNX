@@ -4,6 +4,7 @@
 #include "common/utilities/common.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/gpu/present.h"
+#include "3ds/audio/output.h"
 #include "common/filesystem/host.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -14,7 +15,7 @@ int snx_ctr_aot_run(const char* driver, const char* directory, SnxCtrModel model
     SnxCtrImage image = {0};
     SnxCtrProcess* process = NULL;
     SnxCtrNative native = {0};
-    char *executable = NULL, *parent = NULL, *compiler = NULL, *module_path = NULL, *frames = NULL;
+    char *executable = NULL, *parent = NULL, *compiler = NULL, *module_path = NULL, *frames = NULL, *wav = NULL;
     int result = 1;
     if (!snx_ctr_image_load(directory, &image, error, error_size)) goto done;
     executable = snx_executable(driver);
@@ -56,6 +57,9 @@ int snx_ctr_aot_run(const char* driver, const char* directory, SnxCtrModel model
         goto done;
     }
     if (!snx_ctr_present_init(frames)) printf("Vulkan presenter unavailable: no frames will be shown or saved\n");
+    /* the DSP's output plays on the default device, and its first two minutes go to <output>/audio.wav */
+    wav = snx_path_join(directory, "audio.wav");
+    if (!snx_ctr_audio_init(wav)) printf("No audio output: the DSP's frames will not be heard or saved\n");
     uint64_t executed;
     printf("Running ARM11 static AOT\n");
     SnxCtrRunResult state = snx_ctr_dispatch(native.module, process, limit, &executed);
@@ -77,7 +81,9 @@ int snx_ctr_aot_run(const char* driver, const char* directory, SnxCtrModel model
     }
 done:
     snx_ctr_present_free();
+    snx_ctr_audio_free();
     snx_ctr_process_free(process);
+    free(wav);
     free(frames);
     snx_ctr_native_close(&native);
     free(module_path);

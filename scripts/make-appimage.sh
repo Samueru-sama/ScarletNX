@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# Makes dist/ScarletNX-<arch>.AppImage, a runtime that runs on any Linux, with pkgforge's quick-sharun
+# Makes dist/ScarletNX-linux-<arch>.AppImage, a runtime that runs on any Linux, with pkgforge's quick-sharun
 # (https://github.com/pkgforge-dev/Anylinux-AppImages): it bundles the runtime with every library it loads, SDL3, the
 # Vulkan loader and Mesa's Vulkan drivers included. CI runs it in pkgforge's Arch container after `cmake --install`
 # into /usr (.github/workflows/build.yml), and quick-sharun has to be on PATH (pkgforge-dev/anylinux-setup-action puts
@@ -16,12 +16,17 @@ REPOSITORY=${GITHUB_REPOSITORY:-scarletnx/ScarletNX}
 VERSION=${VERSION:-$(git -C "$(dirname "$0")/.." describe --always --dirty 2>/dev/null || echo unknown)}
 export ARCH VERSION
 export OUTPATH=./dist
-export OUTNAME=ScarletNX-$ARCH.AppImage
+export OUTNAME=ScarletNX-linux-$ARCH.AppImage
 # .DirIcon, what file managers and integrators show, is this PNG (docs.appimage.org/reference/appdir.html)
 export ICON=/usr/share/icons/hicolor/256x256/apps/wimsy.png
 export DESKTOP=/usr/share/applications/scarletnx.desktop
-# AppImageUpdate finds new builds in the rolling release through the .zsync file next to the AppImage
-export UPINFO="gh-releases-zsync|${REPOSITORY%/*}|${REPOSITORY#*/}|nightly|*$ARCH.AppImage.zsync"
+# AppImageUpdate finds new builds through the .zsync file next to the AppImage in the latest release
+# (scripts/publish-builds.py): a version's in this repository's, a nightly's in the owner's nightly repository
+if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+    export UPINFO="gh-releases-zsync|${REPOSITORY%/*}|${REPOSITORY#*/}|latest|*$ARCH.AppImage.zsync"
+else
+    export UPINFO="gh-releases-zsync|${REPOSITORY%/*}|nightly|latest|*$ARCH.AppImage.zsync"
+fi
 # The runtime exits at once without a game module, so tracing it for dlopened libraries finds nothing: name them
 export STRACE_MODE=0 DEPLOY_SDL=1 DEPLOY_VULKAN=1
 
