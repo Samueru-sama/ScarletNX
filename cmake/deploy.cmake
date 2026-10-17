@@ -2,13 +2,32 @@
 # Copyright 2026 the ScarletNX contributors
 # Copies the runtime to games/<Game>/<Game> for every games/<Game>/<Game>_code.so (<Game>.exe for every _code.dll on
 # Windows), and to games/<Game> for an older version's game beside the others. The runtime finds its game module by
-# its own file name, so each game gets a copy under its name.
+# its own file name, so each game gets a copy under its name. GAMES empty: games/ of the folder the driver beside the
+# runtime works in when no --repo names one (snx_data_dir): a .scarletnx/ beside it, else the user's data folder.
 if(WINDOWS)
     set(module_ext dll)
     set(exe_ext .exe)
 else()
     set(module_ext so)
     set(exe_ext "")
+endif()
+if(NOT GAMES)
+    get_filename_component(program_dir "${RUNTIME}" DIRECTORY)
+    if(IS_DIRECTORY "${program_dir}/.scarletnx")
+        set(data "${program_dir}/.scarletnx")
+    elseif(WINDOWS AND DEFINED ENV{APPDATA} AND NOT "$ENV{APPDATA}" STREQUAL "")
+        set(data "$ENV{APPDATA}/scarletnx")
+    elseif(MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+        set(data "$ENV{HOME}/Library/Application Support/scarletnx")
+    elseif(NOT WINDOWS AND NOT MACOS AND "$ENV{XDG_DATA_HOME}" MATCHES "^/") # the XDG spec ignores a relative one
+        set(data "$ENV{XDG_DATA_HOME}/scarletnx")
+    elseif(NOT WINDOWS AND NOT MACOS AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+        set(data "$ENV{HOME}/.local/share/scarletnx")
+    else()
+        message(STATUS "Runtime not deployed: no home folder to find the games in (set SNX_GAMES_DIR)")
+        return()
+    endif()
+    set(GAMES "${data}/games")
 endif()
 # Through a temporary file and a rename, so a game that is running keeps its old copy
 function(deploy folder game)

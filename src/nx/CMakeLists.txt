@@ -183,10 +183,11 @@ endif()
 
 # a sanitized build (SNX_TEST_SANITIZERS) is a test build, its runtime instrumented: it doesn't go next to the games
 if(SNX_DEPLOY AND SNX_TEST_SANITIZERS AND BUILD_TESTING)
-    message(STATUS "SNX_TEST_SANITIZERS: the runtime is not deployed to ${SNX_GAMES_DIR}")
+    message(STATUS "SNX_TEST_SANITIZERS: the runtime is not deployed to the games")
 elseif(SNX_DEPLOY)
     add_custom_command(TARGET scarletnx POST_BUILD
         COMMAND "${CMAKE_COMMAND}" "-DRUNTIME=$<TARGET_FILE:scarletnx>" "-DGAMES=${SNX_GAMES_DIR}" "-DWINDOWS=${WIN32}"
+                "-DMACOS=${APPLE}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/deploy.cmake"
         VERBATIM)
 endif()

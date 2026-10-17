@@ -22,7 +22,7 @@ python3 tests/run_filesystem_tree.py --cc clang --sanitize
 clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src src/common/cpu/aarch64/cpu_helpers.c
 ```
 
-Runtime relink deploys to `games/` by default. Recompiler/`src/common/cpu/aarch64/` edits require `-r`.
+Runtime relink deploys to the data folder's `games/` by default (`SNX_GAMES_DIR`). Recompiler/`src/common/cpu/aarch64/` edits require `-r`.
 Avoid builds during timing runs. Formatting: clang-format 23 + `uv`/pinned Ruff; omit `--check` to write.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 

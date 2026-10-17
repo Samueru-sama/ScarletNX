@@ -7,8 +7,8 @@
 #   cmake --preset default && cmake --build --preset default        (or windows-cross; see CMakePresets.json)
 #   cmake -B build && cmake --build build                           (without the presets)
 #
-# After each build the runtime is copied next to every recompiled game in games/ (SNX_DEPLOY), so a runtime fix
-# reaches the games without recompiling them.
+# After each build the runtime is copied next to every recompiled game in the data folder's games/ (SNX_DEPLOY), so a
+# runtime fix reaches the games without recompiling them.
 cmake_minimum_required(VERSION 3.25)
 
 # Clang only: the runtime, the generated game code and the third-party libraries are built and tested with one
@@ -44,7 +44,12 @@ if(SNX_BUILD_NX AND DEFINED SNX_BACKEND AND NOT SNX_BACKEND STREQUAL "sdl3")
                         "Use -H/--headless at runtime to run without a window.")
 endif()
 option(SNX_DEPLOY "Copy the runtime next to every recompiled game in SNX_GAMES_DIR after building" ON)
-set(SNX_GAMES_DIR "${CMAKE_SOURCE_DIR}/games" CACHE PATH "Folder holding the recompiled games")
+set(SNX_GAMES_DIR "" CACHE PATH "Folder holding the recompiled games (empty: games/ of the drivers' data folder)")
+# the checkout's games/ was the default while the drivers of a build tree worked in it (docs/DEPRECATIONS.md)
+if(SNX_GAMES_DIR STREQUAL "${CMAKE_SOURCE_DIR}/games")
+    message(STATUS "SNX_GAMES_DIR was the checkout's games/, an older version's default: the data folder's from now on")
+    set_property(CACHE SNX_GAMES_DIR PROPERTY VALUE "")
+endif()
 
 # Upstream builds with -O2. RelWithDebInfo keeps that and adds symbols for crash reports. It leaves out -DNDEBUG, as
 # upstream does: the runtime has no assert(), so this keeps VMA's assertions on.

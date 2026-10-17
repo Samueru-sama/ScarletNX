@@ -253,7 +253,7 @@ cmake --build build
 ```
 
 Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`). Runtime relinks deploy `games/Game/Game[.exe]` beside
-matching `Game_code.so/.dll`; no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](DEVELOPMENT.md).
+matching `Game_code.so/.dll`, in the data folder's `games/` ([USAGE](USAGE.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](DEVELOPMENT.md).
 
 CPM: [SHA-256-pinned sources](../cmake/dependencies.cmake), shared `.cache/cpm` cache, offline configure when populated.
 The cache holds each package as released, so one filled by hand (a Flatpak manifest's sources, a distribution's
@@ -280,7 +280,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_FFMPEG_ASM=OFF`: omit x86-64 NASM assembly; slower FFmpeg decoding.
 - `-DCPM_DOWNLOAD_SDL3=ON`: build the pinned SDL3 instead of using a system SDL3 development package.
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
-- `-DSNX_GAMES_DIR=/path`: override deployment dir (default: `games/`).
+- `-DSNX_GAMES_DIR=/path`: override deployment dir (default: empty, the data folder's `games/` the build tree's
+  driver uses). A tree whose value is the checkout's `games/`, the default before, is set back to empty.
 - `-DCPM_SOURCE_CACHE=/path`: override source-download cache.
 - `-DSNX_DEPS_CACHE=/path`: reuse and publish finished FFmpeg and OpenSSL builds there (default: the environment's
   `SNX_DEPS_CACHE`, else none).
