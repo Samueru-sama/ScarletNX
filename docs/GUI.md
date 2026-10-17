@@ -39,8 +39,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Back goes back, Tab to the next screen, Enter or Tap selects, Swipe across turns the page). A key of
   words between slashes presses the word clicked, `Left` or `Right` of `Left/Right`; the text after it
   presses the key when its words all press one. `Arrows`, `mouse` and `pad` press nothing.
-- The menu, top to bottom: the three loads, **Setup device keys**, **Settings**, **Share log** and
-  **Exit**. The games, and the recent ones, are the Games tab's.
+- The menu, top to bottom: the three loads, **Setup device keys**, **Settings**, **Share log**, on
+  Android **Open data folder**, and **Exit**. The games, and the recent ones, are the Games tab's.
 - Space, Enter or a left click explicitly activates an item, marking it bright
   pink. Activation is tracked separately from hover/focus, so the activated item
   stays pink while another item is hovered in yellow. Mouse controls also work
@@ -152,8 +152,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   sizes. Bigger letters scroll the menu. The foot's letters (its keys, and the tips when they are
   there) are a size under the rest's, 1x at the least.
 - **Share log** saves the last run's output and game log to `scarletnx.log`. On the
-  desktop it goes in the working folder with its path copied. On Android it goes to
-  `/sdcard/ScarletNX/` and is shared.
+  desktop it goes in the working folder with its path copied. On Android it goes to the
+  data folder's `state/` and is shared.
+- **Open data folder**, on Android, opens the data folder, the app's own storage, in the
+  system's Files app ([ANDROID](ANDROID.md)).
 - **Exit** closes the launcher. Closing its window during a run terminates the
   entire owned process tree, so let the game exit normally to preserve its saves.
 - As it opens, the menu shows in a box what an older version left where this one no longer looks, a

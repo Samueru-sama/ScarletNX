@@ -7,7 +7,8 @@
 #include <stdint.h>
 #include "common/utilities/font.h" /* gui_glyph */
 
-/* the menu's items, in order: the loads, the keys, Settings and Share log, Exit. The games are the Games tab's */
+/* the menu's items, in order: the loads, the keys, Settings and Share log, on Android the data folder, Exit. The games
+   are the Games tab's */
 enum {
     GUI_SWITCH,
     GUI_LINUX,
@@ -15,6 +16,9 @@ enum {
     GUI_KEYS,
     GUI_SETTINGS, /* the game's .ini settings, the launcher's own for the runs and its App: settings.h */
     GUI_LOG,      /* the logs in one file, for a bug report: a phone has no terminal to copy them from */
+#ifdef __ANDROID__
+    GUI_DATA, /* the data folder, the app's own storage, in the system's Files app (dist/android's DataProvider) */
+#endif
     GUI_EXIT,
     GUI_ITEM_COUNT
 };
@@ -31,7 +35,7 @@ typedef struct {
     int text_size; /* the font's scale, 1 to GUI_TEXT_MAX; 0 fits the screen */
 } GuiMenu;
 /* what a key on the menu asks of the GUI: nothing more, the Settings or the logs shared */
-typedef enum { GUI_MENU_STAY, GUI_MENU_SETTINGS, GUI_MENU_LOG } GuiMenuDo;
+typedef enum { GUI_MENU_STAY, GUI_MENU_SETTINGS, GUI_MENU_LOG, GUI_MENU_DATA } GuiMenuDo;
 GuiMenuDo gui_menu_key(GuiMenu* menu, GuiKey key);
 /* The question a running run's abort asks first, or leaving the menu on a computer: shown or not, which one, and the
    choice in focus, the one that stays first */

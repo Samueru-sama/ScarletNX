@@ -207,6 +207,9 @@ static const char* const items[] = {"Load Switch NSP/XCI/NRO",
                                     "Setup device keys",
                                     "Settings",
                                     "Share log",
+#ifdef SDL_PLATFORM_ANDROID
+                                    "Open data folder",
+#endif
                                     "Exit"};
 #define GUI_RECENT_SHOWN 3 /* the recent games Games shows before a row that shows the rest */
 /* what the screens say to press: a phone has a finger, the back button and the system's file picker, nothing to drop;
@@ -222,7 +225,7 @@ static const char* const items[] = {"Load Switch NSP/XCI/NRO",
 #define SAY_ABORT      "Tap here to abort and return to menu"
 #define SAY_NO_GAMES   "No games in games/: put a game's .nro, .xci or .nsp there."
 #define SAY_COUNT      "game(s)"
-#define SAY_LOG_FAILED "The log could not be saved: allow the app access to files."
+#define SAY_LOG_FAILED "The log could not be saved in the data folder."
 #define SAY_EDITOR     "Tap a key to change, type or pick it. Back: go back."
 #define SAY_PICKER     "Drag a bar, or tap #RRGGBB to type it. Tap outside: keep. Back: put back."
 #define SAY_SETTINGS   SAY_EDITOR
@@ -3753,20 +3756,6 @@ static void leave_run(App* app) {
     layout(app);
 }
 #ifdef SDL_PLATFORM_ANDROID
-/* the working folder moves to /sdcard/ScarletNX once the app may write there, which the user grants after it starts */
-static bool android_folder(App* app) {
-    char* cwd = gui_android_folder() ? SDL_GetCurrentDirectory() : NULL;
-    if (!cwd || (app->cwd && !strcmp(cwd, app->cwd))) {
-        SDL_free(cwd);
-        return false;
-    }
-    SDL_free(app->cwd);
-    app->cwd = cwd;
-    free(app->home_dir);
-    app->home_dir = snx_strdup(cwd);
-    places_apply(app);
-    return true;
-}
 /* A game runs in the app's game activity, a process of its own: no child of this one gets a window */
 static int play(App* app, const char* game) {
     GuiSettings* s = settings_of(app);
@@ -3854,6 +3843,34 @@ static void left_games(App* app, const char* folder) {
     }
     snx_free_strings(names, count);
 }
+#ifdef SDL_PLATFORM_ANDROID
+/* a folder with anything in it */
+static bool has_files(const char* folder) {
+    char** names = NULL;
+    size_t count = 0;
+    bool any = folder && !snx_list_dir(folder, &names, &count) && count;
+    snx_free_strings(names, count);
+    return any;
+}
+/* what older versions kept elsewhere on Android: /sdcard/ScarletNX's games and keys (a shared storage the app no longer
+   uses), and the games/ in the app's own files from before it had All files access */
+static void left_android(App* app) {
+    static const char* const shared[] = {"games", "prod.keys", "title.keys"};
+    const char* files = SDL_GetAndroidInternalStoragePath();
+    char *old, *now;
+    size_t i;
+    for (i = 0; app->data_dir && i < sizeof shared / sizeof shared[0]; ++i) {
+        old = snx_path_join(SNX_ANDROID_DIR, shared[i]);
+        now = i ? snx_path_join(app->data_dir, shared[i]) : snx_strdup(app->games_dir);
+        if (old && now) left_line(app, old, now, i ? snx_is_file(old) : has_files(old));
+        free(old);
+        free(now);
+    }
+    old = files ? snx_path_join(files, "games") : NULL;
+    if (old && app->games_dir) left_line(app, old, app->games_dir, has_files(old));
+    free(old);
+}
+#endif
 /* what older versions left where this one no longer looks, a folder at a time, for the menu to say while it is there:
    the menu's own files' folder (gui/), work/, each game laid out beside the others, a portable copy's games/ beside
    the program (its data in .scarletnx/ now), a build tree's games/, work/ and keys in its checkout. Nothing is moved:
@@ -3891,6 +3908,9 @@ static void left_behind(App* app) {
 #endif
 #endif
     if (work && moved) left_line(app, work, moved, snx_path_exists(work));
+#ifdef SDL_PLATFORM_ANDROID
+    left_android(app);
+#endif
     left_games(app, app->games_dir);
     for (i = 0; i < app->folder_count; ++i) left_games(app, app->folders[i]);
     /* a portable copy's games/ beside the program, which a .scarletnx/ there holds now */
@@ -4083,9 +4103,6 @@ static void pump(App* app) {
     }
 }
 static void launch(App* app, char* absolute, bool prepared) {
-#ifdef SDL_PLATFORM_ANDROID
-    android_folder(app); /* the driver works where the menu stands */
-#endif
     if (!absolute || !snx_is_file(absolute)) {
         snprintf(app->message, sizeof(app->message), "That path is not a readable file. Try again or press ESC.");
         free(absolute);
@@ -4368,26 +4385,19 @@ static char* newest_log(const App* app) {
     free(folder);
     return newest;
 }
-/* the message on the screen, the last run's output and the newest game log, as scarletnx.log: on Android in
-   /sdcard/ScarletNX and handed to the share sheet as that file, elsewhere in its data folder's state folder with its
-   path copied (the working folder without one): started from the desktop, the working folder is the home folder */
+/* the message on the screen, the last run's output and the newest game log, as scarletnx.log in the data folder's state
+   folder (the working folder without one: started from the desktop, that is the home folder), then on Android handed
+   to the share sheet, elsewhere its path copied */
 static void share_log(App* app) {
     char *game, *run, *played, *text, *saved, *state = NULL;
     const char* folder;
-#ifdef SDL_PLATFORM_ANDROID
-    android_folder(app);
-    folder = gui_android_folder();
-#else
     folder = app->cwd;
-#endif
-#ifndef SDL_PLATFORM_ANDROID
     if (app->data_dir && snx_app_dir(app->data_dir)) state = snx_app_kind_dir(app->data_dir, SNX_USER_STATE);
     if (state && snx_mkdirs(state)) {
         free(state);
         state = NULL;
     }
     if (state) folder = state;
-#endif
     left_behind(app);
     game = newest_log(app);
     run = log_tail(app->run_log, 1 << 20);
@@ -4420,9 +4430,6 @@ static void share_log(App* app) {
 static void games_scan(App* app, GuiGames* games, char* message, size_t size) {
     int kinds = GUI_GAMES_RUN | GUI_GAMES_CIA, i;
     char error[sizeof app->message];
-#ifdef SDL_PLATFORM_ANDROID
-    android_folder(app);
-#endif
     gui_games_free(games);
     if (!gui_games_add(games, app->games_dir, kinds, error, sizeof error))
         snprintf(message, size, "Cannot open games/. Create it in the displayed working directory.");
@@ -4544,6 +4551,9 @@ static void menu_key(App* app, GuiKey key) {
     switch (gui_menu_key(&app->menu, key)) {
         case GUI_MENU_SETTINGS: open_settings(app); break;
         case GUI_MENU_LOG: share_log(app); break;
+#ifdef SDL_PLATFORM_ANDROID
+        case GUI_MENU_DATA: gui_android_open_data(app->message, sizeof app->message); break;
+#endif
         default: break;
     }
     if (key == GUI_CANCEL || (key == GUI_SELECT && pick_screen(app))) app->message[0] = 0;
@@ -4915,15 +4925,11 @@ static void touch(App* app, float x, float y) {
     pointer(app, x * (float)w, y * (float)h, true, true);
 }
 #ifdef SDL_PLATFORM_ANDROID
-/* SDL hands the app's lifecycle to watchers only, inside SDL_PollEvent on this thread. Back from the system's settings,
-   the user may have just let the app write to /sdcard */
+/* SDL hands the app's lifecycle to watchers only, inside SDL_PollEvent on this thread */
 static bool SDLCALL lifecycle(void* data, SDL_Event* e) {
     App* app = (App*)data;
     if (e->type == SDL_EVENT_DID_ENTER_BACKGROUND) app->hidden = true;
     if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) app->hidden = false;
-    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND && android_folder(app)) {
-        if (app->menu.view == GUI_LOAD_GAMES) list_games(app);
-    }
     return true;
 }
 #endif
@@ -5187,6 +5193,11 @@ static bool initialize(App* app, const char* self) {
     app->cwd = SDL_GetCurrentDirectory();
 #ifdef SDL_PLATFORM_ANDROID
     app->drivers = gui_android_libraries() ? snx_strdup(gui_android_libraries()) : NULL;
+    /* the app's own storage: no FUSE between it and the drivers, as the shared storage has */
+    if (gui_android_own_folder()) {
+        SDL_free(app->cwd);
+        app->cwd = SDL_GetCurrentDirectory();
+    }
     app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
 #else
     app->drivers = self ? snx_dirname(self) : SDL_GetBasePath() ? snx_strdup(SDL_GetBasePath()) : NULL;

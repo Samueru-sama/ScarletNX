@@ -24,9 +24,21 @@
         android:theme="@style/ScarletNX"
         android:hardwareAccelerated="true"
         android:requestLegacyExternalStorage="true"
+        android:hasFragileUserData="true"
         android:enableOnBackInvokedCallback="false">
         <!-- the menu and the games are laid out wide; SDL frees a resizable window's orientation without this -->
         <meta-data android:name="SDL_ENV.SDL_ORIENTATIONS" android:value="LandscapeLeft LandscapeRight" />
+        <!-- the data folder, the app's own storage, in the system's Files app and its pickers (DataProvider) -->
+        <provider
+            android:name=".DataProvider"
+            android:authorities="${applicationId}.data"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -140,14 +140,40 @@ public class MainActivity extends SDLActivity {
         share(this, path);
     }
 
-    /** the menu's Share log and a stopped game's (GameActivity), from the activity that shows them */
+    /** the menu's Share log and a stopped game's (GameActivity), from the activity that shows them: a file of the data
+        folder through DataProvider, another through the media store */
     static void share(Activity activity, String path) {
+        Uri document = DataProvider.documentUri(activity, new java.io.File(path));
+        if (document != null) {
+            send(activity, document);
+            return;
+        }
         MediaScannerConnection.scanFile(activity, new String[] {path}, new String[] {"text/plain"}, (file, uri) -> {
-            if (uri == null) return;
-            Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, uri);
-            activity.startActivity(
-                Intent.createChooser(send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "ScarletNX log"));
+            if (uri != null) send(activity, uri);
         });
+    }
+
+    private static void send(Activity activity, Uri uri) {
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, uri);
+        activity.startActivity(
+            Intent.createChooser(send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "ScarletNX log"));
+    }
+
+    /** src/gui/android.c: the data folder in the system's Files app, through DataProvider. Its viewer is the Files app
+        itself where the system names none (some makers' own) */
+    public void openData() {
+        Intent view = new Intent(Intent.ACTION_VIEW)
+                          .setDataAndType(DataProvider.rootUri(this), "vnd.android.document/root")
+                          .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        try {
+            startActivity(view);
+        } catch (ActivityNotFoundException e) {
+            try {
+                startActivity(view.setPackage("com.google.android.documentsui"));
+            } catch (ActivityNotFoundException again) {
+                startActivity(view.setPackage("com.android.documentsui"));
+            }
+        }
     }
 
     @Override

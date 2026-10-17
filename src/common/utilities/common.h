@@ -54,7 +54,7 @@ char* snx_user_data_dir(void);
 enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
 /* A portable copy's data folder: this folder beside the AppImage or the program */
 #define SNX_PORTABLE_DIR ".scarletnx"
-/* Android's data folder, which the user sees (the app's working folder once it may write there) */
+/* An older version's data folder on Android, the shared storage's: a game there still runs as one of a data folder */
 #define SNX_ANDROID_DIR  "/sdcard/ScarletNX"
 /* The user's folder for one kind of file: $XDG_CONFIG_HOME/scarletnx (~/.config), $XDG_STATE_HOME/scarletnx
    (~/.local/state) or $XDG_CACHE_HOME/scarletnx (~/.cache), a relative path ignored. Without SNX_XDG config/, state/

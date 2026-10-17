@@ -248,7 +248,8 @@ The driver works in one folder, its data folder, the first of these that applies
 1. the one `--repo DIR` names (the menu names its own);
 2. a portable copy's: `.scarletnx/` beside the AppImage, or beside the Windows zip's programs, when it is there;
 3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows,
-   `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `/sdcard/ScarletNX`.
+   `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `.scarletnx/` in its own
+   storage ([ANDROID](ANDROID.md)).
 
 A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
 not a data folder. `--repo DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.

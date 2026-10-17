@@ -15,14 +15,15 @@
 void gui_android_start(void) {
     const char* files = SDL_GetAndroidInternalStoragePath();
     if (files) setenv("HOME", files, 1);
-    if (!gui_android_folder() && files) chdir(files);
+    if (files) chdir(files); /* then the data folder, gui_android_own_folder */
 }
 
-const char* gui_android_folder(void) {
-    static const char folder[] = SNX_ANDROID_DIR;
+const char* gui_android_own_folder(void) {
+    static char folder[1024];
+    const char* files = SDL_GetAndroidInternalStoragePath();
+    if (!files || snprintf(folder, sizeof folder, "%s/" SNX_PORTABLE_DIR, files) >= (int)sizeof folder) return NULL;
     mkdir(folder, 0770);
     if (access(folder, W_OK) || chdir(folder)) return NULL;
-    /* a phone has no terminal to make it: games/ is where the user puts dumps. The driver makes cache/work/ */
     mkdir("games", 0770);
     return folder;
 }
@@ -121,6 +122,7 @@ int gui_android_share(const char* path, char* message, size_t size) {
     return ok;
 }
 int gui_android_background(char* message, size_t size) { return call("toBack", "()V", NULL, message, size); }
+int gui_android_open_data(char* message, size_t size) { return call("openData", "()V", NULL, message, size); }
 
 static SDL_DialogFileCallback folder_done;
 static void* folder_data;
