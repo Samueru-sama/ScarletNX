@@ -6,9 +6,10 @@ The app is the [GUI](GUI.md) and the runtime, each in SDL's activity (`dist/andr
 recompiles on the phone, then the game opens.
 
 - **The menu** (`MainActivity`) is `scarletnx-gui` as `libmain.so`, in the YoRHa theme. Taps and the back button
-  drive it (see [GUI](GUI.md)). Its working folder is `/sdcard/ScarletNX`, which the user sees: `games/`, `work/`
-  and the logs go there. `HOME` stays the app's own files (`/data/data/org.scarletnx/files`), for
-  `.switch/prod.keys`.
+  drive it (see [GUI](GUI.md)). Its data folder is `/sdcard/ScarletNX`, which the user sees: `games/` goes there,
+  the extractions in its `cache/work/` and the games' logs in its `state/` ([USAGE](USAGE.md#folders)); until the
+  app has *All files access*, the app's own files (`/data/data/org.scarletnx/files`) instead. `HOME` stays the app's
+  own files, for `.switch/prod.keys`.
 - **Loading** (a *Load* item, *Setup device keys*) opens its screen, a box the whole width, and a tap in the box
   opens the system's file picker. A game's file is read by its path, so the app asks for access to the files when
   it starts (all files from Android 11): the picker's path, or for a document without one the file its descriptor
