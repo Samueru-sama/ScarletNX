@@ -352,6 +352,7 @@ interface nn::irsensor::IIrSensorServer is irs {
 
 # ================================================================ mii: an empty database
 type nn::mii::CharInfoElement = bytes<0x5c, 4>;
+type nn::mii::CharInfo = bytes<0x58, 4>;
 
 @fallback(quiet_ok)
 interface nn::mii::detail::IStaticService is mii:e, mii:u {
@@ -361,6 +362,8 @@ interface nn::mii::detail::IDatabaseService {
     @stub [0] IsUpdated(i32 source_flag) -> b8 updated;
     @stub [2] GetCount(i32 source_flag) -> i32 count;
     @stub [3] Get(i32 source_flag, array<nn::mii::CharInfoElement, 6> elements) -> i32 count;
+    [7] BuildDefault(u32 index) -> nn::mii::CharInfo info;
+    [22] SetInterfaceVersion(u32 version);
 }
 
 # ================================================================ ldn:u: local wireless. Opening an access point or a

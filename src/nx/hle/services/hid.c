@@ -96,14 +96,16 @@ static u32 npad_style(int idx) {
 }
 
 static void lifo_push(u8* lifo, u32 esize, const void* state, u32 ssize, u64 samp) {
-    /* lifo header: unused, buffer_count, tail, count. entries: {u64 sampling_number; state} */
+    /* lifo header: unused, buffer_count, tail, count. The entry's atomic sampling number is a
+       sequence lock: odd while writing, even when the state is ready. The state has its own sample number. */
     u64 cnt = 17, tail, count;
     memcpy(&tail, lifo + 0x10, 8);
     memcpy(&count, lifo + 0x18, 8);
     tail = (tail + 1) % cnt;
     u8* e = lifo + 0x20 + tail * esize;
-    memcpy(e, &samp, 8);
+    __atomic_store_n((u64*)e, (samp << 1) | 1, __ATOMIC_SEQ_CST);
     memcpy(e + 8, state, ssize);
+    __atomic_store_n((u64*)e, samp << 1, __ATOMIC_RELEASE);
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     memcpy(lifo + 8, &cnt, 8);
     memcpy(lifo + 0x10, &tail, 8);
@@ -202,7 +204,7 @@ static void npad_refresh_locked(void) {
     {
         u32 supported = __atomic_load_n(&hid.style_supported, __ATOMIC_RELAXED);
         u32 ids = __atomic_load_n(&hid.id_supported, __ATOMIC_RELAXED);
-        u32 style = (supported & (1u << 1)) && (ids & (1u << 8)) ? 1u << 1 : 0;
+        u32 style = !g_opt_docked && (supported & (1u << 1)) && (ids & (1u << 8)) ? 1u << 1 : 0;
         if (hid.visible_style[8] != style) npad_setup(base, 8, style, style ? (1u << 2) | (1u << 3) : 0, style ? 4 : 0);
         if (hid.visible_style[8] != style) {
             hid.visible_style[8] = style;

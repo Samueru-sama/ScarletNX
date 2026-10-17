@@ -150,11 +150,19 @@ void gpu_mem_written_shader(u64 gva, u64 size) { mem_written(gva, size); }
 u64 gpu_mem_generation(void) { return __atomic_load_n(&g_gw_gen, __ATOMIC_ACQUIRE); }
 static int phys_dirty_since(u64 since, u64 a, u64 sz) {
     if (!sz || since >= g_gw_phys_gen) return 0;
+    u64 run = 0, pages = 0;
     for (u64 b = a >> 12, e = (a + sz - 1) >> 12; b <= e; b++) {
         u64 cpu = gmmu_translate(b << 12);
-        if (cpu && write_pages_since(&g_gw_phys, since, cpu, 1)) return 1;
+        cpu &= ~0xfffull;
+        if (cpu && pages && cpu == run + pages * 0x1000) {
+            pages++;
+            continue;
+        }
+        if (pages && write_pages_since(&g_gw_phys, since, run, pages * 0x1000)) return 1;
+        run = cpu;
+        pages = cpu ? 1 : 0;
     }
-    return 0;
+    return pages && write_pages_since(&g_gw_phys, since, run, pages * 0x1000);
 }
 /* nonzero if [a,a+sz) may have been written after gen 'since' */
 static int dirty_since_locked(u64 since, u64 a, u64 sz) {

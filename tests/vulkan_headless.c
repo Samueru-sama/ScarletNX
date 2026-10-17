@@ -42,8 +42,8 @@ static int check_viewport_orientation(void) {
     r[0x286] = 0x6430;
     vp = vk_render_viewport(r);
     CHECK(vp.y == 54 && vp.height == -34 && vp.y + vp.height == 20);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    /* Negative scale and negative coordinate swizzle cancel, including their effect on winding. */
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    /* Negative scale and negative coordinate swizzle cancel in the viewport. */
     transform[1] = -17;
     memcpy(&r[0x280], transform, sizeof transform);
     vp = vk_render_viewport(r);
@@ -58,10 +58,10 @@ static int check_viewport_orientation(void) {
     r[0x286] = 0x6420;
     r[0x647] = 0x900;
     r[0x3FE] = 100u << 16;
-    r[0x4EB] = 1; /* lower-left window origin flips the viewport and its facing */
+    r[0x4EB] = 1; /* lower-left window origin flips the viewport */
     vp = vk_render_viewport(r);
     CHECK(vp.y == 120 && vp.height == -34);
-    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
     return 0;
 }
 
@@ -358,8 +358,10 @@ int main(int argc, char** argv) {
     CHECK(!check_direct_spirv());
     CHECK(g_renderer->method_barrier);
     u32 epoch = g_vk_epoch;
+    u64 finishes = g_vk_finishes;
     for (int kind = 0; kind <= 4; kind++) g_renderer->method_barrier(kind);
     CHECK(g_vk_epoch == epoch + 2); /* data and descriptor invalidation each expire cached reads */
+    CHECK(g_vk_finishes == finishes); /* method barriers order GPU work without forcing a host wait */
     printf("Headless Vulkan device: %s\n", g_vk.props.deviceName);
     /* Make any accidental WSI use during presents/recreation fail the test immediately. */
     vkCreateSwapchainKHR = NULL;

@@ -4,8 +4,10 @@
 #include <stdlib.h>
 
 #define LEAF_PAGES 4096u
+#define GROUP_PAGES 64u
 struct WritePageLeaf {
     u64 max;
+    u64 group_max[LEAF_PAGES / GROUP_PAGES];
     u64 gen[LEAF_PAGES];
 };
 void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen) {
@@ -21,7 +23,9 @@ void write_pages_stamp(WritePages* t, u64 a, u64 size, u64 gen) {
             t->far = gen;
             return;
         }
-        (*l)->gen[p & (LEAF_PAGES - 1)] = (*l)->max = gen;
+        (*l)->gen[p & (LEAF_PAGES - 1)] = gen;
+        (*l)->group_max[(p & (LEAF_PAGES - 1)) / GROUP_PAGES] = gen;
+        (*l)->max = gen;
     }
 }
 int write_pages_since(const WritePages* t, u64 since, u64 a, u64 size) {
@@ -32,10 +36,14 @@ int write_pages_since(const WritePages* t, u64 since, u64 a, u64 size) {
     for (p = a >> 12; p <= e && !(p >> 28);) {
         u64 end = (p | (LEAF_PAGES - 1)) < e ? p | (LEAF_PAGES - 1) : e;
         const WritePageLeaf* l = t->leaf[p >> 12];
-        u64 q;
         if (l && l->max > since)
-            for (q = p; q <= end; q++)
-                if (l->gen[q & (LEAF_PAGES - 1)] > since) return 1;
+            for (u64 group = p; group <= end;) {
+                u64 group_end = (group | (GROUP_PAGES - 1)) < end ? group | (GROUP_PAGES - 1) : end;
+                if (l->group_max[(group & (LEAF_PAGES - 1)) / GROUP_PAGES] > since)
+                    for (u64 q = group; q <= group_end; q++)
+                        if (l->gen[q & (LEAF_PAGES - 1)] > since) return 1;
+                group = group_end + 1;
+            }
         p = end + 1;
     }
     return 0;

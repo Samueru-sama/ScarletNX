@@ -591,6 +591,35 @@ static int nn_mii_detail_IStaticService_GetDatabaseService(SvcObj* self, i32 key
     return 0;
 }
 SvcObj* new_mii(void) { return nn_mii_detail_IStaticService_new(0); }
+/* CharInfoRaw is a 0x58-byte character, not a database record. These six default appearance records follow the
+   public Mii service implementation's DefaultMii table (Eden Emulator Project / yuzu, GPL), converted to CharInfo's
+   byte order. Each row starts at CharInfo offset 0x26, after the create ID and UTF-16 name. */
+static const u8 mii_defaults[6][0x32] = {
+    {0, 4, 0, 64, 64, 0, 0, 0, 4, 0, 0, 68, 8, 0, 2, 8, 4, 3, 4, 2, 12, 6, 8, 4, 3, 6, 2, 10, 1, 4, 9, 23, 19, 4, 3, 13, 8, 0, 0, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 0},
+    {0, 5, 0, 64, 64, 0, 0, 0, 0, 0, 0, 55, 6, 0, 2, 12, 4, 3, 4, 2, 12, 6, 6, 4, 3, 6, 2, 10, 1, 4, 9, 23, 19, 4, 3, 13, 8, 0, 0, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 0},
+    {0, 0, 0, 64, 64, 0, 0, 0, 1, 0, 0, 33, 1, 0, 2, 8, 4, 3, 4, 2, 12, 6, 1, 4, 3, 6, 2, 10, 1, 4, 9, 23, 19, 4, 3, 13, 8, 0, 0, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 0},
+    {0, 2, 1, 64, 64, 0, 0, 0, 2, 0, 0, 24, 8, 0, 4, 8, 4, 3, 3, 2, 12, 0, 8, 4, 3, 6, 2, 10, 1, 4, 9, 23, 19, 4, 3, 13, 8, 0, 0, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 0},
+    {0, 6, 1, 64, 64, 0, 0, 0, 0, 0, 0, 14, 7, 0, 4, 13, 4, 3, 3, 2, 12, 0, 7, 4, 3, 6, 2, 10, 1, 4, 9, 23, 19, 4, 3, 13, 8, 0, 0, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 0},
+    {0, 7, 1, 64, 64, 0, 0, 0, 0, 0, 0, 12, 1, 0, 4, 8, 4, 3, 3, 2, 12, 0, 1, 4, 3, 6, 2, 10, 1, 4, 9, 23, 19, 4, 3, 13, 8, 0, 0, 4, 10, 0, 8, 4, 10, 0, 4, 2, 20, 0},
+};
+static int nn_mii_detail_IDatabaseService_BuildDefault(SvcObj* self, u32 index, nn_mii_CharInfo* info) {
+    (void)self;
+    if (index >= 6) return RC(126, 1); /* InvalidArgument */
+    memset(info, 0, sizeof *info);
+    /* Stable, distinct RFC 4122 version 4 create IDs for the console's default characters. */
+    info->v[0] = (u8)(index + 1);
+    info->v[6] = 0x40;
+    info->v[8] = 0x80;
+    static const char name[] = "no name";
+    for (u32 i = 0; i < sizeof name - 1; i++) info->v[0x10 + i * 2] = (u8)name[i];
+    memcpy(info->v + 0x26, mii_defaults[index], sizeof mii_defaults[index]);
+    return 0;
+}
+static int nn_mii_detail_IDatabaseService_SetInterfaceVersion(SvcObj* self, u32 version) {
+    (void)self;
+    (void)version;
+    return 0;
+}
 /* ldn: local wireless. Initialize and GetState follow the state in u[0] (an atomic: game threads call both),
    AttachStateChangeEvent gives an event */
 static int nn_ldn_detail_IUserLocalCommunicationService_GetState(SvcObj* self, u32* state) {

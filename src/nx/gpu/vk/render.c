@@ -1208,11 +1208,10 @@ static u32 gs_input_vertices(u32 topology, int tes_on, u32 params) {
                                               : 3;
 }
 
-static VkFrontFace front_face_at_viewport(const u32* r, float viewport_height) {
+static VkFrontFace front_face_at_viewport(const u32* r) {
     int cw = r[0x647] == 0x900;
-    /* Vulkan tests facing in framebuffer coordinates. A negative viewport height reverses the winding there; reverse
-       the selected front face as well to preserve the guest's culling. */
-    if (viewport_height < 0) cw = !cw;
+    /* A negative Vulkan viewport height already reverses the triangle's framebuffer winding. Flipping the selected
+       front face as well culls front-facing full-screen passes (Tomodachi Life's final composition is one). */
     /* NVB197_SET_WINDOW_ORIGIN_FLIP_Y changes triangle facing, not viewport or display row order. */
     if (r[0x4EB] & 0x10) cw = !cw;
     return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
@@ -1223,7 +1222,7 @@ int vk_render_depth_clamp(const u32* r) {
     return mode != 1 && mode != 3 && mode != 5;
 }
 
-VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r, vk_render_viewport(r).height); }
+VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r); }
 
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances) {
@@ -1725,7 +1724,7 @@ retry:
                          : r[0x648] == 0x404 ? VK_CULL_MODE_FRONT_BIT
                          : r[0x648] == 0x408 ? VK_CULL_MODE_FRONT_AND_BACK
                                              : VK_CULL_MODE_BACK_BIT);
-    vkCmdSetFrontFace(cb, front_face_at_viewport(r, vp.height));
+    vkCmdSetFrontFace(cb, front_face_at_viewport(r));
     vkCmdSetPrimitiveTopology(cb, topo);
     vkCmdSetPrimitiveRestartEnable(cb, restart && (indexed == 1 || indexed == 3));
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);

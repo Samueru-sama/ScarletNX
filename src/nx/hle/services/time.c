@@ -179,13 +179,14 @@ static void time_shm_update(void) {
     memcpy(p + 0xC8, &cnt, 4);
     p[0xCC] = 1;
     p[0xCD] = 1;
-    /* ContinuousAdjustmentTimePoint (17.0+) {u32 counter; pad; 2 x {rtc_offset, diff_scale, shift+pad, lower{t,id}, upper{t,id}}} @0xD0 */
+    /* ContinuousAdjustmentTimePoint (17.0+): counter and two 0x38-byte records. The SDK checks the source ID at
+       record+0x28 before using a system clock context. The wrong stride and ID previously made the SDK clear the
+       current time to zero. Zero adjustment fields leave the guest steady clock unchanged. */
     memcpy(p + 0xD0, &cnt, 4);
     for (int k = 0; k < 2; k++) {
-        u8* e = p + 0xD8 + k * 0x48;
-        memset(e, 0, 0x48);
-        memcpy(e + 0x18 + 8, g_clock_id, 16);
-        memcpy(e + 0x30 + 8, g_clock_id, 16);
+        u8* e = p + 0xD8 + k * 0x38;
+        memset(e, 0, 0x38);
+        memcpy(e + 0x28, g_clock_id, 16);
     }
 }
 /* a ClockSnapshot of two contexts. A user context on another steady clock fails with TimeMismatch, a network one

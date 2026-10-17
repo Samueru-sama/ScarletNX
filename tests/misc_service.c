@@ -270,6 +270,15 @@ static u64 npad_latest_buttons(int id, u32 lifo_offset) {
            8);
     return buttons;
 }
+static void check_npad_latest_sample(int id, u32 lifo_offset, u64 sample) {
+    u8* lifo = kshmem_ptr(hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
+    u64 tail, stamp, state_sample;
+    memcpy(&tail, lifo + HO_HidCommonLifoHeader_tail, 8);
+    u8* entry = lifo + HO_HidNpadCommonLifo_storage + tail * HS_HidNpadCommonStateAtomicStorage;
+    memcpy(&stamp, entry, 8);
+    memcpy(&state_sample, entry + HO_HidNpadCommonStateAtomicStorage_state, 8);
+    CHECK((stamp & 1) == 0 && stamp == sample << 1 && state_sample == sample);
+}
 static void npad_latest_sticks(int id, u32 lifo_offset, i32 sticks[4]) {
     u8* lifo = kshmem_ptr(hid.shm) + HO_HidSharedMemory_npad + id * HS_HidNpadSharedMemoryEntry + lifo_offset;
     u64 tail;
@@ -549,6 +558,17 @@ static void test_npad_players(SvcObj* h) {
 static void test_hid(void) {
     svc_hid_init();
     SvcObj* h = new_hid();
+    for (int i = 0; i < 2; i++) {
+        hid_update();
+        check_npad_latest_sample(0, HO_HidNpadInternalState_full_key_lifo, hid.samp);
+    }
+    CHECK(npad_style_at(8) == 1u << 1);
+    g_opt_docked = 1;
+    hid_update();
+    CHECK(npad_style_at(8) == 0);
+    g_opt_docked = 0;
+    hid_update();
+    CHECK(npad_style_at(8) == 1u << 1);
     CHECK(get_styles(h) == 0x7F); /* every style until the game says which it takes */
     CHECK(no1_style() == 1);      /* No1 is a Pro Controller */
     KEvent* no1 = style_event(h, 0);
@@ -585,11 +605,42 @@ static void test_hid(void) {
     for (int i = 0; i < 10; i++) kobj_unref(&hid.style_ev[i]->o);
 }
 
+static void test_mii_default(void) {
+    SvcObj* service = new_mii();
+    Request r;
+    request(&r, 0);
+    argument32(&r, 0, 0);
+    call(service, &r);
+    CHECK(r.c.nout_objs == 1);
+    SvcObj* db = r.c.out_objs[0];
+    request(&r, 22);
+    argument32(&r, 0, 1);
+    call(db, &r);
+    CHECK(r.c.out_size == 0);
+    request(&r, 7);
+    argument32(&r, 0, 0);
+    call(db, &r);
+    CHECK(r.c.out_size == 0x58);
+    CHECK(r.c.out[0] != 0 && r.c.out[0x10] == 'n' && r.c.out[0x12] == 'o');
+    CHECK(r.c.out[0x29] == 64 && r.c.out[0x2a] == 64);
+    CHECK(r.c.out[0x31] == 68 && r.c.out[0x34] == 2 && r.c.out[0x27] == 4);
+    request(&r, 7);
+    argument32(&r, 0, 3);
+    call(db, &r);
+    CHECK(r.c.out[0x28] == 1 && r.c.out[0x31] == 24);
+    request(&r, 7);
+    argument32(&r, 0, 6);
+    CHECK(db->dispatch(db, &r.c) == RC(126, 1));
+    svcobj_unref(db);
+    svcobj_unref(service);
+}
+
 int main(void) {
     g_mem = calloc(1, 0x10000);
     CHECK(g_mem != NULL);
     test_mm();
     test_hid();
+    test_mii_default();
     CHECK(test_objects == 0 && test_kobjs == 0);
     free(g_mem);
     printf("misc_service: %u checks passed\n", test_checks);
