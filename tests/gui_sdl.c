@@ -4,6 +4,9 @@
 #define SNX_GUI_NO_MAIN
 #include "gui/main.c"
 #include <assert.h>
+#ifndef _WIN32
+#include <sys/statvfs.h> /* Folders on a disk mounted noexec */
+#endif
 /* the default theme's colours, as the checks below name them */
 static const SDL_Color normal = {220, 220, 220, 255}, yellow = {255, 255, 0, 255}, red = {255, 0, 0, 255},
                        pink = {255, 85, 255, 255}, black = {0, 0, 0, 255};
@@ -828,9 +831,22 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 1 && strstr(argv[0], "scarletnx-3ds")) {
-        assert(argc == 2 && snx_is_file(argv[1]) && strstr(argv[1], "3ds input.CIA"));
+        /* in the menu's data folder, as the Switch driver */
+        assert(argc == 4 && snx_is_file(argv[1]) && strstr(argv[1], "3ds input.CIA") && !strcmp(argv[2], "--repo") &&
+               argv[3][0]);
         fputs("CIA execution is not implemented (stage 2)\n", stderr);
         return 3;
+    }
+    if (argc > 1 && strstr(argv[1], "picked folders")) { /* Settings > App > Folders' games and extractions */
+        int i = 2;
+        bool nro = strstr(argv[1], ".nro") != NULL; /* runs without an extraction */
+        while (i < argc && strcmp(argv[i], "--repo")) ++i;
+        assert(i + (nro ? 4 : 6) == argc && argv[i + 1][0] && !strcmp(argv[i + 2], "--outdir") &&
+               strstr(argv[i + 3], "picked games"));
+        assert(nro || (!strcmp(argv[i + 4], "--out") && strstr(argv[i + 5], "picked work") &&
+                       !strcmp(argv[i + 5] + strlen(argv[i + 5]) - 15, "/picked folders")));
+        puts("Recompiling picked folders\nScarletNX - picked folders");
+        return 0;
     }
     if (argc > 1 && strstr(argv[1], "option flags")) {
         int i = 2;
@@ -1353,7 +1369,7 @@ int main(int argc, char** argv) {
     /* App: the theme and the letters, either way round, and the theme editor, which comes back here */
     app.editor.row = 0;
     key(&app, SDLK_RETURN);
-    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 5);
+    assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME && GUI_APP_ROWS == 6);
     {
         char first[64], line[96];
         snprintf(first, sizeof first, "%s", app.theme.name);
@@ -1363,6 +1379,7 @@ int main(int argc, char** argv) {
         shows(&app, line, yellow);
         shows(&app, "- Text size          Auto", normal);
         shows(&app, "- Theme editor", normal);
+        shows(&app, "- Folders            Defaults", normal);
         shows(&app, "- Clean old settings", normal);
         hides(&app, "- Layout", normal);
         key(&app, SDLK_RIGHT);
@@ -1698,6 +1715,136 @@ int main(int argc, char** argv) {
         free(kept_as);
         free(more);
     }
+    /* Folders: the data folder, games/ and the extractions, each its default or a folder picked, kept in app.ini's
+       [folders]. A folder that cannot take what goes there is refused, never swapped for the default */
+    {
+        char *data = snx_strdup(app.data_dir), *games = snx_strdup(app.games_dir), *work = snx_strdup(app.work_dir);
+        char* games_default = snx_path_join(data, "games"); /* the test's own games/ is elsewhere, set by hand */
+        char *keys = snx_strdup(app.keys_path), *themes = snx_strdup(app.themes_dirs[0]); /* so are these */
+        char *picked = snx_path_join(temporary, "picked games"), *file = snx_path_join(temporary, "not a folder.txt");
+        char *kept, line[512];
+        size_t size;
+        key(&app, SDLK_DOWN);
+        assert(app.editor.row == GUI_APP_PLACES && !strcmp(app.app_form.places, "Defaults"));
+        key(&app, SDLK_RETURN);
+        assert(app.form == GUI_FORM_PLACES && app.editor.row == GUI_PLACE_DATA && gui_editor_rows(&app.editor) == 4);
+        render(&app);
+        shows(&app, "Folders", normal);
+        shows(&app, "- Data", yellow);
+        shows(&app, "default", yellow);
+        shows(&app, data, rgb(app.theme.soft)); /* the folder in use, whole, under the rows */
+        shows(&app, "- Extractions", normal);
+        shows(&app, "- All back to the defaults", normal);
+        assert(!strcmp(app.place_line[GUI_PLACE_GAMES], app.games_dir) && !strcmp(app.app_form.place[1], "default"));
+        assert(strstr(app.place_about[GUI_PLACE_GAMES], "The recompiled games, ") &&
+               strstr(app.place_about[GUI_PLACE_GAMES], " free. Enter: pick another. Del: the default"));
+        /* refused: a folder not there, a file; nothing changes, nothing is kept */
+        key(&app, SDLK_DOWN);
+        place_set(&app, GUI_PLACE_GAMES, picked);
+        snprintf(line, sizeof line, "Not changed: %s is not there", picked);
+        assert(!app.place[GUI_PLACE_GAMES] && !strcmp(app.editor.note, line) && !strcmp(app.games_dir, games));
+        assert(!snx_write_file(file, "x", 1));
+        place_set(&app, GUI_PLACE_GAMES, file);
+        assert(!app.place[GUI_PLACE_GAMES] && strstr(app.editor.note, " is not a folder"));
+        kept = (char*)snx_read_file(app.app_file, &size);
+        assert(!kept || !strstr(kept, "[folders]"));
+        free(kept);
+        /* Enter opens the folder picker for the focused row; its answer is that row's folder at once, kept, and the
+           folder before keeps what it has */
+        assert(!snx_mkdirs(picked));
+        key(&app, SDLK_RETURN);
+        assert(app.place_row == GUI_PLACE_GAMES);
+        {
+            SDL_Event answer;
+            SDL_zero(answer);
+            answer.type = app.picked_folder;
+            answer.user.data1 = SDL_strdup(picked);
+            event(&app, &answer);
+        }
+        assert(app.place_row == -1 && app.place[GUI_PLACE_GAMES] && !strcmp(app.games_dir, app.place[GUI_PLACE_GAMES]));
+        assert(snx_path_within(app.games_dir, picked) && !strcmp(app.data_dir, data) && !strcmp(app.work_dir, work));
+        snprintf(line, sizeof line, "Games: %s. The folder before keeps what it has", app.games_dir);
+        assert(!strcmp(app.editor.note, line) && app.editor.row == GUI_PLACE_GAMES);
+        kept = (char*)snx_read_file(app.app_file, &size);
+        snprintf(line, sizeof line, "[folders]\ndata = \ngames = %s\nwork = \n", app.games_dir);
+        assert(kept && strstr(kept, "[app]\ntheme = ") && strstr(kept, line));
+        free(kept);
+        render(&app);
+        shows(&app, "- Games", yellow);
+        shows(&app, "picked", yellow);
+        assert(!strcmp(app.place_line[GUI_PLACE_GAMES], app.games_dir));
+        /* read back as the menu opens, a path not from the root left out and named */
+        free(app.place[GUI_PLACE_GAMES]);
+        app.place[GUI_PLACE_GAMES] = NULL;
+        places_apply(&app);
+        assert(!strcmp(app.games_dir, games_default));
+        kept = (char*)snx_read_file(app.app_file, &size);
+        {
+            char* more_text = snx_format("%s[folders]\nwork = relative/work\nshaders = /x\n", kept);
+            assert(!snx_write_file(app.app_file, more_text, strlen(more_text)));
+            free(more_text);
+        }
+        free(kept);
+        app.message[0] = 0;
+        app_load(&app);
+        snprintf(line, sizeof line, "Not used from %s: [folders] work = relative/work, [folders] shaders = /x",
+                 app.app_file);
+        assert(!strcmp(app.message, line) && app.place[GUI_PLACE_GAMES] && !strcmp(app.games_dir, app.place[1]));
+        assert(!app.place[GUI_PLACE_WORK] && !strcmp(app.work_dir, work));
+        app.message[0] = 0;
+        /* a folder picked once and gone since: its row says so, as a run would refuse it */
+        assert(!snx_remove_tree(picked));
+        open_places(&app, GUI_PLACE_GAMES);
+        snprintf(line, sizeof line, "%s is not there", app.games_dir);
+        assert(!strcmp(app.app_form.place[GUI_PLACE_GAMES], "is not there") &&
+               !strcmp(app.place_line[GUI_PLACE_GAMES], line));
+        assert(!places_fit(&app, line, sizeof line) && strstr(line, "Games folder ") &&
+               strstr(line, " is not there. "));
+        /* Del: the default again, kept */
+        key(&app, SDLK_DELETE);
+        assert(!app.place[GUI_PLACE_GAMES] && !strcmp(app.games_dir, games_default) &&
+               strstr(app.editor.note, ", the default"));
+        kept = (char*)snx_read_file(app.app_file, &size);
+        assert(kept && !strstr(kept, "[folders]"));
+        free(kept);
+        /* a disk that runs no programs takes the extractions, not the games */
+#if defined(ST_NOEXEC) && !defined(SDL_PLATFORM_ANDROID)
+        {
+            struct statvfs st;
+            if (!statvfs("/dev/shm", &st) && (st.f_flag & ST_NOEXEC)) {
+                char* shm = snx_temp_dir("/dev/shm");
+                assert(shm);
+                place_set(&app, GUI_PLACE_GAMES, shm);
+                assert(!app.place[GUI_PLACE_GAMES] && strstr(app.editor.note, "runs no programs (noexec)"));
+                place_set(&app, GUI_PLACE_WORK, shm);
+                assert(app.place[GUI_PLACE_WORK] && !strcmp(app.work_dir, app.place[GUI_PLACE_WORK]));
+                assert(!snx_remove_tree(shm));
+                free(shm);
+            }
+        }
+#endif
+        /* the last row: every one back to its default */
+        place_set(&app, GUI_PLACE_DATA, temporary);
+        assert(app.place[GUI_PLACE_DATA] && snx_path_within(app.data_dir, temporary) &&
+               snx_path_within(app.games_dir, app.data_dir));
+        app.editor.row = GUI_PLACES;
+        key(&app, SDLK_RETURN);
+        assert(!app.place[0] && !app.place[1] && !app.place[2] && !strcmp(app.data_dir, data));
+        assert(!strcmp(app.editor.note, "All back to the defaults. The folders before keep what they have"));
+        free(app.games_dir); /* the test's own games/ and the rest, as before */
+        app.games_dir = games;
+        free(app.keys_path);
+        app.keys_path = keys;
+        free(app.themes_dirs[0]);
+        app.themes_dirs[0] = themes;
+        key(&app, SDLK_ESCAPE);
+        assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_PLACES);
+        free(file);
+        free(picked);
+        free(work);
+        free(data);
+        free(games_default);
+    }
     key(&app, SDLK_ESCAPE);
     assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 0);
     key(&app, SDLK_ESCAPE);
@@ -1819,6 +1966,43 @@ int main(int argc, char** argv) {
     launcher(&app, false);
     app.menu.selected = GUI_LINUX;
     free(flags_input);
+    /* the folders picked in Settings > App > Folders, passed to the driver: games/ for every input, the extraction for a
+       dump, under the picked folder as the driver names it; one gone since stops the run, naming it */
+    {
+        char *games = snx_path_join(temporary, "picked games"), *work = snx_path_join(temporary, "picked work");
+        char *dump = snx_path_join(temporary, "picked folders.nsp"),
+             *nro = snx_path_join(temporary, "picked folders.nro");
+        char *games_was = snx_strdup(app.games_dir), *keys_was = snx_strdup(app.keys_path), expected[512];
+        assert(!snx_mkdirs(games) && !snx_mkdirs(work) && !snx_write_file(dump, "fixture", 7) &&
+               !snx_write_file(nro, "fixture", 7));
+        place_set(&app, GUI_PLACE_GAMES, games);
+        place_set(&app, GUI_PLACE_WORK, work);
+        app.menu.selected = GUI_SWITCH;
+        launcher(&app, true);
+        launch(&app, snx_strdup(dump), false);
+        finish(&app, 0);
+        launch(&app, snx_strdup(nro), false);
+        finish(&app, 0);
+        assert(!snx_remove_tree(work));
+        launch(&app, snx_strdup(dump), false);
+        assert(!app.menu.running && strstr(app.message, "Extractions folder ") &&
+               strstr(app.message, " is not there. Settings > App > Folders picks another."));
+        launcher(&app, false);
+        app.menu.selected = GUI_LINUX;
+        places_reset(&app);
+        snprintf(expected, sizeof expected,
+                 "Folders: All back to the defaults. The folders before keep what they have");
+        assert(!app.place[GUI_PLACE_GAMES] && !app.place[GUI_PLACE_WORK] && !strcmp(app.message, expected));
+        app.message[0] = 0;
+        free(app.games_dir);
+        app.games_dir = games_was;
+        free(app.keys_path);
+        app.keys_path = keys_was;
+        free(nro);
+        free(dump);
+        free(work);
+        free(games);
+    }
 
     /* recent games: what the GUI ran, newest first in Games under Add a folder and kept in a file, named as the run
        named it; one runs again with the options the menu has now, which the fake driver checks */

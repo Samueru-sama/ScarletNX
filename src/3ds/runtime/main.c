@@ -35,27 +35,6 @@ static void usage(FILE* out) {
           "Encrypted content is not implemented.\n",
           out);
 }
-/* The extraction's folder name, from the CIA's file name in the Switch driver's alphabet */
-static char* dump_name(const char* input) {
-    const char *base = input, *end;
-    for (const char* p = input; *p; ++p)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    end = strrchr(base, '.');
-    if (!end || end == base) end = base + strlen(base);
-    char* name = malloc((size_t)(end - base) + 1);
-    if (!name) return NULL;
-    size_t n = 0;
-    for (const char* p = base; p < end; ++p)
-        if ((unsigned char)*p >= 128 || isalnum((unsigned char)*p) || *p == '-' || *p == '_' || *p == ' ')
-            name[n++] = *p;
-    while (n && name[n - 1] == ' ') --n;
-    name[n] = 0;
-    if (!n) {
-        free(name);
-        return snx_strdup("Game");
-    }
-    return name;
-}
 static bool cia_path(const char* path) {
     size_t n = strlen(path);
     return n >= 4 && path[n - 4] == '.' && tolower((unsigned char)path[n - 3]) == 'c' &&
@@ -173,7 +152,7 @@ int main(int argc, char** argv) {
     if (output)
         extracted = snx_strdup(output); /* as given: the extractor refuses links on the way to it */
     else {
-        char *work = work_folder(repo, argv[0]), *name = dump_name(input);
+        char *work = work_folder(repo, argv[0]), *name = snx_dump_name(input);
         extracted = work && name ? snx_path_join(work, name) : NULL;
         free(work);
         free(name);

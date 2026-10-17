@@ -273,8 +273,10 @@ list). The user's data folder and a portable copy's keep each kind of file apart
 | the menu's Share log, `scarletnx.log` | - | `~/.local/state/scarletnx/` | `state/` |
 | `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 
-The menu works in the user's data folder or a portable copy's, never another. On Android its own files stay in the
-app's own storage, which needs no permission. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
+The menu works in the user's data folder or a portable copy's, unless its Settings > App > Folders picks a data
+folder, a games folder or an extractions folder ([GUI](GUI.md)): it passes them to the driver as `--repo`, `--outdir`
+and `--out` (to the 3DS driver as `--repo` and `--output`), and its own files stay where they are. On Android they
+stay in the app's own storage, which needs no permission. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
 defaults of `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and `$XDG_CACHE_HOME` (a relative one is ignored).
 
 An older version kept a game's files side by side in `games/` (`games/Game`, `Game_code.so`, `Game_data/`,

@@ -790,6 +790,45 @@ void snx_checkout_left(const char* checkout, const char* data) {
         free(now);
     }
 }
+char* snx_dump_name(const char* input) {
+    const char *base = input, *p, *end;
+    char* name;
+    size_t n = 0;
+    for (p = input; *p; ++p)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    end = strrchr(base, '.');
+    if (!end || end == base) end = base + strlen(base);
+    name = (char*)snx_alloc((size_t)(end - base) + 1);
+    for (p = base; p < end; ++p)
+        if ((unsigned char)*p >= 128 || isalnum((unsigned char)*p) || *p == '-' || *p == '_' || *p == ' ')
+            name[n++] = *p;
+    while (n && name[n - 1] == ' ') --n;
+    name[n] = 0;
+    if (!n) {
+        free(name);
+        return snx_strdup("Game");
+    }
+    return name;
+}
+const char* snx_folder_unfit(const char* folder, int run) {
+    char* probe;
+#if defined(ST_NOEXEC) && !defined(__ANDROID__) /* there a game's code loads from a copy in the cache */
+    struct statvfs st;
+#endif
+    if (!snx_path_exists(folder)) return "is not there";
+    if (!snx_is_dir(folder)) return "is not a folder";
+    /* made and taken away: the folder's rights, as the system applies them (ACLs, a read-only mount) */
+    probe = snx_temp_dir(folder);
+    if (!probe) return "cannot be written";
+    snx_remove_tree(probe);
+    free(probe);
+#if defined(ST_NOEXEC) && !defined(__ANDROID__)
+    if (run && !statvfs(folder, &st) && (st.f_flag & ST_NOEXEC)) return "is on a disk that runs no programs (noexec)";
+#else
+    (void)run;
+#endif
+    return NULL;
+}
 char* snx_temp_dir(const char* parent) {
     char* path;
 #ifdef _WIN32

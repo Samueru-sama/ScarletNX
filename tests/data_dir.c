@@ -9,6 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 static char* join(const char* a, const char* b) {
     char* p = snx_path_join(a, b);
@@ -154,6 +158,38 @@ int main(void) {
     free(said);
     free(file);
 
+    /* snx_folder_unfit: how the menu's Folders and each run check a folder picked for the drivers */
+    {
+        char *dir = snx_path_join(root, "fit"), *file = snx_path_join(root, "fit.txt"), **left = NULL;
+        size_t n = 0;
+        assert(!strcmp(snx_folder_unfit(dir, 0), "is not there"));
+        assert(!snx_mkdirs(dir) && !snx_folder_unfit(dir, 1) && !snx_write_file(file, "", 0));
+        assert(!strcmp(snx_folder_unfit(file, 0), "is not a folder"));
+#ifndef _WIN32
+        if (geteuid()) { /* root writes anywhere */
+            assert(!chmod(dir, 0555) && !strcmp(snx_folder_unfit(dir, 0), "cannot be written"));
+            assert(!chmod(dir, 0755));
+        }
+#endif
+        assert(!snx_list_dir(dir, &left, &n) && !n); /* the check leaves nothing in it */
+        snx_free_strings(left, n);
+        free(file);
+        free(dir);
+    }
+    /* snx_dump_name: the extraction's folder the drivers and the menu give a dump */
+    {
+        static const char* const names[][2] = {{"/dumps/My Game [v1.0].nsp", "My Game v10"},
+                                               {"C:\\dumps\\two.dots.xci", "twodots"},
+                                               {"/dumps/.nsp", "nsp"},
+                                               {"/dumps/[] .xci", "Game"},
+                                               {"caf\xc3\xa9 -_1.nsp", "caf\xc3\xa9 -_1"}};
+        size_t i;
+        for (i = 0; i < sizeof names / sizeof names[0]; ++i) {
+            char* name = snx_dump_name(names[i][0]);
+            assert(!strcmp(name, names[i][1]));
+            free(name);
+        }
+    }
     puts("snx_data_dir: .scarletnx beside the program or the AppImage, else the user's data folder, for a build "
          "tree's programs too; snx_checkout: a build tree's program's checkout, what an older version kept in it said");
     free(expected);

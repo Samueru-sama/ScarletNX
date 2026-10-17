@@ -49,28 +49,6 @@ static void usage(void) {
          "Short options may be combined, for example -rx or -Hs.");
 #endif
 }
-/* the dump's extraction in work/, named after its file in the alphabet of the recompiler's explicit output name: the
-   title ID is only known once it is extracted */
-static char* dump_name(const char* input) {
-    const char *base = input, *p, *end;
-    char* name;
-    size_t n = 0;
-    for (p = input; *p; ++p)
-        if (*p == '/' || *p == '\\') base = p + 1;
-    end = strrchr(base, '.');
-    if (!end || end == base) end = base + strlen(base);
-    name = (char*)snx_alloc((size_t)(end - base) + 1);
-    for (p = base; p < end; ++p)
-        if ((unsigned char)*p >= 128 || isalnum((unsigned char)*p) || *p == '-' || *p == '_' || *p == ' ')
-            name[n++] = *p;
-    while (n && name[n - 1] == ' ') --n;
-    name[n] = 0;
-    if (!n) {
-        free(name);
-        return snx_strdup("Game");
-    }
-    return name;
-}
 static int is_nro_path(const char* path) {
     const char* ext = strrchr(path, '.');
     return ext && strlen(ext) == 4 && tolower((unsigned char)ext[1]) == 'n' && tolower((unsigned char)ext[2]) == 'r' &&
@@ -92,7 +70,7 @@ static int cached_abi(const char* base) {
 /* games/ and the extraction in work/ of the data folder, else the folder outdir names and the extraction out names */
 static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, const char* backend, const char* outdir,
                      const char* out, int settings, char** setting, int game_argc, char** game_argv) {
-    char *dumped = dump_name(input), *dump = snx_absolute(input), *name = NULL;
+    char *dumped = snx_dump_name(input), *dump = snx_absolute(input), *name = NULL;
     char* games = outdir ? snx_absolute(outdir) : snx_path_join(paths->repo, "games");
     char* extracted = out ? snx_absolute(out) : NULL;
     char* work = !out ? snx_work_dir(paths->repo) : extracted ? snx_dirname(extracted) : NULL;

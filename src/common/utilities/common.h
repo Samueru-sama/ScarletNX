@@ -106,6 +106,12 @@ char* snx_checkout(const char* checkout, const char* build, const char* program_
 extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
 char* snx_checkout_now(const char* data, int file);
 void snx_checkout_left(const char* checkout, const char* data);
+/* The name of a dump's extraction in work/: its file's name without the extension, kept to letters, digits, UTF-8,
+   spaces, '-' and '_', trailing spaces cut; "Game" when nothing is left */
+char* snx_dump_name(const char* input);
+/* Why folder cannot take what the drivers write there, and with run the games run from it: "is not there", "is not a
+   folder", "cannot be written" or "is on a disk that runs no programs (noexec)"; NULL when it can */
+const char* snx_folder_unfit(const char* folder, int run);
 SnxU64 snx_free_space(const char* path);
 SnxU64 snx_file_size(const char* path);
 int snx_make_executable(const char* path);

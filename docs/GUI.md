@@ -100,7 +100,14 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   folder*, or *With subfolders*, whose games are listed too, four levels down, hidden folders
   left alone (its row says *+ subfolders*). Del, or Enter twice, takes one off the list (the
   folder stays). They are kept in `folders.txt` beside `settings.ini`, a line each, `/**` after
-  one kept with its subfolders; one that cannot be read is named when the games are listed. **Clean old settings**, Enter twice (the first says what it
+  one kept with its subfolders; one that cannot be read is named when the games are listed. **Folders** has a row for
+  the data folder (**Data**: `games/`, `themes/` and `prod.keys`), **Games** and **Extractions**, each its default or a
+  folder picked. Enter opens the folder picker, a folder dropped or pasted with Ctrl+V takes the focused row, Del puts
+  its default back and the last row, **All back to the defaults**, all three. A row says *default*, *picked* or why
+  its folder cannot be; the line under the rows names the folder in use, the one above its disk's free space. A folder
+  not there, not a folder, that cannot be written or, for the games, on a disk that runs no programs (`noexec`) is
+  refused, and a run whose picked folder no longer can be stops, naming it: the default never takes its place.
+  Nothing is moved, the folder before keeps what it has. The menu's own files stay where they are. **Clean old settings**, Enter twice (the first says what it
   would do), takes out the settings nothing reads any more: the `[Deprecated]` section the runtime
   gives a game's `.ini` for the keys it no longer uses (in the config folder's `games/`, in `games/`
   and in the player's folders), the keys of `settings.ini` that no setting of the runtime's takes
@@ -127,7 +134,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   and YoRHa, then each folder of `themes/` (see [Themes](#themes)). The menu opens in YoRHa until one is picked.
   It is kept for the next start,
   as is Text size, in `app.ini` beside `settings.ini`: `[app]` with `theme` (a theme's folder
-  name) and `text_size` (`auto` or 1 to 4). A value the
+  name) and `text_size` (`auto` or 1 to 4), and once one is picked `[folders]` with Folders' `data`, `games` and
+  `work` (a full path, nothing for the default). A value the
   menu does not know, or a theme no longer there, is named in the menu's message as it opens and
   left out; a file that cannot be written is named in App's note.
 - Settings > App's **Theme editor** edits the current theme: **Save** first, the folder it is saved in, a row
