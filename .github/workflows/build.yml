@@ -632,6 +632,206 @@ jobs:
           archive: false
           if-no-files-found: error
 
+  # macOS and iOS (docs/APPLE.md), on Apple silicon with Xcode's Clang and SDKs; FFmpeg, OpenSSL and SDL3 are built from
+  # the pinned sources as everywhere. Until both have built green once, a failure here does not fail the run
+  # (continue-on-error), which would hold back the nightly: they are new, and no Mac checked them before CI. Each app
+  # carries Ryujinx's MoltenVK (V380-Ori/Ryujinx.MoltenVK): mainline's lacks patches emulators' pipelines need. The
+  # release's tar, its SHA-256 the one GitHub lists for it
+  macos:
+    name: macOS (arm64)
+    runs-on: macos-26
+    timeout-minutes: 90
+    continue-on-error: true
+    env:
+      MOLTENVK_RELEASE: v1.4.1-ryujinx
+      MOLTENVK_SHA256: ea1c633808d0a61e86ee35af4bdc280f5f07f95633b95935f3e695dc5226e640
+    steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: .cache/cpm
+          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      # llvm: llvm-config and LLVM-C for the recompiler, keg-only (named below). Xcode's Clang builds everything, as a
+      # user's Mac does
+      - name: Install tools
+        run: brew install llvm ninja ccache
+      # ccache and the dependency builds, set up as in the linux job
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-
+      - uses: actions/cache/restore@v5
+        id: deps
+        with:
+          path: .cache/deps
+          key: deps-${{ github.job }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-
+      - name: Set up the caches
+        run: |
+          {
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/.cache/ccache"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$GITHUB_WORKSPACE/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
+      - name: Build the runtime
+        run: |
+          cmake --preset macos -DSNX_LLVM_CONFIG="$(brew --prefix llvm)/bin/llvm-config" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset macos
+          cmake --install build/macos --prefix stage
+      - name: Trim the compiler cache
+        run: |
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+      - uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Name the dependency builds
+        id: deps-used
+        run: |
+          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
+          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
+          echo "key=deps-${{ github.job }}-$(shasum -a 256 <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/deps
+          key: ${{ steps.deps-used.outputs.key }}
+      - name: Check the ABI helpers compile
+        run: clang -fsyntax-only -Wall -fno-strict-aliasing -fwrapv -I src src/common/cpu/aarch64/cpu_helpers.c
+      - name: Test native tooling and indexed filesystems
+        run: ctest --test-dir build/macos --output-on-failure --parallel 4
+      - name: Fetch MoltenVK
+        run: |
+          curl -fL -o moltenvk.tar \
+            "https://github.com/V380-Ori/Ryujinx.MoltenVK/releases/download/$MOLTENVK_RELEASE/MoltenVK-macos.tar"
+          echo "$MOLTENVK_SHA256  moltenvk.tar" | shasum -a 256 -c
+          mkdir moltenvk && tar -xf moltenvk.tar -C moltenvk
+      # ditto keeps the app's links and its signature, which zip would not
+      - name: Make the app
+        run: |
+          scripts/apple-app.sh macos stage app moltenvk
+          ditto -c -k --keepParent app/ScarletNX.app ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ScarletNX-macos-arm64-${{ steps.commit.outputs.short }}.zip
+          archive: false
+          if-no-files-found: error
+
+  ios:
+    name: iOS (arm64)
+    runs-on: macos-26
+    timeout-minutes: 150
+    continue-on-error: true
+    env:
+      MOLTENVK_RELEASE: v1.4.1-ryujinx
+      MOLTENVK_SHA256: 7cec48d4e73cf9eb89b60e8596758900caaf8398c49ae8abe4544295fb7e0c84
+    steps:
+      # Artifacts carry the commit they came from: the branch's head in a pull request, else the commit pushed
+      - name: Name the commit
+        id: commit
+        shell: bash
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v5
+        with:
+          path: .cache/cpm
+          key: cpm-${{ github.job }}-${{ hashFiles('cmake/dependencies.cmake') }}
+      # LLVM's libraries for iOS (scripts/ios-llvm.sh), built once per script and Xcode, as Android's per NDK
+      - name: Name the Xcode
+        id: xcode
+        run: echo "version=$(xcodebuild -version | tr '\n' ' ' | tr -s ' ' '-')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v5
+        id: llvm
+        with:
+          path: ios-llvm
+          key: ios-llvm-${{ hashFiles('scripts/ios-llvm.sh') }}-${{ steps.xcode.outputs.version }}
+      - name: Install tools
+        run: brew install ninja ccache
+      - name: Build LLVM's libraries
+        if: steps.llvm.outputs.cache-hit != 'true'
+        run: scripts/ios-llvm.sh "$PWD/ios-llvm"
+      # ccache and the dependency builds, set up as in the linux job
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ github.job }}-
+      - uses: actions/cache/restore@v5
+        id: deps
+        with:
+          path: .cache/deps
+          key: deps-${{ github.job }}-${{ github.run_id }}
+          restore-keys: deps-${{ github.job }}-
+      - name: Set up the caches
+        run: |
+          {
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/.cache/ccache"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$GITHUB_WORKSPACE/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
+      - name: Build the app
+        run: |
+          cmake --preset ios -DLLVM_DIR="$PWD/ios-llvm/lib/cmake/llvm" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset ios
+          cmake --install build/ios --prefix stage
+      - name: Trim the compiler cache
+        run: |
+          ccache --show-stats --verbose
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+      - uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Name the dependency builds
+        id: deps-used
+        run: |
+          used=$(find build -path '*/snx-deps/*.dir' -exec cat {} + | sort -u)
+          for d in .cache/deps/*; do grep -qxF "${d##*/}" <<<"$used" || rm -rf "$d"; done
+          echo "key=deps-${{ github.job }}-$(shasum -a 256 <<<"$used" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - if: steps.deps-used.outputs.key != steps.deps.outputs.cache-matched-key
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/deps
+          key: ${{ steps.deps-used.outputs.key }}
+      - name: Fetch MoltenVK
+        run: |
+          curl -fL -o moltenvk.tar \
+            "https://github.com/V380-Ori/Ryujinx.MoltenVK/releases/download/$MOLTENVK_RELEASE/MoltenVK-ios.tar"
+          echo "$MOLTENVK_SHA256  moltenvk.tar" | shasum -a 256 -c
+          mkdir moltenvk && tar -xf moltenvk.tar -C moltenvk
+      # Unsigned: AltStore, SideStore or a developer account sign it for the device it goes on, with
+      # dist/apple/ScarletNX.entitlements
+      - name: Make the IPA
+        run: |
+          scripts/apple-app.sh ios stage app moltenvk
+          mv app/ScarletNX.ipa ScarletNX-ios-arm64-${{ steps.commit.outputs.short }}.ipa
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ScarletNX-ios-arm64-${{ steps.commit.outputs.short }}.ipa
+          archive: false
+          if-no-files-found: error
+
   # The packages as a user gets them, each on a runner of its own (scripts/check-package.sh): in the build jobs the
   # checkout sits where the package looks for one, and stands in for what an installed copy lacks
   appimage-check:

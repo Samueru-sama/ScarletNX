@@ -60,10 +60,21 @@ if(SNX_Z3_LIBRARY)
     # the binary's search path instead of the caller's environment.
     find_library(SNX_XML2_LIBRARY NAMES xml2 libxml2.so.2 HINTS "${ctr_z3_dir}" "${SNX_LLVM_LIBRARY_DIR}"
                     PATH_SUFFIXES lib x86_64-linux-gnu)
-    target_link_libraries(scarletnx-3ds PRIVATE "-Wl,--no-as-needed" "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY}
-                        "-Wl,--as-needed")
+    if(APPLE) # ld64 keeps every library named, and has no --as-needed
+        target_link_libraries(scarletnx-3ds PRIVATE "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY})
+    else()
+        target_link_libraries(scarletnx-3ds PRIVATE "-Wl,--no-as-needed" "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY}
+                            "-Wl,--as-needed")
+    endif()
 endif()
-target_link_options(scarletnx-3ds PRIVATE "-Wl,-rpath,${ctr_llvm_rpath}")
+if(APPLE) # ld64 takes one folder per -rpath
+    string(REPLACE ":" ";" ctr_llvm_rpaths "${ctr_llvm_rpath}")
+    foreach(path IN LISTS ctr_llvm_rpaths)
+        target_link_options(scarletnx-3ds PRIVATE "-Wl,-rpath,${path}")
+    endforeach()
+else()
+    target_link_options(scarletnx-3ds PRIVATE "-Wl,-rpath,${ctr_llvm_rpath}")
+endif()
 target_compile_definitions(scarletnx-3ds PRIVATE "SNX_CTR_HOST_CC=\"${CMAKE_C_COMPILER}\"")
 add_library(snx_ctr_native STATIC aot/load.c)
 target_link_libraries(snx_ctr_native PUBLIC snx_ctr_process ${CMAKE_DL_LIBS})

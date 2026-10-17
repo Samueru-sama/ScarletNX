@@ -53,6 +53,13 @@ char* snx_user_data_dir(void);
 enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
 /* A portable copy's data folder: this folder beside the AppImage or the program */
 #define SNX_PORTABLE_DIR ".scarletnx"
+/* iOS: the app (dist/apple), which starts no other process and keeps its data in its Documents folder */
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#define SNX_IOS 1
+#endif
+#endif
 /* Android's data folder, which the user sees (the app's working folder once it may write there) */
 #define SNX_ANDROID_DIR  "/sdcard/ScarletNX"
 /* An installed build's folder for one kind of file: $XDG_CONFIG_HOME/scarletnx (~/.config), $XDG_STATE_HOME/scarletnx

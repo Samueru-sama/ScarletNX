@@ -58,8 +58,8 @@ static bool playable(const char* directory, char* name, int kinds) {
         return listed;
     }
     if (!(kinds & GUI_GAMES_RUN)) return false;
-#ifdef __ANDROID__
-    { /* a game's code or a dump, a file: a folder named so is neither */
+#if defined(__ANDROID__) || defined(SNX_IOS)
+    { /* a game's code or a dump, a file: a folder named so is neither. An app's games have no runtime copy */
         bool code = suffix(name, "_code.so");
         if (!code && !gui_is_dump(name)) return false;
         path = snx_path_join(directory, name);
@@ -97,7 +97,7 @@ static char* folder_game(const char* directory, const char* name, int kinds) {
     if (!(kinds & GUI_GAMES_RUN) || name[0] == '.') return NULL;
     folder = snx_path_join(directory, name);
     if (folder && snx_is_dir(folder) && !snx_is_link(folder)) {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(SNX_IOS)
         own = snx_format("%s_code.so", name);
 #elif defined(_WIN32)
         own = snx_format("%s.exe", name);

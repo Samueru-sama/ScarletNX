@@ -28,7 +28,13 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <signal.h>
+#ifdef __APPLE__
+/* Darwin's <ucontext.h> stops the build unless _XOPEN_SOURCE asks for the deprecated context functions; the type the
+   signal handler reads is in this one */
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #include <sched.h>
 #include <errno.h>
 extern char** environ;
@@ -106,7 +112,9 @@ int plat_text_input(char* out, size_t cap, const char* initial) {
 void pc_init(PCond* c) {
     pthread_condattr_t a;
     pthread_condattr_init(&a);
+#ifndef __APPLE__ /* Darwin has no clock to choose: pc_wait waits a relative time there */
     pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+#endif
     pthread_cond_init(&c->c, &a);
 }
 void pc_signal(PCond* c) { pthread_cond_signal(&c->c); }
@@ -117,6 +125,11 @@ int pc_wait(PCond* c, PMutex* m, i64 ns) {
         return 0;
     }
     struct timespec ts;
+#ifdef __APPLE__
+    ts.tv_sec = ns / 1000000000;
+    ts.tv_nsec = ns % 1000000000;
+    return pthread_cond_timedwait_relative_np(&c->c, &m->l, &ts) == ETIMEDOUT;
+#endif
     clock_gettime(CLOCK_MONOTONIC, &ts);
     u64 t = (u64)ts.tv_sec * 1000000000ull + ts.tv_nsec + (u64)ns;
     ts.tv_sec = t / 1000000000ull;
@@ -167,6 +180,10 @@ int plat_thread(PThreadFn fn, void* arg, size_t stack) {
     pthread_attr_init(&at);
     /* below the minimum, pthread_attr_setstacksize fails and the thread would get the default size instead */
     if (stack && stack < (size_t)PTHREAD_STACK_MIN) stack = (size_t)PTHREAD_STACK_MIN;
+#ifdef __APPLE__
+    /* and Darwin's takes only whole pages (16 KiB on Apple silicon) */
+    if (stack) stack = (stack + (size_t)sysconf(_SC_PAGESIZE) - 1) & ~((size_t)sysconf(_SC_PAGESIZE) - 1);
+#endif
     if (stack) pthread_attr_setstacksize(&at, stack);
     pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     pthread_t t;
@@ -271,8 +288,13 @@ u8* plat_vm_reserve(u64 size) {
 }
 int plat_vm_commit(u8* p, u64 size) { return mprotect(p, size, PROT_READ | PROT_WRITE); }
 void plat_vm_decommit(u8* p, u64 size) {
+#ifdef __APPLE__
+    /* Darwin's MADV_DONTNEED keeps the pages' contents: a new mapping in their place is what gives zeroes back */
+    mmap(p, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+#else
     madvise(p, size, MADV_DONTNEED);
     mprotect(p, size, PROT_NONE);
+#endif
 }
 #ifdef __ANDROID__
 #include <SDL3/SDL_system.h>
@@ -429,6 +451,10 @@ static void sighandler(int sig, siginfo_t* si, void* uc_) {
     pc = (void*)uc->uc_mcontext.mc_rip;
 #elif defined(__FreeBSD__) && defined(__aarch64__)
     pc = (void*)uc->uc_mcontext.mc_gpregs.gp_elr;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    pc = (void*)__darwin_arm_thread_state64_get_pc(uc->uc_mcontext->__ss);
+#elif defined(__APPLE__) && defined(__x86_64__)
+    pc = (void*)uc->uc_mcontext->__ss.__rip;
 #elif defined(__x86_64__)
     pc = (void*)uc->uc_mcontext.gregs[REG_RIP];
 #elif defined(__aarch64__)

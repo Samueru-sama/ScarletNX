@@ -26,6 +26,9 @@
 #ifdef SDL_PLATFORM_ANDROID
 #include "gui/android.h"
 #endif
+#ifdef SDL_PLATFORM_APPLE
+#include "gui/apple.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2026,16 +2029,20 @@ static GuiSettings* settings_of(App* app) {
     char* list;
     if (app->settings.keys) return &app->settings;
     driver = find_driver(app, GUI_SWITCH);
+#ifdef SDL_PLATFORM_IOS /* no program to ask: the game's .ini keeps its settings */
+    list = NULL;
+#else
     {
         const char* argv[] = {driver, "--settings", NULL};
         list = driver ? capture(app, argv) : NULL;
     }
+#endif
     gui_settings_read(&app->settings, list ? list : "");
     free(list);
     free(driver);
     /* the launcher's own choices win over the game's .ini, as its items did: a phone plays on the whole screen, its
        pad shown */
-#ifdef SDL_PLATFORM_ANDROID
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     gui_settings_set(&app->settings, "fullscreen", "1");
     gui_settings_set(&app->settings, "controls", "1");
 #else
@@ -2402,6 +2409,16 @@ static void open_folder_picker(App* app) {
         else if (app->editing)
             snprintf(app->editor.note, sizeof app->editor.note, "The folder picker could not open: %s", message);
         else /* Games' Add a folder */
+            snprintf(app->message, sizeof app->message, "Game folders: the folder picker could not open: %s", message);
+    }
+#elif defined(SDL_PLATFORM_IOS)
+    { /* nor there: the document picker (dist/apple) */
+        char message[sizeof app->editor.note - 40];
+        if (gui_apple_pick(app->window, 1, folder_picked, &app->picked_folder, message, sizeof message))
+            ;
+        else if (app->editing)
+            snprintf(app->editor.note, sizeof app->editor.note, "The folder picker could not open: %s", message);
+        else
             snprintf(app->message, sizeof app->message, "Game folders: the folder picker could not open: %s", message);
     }
 #else
@@ -3562,6 +3579,23 @@ static void tell(App* app) {
     app->told_ms = now;
 }
 #endif
+#ifdef SDL_PLATFORM_IOS
+/* A game runs in this process once the menu has closed (gui_apple_play, src/nx/runtime/entry.c): an iOS app has no
+   other */
+static int play(App* app, const char* game) {
+    GuiSettings* s = settings_of(app);
+    char* option = snx_format("--game=%s", game);
+    const char** argv = (const char**)snx_alloc((size_t)(s->count + 4) * sizeof(*argv));
+    argv[0] = "scarletnx";
+    argv[1] = option;
+    argv[2 + gui_settings_options(s, 0, 1, argv + 2)] = NULL;
+    gui_apple_play(argv);
+    app->menu.quit = true;
+    free(argv);
+    free(option);
+    return 1;
+}
+#endif
 /* a line more while what an older version left at old (a folder, or a game's files) is there; this one keeps it at now */
 static void left_line(App* app, const char* old, const char* now, bool there) {
     char *line, *grown;
@@ -3842,7 +3876,7 @@ static void launch(App* app, char* absolute, bool prepared) {
         free(absolute);
         return;
     }
-#ifdef SDL_PLATFORM_ANDROID
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     if (native) {
         if (play(app, absolute) && app->recent_file && !gui_recent_add(&app->recent, absolute, GUI_SWITCH, true))
             recent_changed(app);
@@ -4043,7 +4077,11 @@ static void picked(App* app, const char* uri);
 static void open_picker(App* app) {
     app->keys_done = 0; /* another try: the last one's outcome no longer stands */
     if (!app->picked) app->picked = SDL_RegisterEvents(1);
+#ifdef SDL_PLATFORM_IOS /* SDL has no file dialog there: the document picker (dist/apple) */
+    if (app->picked) gui_apple_pick(app->window, 0, picker_done, &app->picked, app->message, sizeof(app->message));
+#else
     if (app->picked) SDL_ShowOpenFileDialog(picker_done, &app->picked, app->window, NULL, 0, NULL, false);
+#endif
 }
 /* the last max bytes of a file, as text with only ASCII (what Java takes as a string from any log), or "" */
 static char* log_tail(const char* path, size_t max) {
@@ -4125,6 +4163,9 @@ static void share_log(App* app) {
         snprintf(app->message, sizeof(app->message), SAY_LOG_FAILED);
 #ifdef SDL_PLATFORM_ANDROID
     else if (gui_android_share(saved, app->message, sizeof(app->message)))
+        snprintf(app->message, sizeof(app->message), "Log saved to %s", saved);
+#elif defined(SDL_PLATFORM_APPLE)
+    else if (gui_apple_share(app->window, saved, app->message, sizeof(app->message)))
         snprintf(app->message, sizeof(app->message), "Log saved to %s", saved);
 #else
     else if (SDL_SetClipboardText(saved))
@@ -4878,8 +4919,11 @@ static bool initialize(App* app, const char* self) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
+#ifdef SDL_PLATFORM_IOS
+    gui_apple_start();
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) return false;
-#ifdef SDL_PLATFORM_ANDROID
+#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
     /* the whole screen, the system's bars out of the way, as the Settings' fullscreen says: a phone held wide is short */
     flags = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 #else

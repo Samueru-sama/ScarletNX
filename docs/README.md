@@ -8,6 +8,7 @@ New here? Start with [Build](./BUILD.md), then [Usage](./USAGE.md).
 - **[Usage](./USAGE.md)** - extract, recompile and play; settings and folders
 - **[GUI launcher](./GUI.md)** - the menu and its themes
 - **[Android](./ANDROID.md)**
+- **[macOS and iOS](./APPLE.md)**
 - **[Development](./DEVELOPMENT.md)** - tests and diagnostics
 - **[Deprecations](./DEPRECATIONS.md)** - what an older version used, and how it goes away
 - **[Status and roadmap](./ROADMAP.md)**

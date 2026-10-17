@@ -11,7 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__APPLE__)
+/* Windows loads PE and Darwin Mach-O: neither has <elf.h>, and an ELF module would not load there */
 int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                  const char* soname, SnxLinkOutput* output, char* error, size_t error_size) {
     (void)inputs;
@@ -20,7 +21,7 @@ int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* ex
     (void)export_count;
     (void)soname;
     (void)output;
-    snprintf(error, error_size, "ELF output is not supported on Windows hosts");
+    snprintf(error, error_size, "ELF output is not supported on this host");
     return -1;
 }
 #else

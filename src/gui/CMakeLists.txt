@@ -2,10 +2,10 @@
 # Copyright 2026 the ScarletNX contributors
 if(WIN32)
     set(gui_process process_win32.c)
-elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Android)$")
+elseif(CMAKE_SYSTEM_NAME MATCHES "^(Linux|FreeBSD|Android|Darwin|iOS)$")
     set(gui_process process_posix.c)
 else()
-    message(FATAL_ERROR "scarletnx-gui currently supports Linux, FreeBSD and Windows")
+    message(FATAL_ERROR "scarletnx-gui currently supports Linux, FreeBSD, macOS, iOS and Windows")
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 add_library(snx_gui_support STATIC model.c browser.c steps.c theme.c recent.c editor.c settings.c place.c clean.c
@@ -49,6 +49,28 @@ else()
         install(FILES "${PROJECT_SOURCE_DIR}/dist/scarletnx-gui.desktop"
                 DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT desktop)
     endif()
+endif()
+if(APPLE)
+    # the iOS and macOS frontend (docs/APPLE.md), as Android's is MainActivity and android.c: apple.m is the menu's
+    # side, dist/apple/Frontend.swift the system's (iOS's document picker and share sheet, the Finder on macOS)
+    add_library(snx_apple_frontend STATIC "${PROJECT_SOURCE_DIR}/dist/apple/Frontend.swift")
+    # Swift 5's checks: the functions apple.m calls run on the main thread, which Swift 6 would want them to prove
+    set_target_properties(snx_apple_frontend PROPERTIES Swift_LANGUAGE_VERSION 5)
+    # the Swift runtime is the system's (/usr/lib/swift, from iOS 12.2 and macOS 10.14.4); the objects name its
+    # libraries for the linker, which looks for them in the SDK, and for the back-deployment ones in the toolchain
+    execute_process(COMMAND xcrun --find swiftc OUTPUT_VARIABLE snx_swiftc OUTPUT_STRIP_TRAILING_WHITESPACE)
+    get_filename_component(snx_swift_toolchain "${snx_swiftc}" DIRECTORY)
+    if(IOS)
+        set(snx_swift_platform iphoneos)
+    else()
+        set(snx_swift_platform macosx)
+    endif()
+    target_link_directories(snx_apple_frontend INTERFACE "${SNX_APPLE_SDK}/usr/lib/swift"
+                            "${snx_swift_toolchain}/../lib/swift/${snx_swift_platform}")
+    target_sources(scarletnx-gui PRIVATE apple.m)
+    set_source_files_properties(apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    # PUBLIC: the link folders above go with it to the program that links the menu
+    target_link_libraries(scarletnx-gui PUBLIC snx_apple_frontend "-framework Foundation")
 endif()
 set_target_properties(scarletnx-gui PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

@@ -41,8 +41,11 @@ elseif(WIN32)
     else()
         set(snx_openssl_target mingw64)
     endif()
+elseif(IOS)
+    # 64-bit iOS: its compiler, Xcode's Clang, gets the SDK and oldest version from the flags below
+    set(snx_openssl_target ios64-xcrun)
 elseif(CMAKE_CROSSCOMPILING)
-    message(FATAL_ERROR "Cross-building OpenSSL is only set up for Windows and Android (cmake/openssl.cmake)")
+    message(FATAL_ERROR "Cross-building OpenSSL is only set up for Windows, Android and iOS (cmake/openssl.cmake)")
 endif()
 set(snx_openssl_args
     ${snx_openssl_target}
@@ -60,6 +63,12 @@ else()
 endif()
 if(CMAKE_RC_COMPILER)
     list(APPEND snx_openssl_args RC=${CMAKE_RC_COMPILER})
+endif()
+# macOS and iOS: the architecture, SDK and oldest system version CMake's compiles get (cmake/apple.cmake). iOS marks
+# makecontext unavailable, which OpenSSL's async jobs are made of: nothing here starts one
+list(APPEND snx_openssl_args ${SNX_APPLE_FLAGS})
+if(IOS)
+    list(APPEND snx_openssl_args no-async)
 endif()
 if(NOT WIN32)
     # position-independent, as FFmpeg is: the libraries go into a shared library too (Android's runtime)

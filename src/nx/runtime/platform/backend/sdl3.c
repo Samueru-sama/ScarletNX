@@ -277,6 +277,19 @@ void video_init(const char* title) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
     SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
+#ifdef __APPLE__
+    { /* the apps carry their MoltenVK (scripts/apple-app.sh), in the bundle's Frameworks, which SDL does not search:
+         macOS's beside Resources/ (SDL's base folder), iOS's in the bundle itself. Elsewhere the system's loader */
+        const char* base = SDL_GetBasePath();
+        const char* const own[] = {"../Frameworks/libMoltenVK.dylib", "Frameworks/MoltenVK.framework/MoltenVK"};
+        size_t i;
+        for (i = 0; base && !SDL_GetHint(SDL_HINT_VULKAN_LIBRARY) && i < sizeof own / sizeof *own; i++) {
+            char* path = snx_format("%s%s", base, own[i]);
+            if (snx_is_file(path)) SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, path);
+            free(path);
+        }
+    }
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */

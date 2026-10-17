@@ -29,6 +29,11 @@ endfunction()
 snx_component(core runtime/main.c runtime/arm.c runtime/loader.c runtime/rtapi.c runtime/clock.c runtime/crash.c runtime/options.c
               runtime/ini.c runtime/startup.c runtime/gdbstub.c runtime/present.c)
 target_link_libraries(snx_core PRIVATE snx_driver snx_lz4)
+if(APPLE)
+    # main.c's weak snx_module_static, which no build defines yet: ld64 refuses an undefined symbol, weak or not,
+    # unless told it is resolved at run time
+    target_link_options(snx_core INTERFACE "LINKER:-U,_snx_module_static")
+endif()
 snx_component(kernel hle/kernel/kernel.c hle/kernel/thread.c hle/kernel/sync.c hle/svc/svc.c hle/svc/svc_mem.c hle/kernel/debug.c
               memory/mem.c hle/kernel/ipc.c)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/pl.c hle/services/sm.c hle/services/am.c hle/services/set.c hle/services/time.c hle/services/acc.c hle/services/audio.c
@@ -91,6 +96,15 @@ else()
         target_link_libraries(scarletnx PRIVATE scarletnx-gui)
         target_compile_definitions(scarletnx PRIVATE SNX_WITH_GUI)
     endif()
+endif()
+if(IOS)
+    # the app (dist/apple): the menu and then the game it plays, in the one process an iOS app has
+    set_target_properties(scarletnx PROPERTIES MACOSX_BUNDLE ON
+                          MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/dist/apple/Info-iOS.plist"
+                          MACOSX_BUNDLE_GUI_IDENTIFIER org.scarletnx
+                          MACOSX_BUNDLE_BUNDLE_NAME ScarletNX
+                          MACOSX_BUNDLE_SHORT_VERSION_STRING 0.1
+                          MACOSX_BUNDLE_BUNDLE_VERSION 1)
 endif()
 list(TRANSFORM components PREPEND snx_)
 add_library(scarletnx-nx STATIC)
@@ -194,7 +208,7 @@ elseif(SNX_DEPLOY)
 endif()
 
 # All model names share the same Horizon/Maxwell implementation.
-if(ANDROID)
+if(ANDROID OR IOS) # an app has one program, started by its icon
     set(snx_models "")
 else()
     set(snx_models erista mariko aula)

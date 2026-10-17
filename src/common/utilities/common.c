@@ -2,6 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE   700
+#ifdef __APPLE__
+/* the POSIX names above would hide Darwin's own (the sysctl and dyld types) */
+#define _DARWIN_C_SOURCE
+#endif
 #include "common/utilities/common.h"
 #include <ctype.h>
 #include <errno.h>
@@ -31,6 +35,9 @@
 #ifdef __FreeBSD__
 #include <sys/types.h>
 #include <sys/sysctl.h>
+#endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
 #endif
 
 void* snx_alloc(size_t size) {
@@ -281,6 +288,15 @@ char* snx_executable(const char* argv0) {
     if (n > 0 && (size_t)n < sizeof(buf) - 1) {
         buf[n] = 0;
         return snx_strdup(buf);
+    }
+#elif defined(__APPLE__)
+    char buf[8192];
+    uint32_t size = sizeof(buf);
+    char* resolved;
+    if (!_NSGetExecutablePath(buf, &size) && (resolved = realpath(buf, NULL)) != NULL) {
+        char* path = snx_strdup(resolved);
+        free(resolved);
+        return path;
     }
 #endif
     return snx_find_tool(argv0);
@@ -624,8 +640,9 @@ SnxU64 snx_free_space(const char* path) {
 }
 /* The per-user folder of an installed build, which has no checkout: $XDG_DATA_HOME/scarletnx or
    ~/.local/share/scarletnx, ~/Library/Application Support/scarletnx on macOS, %APPDATA%\scarletnx on Windows. These are
-   the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI. NULL when the environment names no home */
-#ifndef _WIN32
+   the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI; the app's Documents on iOS. NULL when the environment
+   names no home */
+#if !defined(_WIN32) && !defined(SNX_IOS)
 /* $var/scarletnx, else ~/fallback/scarletnx: the XDG spec ignores a relative path */
 static char* home_folder(const char* var, const char* fallback) {
     const char* base = var ? getenv(var) : NULL;
@@ -643,6 +660,10 @@ char* snx_user_data_dir(void) {
 #ifdef _WIN32
     const char* base = getenv("APPDATA");
     return base && base[0] ? snx_path_join(base, "scarletnx") : NULL;
+#elif defined(SNX_IOS)
+    /* the app's Documents, which the Files app and the Finder show the user (UIFileSharingEnabled, dist/apple) */
+    const char* home = getenv("HOME");
+    return home && home[0] ? snx_path_join(home, "Documents") : NULL;
 #elif defined(__APPLE__)
     return home_folder(NULL, "Library/Application Support");
 #else
@@ -837,7 +858,7 @@ unsigned snx_cpu_count(void) {
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     return info.dwNumberOfProcessors ? info.dwNumberOfProcessors : 1;
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (unsigned)n : 1;
 #elif defined(__FreeBSD__)

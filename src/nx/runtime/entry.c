@@ -9,6 +9,15 @@
 #include "gui/gui.h"
 #endif
 #include <stdio.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(SNX_WITH_GUI)
+/* iOS: SDL's main starts UIKit and calls this one as SDL_main; the menu's game runs here after it (src/gui/apple.m) */
+#include "gui/apple.h"
+#include <SDL3/SDL_main.h>
+#define SNX_PLAY_AFTER_MENU 1
+#endif
 int main(int argc, char** argv) {
 #ifdef SNX_WITH_GUI
     snx_menu = snx_gui_main;
@@ -17,5 +26,14 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     int result = snx_driver(argc, argv);
-    return result >= 0 ? result : snx_main(argc, argv);
+    result = result >= 0 ? result : snx_main(argc, argv);
+#ifdef SNX_PLAY_AFTER_MENU
+    {
+        int played_argc;
+        char** played = gui_apple_played(&played_argc);
+        /* the menu only opened (main.c's open_menu): the runtime has not started, and starts once for this game */
+        if (played) result = snx_main(played_argc, played);
+    }
+#endif
+    return result;
 }

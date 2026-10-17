@@ -79,6 +79,18 @@ static int has_layer(const char* name) {
     return found;
 }
 
+/* MoltenVK (macOS, iOS) is a portability driver: the loader lists it only for an instance that asks for those */
+static int has_instance_extension(const char* name) {
+    u32 n = 0;
+    vkEnumerateInstanceExtensionProperties(NULL, &n, NULL);
+    VkExtensionProperties* e = calloc(n ? n : 1, sizeof *e);
+    vkEnumerateInstanceExtensionProperties(NULL, &n, e);
+    int found = 0;
+    for (u32 i = 0; i < n && !found; i++) found = !strcmp(e[i].extensionName, name);
+    free(e);
+    return found;
+}
+
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
@@ -98,11 +110,22 @@ static int create_instance(void) {
             validation = 0;
         }
     }
+    /* the window backend may ask for it already (SDL does on Apple systems) */
+    int portability = has_instance_extension(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME), asked = 0;
+    for (u32 i = 0; i < next; i++) asked |= !strcmp(ext[i], VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    if (portability && !asked) {
+        if (next < 16)
+            ext[next++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+        else
+            portability = 0;
+    }
+    portability |= asked;
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                              .pApplicationName = "ScarletNX",
                              .pEngineName = "ScarletNX",
                              .apiVersion = VK_API_VERSION_1_3};
     VkInstanceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                               .flags = portability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0,
                                .pApplicationInfo = &app,
                                .enabledLayerCount = nlayers,
                                .ppEnabledLayerNames = layers,
@@ -273,6 +296,8 @@ static int create_device(void) {
             if (!strcmp(e[i].extensionName, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME)) g_vk.has_divisor = 1;
             if (!strcmp(e[i].extensionName, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME)) g_vk.has_border_color = 1;
             if (!strcmp(e[i].extensionName, VK_KHR_SHADER_CLOCK_EXTENSION_NAME)) has_shader_clock = 1;
+            /* a portability driver's subset must be enabled when it has one (MoltenVK) */
+            if (!strcmp(e[i].extensionName, "VK_KHR_portability_subset")) ext[next++] = "VK_KHR_portability_subset";
         }
         free(e);
     }

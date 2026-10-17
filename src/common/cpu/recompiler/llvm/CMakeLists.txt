@@ -30,6 +30,8 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc"
 # first time a module entered the interpreter. Android's is the phone's ABI baseline, which Clang targets by default
 if(ANDROID)
     set(snx_rtlib_flags --target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT})
+elseif(APPLE) # the architecture, SDK and oldest system version (cmake/apple.cmake): iOS's are not this Mac's
+    set(snx_rtlib_flags ${SNX_APPLE_FLAGS})
 else()
     set(snx_rtlib_flags "")
 endif()

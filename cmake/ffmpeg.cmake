@@ -8,7 +8,8 @@
 # VP9), and Opus for hwopus (FFmpeg's Opus decoder resamples its SILK layer with libswresample, which is why that
 # library is in): no programs, formats, filters, devices, network or autodetected system libraries, so the result needs
 # nothing but libc and builds the same everywhere. All of it is LGPL (no --enable-gpl). It needs a POSIX shell and make
-# (gmake on the BSDs), and NASM for the x86-64 assembly.
+# (gmake on the BSDs), and NASM for the x86-64 assembly. macOS and iOS build it with Xcode's Clang and SDK
+# (cmake/apple.cmake), iOS as a cross build.
 # This file is included into the top-level scope: its variables carry the snx_ffmpeg_ prefix.
 set(snx_ffmpeg_src "${CMAKE_BINARY_DIR}/_deps/ffmpeg-patched")
 set(snx_ffmpeg_prefix "${CMAKE_BINARY_DIR}/ffmpeg")
@@ -64,13 +65,18 @@ if(WIN32 OR CMAKE_CROSSCOMPILING)
     # architecture AMD64 or ARM64 on Windows, which configure doesn't know
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
         set(snx_ffmpeg_arch x86_64)
-    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
+           (APPLE AND NOT CMAKE_SYSTEM_PROCESSOR AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64"))
+        # an iOS build names its architecture in CMAKE_OSX_ARCHITECTURES, CMAKE_SYSTEM_PROCESSOR being optional there
         set(snx_ffmpeg_arch aarch64)
     else()
         string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" snx_ffmpeg_arch)
     endif()
     if(WIN32)
         set(snx_ffmpeg_os mingw32)
+    elseif(APPLE)
+        # configure's name for macOS and iOS alike: the SDK in the flags below says which
+        set(snx_ffmpeg_os darwin)
     else()
         # configure's names for Linux, Darwin, FreeBSD, Android are CMake's in lower case
         string(TOLOWER "${CMAKE_SYSTEM_NAME}" snx_ffmpeg_os)
@@ -82,6 +88,13 @@ if(ANDROID)
     # a shared library there (src/nx)
     list(APPEND snx_ffmpeg_args --sysroot=${CMAKE_SYSROOT} --extra-cflags=--target=${CMAKE_C_COMPILER_TARGET}
          --extra-ldflags=--target=${CMAKE_C_COMPILER_TARGET} --enable-pic)
+endif()
+if(SNX_APPLE_FLAGS)
+    # the architecture, SDK and oldest system version CMake gives its own compiles (cmake/apple.cmake), which configure
+    # does not get from --cc; on iOS without them it would build for the Mac. Its tests link programs, so the linker
+    # gets them too
+    list(JOIN SNX_APPLE_FLAGS " " snx_ffmpeg_apple_flags)
+    list(APPEND snx_ffmpeg_args "--extra-cflags=${snx_ffmpeg_apple_flags}" "--extra-ldflags=${snx_ffmpeg_apple_flags}")
 endif()
 if(CMAKE_CROSSCOMPILING)
     # configure builds a few helper programs for the machine doing the build, which needs its own C compiler
