@@ -1208,12 +1208,11 @@ static u32 gs_input_vertices(u32 topology, int tes_on, u32 params) {
                                               : 3;
 }
 
-static VkFrontFace front_face_at_viewport(const u32* r) {
+static VkFrontFace front_face_at_viewport(const u32* r, float viewport_height) {
     int cw = r[0x647] == 0x900;
-    /* A negative Vulkan viewport height already reverses the triangle's framebuffer winding. Flipping the selected
-       front face as well culls front-facing full-screen passes (Tomodachi Life's final composition is one). */
-    /* NVB197_SET_WINDOW_ORIGIN_FLIP_Y changes triangle facing, not viewport or display row order. */
-    if (r[0x4EB] & 0x10) cw = !cw;
+    /* A negative Vulkan viewport already reverses framebuffer winding. WINDOW_ORIGIN_FLIP_Y also reverses guest
+       facing, so only compensate for that bit when the viewport has not performed the same reversal. */
+    if ((r[0x4EB] & 0x10) && viewport_height > 0) cw = !cw;
     return cw ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
 int vk_render_depth_clamp(const u32* r) {
@@ -1222,7 +1221,7 @@ int vk_render_depth_clamp(const u32* r) {
     return mode != 1 && mode != 3 && mode != 5;
 }
 
-VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r); }
+VkFrontFace vk_render_front_face(const u32* r) { return front_face_at_viewport(r, vk_render_viewport(r).height); }
 
 void vk_render_draw(GpuChannel* ch, int indexed, u32 topology, u32 first, u32 count, u32 base_vertex, u32 base_instance,
                     u32 instances) {
@@ -1724,7 +1723,7 @@ retry:
                          : r[0x648] == 0x404 ? VK_CULL_MODE_FRONT_BIT
                          : r[0x648] == 0x408 ? VK_CULL_MODE_FRONT_AND_BACK
                                              : VK_CULL_MODE_BACK_BIT);
-    vkCmdSetFrontFace(cb, front_face_at_viewport(r));
+    vkCmdSetFrontFace(cb, front_face_at_viewport(r, vp.height));
     vkCmdSetPrimitiveTopology(cb, topo);
     vkCmdSetPrimitiveRestartEnable(cb, restart && (indexed == 1 || indexed == 3));
     vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);

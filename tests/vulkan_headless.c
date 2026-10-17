@@ -51,6 +51,13 @@ static int check_viewport_orientation(void) {
     CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
     r[0x4EB] = 0x10;
     CHECK(vk_render_front_face(r) == VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    /* The origin facing flip and a negative viewport cancel. */
+    transform[1] = 17;
+    memcpy(&r[0x280], transform, sizeof transform);
+    CHECK(vk_render_viewport(r).height == -34);
+    CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
+    transform[1] = -17;
+    memcpy(&r[0x280], transform, sizeof transform);
     r[0x647] = 0x901;
     CHECK(vk_render_front_face(r) == VK_FRONT_FACE_CLOCKWISE);
     transform[1] = 17;
