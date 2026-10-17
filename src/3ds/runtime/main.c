@@ -25,9 +25,8 @@ static void usage(FILE* out) {
           "  -x, --extract   Extract only\n"
           "  -r, --recomp    Recompile without playing\n"
           "  --model old|new The console to model (default old)\n"
-          "  --repo DIR      The data folder (default: the checkout, a portable copy's folder, else the\n"
-          "                  user's data folder, as scarletnx picks it; an installed build's work/ is in\n"
-          "                  its cache folder)\n"
+          "  --repo DIR      The data folder (default: a portable copy's folder, else the user's data\n"
+          "                  folder, as scarletnx picks it; the user's keeps work/ in its cache folder)\n"
           "  --output DIR    The extraction folder (default work/3ds/<the CIA's name>)\n"
           "  --max-blocks N  Stop after N native blocks (default: run until the game exits or its window\n"
           "                  closes)\n"
@@ -67,13 +66,16 @@ static bool visible_path(const char* path) {
         if (*p < 32 || *p == 127) return false;
     return true;
 }
-/* work/3ds of the data folder the Switch driver works in (snx_data_dir), which an installed build keeps in its cache
-   folder (snx_work_dir); resolved, as the loader refuses a link on the way to its output */
+/* work/3ds of the data folder the Switch driver works in (snx_data_dir), which the user's keeps in its cache folder
+   (snx_work_dir); resolved, as the loader refuses a link on the way to its output */
 static char* work_folder(const char* repo, const char* argv0) {
     char *exe = repo ? NULL : snx_executable(argv0), *dir = exe ? snx_dirname(exe) : NULL;
-    char* data = repo ? snx_strdup(repo) : snx_data_dir(SNX_SOURCE_DIR, SNX_BUILD_DIR, dir);
+    char* data = repo ? snx_strdup(repo) : snx_data_dir(dir);
+    char* checkout = repo ? NULL : snx_checkout(SNX_SOURCE_DIR, SNX_BUILD_DIR, dir);
     char *work = data ? snx_work_dir(data) : snx_strdup("work"), *folder = snx_path_join(work, "3ds");
     char* resolved = snx_absolute(folder);
+    if (checkout && data) snx_checkout_left(checkout, data);
+    free(checkout);
     free(folder);
     free(work);
     free(data);

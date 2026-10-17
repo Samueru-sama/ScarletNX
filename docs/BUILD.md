@@ -357,12 +357,12 @@ instructions (20000 on Android; `--chunk`), with a progress line per compiled un
 Debian, `libgccjit-devel` on Fedora; `-DSNX_GCCJIT_ROOT=` points at another GCC's prefix). It is meant for DEC Alpha EV67 hosts, which LLVM has no backend for; everywhere else use LLVM.
 Running it needs only GNU binutils (`as`, `ld`) on PATH besides libgccjit: the module links none of GCC's files.
 
-Extraction builds missing hactool separately. Recompilation deploys the running full runtime;
-the tools-only build creates one in `build/native-recomp`, or accepts `--runtime FILE`.
-`--repo DIR` and `--build-dir DIR` before the command override compiled-in checkout/tool paths; a program run outside
-its build tree (an installed copy) uses the user's data folder instead (`~/.local/share/scarletnx`,
-`%APPDATA%\scarletnx` on Windows), and on Linux the XDG config, state and cache folders hold its settings, logs and
-caches ([USAGE](USAGE.md#folders)).
+Extraction builds a missing hactool separately, in the checkout of a build tree's driver. Recompilation deploys the
+running full runtime; the tools-only build creates one in its checkout's `build/native-recomp`, or accepts
+`--runtime FILE`. A build tree's programs work in the same data folder as an installed copy's: the user's
+(`~/.local/share/scarletnx`, `%APPDATA%\scarletnx` on Windows), and on Linux the XDG config, state and cache folders
+hold its settings, logs and caches ([USAGE](USAGE.md#folders)). `--repo DIR` before the command names another data
+folder, `--build-dir DIR` another build tree.
 Python ≥3.12 is optional for `tools/*.py` diagnostics.
 
 ## Install / AppImage

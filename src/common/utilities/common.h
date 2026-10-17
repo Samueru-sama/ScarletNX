@@ -11,9 +11,10 @@
 typedef uint32_t SnxU32;
 typedef uint64_t SnxU64;
 typedef struct {
-    const char* repo;
+    const char* repo; /* the data folder: games/, work/, the keys */
     const char* build;
     const char* executable;
+    const char* source; /* the checkout the build came from (snx_checkout), to build tools in; NULL without one */
 } SnxPaths;
 
 void* snx_alloc(size_t size);
@@ -55,18 +56,18 @@ enum { SNX_USER_DATA, SNX_USER_CONFIG, SNX_USER_STATE, SNX_USER_CACHE };
 #define SNX_PORTABLE_DIR ".scarletnx"
 /* Android's data folder, which the user sees (the app's working folder once it may write there) */
 #define SNX_ANDROID_DIR  "/sdcard/ScarletNX"
-/* An installed build's folder for one kind of file: $XDG_CONFIG_HOME/scarletnx (~/.config), $XDG_STATE_HOME/scarletnx
+/* The user's folder for one kind of file: $XDG_CONFIG_HOME/scarletnx (~/.config), $XDG_STATE_HOME/scarletnx
    (~/.local/state) or $XDG_CACHE_HOME/scarletnx (~/.cache), a relative path ignored. Without SNX_XDG config/, state/
    and cache/ of the data folder. NULL when the environment names no home */
 char* snx_user_dir(int kind);
 /* 1 for a data folder that keeps each kind of file apart: the user's, a portable copy's (SNX_PORTABLE_DIR), Android's.
-   A checkout's or an --outdir's games keep their files in their folders */
+   Another folder's games (--repo, --outdir) keep their files in their folders */
 int snx_app_dir(const char* folder);
 /* Such a data folder's folder for one kind of file: the user's as snx_user_dir says, another's config/, state/ and
    cache/ in it; the data folder itself for SNX_USER_DATA */
 char* snx_app_kind_dir(const char* app, int kind);
 /* A path in a data folder (snx_app_dir), moved to the same place in its folder of kind: games/X/X.ini of the data
-   folder is games/X/X.ini of the config folder. Any other path (a checkout, an --outdir) is returned as it is */
+   folder is games/X/X.ini of the config folder. Any other path (another --repo, an --outdir) is returned as it is */
 char* snx_user_path(const char* path, int kind);
 /* The folder of kind of the launcher's own files (settings.ini and gamecontrollerdb.txt in config, recent.txt in
    state) for a program in folder: the data folder's (snx_app_dir) that folder is in, else the user's. The launcher
@@ -88,14 +89,23 @@ typedef struct {
     int kind;
 } SnxGameFile;
 extern const SnxGameFile snx_game_files[SNX_GAME_FILES];
-/* work/ of a data folder, the drivers' extractions: an installed build's is in its cache folder. An older build's
+/* work/ of a data folder, the drivers' extractions: the user's is in its cache folder. An older build's
    work/ in the data folder stays, a line on stdout saying so */
 char* snx_work_dir(const char* data_dir);
-/* The folder work/, games/ and the keys are in when a run names none (--repo), and the menu's games/: the checkout a build
-   came from, for a program run from that build's tree (build; NULL: any program); else SNX_PORTABLE_DIR beside the
-   AppImage or the program, when it is there (a portable copy); else the user's data folder. NULL when none can be
-   named */
-char* snx_data_dir(const char* checkout, const char* build, const char* program_dir);
+/* The folder work/, games/ and the keys are in when a run names none (--repo), and the menu's games/: SNX_PORTABLE_DIR
+   beside the AppImage or the program, when it is there (a portable copy); else the user's data folder. NULL when none
+   can be named */
+char* snx_data_dir(const char* program_dir);
+/* The checkout a program run from its build tree (build; NULL: any program) was built from, for what only a checkout
+   has: its sources, and what an older version kept in it. NULL for any other program */
+char* snx_checkout(const char* checkout, const char* build, const char* program_dir);
+/* What an older version kept in the checkout of a build tree's program, its data folder then: games/, work/ and the
+   keys. snx_checkout_now names where this one keeps each for the data folder data; snx_checkout_left says so on
+   stderr for each still there. Nothing is moved: the player does that (docs/DEPRECATIONS.md) */
+#define SNX_CHECKOUT_FILES 4
+extern const char* const snx_checkout_files[SNX_CHECKOUT_FILES];
+char* snx_checkout_now(const char* data, int file);
+void snx_checkout_left(const char* checkout, const char* data);
 SnxU64 snx_free_space(const char* path);
 SnxU64 snx_file_size(const char* path);
 int snx_make_executable(const char* path);

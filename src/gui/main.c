@@ -32,7 +32,7 @@
 #ifndef _WIN32
 #include <sys/stat.h>
 #endif
-/* the checkout the drivers were built from and its build tree: a build tree's menu lists the games/ its driver makes */
+/* the checkout the drivers were built from and its build tree, where an older version kept games/ and work/ */
 #ifdef SNX_SOURCE_DIR
 #define GUI_CHECKOUT SNX_SOURCE_DIR
 #define GUI_BUILD    SNX_BUILD_DIR
@@ -98,6 +98,7 @@ typedef struct {
     char* drivers; /* the folder the other drivers are looked for in first */
     char *cwd, *file, *games_dir, *keys_path;
     char* data_dir;       /* games/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
+    char* checkout;       /* a build tree's menu's checkout (snx_checkout), where an older version kept games/ */
     char* themes_dirs[2]; /* themes/ in the data folder, then beside the GUI */
     char message[512];
     Uint64 keys_done; /* the keys screen's outcome shown since, 0 for none: then the menu by itself */
@@ -363,7 +364,7 @@ static char* home_keys_path(void) {
     return path;
 }
 #ifdef SNX_XDG
-/* the menu of an installed build, whose folder is the user's data folder (snx_data_dir) */
+/* the menu whose folder is the user's data folder (snx_data_dir), not a portable copy's */
 static bool installed(const App* app) {
     char* user = snx_user_data_dir();
     bool same = user && app->data_dir && !strcmp(user, app->data_dir);
@@ -372,8 +373,8 @@ static bool installed(const App* app) {
 }
 #endif
 /* the folder of kind for the menu's own files (settings.ini, app.ini and folders.txt in config, recent.txt and
-   last-run.log in state), made: its data folder's (snx_app_dir: the user's, a portable copy's), else the user's (a
-   checkout's menu). On Android the app's own storage, which needs no permission. Made with make; NULL when none can be */
+   last-run.log in state), made: its data folder's (snx_app_dir: the user's, a portable copy's), else the user's. On
+   Android the app's own storage, which needs no permission. Made with make; NULL when none can be */
 static char* menu_folder(const App* app, int kind, bool make) {
     char* folder;
 #ifdef SDL_PLATFORM_ANDROID
@@ -390,8 +391,8 @@ static char* menu_folder(const App* app, int kind, bool make) {
     }
     return folder;
 }
-/* where the keys are installed: an installed build's data folder, which the driver reads first, so nothing is written
-   in the home folder itself (XDG); else ~/.switch */
+/* where the keys are installed: the user's data folder, which the driver reads first, so nothing is written in the
+   home folder itself (XDG); else ~/.switch */
 static char* device_keys_path(const App* app) {
 #ifdef SNX_XDG
     if (installed(app)) return snx_path_join(app->data_dir, "prod.keys");
@@ -400,7 +401,7 @@ static char* device_keys_path(const App* app) {
 #endif
     return home_keys_path();
 }
-/* the prod.keys the driver reads: those installed here, else for an installed build the ones in ~/.switch */
+/* the prod.keys the driver reads: those installed here, else with the user's data folder the ones in ~/.switch */
 static char* keys_in_use(const App* app) {
     if (app->keys_path && snx_is_file(app->keys_path)) return snx_strdup(app->keys_path);
 #ifdef SNX_XDG
@@ -3606,7 +3607,8 @@ static void left_games(App* app, const char* folder) {
 }
 /* what older versions left where this one no longer looks, a folder at a time, for the menu to say while it is there:
    the menu's own files' folder (gui/), work/, each game laid out beside the others, a portable copy's games/ beside
-   the program (its data in .scarletnx/ now). Nothing is moved: the player does that (docs/DEPRECATIONS.md) */
+   the program (its data in .scarletnx/ now), a build tree's games/, work/ and keys in its checkout. Nothing is moved:
+   the player does that (docs/DEPRECATIONS.md) */
 static void left_behind(App* app) {
     char *config = menu_folder(app, SNX_USER_CONFIG, false), *state = menu_folder(app, SNX_USER_STATE, false);
     char *data = snx_user_data_dir(), *gui = data ? snx_path_join(data, "gui") : NULL, *kept = NULL;
@@ -3650,6 +3652,14 @@ static void left_behind(App* app) {
     }
     free(old);
     free(now);
+    /* the checkout a build tree's menu used as its data folder */
+    for (i = 0; app->checkout && app->data_dir && i < SNX_CHECKOUT_FILES; ++i) {
+        old = snx_path_join(app->checkout, snx_checkout_files[i]);
+        now = snx_checkout_now(app->data_dir, i);
+        if (old && now) left_line(app, old, now, snx_path_exists(old));
+        free(old);
+        free(now);
+    }
     free(kept);
     free(moved);
     free(work);
@@ -4092,9 +4102,8 @@ static char* newest_log(const App* app) {
     return newest;
 }
 /* the message on the screen, the last run's output and the newest game log, as scarletnx.log: on Android in
-   /sdcard/ScarletNX and handed to the share sheet as that file, elsewhere in the working folder with its path copied.
-   An installed build saves it in its state folder (XDG), as the working folder is the home folder when the menu is
-   started from the desktop */
+   /sdcard/ScarletNX and handed to the share sheet as that file, elsewhere in its data folder's state folder with its
+   path copied (the working folder without one): started from the desktop, the working folder is the home folder */
 static void share_log(App* app) {
     char *game, *run, *played, *text, *saved, *state = NULL;
     const char* folder;
@@ -4898,8 +4907,9 @@ static bool initialize(App* app, const char* self) {
     app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
 #else
     app->drivers = self ? snx_dirname(self) : SDL_GetBasePath() ? snx_strdup(SDL_GetBasePath()) : NULL;
-    app->data_dir = snx_data_dir(GUI_CHECKOUT, GUI_BUILD, app->drivers);
+    app->data_dir = snx_data_dir(app->drivers);
     if (!app->data_dir) app->data_dir = snx_strdup(app->cwd ? app->cwd : ".");
+    app->checkout = snx_checkout(GUI_CHECKOUT, GUI_BUILD, app->drivers);
 #endif
     app->games_dir = snx_path_join(app->data_dir, "games");
     app->themes_dirs[0] = snx_path_join(app->data_dir, "themes");
@@ -4935,6 +4945,7 @@ static void cleanup(App* app) {
     free(app->drivers);
     free(app->file);
     free(app->data_dir);
+    free(app->checkout);
     free(app->games_dir);
     free(app->themes_dirs[0]);
     free(app->themes_dirs[1]);

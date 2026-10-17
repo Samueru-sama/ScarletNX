@@ -22,7 +22,7 @@ static void usage(void) {
     puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
          "  INPUT                  Game/ExeFS directory or .nro\n"
          "  -o, --name, --out NAME  Output name (default: the title ID, else the NPDM's or input name)\n"
-         "  --outdir DIR           Where the game's folder goes (default: games/ in the checkout or data folder)\n"
+         "  --outdir DIR           Where the game's folder goes (default: games/ in the data folder)\n"
          "  -O LEVEL               Optimization: 0,1,2,3,s,z (default: 3)\n"
          "  --jobs N               Parallel compiles (default: CPU count)");
     puts("  --backend NAME         Code generator: llvm (LLVM-C, the default and the recommended one),\n"

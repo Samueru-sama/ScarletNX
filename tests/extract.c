@@ -369,12 +369,14 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
     paths.repo = repo;
     paths.build = build;
     paths.executable = self;
+    /* hactool is built in the checkout's build/extract when it is missing, never without a checkout */
+    paths.source = strcmp(mode, "autobuild-no-checkout") ? repo : NULL;
 #if defined(_WIN32)
     tool = snx_path_join(build, "hactool.exe");
 #else
     tool = snx_path_join(build, "hactool");
 #endif
-    if (!strcmp(mode, "autobuild")) {
+    if (!strncmp(mode, "autobuild", 9)) {
         free(tool);
 #if defined(_WIN32)
         tool = snx_path_join(build, "cmake.exe");
@@ -406,8 +408,8 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
     set_env("XDG_CONFIG_HOME", "must not reach hactool");
     kind = "pfs0";
     base_name = "Base Game (&).NSP";
-    if (!strcmp(mode, "xci") || !strcmp(mode, "xci-keyless") || !strcmp(mode, "xci-renamed-dnsp")
-        || !strcmp(mode, "slow-xci") || !strcmp(mode, "xci-keyarea")) {
+    if (!strcmp(mode, "xci") || !strcmp(mode, "xci-keyless") || !strcmp(mode, "xci-renamed-dnsp") ||
+        !strcmp(mode, "slow-xci") || !strcmp(mode, "xci-keyarea")) {
         kind = !strcmp(mode, "xci-keyarea") ? "xci-keyarea" : "xci";
         base_name = !strcmp(mode, "xci-renamed-dnsp") ? "Base Game (&).DNsP" : "Base Game (&).XCI";
     } else if (strstr(mode, "dxci") || merged) {
@@ -494,9 +496,15 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
     }
     expected_failure = !strcmp(mode, "failure") || !strcmp(mode, "no-main") || !strcmp(mode, "dlc") ||
                        !strcmp(mode, "encrypted-no-keys") || !strcmp(mode, "explicit-missing-keys") ||
-                       !strcmp(mode, "unmatched-update") || existing || invalid;
+                       !strcmp(mode, "unmatched-update") || !strcmp(mode, "autobuild-no-checkout") || existing ||
+                       invalid;
     result = snx_extract(count, arguments, &paths);
     CHECK((result != 0) == expected_failure);
+    if (!strcmp(mode, "autobuild-no-checkout")) {
+        text = snx_path_join(repo, "build/extract");
+        CHECK(!snx_is_dir(text)); /* CMake did not run */
+        free(text);
+    }
     after = snx_read_file(base, &after_size);
     CHECK(after != NULL && after_size == original_size && !memcmp(original, after, original_size));
     free(original);
@@ -529,8 +537,9 @@ static int scenario(const char* self, const char* scratch, const char* mode) {
         }
         free(text);
     }
-    if (!strcmp(mode, "existing") || !strcmp(mode, "explicit-missing-keys") || invalid)
-        CHECK(!snx_is_file(report));
+    if (!strcmp(mode, "existing") || !strcmp(mode, "explicit-missing-keys") || !strcmp(mode, "autobuild-no-checkout") ||
+        invalid)
+        CHECK(!snx_is_file(report)); /* hactool never ran */
     else
         assert_temp_removed(report);
     CHECK(getenv("XDG_CONFIG_HOME") && !strcmp(getenv("XDG_CONFIG_HOME"), "must not reach hactool"));
@@ -581,6 +590,7 @@ int main(int argc, char** argv) {
                                   "preserve",
                                   "dot-parent",
                                   "autobuild",
+                                  "autobuild-no-checkout",
                                   "named-output",
                                   "malformed-dxci",
                                   "truncated-dxci",

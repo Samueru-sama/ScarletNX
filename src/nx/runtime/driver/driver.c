@@ -30,9 +30,9 @@ static void usage(void) {
     puts("  --backend=llvm|gcc     Select the recompiler backend for preparation\n"
          "  -x -h / -r -h          Extraction / recompilation options\n"
          "  --game=games/Game      Run a compiled game\n"
-         "  --repo / --build-dir   Override this build's checkout / build directory\n"
-         "                         (without its checkout: a .scarletnx folder beside the\n"
-         "                         AppImage or the program, else the user's data folder,\n"
+         "  --repo DIR             The data folder: games/, work/ and the keys (default: a\n"
+         "                         .scarletnx folder beside the AppImage or the program,\n"
+         "                         else the user's data folder,\n"
 #ifdef _WIN32
          "                         %APPDATA%\\scarletnx)");
 #elif defined(__APPLE__)
@@ -40,6 +40,7 @@ static void usage(void) {
 #else
          "                         ~/.local/share/scarletnx)");
 #endif
+    puts("  --build-dir DIR        Override this build's build directory");
 #ifndef _WIN32
     puts("  -S                     Enable the native GDB stub on localhost:1234\n"
          "  -s                     Enable the stub and stop at startup\n"
@@ -237,8 +238,8 @@ static int container_path(const char* path) {
 }
 int snx_driver(int argc, char** argv) {
     SnxPaths paths;
-    const char *repo = SNX_SOURCE_DIR, *build = SNX_BUILD_DIR, *input = NULL, *backend = NULL;
-    char *r = NULL, *b = NULL, *exe = NULL, **rest, **setting, *checkout, *data = NULL;
+    const char *repo = NULL, *build = SNX_BUILD_DIR, *input = NULL, *backend = NULL;
+    char *r = NULL, *b = NULL, *exe = NULL, **rest, **setting, *self, *data = NULL, *source = NULL;
     unsigned flags = 0;
     int i, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic, backend_args = 0;
     int repo_given = 0, settings = 0;
@@ -346,24 +347,25 @@ int snx_driver(int argc, char** argv) {
     if (!automatic)
         for (i = separator; i < argc; ++i) rest[n++] = argv[i];
     rest[n] = NULL;
-    /* An installed build (the AppImage, the Windows zip) runs without the checkout it was built from: work/, games/ and
-       prod.keys are in its data folder then (snx_data_dir), unless --repo names one (the menu does). Not the current
-       folder: a desktop entry or Explorer start the driver wherever they happen to be, often somewhere read-only (/,
-       the AppImage's mount, Program Files) */
+    /* work/, games/ and prod.keys are in the data folder (snx_data_dir), unless --repo names one (the menu does), for
+       a build tree's driver as for an installed one. Not the current folder: a desktop entry or Explorer start the
+       driver wherever they happen to be, often somewhere read-only (/, the AppImage's mount, Program Files) */
+    self = snx_executable(argv[0]);
+    exe = self ? snx_dirname(self) : NULL;
+    free(self);
+    source = snx_checkout(SNX_SOURCE_DIR, build, exe);
     if (!repo_given) {
-        checkout = snx_executable(argv[0]);
-        exe = checkout ? snx_dirname(checkout) : NULL;
-        free(checkout);
-        data = snx_data_dir(repo, build, exe);
-        free(exe);
-        exe = NULL;
+        data = snx_data_dir(exe);
         if (data && snx_mkdirs(data)) {
             result = snx_error("cannot create the data folder %s", data);
             goto done;
         }
         repo = data ? data : ".";
     }
+    free(exe);
+    exe = NULL;
     snx_tool_console();
+    if (data && source) snx_checkout_left(source, data);
     r = snx_absolute(repo);
     b = snx_absolute(build);
     exe = snx_executable(argv[0]);
@@ -374,6 +376,7 @@ int snx_driver(int argc, char** argv) {
     paths.repo = r;
     paths.build = b;
     paths.executable = exe;
+    paths.source = source;
     if (automatic)
         result =
             play_dump(input, &paths, flags, backend, settings, setting, separator < argc ? argc - separator - 1 : 0,
@@ -386,5 +389,6 @@ done:
     free(b);
     free(exe);
     free(data);
+    free(source);
     return result;
 }

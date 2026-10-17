@@ -3994,6 +3994,32 @@ int main(int argc, char** argv) {
                 free(said);
                 free(db);
             }
+            /* a build tree's menu: its checkout's games/, work/ and keys, where an older version kept them, each where
+               this one does */
+            {
+                char *checkout = snx_path_join(temporary, "checkout"), *old_games = snx_path_join(checkout, "games");
+                char *old_work = snx_path_join(checkout, "work"), *keys = snx_path_join(checkout, "prod.keys"),
+                     *said[3];
+                assert(!snx_mkdirs(old_games) && !snx_mkdirs(old_work) && !snx_write_file(keys, "", 0));
+                said[0] = snx_format("%s" SAY_LEFT_BY "%s\n", old_games, app.games_dir);
+                said[1] = snx_format("%s" SAY_LEFT_BY "%s/scarletnx/work\n", old_work, cache);
+                said[2] = snx_format("%s" SAY_LEFT_BY "%s/prod.keys\n", keys, app.data_dir);
+                app.checkout = checkout;
+                left_behind(&app);
+                assert(app.lefts == 8);
+                for (i = 0; i < 3; ++i) {
+                    assert(strstr(app.left, said[i]));
+                    free(said[i]);
+                }
+                app.checkout = NULL;
+                left_behind(&app);
+                assert(app.lefts == 5);
+                assert(!snx_remove_tree(checkout));
+                free(keys);
+                free(old_work);
+                free(old_games);
+                free(checkout);
+            }
             /* in a box over the menu as it opens: each where it is (-) and where it would go (->, in ink: a proposal,
                not a diff's added green), a path too long for a row going on in the next, as many as fit */
             {

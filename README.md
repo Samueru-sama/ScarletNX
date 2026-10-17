@@ -70,12 +70,14 @@ For encrypted dumps, put `prod.keys` (and `title.keys`, for NSPs) in `~/.switch`
 ./build/scarletnx "Game.xci"  # extract, recompile, then play (also accepts NSP, DNSP and DXCI)
 ```
 Run the same command again after an interruption. Completed extraction and recompilation are skipped,
-but the game always starts anew. To run the steps separately:
+but the game always starts anew. The driver keeps games, extractions and keys in its data folder,
+`~/.local/share/scarletnx` on Linux ([Folders](./docs/USAGE.md#folders)). To run the steps separately, here in
+folders of the current one:
 ```bash
-./build/scarletnx -x "Game.xci" --name Game  # -> work/Game/{exefs,romfs}
-./build/scarletnx -r work/Game Game         # -> games/Game/Game
-./build/scarletnx -rx "Game.xci"            # prepare without playing (UNIX)
-./build/scarletnx -Hs "Game.xci"            # headless, wait for GDB (UNIX)
+./build/scarletnx -x "Game.xci" --out work/Game     # -> work/Game/{exefs,romfs}
+./build/scarletnx -r work/Game Game --outdir games  # -> games/Game/Game
+./build/scarletnx -rx "Game.xci"                   # prepare without playing (UNIX)
+./build/scarletnx -Hs "Game.xci"                   # headless, wait for GDB (UNIX)
 cd games/Game && ./Game
 ```
 

@@ -25,8 +25,9 @@ Pass a single XCI, NSP, DXCI or DNSP to extract, recompile and play:
 ```
 
 The driver runs each step as a child process and starts the game with its folder, `games/<id>/`, as its working
-directory. The game is named by its title ID, an NRO by its name ([Folders](#folders)). Its extraction in `work/`
-is named after the dump stem, retaining letters, digits, UTF-8, spaces, hyphens and underscores.
+directory. The game is named by its title ID, an NRO by its name; `games/` and `work/` are the data folder's, from a
+build tree too ([Folders](#folders)). Its extraction in `work/` is named after the dump stem, retaining letters,
+digits, UTF-8, spaces, hyphens and underscores.
 `--repo DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
 `-H` (`--headless`) can precede or follow the dump and is passed to the game only.
 Omitting it starts the game with a window, unless the build has no window backend.
@@ -102,17 +103,18 @@ This uses ScarletNX's existing guest runtime, not a complete homebrew-loader env
 Compatibility still depends on the application's runtime and service requirements.
 See [NRO implementation notes](NRO.md) for the reference and validation policy.
 
-To run the steps separately:
+To run the steps separately, here in folders of the current one (`--out` and `--outdir`; without them, the data
+folder's `work/` and `games/`):
 
 ```sh
-./build/scarletnx -x "Game.xci" --name Game
-./build/scarletnx -r work/Game Game
+./build/scarletnx -x "Game.xci" --out work/Game
+./build/scarletnx -r work/Game Game --outdir games
 games/Game/Game
 ```
 
 ```powershell
-.\build\scarletnx.exe -x "Game.xci" --name Game
-.\build\scarletnx.exe -r work/Game Game
+.\build\scarletnx.exe -x "Game.xci" --out work/Game
+.\build\scarletnx.exe -r work/Game Game --outdir games
 .\games\Game\Game.exe
 ```
 
@@ -123,16 +125,17 @@ Remaining examples: POSIX.
 ./build/scarletnx -x Game.nsp --update update.nsp --name Game \
   --keys /path/prod.keys --title-keys /path/title.keys
 
-./build/scarletnx -r work/Game Game --jobs 8
+./build/scarletnx -r work/Game Game --outdir games --jobs 8
 ./build/scarletnx -r app.nro -o App --outdir games
 ./build/scarletnx -r -h
 ```
 
-- **Keys:** encrypted content uses flags → the data folder (the checkout, or an installed copy's, below) → `~/.switch`
+- **Keys:** encrypted content uses flags → the data folder ([Folders](#folders)) → `~/.switch`
   (`%USERPROFILE%\.switch` on Windows).
   Common NSP tickets supplement title keys. Fully decrypted content needs neither key file.
-- **Extraction:** defaults to `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing `exefs`;
-  builds missing hactool. [Temp cleanup/key filtering](../src/nx/runtime/driver/extract.c).
+- **Extraction:** defaults to the data folder's `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing
+  `exefs`; a build tree's driver builds a missing hactool in its checkout.
+  [Temp cleanup/key filtering](../src/nx/runtime/driver/extract.c).
   Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
   area all extract, through what [`cmake/hactool-libhac.patch`](../cmake/hactool-libhac.patch) ports from LibHac.
 - **Recompile:** AOT → module (LLVM, or `--backend=gcc` for libgccjit on DEC Alpha EV67 hosts) →
@@ -140,7 +143,7 @@ Remaining examples: POSIX.
   `-O 0..3,s,z` sets the optimization level.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
   them. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
-  `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
+  its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
   `--keep-c` is the deprecated spelling of `--keep-ir`.
 - **Codegen:** `--no-build` stages data/INI only; `--interp-only` omits AOT functions.
   `--chunk N` sets instructions per code unit. Nothing is cached between runs.
@@ -148,7 +151,7 @@ Remaining examples: POSIX.
 - **Data updates:** ExeFS refreshes; `<id>_data/romfs` is reused.
   Replace cached RomFS after asset changes; preserve `<id>_data/save/`.
 
-In a checkout (elsewhere, see [Folders](#folders)):
+With `--out work/Game` and `--outdir games` as above (without them, see [Folders](#folders)):
 
 | Output | Contents |
 | --- | --- |
@@ -238,41 +241,45 @@ X11 bypasses Wayland. [Licenses](CREDITS.md).
 
 ## Folders
 
-The driver works in one folder, the first of these that applies (`--repo DIR` names another):
+The driver works in one folder, its data folder, the first of these that applies:
 
-1. the checkout it was built from, for a program run from its build tree;
+1. the one `--repo DIR` names (the menu names its own);
 2. a portable copy's: `.scarletnx/` beside the AppImage, or beside the Windows zip's programs, when it is there;
 3. the user's data folder: `~/.local/share/scarletnx` on Linux, `%APPDATA%\scarletnx` on Windows,
    `~/Library/Application Support/scarletnx` on macOS. On Android the app names its own, `/sdcard/ScarletNX`.
 
+A driver run from its build tree works in the same folder as an installed one: the checkout it was built from is
+not a data folder. `--repo DIR`, or `--outdir DIR` for a recompile, keeps a run's files in one folder of your choice.
+
 Each game is a folder of `games/` named by its title ID, `games/0100DA801624E000/` and its files
 `0100DA801624E000*` in it; a program without an ID of its own (an NRO, an ExeFS without NPDM) by its name, and
 `--name` names any. The game is shown by the name in its `control.nacp` (the window, the recompile, the menu's
-list). A data folder that is not a checkout keeps each kind of file apart: on Linux in the
+list). The user's data folder and a portable copy's keep each kind of file apart: on Linux the user's in the
 [XDG](https://specifications.freedesktop.org/basedir/latest/) folder of its kind, elsewhere in its own `config/`,
-`state/` and `cache/`. A checkout's games, and an `--outdir`'s, keep everything in their folders.
+`state/` and `cache/`. Any other folder `--repo` or `--outdir` names keeps everything in its games' folders.
 
-| What | A checkout, an `--outdir` | Linux, the user's data folder | Another data folder |
+| What | Another `--repo`, an `--outdir` | Linux, the user's data folder | A portable copy's, the user's elsewhere |
 | --- | --- | --- | --- |
 | a game: its program, `<id>_code.so`, `<id>_data/` (saves, `control.nacp`), `captures/` | `games/<id>/` | `~/.local/share/scarletnx/games/<id>/` | `games/<id>/` |
 | its settings, `<id>.ini` | `games/<id>/` | `~/.config/scarletnx/games/<id>/` | `config/games/<id>/` |
 | its `<id>.log` and `threads.txt` | `games/<id>/` | `~/.local/state/scarletnx/games/<id>/` | `state/games/<id>/` |
 | its pipeline cache | `games/<id>/shader_cache/` | `~/.cache/scarletnx/games/<id>/shader_cache/` | `cache/games/<id>/shader_cache/` |
 | extractions (`3ds/` for the 3DS driver) | `work/` | `~/.cache/scarletnx/work/` | `cache/work/` |
-| the menu's themes, `<name>/theme.ini` | `themes/` | `~/.local/share/scarletnx/themes/` | `themes/` |
-| the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | the user's, as in the next columns | `~/.config/scarletnx/` | `config/` |
-| the menu's `recent.txt`, `last-run.log` | the user's, as in the next columns | `~/.local/state/scarletnx/` | `state/` |
-| the menu's Share log, `scarletnx.log` | the working folder | `~/.local/state/scarletnx/` | `state/` |
+| the menu's themes, `<name>/theme.ini` | - | `~/.local/share/scarletnx/themes/` | `themes/` |
+| the menu's `settings.ini`, `app.ini`, `folders.txt`, `gamecontrollerdb.txt` | - | `~/.config/scarletnx/` | `config/` |
+| the menu's `recent.txt`, `last-run.log` | - | `~/.local/state/scarletnx/` | `state/` |
+| the menu's Share log, `scarletnx.log` | - | `~/.local/state/scarletnx/` | `state/` |
 | `prod.keys`, read before `~/.switch` | the folder | `~/.local/share/scarletnx/` | the folder |
 
-On Android the menu's own files stay in the app's own storage, which needs no permission. `~/.local/share`,
-`~/.config`, `~/.local/state` and `~/.cache` are the defaults of `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`,
-`$XDG_STATE_HOME` and `$XDG_CACHE_HOME` (a relative one is ignored).
+The menu works in the user's data folder or a portable copy's, never another. On Android its own files stay in the
+app's own storage, which needs no permission. `~/.local/share`, `~/.config`, `~/.local/state` and `~/.cache` are the
+defaults of `$XDG_DATA_HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and `$XDG_CACHE_HOME` (a relative one is ignored).
 
 An older version kept a game's files side by side in `games/` (`games/Game`, `Game_code.so`, `Game_data/`,
-`Game.ini`), the menu's in the data folder's `gui/`, outside Linux the rest in the data folder itself, and a portable
-copy's in a `games/` beside the program. This one moves none of it: as long as it is there, the menu lists each
-folder and where it goes now, and an older game runs where it is, its run saying where its folder goes.
+`Game.ini`), the menu's in the data folder's `gui/`, outside Linux the rest in the data folder itself, a portable
+copy's in a `games/` beside the program, and a build tree's `games/`, `work/` and keys in its checkout. This one moves
+none of it: as long as it is there, the menu lists each folder and where it goes now, the driver says so on each run,
+and an older game runs where it is, its run saying where its folder goes.
 [DEPRECATIONS](DEPRECATIONS.md) says how to move them.
 
 ## Settings / input

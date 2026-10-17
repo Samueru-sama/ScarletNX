@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""An installed build's files in the XDG Base Directory folders: the game's settings in the config folder, its log and
-threads.txt in the state folder, the pipeline cache and the extractions in the cache folder, each game in a folder of
-its own there. What an older build left beside the game stays there, each run saying where it is and where this one
-keeps it. A game recompiled elsewhere (--outdir) keeps everything in its folder. No GPU: the game stops before it, its
-ExeFS taken away."""
+"""The user's data folder's files in the XDG Base Directory folders, a build tree's driver's as an installed one's:
+the game's settings in the config folder, its log and threads.txt in the state folder, the pipeline cache and the
+extractions in the cache folder, each game in a folder of its own there. What an older build left beside the game
+stays there, each run saying where it is and where this one keeps it. A game recompiled elsewhere (--outdir) keeps
+everything in its folder. No GPU: the game stops before it, its ExeFS taken away."""
 
 import argparse
 import os
@@ -81,6 +81,12 @@ def main():
             out,
         )
         check((games / 'InTheWay').read_bytes() == b'older program', "the older game's program was touched", out)
+
+        # the build tree's own driver with no --repo works there too (#318), never in the checkout it was built from
+        checkout = Path(__file__).resolve().parents[1]
+        status, out = run([driver, '-r', str(nro), 'Tree', '--runtime', driver, '--jobs', '2'])
+        check(status == 0 and (games / 'Tree/Tree').is_file(), 'the driver without --repo did not use games/', out)
+        check(not (checkout / 'games/Tree').exists(), 'the driver without --repo wrote in its checkout', out)
 
         # the game, started in its folder as ./Smoke, logs in the state folder and stops before the GPU without its
         # ExeFS. Each start says where the older files are, as long as they are there

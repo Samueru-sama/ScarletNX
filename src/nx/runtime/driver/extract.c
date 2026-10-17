@@ -46,9 +46,9 @@ static void extract_help(void) {
          "  --keys FILE         prod.keys (default: REPO, then ~/.switch)\n"
          "  --title-keys FILE   title.keys (same discovery order; optional)\n"
          "  --help              Show this help");
-    puts("REPO is the checkout, or for an installed build the user's data folder (scarletnx --help).");
+    puts("REPO is the data folder: --repo, else a portable copy's or the user's (scarletnx --help).");
 #ifdef SNX_XDG
-    puts("An installed build's work/ is in its cache folder, $XDG_CACHE_HOME/scarletnx (~/.cache/scarletnx).");
+    puts("The user's data folder keeps work/ in its cache folder, $XDG_CACHE_HOME/scarletnx (~/.cache/scarletnx).");
 #endif
     puts("Decrypted content needs no keys. Refuses output containing exefs.");
 }
@@ -752,7 +752,11 @@ static char* locate_hactool(const SnxPaths* paths) {
     free(parent);
     if (!path || snx_is_file(path)) return path;
     free(path);
-    extract_build = snx_path_join(paths->repo, "build/extract");
+    if (!paths->source) {
+        snx_error("hactool is missing, and there is no checkout to build it from");
+        return NULL;
+    }
+    extract_build = snx_path_join(paths->source, "build/extract");
     if (!extract_build) return NULL;
     path = snx_path_join(extract_build, tool_name);
     if (!path || snx_is_file(path)) {
@@ -776,7 +780,7 @@ static char* locate_hactool(const SnxPaths* paths) {
     command[5] = "-DSNX_HACTOOL_ONLY=ON";
     command[6] = NULL;
     output = NULL;
-    result = snx_run(command, paths->repo, NULL, &output);
+    result = snx_run(command, paths->source, NULL, &output);
     free(output);
     if (!result) {
         command[1] = "--build";
@@ -785,7 +789,7 @@ static char* locate_hactool(const SnxPaths* paths) {
         command[4] = "hactool";
         command[5] = NULL;
         output = NULL;
-        result = snx_run(command, paths->repo, NULL, &output);
+        result = snx_run(command, paths->source, NULL, &output);
         free(output);
     }
     free(cmake);

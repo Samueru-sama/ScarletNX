@@ -4,12 +4,18 @@
 
 [Architecture](ARCHITECTURE.md) · [build/toolchains](BUILD.md) · [usage](USAGE.md) · [agent rules](../CLAUDE.md) · [contributing](../CONTRIBUTING.md).
 Run from checkout. POSIX examples: Windows uses `python`, `.exe`, PowerShell env syntax.
+The build tree's drivers work in the user's data folder, as an installed copy does ([Folders](USAGE.md#folders));
+the examples name its folders on Linux, and `--repo DIR` keeps a run's files in DIR instead:
+
+```sh
+games=~/.local/share/scarletnx/games work=~/.cache/scarletnx/work
+```
 
 ## Rebuild / checks
 
 ```sh
 cmake --build build
-./build/scarletnx -r work/Game Game --jobs 8
+./build/scarletnx -r "$work/Game" Game --jobs 8
 ctest --test-dir build --output-on-failure
 scripts/format.sh --check
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
@@ -39,11 +45,11 @@ Test guest semantics + malformed IPC with synthetic cases.
 ## Run / diagnose
 
 ```sh
-(cd games/<id> && ./<id> --seconds=60 --script=15000:400,16000:1 --press_len=300 --shot=out)
-python3 tools/run_game.py <id> --runs 5 --seconds 60 --dump work/Game --script ""
-python3 tools/symbols.py work/Game cf34380
-python3 tools/disasm.py work/Game NvRmStreamFlushSync
-python3 tools/disasm.py work/Game cf34240 cf343c0
+(cd "$games/<id>" && ./<id> --seconds=60 --script=15000:400,16000:1 --press_len=300 --shot=out)
+python3 tools/run_game.py <id> --runs 5 --seconds 60 --dump "$work/Game" --script ""
+python3 tools/symbols.py "$work/Game" cf34380
+python3 tools/disasm.py "$work/Game" NvRmStreamFlushSync
+python3 tools/disasm.py "$work/Game" cf34240 cf343c0
 ```
 
 - Runtime: `--seconds=N` / `--frames=N`; `--shot=out` → CWD `out.ppm`; `--shot_every=N` → every N frames.
@@ -59,7 +65,7 @@ python3 tools/disasm.py work/Game cf34240 cf343c0
 ## Shaders
 
 ```sh
-SNX_SHADER_CORPUS=corpus games/Game/Game
+SNX_SHADER_CORPUS=corpus "$games/Game/Game"
 build/snx-shaderc corpus --validate --out translated
 ```
 

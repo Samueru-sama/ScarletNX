@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* snx_data_dir, the folder the driver and the menu share: the checkout, else a portable copy's (.scarletnx beside the
-   AppImage or the program), else the user's data folder. */
+/* snx_data_dir, the folder the driver and the menu share: a portable copy's (.scarletnx beside the AppImage or the
+   program), else the user's data folder, for a build tree's programs too. snx_checkout, the checkout of a build tree's
+   program, and what an older version kept in it, said with where it goes now. */
 #define _POSIX_C_SOURCE 200809L
 #include "common/utilities/common.h"
 #include <assert.h>
@@ -15,9 +16,23 @@ static char* join(const char* a, const char* b) {
     return p;
 }
 
+/* what snx_checkout_left says on stderr, through a file */
+static char* left_said(const char* checkout, const char* data, const char* file) {
+    char* text;
+    size_t size;
+    fflush(stderr);
+    assert(freopen(file, "w", stderr));
+    snx_checkout_left(checkout, data);
+    fflush(stderr);
+    text = (char*)snx_read_file(file, &size);
+    assert(text);
+    return text;
+}
+
 int main(void) {
     char *root = snx_temp_dir(NULL), *checkout, *build, *built, *program, *mount, *copy, *data, *xdg, *expected, *file;
-    char *portable, *beside;
+    char *portable, *beside, *said, *line, *cache, *old, *now;
+    int i;
     assert(root);
     checkout = join(root, "checkout");
     build = join(root, "build");
@@ -26,6 +41,7 @@ int main(void) {
     mount = join(root, "mount");
     copy = join(root, "copy");
     xdg = join(root, "xdg");
+    cache = join(root, "xdg-cache");
     assert(!snx_mkdirs(checkout) && !snx_mkdirs(built) && !snx_mkdirs(program) && !snx_mkdirs(mount) &&
            !snx_mkdirs(copy));
     file = join(checkout, "CMakeLists.txt");
@@ -34,37 +50,30 @@ int main(void) {
     unsetenv("APPIMAGE");
     unsetenv("APPDIR");
     setenv("XDG_DATA_HOME", xdg, 1);
+    setenv("XDG_CACHE_HOME", cache, 1);
     expected = join(xdg, "scarletnx");
 
-    /* a build tree's checkout wins, for a program of that build tree */
-    data = snx_data_dir(checkout, build, built);
-    assert(data && !strcmp(data, checkout));
-    free(data);
-    data = snx_data_dir(checkout, NULL, program); /* no build tree named: any program */
-    assert(data && !strcmp(data, checkout));
-    free(data);
-    /* a copy installed from that build (cmake --install) is installed, the checkout still there or not (#251) */
-    data = snx_data_dir(checkout, build, program);
+    /* a build tree's program works in the user's data folder too, its checkout there or not */
+    data = snx_data_dir(built);
     assert(data && !strcmp(data, expected));
     free(data);
-    /* no checkout and nothing beside the program: the user's data folder */
-    data = snx_data_dir(program, NULL, program);
+    data = snx_data_dir(program);
     assert(data && !strcmp(data, expected));
     free(data);
-    data = snx_data_dir(NULL, NULL, NULL);
+    data = snx_data_dir(NULL);
     assert(data && !strcmp(data, expected));
     free(data);
     /* a games/ beside the program is an older version's portable copy: not one now */
     file = join(program, "games");
     assert(!snx_mkdirs(file));
     free(file);
-    data = snx_data_dir(NULL, NULL, program);
+    data = snx_data_dir(program);
     assert(data && !strcmp(data, expected));
     free(data);
     /* .scarletnx beside the program (the Windows zip, a portable install) is the folder */
     beside = join(program, ".scarletnx");
     assert(!snx_mkdirs(beside));
-    data = snx_data_dir(NULL, NULL, program);
+    data = snx_data_dir(program);
     assert(data && !strcmp(data, beside));
     free(data);
 
@@ -75,25 +84,80 @@ int main(void) {
     setenv("APPDIR", mount, 1);
     free(file);
     file = join(mount, "bin");
-    data = snx_data_dir(NULL, NULL, file);
+    data = snx_data_dir(file);
     assert(data && !strcmp(data, expected)); /* no .scarletnx beside the AppImage yet */
     free(data);
     portable = join(copy, ".scarletnx");
     assert(!snx_mkdirs(portable));
-    data = snx_data_dir(NULL, NULL, file);
+    data = snx_data_dir(file);
     assert(data && !strcmp(data, portable));
     free(data);
     free(file);
     /* APPIMAGE inherited by a program outside the mount: that program's own folder decides */
-    data = snx_data_dir(NULL, NULL, program);
+    data = snx_data_dir(program);
     assert(data && !strcmp(data, beside));
     free(data);
     free(portable);
     free(beside);
+    unsetenv("APPIMAGE");
+    unsetenv("APPDIR");
 
-    puts("snx_data_dir: the checkout for its build tree's programs, .scarletnx beside the program or the AppImage, the "
-         "user's data folder");
+    /* the checkout: for a program of its build tree, or any program when no build tree is named */
+    data = snx_checkout(checkout, build, built);
+    assert(data && !strcmp(data, checkout));
+    free(data);
+    data = snx_checkout(checkout, NULL, program);
+    assert(data && !strcmp(data, checkout));
+    free(data);
+    /* a copy installed from that build (cmake --install) has none, the checkout still there or not (#251) */
+    assert(!snx_checkout(checkout, build, program));
+    /* a folder without CMakeLists.txt is no checkout; none named, none */
+    assert(!snx_checkout(program, NULL, program));
+    assert(!snx_checkout(NULL, NULL, program));
+
+    /* where this version keeps what an older one kept in the checkout: games/ and the keys in the data folder, work/
+       in its cache folder (the user's on Linux) */
+    for (i = 0; i < SNX_CHECKOUT_FILES; ++i) {
+        now = snx_checkout_now(expected, i);
+        line = !strcmp(snx_checkout_files[i], "work") ? snx_format("%s/scarletnx/work", cache)
+                                                      : join(expected, snx_checkout_files[i]);
+        assert(now && !strcmp(now, line));
+        free(line);
+        free(now);
+    }
+    /* said on stderr for each one still there, nothing for the others; nothing is moved */
+    file = join(root, "stderr.txt");
+    said = left_said(checkout, expected, file);
+    assert(!said[0]);
+    free(said);
+    old = join(checkout, "games");
+    assert(!snx_mkdirs(old));
+    free(old);
+    old = join(checkout, "prod.keys");
+    assert(!snx_write_file(old, "", 0));
+    free(old);
+    said = left_said(checkout, expected, file);
+    line = snx_format("scarletnx: %s/games was left by an older version: this one keeps it in %s/games "
+                      "(docs/DEPRECATIONS.md)\n"
+                      "scarletnx: %s/prod.keys was left by an older version: this one keeps it in %s/prod.keys "
+                      "(docs/DEPRECATIONS.md)\n",
+                      checkout, expected, checkout, expected);
+    assert(!strcmp(said, line));
+    free(line);
+    free(said);
+    old = join(checkout, "games");
+    assert(snx_is_dir(old));
+    free(old);
+    /* the checkout named as the data folder (--repo) left nothing behind */
+    said = left_said(checkout, checkout, file);
+    assert(!said[0]);
+    free(said);
+    free(file);
+
+    puts("snx_data_dir: .scarletnx beside the program or the AppImage, else the user's data folder, for a build "
+         "tree's programs too; snx_checkout: a build tree's program's checkout, what an older version kept in it said");
     free(expected);
+    free(cache);
     free(xdg);
     free(copy);
     free(mount);

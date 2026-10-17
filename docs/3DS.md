@@ -239,8 +239,8 @@ The output is a directory containing `contents/*.app`, `exefs/` (with
 expanded/page-padded `.code`), `romfs/`, raw container/NCCH/ExHeader metadata and
 `manifest.ini` with source/code hashes and segment layout. The default directory
 is `work/3ds/<name>`, named after the CIA's file as the Switch driver names a dump's, in the data folder the Switch driver uses
-(the checkout, a portable copy's folder, else the user's data folder; `--repo DIR` names
-another), which an installed copy on Linux keeps in `~/.cache/scarletnx/work/3ds/`. No source CIA needs to be mounted by
+(`--repo DIR`, else a portable copy's folder, else the user's data folder, from a build tree too),
+which the user's on Linux keeps in `~/.cache/scarletnx/work/3ds/`. No source CIA needs to be mounted by
 the future guest FS. Extraction is privately staged, then published only after
 all checks succeed; failures remove staging files. As in the Switch driver, a
 finished extraction already there is used as it is, never extracted again or

@@ -622,7 +622,7 @@ SnxU64 snx_free_space(const char* path) {
     return statvfs(path, &st) ? 0 : (SnxU64)st.f_bavail * st.f_frsize;
 #endif
 }
-/* The per-user folder of an installed build, which has no checkout: $XDG_DATA_HOME/scarletnx or
+/* The per-user data folder, an installed build's and a build tree's: $XDG_DATA_HOME/scarletnx or
    ~/.local/share/scarletnx, ~/Library/Application Support/scarletnx on macOS, %APPDATA%\scarletnx on Windows. These are
    the folders SDL_GetPrefPath("scarletnx", ...) gives the GUI. NULL when the environment names no home */
 #ifndef _WIN32
@@ -744,16 +744,9 @@ char* snx_work_dir(const char* data_dir) {
     free(old);
     return work;
 }
-char* snx_data_dir(const char* checkout, const char* build, const char* program_dir) {
+char* snx_data_dir(const char* program_dir) {
     const char *appimage = getenv("APPIMAGE"), *appdir = getenv("APPDIR");
-    char *path = checkout ? snx_path_join(checkout, "CMakeLists.txt") : NULL, *dir = NULL, *copy;
-    /* a copy installed from that build (cmake --install) is installed, even where the checkout still is */
-    if (path && snx_is_file(path) &&
-        (!build || !program_dir || (snx_is_dir(build) && snx_path_within(program_dir, build)))) {
-        free(path);
-        return snx_strdup(checkout);
-    }
-    free(path);
+    char *dir = NULL, *copy;
     /* an AppImage's programs run from its mount: the copy is the AppImage file. APPIMAGE is inherited, so it counts
        only for a program inside the mount */
     if (appimage && appimage[0] == '/' && appdir && appdir[0] && program_dir && snx_path_within(program_dir, appdir))
@@ -765,6 +758,37 @@ char* snx_data_dir(const char* checkout, const char* build, const char* program_
     if (copy && snx_is_dir(copy)) return copy;
     free(copy);
     return snx_user_data_dir();
+}
+char* snx_checkout(const char* checkout, const char* build, const char* program_dir) {
+    char* path = checkout ? snx_path_join(checkout, "CMakeLists.txt") : NULL;
+    /* a copy installed from that build (cmake --install) has none, even where the checkout still is */
+    int ours = path && snx_is_file(path) &&
+               (!build || !program_dir || (snx_is_dir(build) && snx_path_within(program_dir, build)));
+    free(path);
+    return ours ? snx_strdup(checkout) : NULL;
+}
+const char* const snx_checkout_files[SNX_CHECKOUT_FILES] = {"games", "work", "prod.keys", "title.keys"};
+char* snx_checkout_now(const char* data, int file) {
+    char* path = snx_path_join(data, snx_checkout_files[file]);
+    char* now;
+    if (strcmp(snx_checkout_files[file], "work")) return path;
+    now = snx_user_path(path, SNX_USER_CACHE);
+    free(path);
+    return now;
+}
+void snx_checkout_left(const char* checkout, const char* data) {
+    char *old, *now;
+    int i;
+    for (i = 0; i < SNX_CHECKOUT_FILES; ++i) {
+        old = snx_path_join(checkout, snx_checkout_files[i]);
+        now = snx_checkout_now(data, i);
+        if (old && now && snx_left_behind(old, now))
+            fprintf(stderr,
+                    "scarletnx: %s was left by an older version: this one keeps it in %s (docs/DEPRECATIONS.md)\n", old,
+                    now);
+        free(old);
+        free(now);
+    }
 }
 char* snx_temp_dir(const char* parent) {
     char* path;

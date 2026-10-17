@@ -67,8 +67,8 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `blink_ms`) while no `prod.keys` is in use. It prompts you to
   pick `prod.keys` (a click on the blinking **[ Pick or drop prod.keys ]** in the middle of
   the screen, the theme's `[prompt]`, or Enter), drop it, or paste its path with Ctrl+V. It installs the file to `~/.switch/prod.keys`, or
-  `%USERPROFILE%\.switch\prod.keys` on Windows; an installed copy on Linux puts it in its
-  data folder instead (`~/.local/share/scarletnx/prod.keys`), which the driver reads before
+  `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it puts it there
+  instead (`~/.local/share/scarletnx/prod.keys`), which the driver reads before
   `~/.switch`, and names the keys of `~/.switch` it would use until then. It creates the
   folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
@@ -151,9 +151,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - As it opens, the menu shows in a box what an older version left where this one no longer looks, a
   folder at a time: where it is (`- `, in the failure colour) and where it goes now (`-> `), a path
   too long for a row going on in the next. They are the menu's `gui/`, `work/`, each game laid out
-  beside the others in `games/` or a game folder (`games/<id>/` now) and a portable copy's `games/`
-  beside the program ([USAGE](USAGE.md#folders)). Any key, click or tap closes it;
-  nothing is moved, and it shows again at the next start for as long as they are there.
+  beside the others in `games/` or a game folder (`games/<id>/` now), a portable copy's `games/`
+  beside the program, and a build tree's `games/`, `work/` and keys in its checkout
+  ([USAGE](USAGE.md#folders)). Any key, click or tap closes it; nothing is moved, and it shows again at the next
+  start for as long as they are there.
   **Share log** lists them all.
 - **Recent games**, in Games under Add a folder, lists the last games run, newest first, three and a row that
   shows the rest, by the name their run gave (the runner's `ScarletNX - <name>` line), else their file's.
@@ -179,9 +180,9 @@ Status box. See [GNUABI](GNUABI.md) for supported Linux ELF applications.
 
 **Games**, the tab, lists the games: the ones ready to run (a recompiled game runs directly), the dumps to prepare
 on Android, and CIA files, which go to the 3DS driver. It reads the `games/` of the
-folder the driver works in, which the menu passes it as `--repo`: the checkout of a build tree,
-else the folder of an AppImage (or of the GUI) that has a `games/` beside it, else the user's
-data folder (docs/USAGE.md), then each folder of Settings > App > Game folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
+folder the driver works in, which the menu passes it as `--repo`: a portable copy's `.scarletnx/` beside the
+AppImage (or the GUI), else the user's data folder, a build tree's menu's too ([USAGE](USAGE.md#folders)), then each
+folder of Settings > App > Game folders. Each game is shown by the name in its `control.nacp`, which the recompile copies into
 its data, else by its folder's or file's name, sorted by it in each folder. Only immediate files are listed:
 executables (execute permission on UNIX, `.exe` on Windows) and `.cia` files (case-insensitive,
 no execute permission needed), which run with the 3DS driver. Hidden files, shared libraries and

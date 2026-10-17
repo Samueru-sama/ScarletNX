@@ -23,7 +23,11 @@ char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet) {
 #ifndef _WIN32
     if (target_win) preset = "windows-cross";
 #endif
-    bdir = snx_path_join(paths->repo, target_win ? "build/win64-recomp" : "build/native-recomp");
+    if (!paths->source) {
+        snx_error("no checkout to build the runtime from: this driver was not run from its build tree");
+        return NULL;
+    }
+    bdir = snx_path_join(paths->source, target_win ? "build/win64-recomp" : "build/native-recomp");
     if (!quiet) printf("Building runtime in %s\n", bdir);
     args[0] = "cmake";
     args[1] = "--preset";
@@ -33,14 +37,14 @@ char* snx_build_runtime(const SnxPaths* paths, int target_win, int quiet) {
     args[5] = "-DSNX_DEPLOY=OFF";
     args[6] = "-DSNX_TOOLS_ONLY=OFF";
     args[7] = NULL;
-    rc = snx_run(args, paths->repo, NULL, &output);
+    rc = snx_run(args, paths->source, NULL, &output);
     if (!rc) {
         free(output);
         output = NULL;
         args[1] = "--build";
         args[2] = bdir;
         args[3] = NULL;
-        rc = snx_run(args, paths->repo, NULL, &output);
+        rc = snx_run(args, paths->source, NULL, &output);
     }
     if (rc) {
         diagnostic("Runtime build", output);
