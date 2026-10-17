@@ -179,8 +179,9 @@ int snx_recompile(int argc, char** argv, const SnxPaths* paths) {
 }
 static void run(const char* exe, const char* repo, const char* dump, const char* log, int expected, const char* events,
                 const char* diagnostic) {
-    const char* args[16];
+    const char* args[24];
     const char *headless = getenv("SNX_WORKFLOW_HEADLESS"), *flags = getenv("SNX_WORKFLOW_FLAGS");
+    const char *outdir = getenv("SNX_WORKFLOW_OUTDIR"), *out = getenv("SNX_WORKFLOW_OUT");
     int n = 5;
     char* output = NULL;
     unsigned char* recorded;
@@ -197,6 +198,14 @@ static void run(const char* exe, const char* repo, const char* dump, const char*
     args[n++] = dump;
     if (flags && !strncmp(flags, "--backend=", 10)) args[n++] = flags;
     if (headless && *headless && strcmp(getenv("SNX_WORKFLOW_PREFIX"), "1")) args[n++] = headless;
+    if (outdir && *outdir) { /* "none": the option without its folder */
+        args[n++] = "--outdir";
+        if (strcmp(outdir, "none")) args[n++] = outdir;
+    }
+    if (out && *out) {
+        args[n++] = "--out";
+        args[n++] = out;
+    }
     if (getenv("SNX_WORKFLOW_ARGS") && *getenv("SNX_WORKFLOW_ARGS")) {
         args[n++] = "--";
         args[n++] = "some arg";
@@ -296,6 +305,8 @@ int main(int argc, char** argv) {
     set_env("SNX_WORKFLOW_HEADLESS", "");
     set_env("SNX_WORKFLOW_PREFIX", "0");
     set_env("SNX_WORKFLOW_NRO", "");
+    set_env("SNX_WORKFLOW_OUTDIR", "");
+    set_env("SNX_WORKFLOW_OUT", "");
     reset(repo, dump);
     run(exe, repo, dump, log, 0, "ERG", NULL);
     CHECK(snx_is_dir(extracted) && snx_is_file(game));
@@ -495,6 +506,9 @@ int main(int argc, char** argv) {
             set_env("SNX_WORKFLOW_HEADLESS", "--headless");
             run(exe, repo, nro, log, 0, "RG", NULL);
             CHECK(!snx_is_dir(extracted) && snx_is_file(game));
+            set_env("SNX_WORKFLOW_OUT", extracted); /* an extraction an NRO does not have */
+            run(exe, repo, nro, log, 1, "", "--out names a dump's extraction, and an NRO has none");
+            set_env("SNX_WORKFLOW_OUT", "");
             CHECK(!snx_mkdirs(extracted));
             run(exe, repo, nro, log, 0, "RG", NULL);
             set_env("SNX_WORKFLOW_FAIL", "R");
@@ -507,6 +521,35 @@ int main(int argc, char** argv) {
         }
         set_env("SNX_WORKFLOW_NRO", "");
         set_env("SNX_WORKFLOW_HEADLESS", "");
+    }
+    /* --outdir and --out, as the menu passes the games and the extractions of Settings > App > Folders: the game and
+       the extraction go there, not in the data folder, and are used again there */
+    {
+        char *outdir = snx_path_join(root, "games elsewhere"), *out = snx_path_join(root, "work elsewhere/Test game");
+        char *folder = snx_path_join(outdir, "Test game"), *moved;
+#ifdef _WIN32
+        moved = snx_path_join(folder, "Test game.exe");
+#else
+        moved = snx_path_join(folder, "Test game");
+#endif
+        reset(repo, dump);
+        set_env("SNX_WORKFLOW_GAMES", folder);
+        set_env("SNX_WORKFLOW_OUTDIR", outdir);
+        set_env("SNX_WORKFLOW_OUT", out);
+        run(exe, repo, dump, log, 0, "ERG", NULL);
+        CHECK(snx_is_dir(out) && snx_is_file(moved) && !snx_is_dir(extracted) && !snx_is_file(game));
+        run(exe, repo, dump, log, 0, "G", NULL);
+        set_env("SNX_WORKFLOW_OUT", "");
+        set_env("SNX_WORKFLOW_OUTDIR", "none");
+        run(exe, repo, dump, log, 1, "", "--outdir requires a directory");
+        set_env("SNX_WORKFLOW_OUTDIR", "");
+        free(folder);
+        folder = snx_path_join(repo, "games/Test game");
+        set_env("SNX_WORKFLOW_GAMES", folder);
+        free(folder);
+        free(moved);
+        free(out);
+        free(outdir);
     }
     /* The probe takes a third argument, so use a separate, terminated vector. */
     {

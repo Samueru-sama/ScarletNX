@@ -29,7 +29,9 @@ static void usage(void) {
          "  --KEY=VALUE            Any setting of the game's .ini, for this run (--settings lists them)");
     puts("  --backend=llvm|gcc     Select the recompiler backend for preparation\n"
          "  -x -h / -r -h          Extraction / recompilation options\n"
-         "  --game=games/Game      Run a compiled game\n"
+         "  --game=games/Game      Run a compiled game");
+    puts("  --outdir DIR           Played or prepared, where the game's folder goes (default: games/)\n"
+         "  --out DIR              Played or prepared, the dump's extraction (default: work/<its name>)\n"
          "  --repo DIR             The data folder: games/, work/ and the keys (default: a\n"
          "                         .scarletnx folder beside the AppImage or the program,\n"
          "                         else the user's data folder,\n"
@@ -87,15 +89,27 @@ static int cached_abi(const char* base) {
     free(stamp);
     return expected && abi == expected;
 }
-static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, const char* backend, int settings,
-                     char** setting, int game_argc, char** game_argv) {
+/* games/ and the extraction in work/ of the data folder, else the folder outdir names and the extraction out names */
+static int play_dump(const char* input, const SnxPaths* paths, unsigned flags, const char* backend, const char* outdir,
+                     const char* out, int settings, char** setting, int game_argc, char** game_argv) {
     char *dumped = dump_name(input), *dump = snx_absolute(input), *name = NULL;
-    char *work = snx_work_dir(paths->repo), *games = snx_path_join(paths->repo, "games");
-    char *extracted = snx_path_join(work, dumped), *pending = snx_format("%s.extracting", extracted);
-    char *game = NULL, *folder = NULL, *base = NULL, *code = NULL, error[256];
+    char* games = outdir ? snx_absolute(outdir) : snx_path_join(paths->repo, "games");
+    char* extracted = out ? snx_absolute(out) : NULL;
+    char* work = !out ? snx_work_dir(paths->repo) : extracted ? snx_dirname(extracted) : NULL;
+    char *pending, *game = NULL, *folder = NULL, *base = NULL, *code = NULL, error[256];
     const char** command = (const char**)snx_alloc((size_t)(game_argc + settings + 16) * sizeof(*command));
     int rc = 1, nro = is_nro_path(input), n, j;
     SnxNpdm npdm;
+    if (!out && work) extracted = snx_path_join(work, dumped);
+    pending = extracted ? snx_format("%s.extracting", extracted) : NULL;
+    if (!pending || !games) {
+        snx_error("cannot resolve the folders of %s", input);
+        goto done;
+    }
+    if (nro && out) {
+        snx_error("--out names a dump's extraction, and an NRO has none");
+        goto done;
+    }
     if (!dump || !snx_is_file(dump)) {
         snx_error("Input dump is missing or is not a file: %s", input);
         goto done;
@@ -238,7 +252,7 @@ static int container_path(const char* path) {
 }
 int snx_driver(int argc, char** argv) {
     SnxPaths paths;
-    const char *repo = NULL, *build = SNX_BUILD_DIR, *input = NULL, *backend = NULL;
+    const char *repo = NULL, *build = SNX_BUILD_DIR, *input = NULL, *backend = NULL, *outdir = NULL, *out = NULL;
     char *r = NULL, *b = NULL, *exe = NULL, **rest, **setting, *self, *data = NULL, *source = NULL;
     unsigned flags = 0;
     int i, n = 0, separator = argc, result = -1, tool_paths = 0, help = 0, parsed, automatic, backend_args = 0;
@@ -322,6 +336,18 @@ int snx_driver(int argc, char** argv) {
         } else
             rest[i - settings] = rest[i];
     n -= settings;
+    /* played, --outdir names the games' folder and --out the dump's extraction, as -r and -x take them */
+    for (i = 0; automatic && i < n; ++i)
+        if (!strcmp(rest[i], "--outdir") || !strcmp(rest[i], "--out")) {
+            if (i + 1 == n) {
+                result = snx_error("%s requires a directory", rest[i]);
+                goto done;
+            }
+            *(strcmp(rest[i], "--out") ? &outdir : &out) = rest[i + 1];
+            memmove(rest + i, rest + i + 2, (size_t)(n - i - 2) * sizeof(*rest));
+            n -= 2;
+            --i;
+        }
     if (automatic && (n != 1 + backend_args || help)) {
         result = snx_error("automatic preparation accepts one dump file. Pass game arguments after --");
         goto done;
@@ -379,8 +405,8 @@ int snx_driver(int argc, char** argv) {
     paths.source = source;
     if (automatic)
         result =
-            play_dump(input, &paths, flags, backend, settings, setting, separator < argc ? argc - separator - 1 : 0,
-                      argv + (separator < argc ? separator + 1 : argc));
+            play_dump(input, &paths, flags, backend, outdir, out, settings, setting,
+                      separator < argc ? argc - separator - 1 : 0, argv + (separator < argc ? separator + 1 : argc));
     else
         result = (flags & SNX_RECOMP) ? snx_recompile(n, rest, &paths) : snx_extract(n, rest, &paths);
 done:

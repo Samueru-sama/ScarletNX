@@ -29,6 +29,8 @@ directory. The game is named by its title ID, an NRO by its name; `games/` and `
 build tree too ([Folders](#folders)). Its extraction in `work/` is named after the dump stem, retaining letters,
 digits, UTF-8, spaces, hyphens and underscores.
 `--repo DIR` and `--build-dir DIR` may precede the dump. Keys use the usual discovery paths below.
+`--outdir DIR` puts the game's folder in DIR and `--out DIR` the dump's extraction at DIR, as `-r` and `-x` take
+them, in place of the data folder's `games/` and `work/<dump stem>`; an NRO has no extraction to name.
 `-H` (`--headless`) can precede or follow the dump and is passed to the game only.
 Omitting it starts the game with a window, unless the build has no window backend.
 `-x` means `--extract`, and `-r` means `--recomp` (the old `--recompile` spelling was removed).
