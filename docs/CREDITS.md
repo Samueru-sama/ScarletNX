@@ -23,6 +23,20 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 The GUI font's original notice and pinned source are preserved in
 [`src/gui/FONT-NOTICE.txt`](../src/gui/FONT-NOTICE.txt).
 
+Code ported into the repository, and assets taken from other projects. In these places, the files whose header names
+a source keep that source's copyright lines and license, most with the revision they came from; the drawables of
+`dist/controls/` have theirs in [its README](../dist/controls/README.md):
+
+| Where | From | License |
+| --- | --- | --- |
+| `cmake/hactool-libhac.patch` (the storages it adds to hactool) | LibHac, as Ryubing maintains it | MIT |
+| `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c` | Azahar (Citra) | GPL-2.0-or-later |
+| `src/3ds/gpu/shader.c` and `shader.h` (the instruction fields) | nihstro | BSD-3-Clause |
+| `src/common/network/`, `src/nx/hle/services/network/` | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
+| `src/nx/gpu/video/vp9_rebuild.cpp` | Eden and yuzu | GPL-3.0-or-later, GPL-2.0-or-later |
+| `tests/ipc_message.c` (the HIPC, CMIF and TIPC request builders) | libnx | ISC |
+| `dist/controls/*.xml`, and `controls.png` made from them | yuzu's Android overlay, as Eden and rEden carry it | GPL-3.0-or-later |
+
 Installed license texts: `share/licenses/scarletnx/`. AppImage system-library licenses
 and package manifest: `share/licenses/`. Component license files contain the full terms.
 

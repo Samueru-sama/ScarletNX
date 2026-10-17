@@ -29,10 +29,12 @@ MZ Labs' code stays under the Apache License 2.0, which is in LICENSE.apache
 fork as a whole, with its changes to MZ Labs' files and the files it added, is
 licensed under the GNU General Public License, version 3 or (at your option) any
 later version, which is in LICENSE. The third-party components and their
-licenses are listed in README.md (the release's README.txt). The repository
-holds none of their code: they are downloaded as source when the runtime is
-built (cmake/dependencies.cmake) and compiled into the runtime and its tools.
-The one exception is cmake/hactool-libhac.patch, which adds code ported from
-LibHac (MIT, Copyright (c) 2018 Alex Barney) to hactool, with LibHac's notice.
+licenses are listed in docs/CREDITS.md. The libraries are not in the
+repository: they are downloaded as source when the runtime is built
+(cmake/dependencies.cmake) and compiled into the runtime and its tools. Code
+ported from other projects (LibHac, Azahar and Citra, nihstro, Eden and yuzu,
+libnx), the touch controls' drawables taken from yuzu and the GUI's VGA font
+keep their copyright lines and licenses in the files that carry them (the
+drawables in dist/controls/README.md), and docs/CREDITS.md lists where.
 A built runtime, and the AppImage with the system libraries it carries,
 contains them under their own licenses.
