@@ -8,7 +8,8 @@
 #include "nx/gpu/video/host1x_int.h"
 /* The config struct (its iova in register 0x708) as the game's TVMR and NvDdkVic libraries build it: 0x610 bytes,
    the output surface config at +0x20, 8 slots of 0xB0 bytes from +0x90.
-   Surface config u64 (output at +0x20, a slot's at slot+0x40): 0-6 format (0x1F A8B8G8R8, 0x20 A8R8G8B8, 0x44 NV12),
+   Surface config u64 (output at +0x20, a slot's at slot+0x40): 0-6 format (0x1F A8B8G8R8, 0x20 A8R8G8B8,
+   0x23 X8B8G8R8, 0x44 NV12; NVIDIA vic_ceb6_types.h),
    11-14 block kind (0 pitch linear), 15-18 block height log2, 32-45 width-1, 46-59 height-1.
    A slot's config u64 at slot+0: bit 0 enable. Its source rectangle is 16.16 fixed point, right and bottom inclusive:
    left bits 0-29 and right 32-61 of the u64 at slot+0x20, top and bottom of the one at +0x28. Its target rectangle,
@@ -106,8 +107,8 @@ static int compose_slot(const u32* r, const u8* cs, int s, u32 fmt, const Plane*
     LOG_LIMIT(3, "video: VIC slot %d: NV12 %ux%u %s (block height %u), source %u,%u, target %u,%u, %ux%u copied\n", s,
               iw, ih, iblk ? "block linear" : "pitch linear", 1u << ibh, sx0, sy0, dx0, dy0, w, h);
     u32 wc = (w + 1) & ~1u; /* chroma bytes: whole U, V pairs */
-    if (fmt == 0x1F || fmt == 0x20) {
-        int ri = fmt == 0x1F ? 0 : 2, bi = fmt == 0x1F ? 2 : 0;
+    if (fmt == 0x1F || fmt == 0x20 || fmt == 0x23) {
+        int ri = fmt == 0x20 ? 2 : 0, bi = fmt == 0x20 ? 0 : 2;
         for (u32 y = 0; y < h; y++) {
             plane_row(&iy, sx0, sy0 + y, g_rowy, w, 0);
             plane_row(&ic, sx0, (sy0 + y) / 2, g_rowc, wc, 0);
@@ -158,7 +159,7 @@ void vic_execute(const u32* r) {
         fmt_env = e ? (int)(strtoul(e, 0, 0) & 0x7F) : -2;
     }
     if (fmt_env >= 0) fmt = (u32)fmt_env;
-    if (fmt != 0x1F && fmt != 0x20 && fmt != 0x44) {
+    if (fmt != 0x1F && fmt != 0x20 && fmt != 0x23 && fmt != 0x44) {
         LOG_LIMIT(4, "video: VIC output format %x isn't handled, job skipped\n", fmt);
         return;
     }
