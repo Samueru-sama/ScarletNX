@@ -449,7 +449,7 @@
 +    if (ctx && EVP_PKEY_verify_init(ctx) > 0
 +        && EVP_PKEY_CTX_set_signature_md(ctx, EVP_sha256()) > 0
 +        && EVP_PKEY_CTX_set_rsa_padding(ctx, pss ? RSA_PKCS1_PSS_PADDING : RSA_PKCS1_PADDING) > 0
-+        /* Nintendo's PSS: MGF1 with SHA-256 and a 0x20-byte salt */
++        /* the console's PSS: MGF1 with SHA-256 and a 0x20-byte salt */
 +        && (!pss || (EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, EVP_sha256()) > 0
 +                     && EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx, 0x20) > 0))) {
 +        valid = EVP_PKEY_verify(ctx, signature, RSA_2048_BYTES, hash, sizeof(hash)) == 1;

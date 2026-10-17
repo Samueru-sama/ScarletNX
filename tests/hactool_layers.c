@@ -114,7 +114,7 @@ static void ctr_crypt(const unsigned char iv_high[8], uint64_t counter_offset, u
     free_aes_ctx(aes);
 }
 
-/* A bucket tree as Nintendo's builder writes one: an L1 node, any L2 nodes, then entry sets of one node each. */
+/* A bucket tree as the official builder writes one: an L1 node, any L2 nodes, then entry sets of one node each. */
 static blob_t tree_build(const unsigned char* entries, size_t entry_size, uint32_t count, uint64_t end) {
     uint32_t per_set = (uint32_t)((BUCKET_TREE_NODE_SIZE - 0x10) / entry_size);
     uint32_t sets = (count + per_set - 1) / per_set;

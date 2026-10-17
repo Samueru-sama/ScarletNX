@@ -20,7 +20,7 @@ snx_patched_copy(SOURCE "${hactool_SOURCE_DIR}" DEST "${hactool_src}"
                        aes.h b752de88f873c48c992c6bc25847d53822bde4e1ce8dbf4ecfa987dfda14a958
                        sha.c 7f3d5eccd90107afdd73ee79107788cc832de913d6c13568f18539bd9b159ea2
                        sha.h 712d85c8e42090af85868aa3ba0b5cd48402c51cc6ce2ddc4b57d319999f4ed5
-                       rsa.c af6c63b9271dcbba4ef73ff4efd1d0d6691cd00f39170e93b69ddd5e986b7679
+                       rsa.c 15eabd02297eed3c9503df3e0c827350fad411fb9ec698812247d5c2ca8f680c
                        rsa.h 368a4307276ac6431d6520f45ac6ebdf5b30e6d019a200d4a762003e8216ca25)
 # hactool's lz4.c (LZ4 1.8) is left out for the pinned LZ4 (snx_lz4). nso.c and storage.c still include its own lz4.h,
 # found first beside them, which declares LZ4_decompress_safe, the only LZ4 function hactool calls, as every LZ4 since

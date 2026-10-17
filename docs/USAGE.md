@@ -294,7 +294,7 @@ type, range and help, tab-separated.
 | `fps_limit` | `game` | The pace the game asks for, as on the console: 60 FPS, or 30 for a game made for 30. `0` is unlimited, and `10` to `1000` is that many FPS |
 | `memory_gb` | `0` | Memory the game sees. Below `6` it is the console's 3.2 GB, `6` gives 4.8 GB and `8` gives 6.8 GB. Games that run out of memory on 3.2 GB, like Tears of the Kingdom, need `6` |
 | `heap_max_mb` | `0` | The most heap the game can allocate, in MB. `0` is as much as the memory allows |
-| `network` | `0` | `0` reports offline and lets the game reach only loopback, which is not a network sandbox. `1` uses the computer's connection, and the resolver blocks known Nintendo service domains |
+| `network` | `0` | `0` reports offline and lets the game reach only loopback, which is not a network sandbox. `1` uses the computer's connection, and the resolver blocks known console service domains |
 | `touch` | `2` | The game's touch screen: `2` fingers and the mouse's left button, `1` fingers, `0` off |
 | `controls` | `1` on Android, else `0` | The [on-screen controls](#on-screen-controls) shown |
 | `controls_snap`, `controls_scale`, `controls_opacity`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics` | `0`, `50`, `100`, `1`, `1`, `1` | As [On-screen controls](#on-screen-controls) describes them. `controls_scale` runs from `0` to `100` for 50% to 150% |
@@ -345,9 +345,9 @@ Replace `GUID` and each binding with values for the device, and `Linux` with `Wi
 where it runs: SDL takes a line of the file only with its own platform. This SDL mapping selects physical joystick
 controls; `gamepad_map` instead selects which Switch buttons the mapped controls send. The game log reports every
 detected joystick, whether it has an SDL mapping, and any gamepad open error. On Linux, installing
-`dist/72-scarletnx-input.rules` in `/etc/udev/rules.d/` grants desktop seat access to joystick event nodes and
-Nintendo hidraw nodes for Joy-Con features. Reload udev rules and reconnect the controller after installation.
-Other HIDAPI controllers may need their vendor's own hidraw rule.
+`dist/72-scarletnx-input.rules` in `/etc/udev/rules.d/` grants desktop seat access to joystick event nodes and to
+the hidraw nodes of the console's controllers, for Joy-Con features. Reload udev rules and reconnect the controller
+after installation. Other HIDAPI controllers may need their vendor's own hidraw rule.
 
 | Keyboard | Switch |
 | --- | --- |

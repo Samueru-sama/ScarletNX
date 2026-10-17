@@ -1,7 +1,8 @@
 # SDL's Linux joystick backend reads the input event node. udev marks this node as a joystick.
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_JOYSTICK}=="1", TAG+="uaccess"
 
-# Nintendo HIDAPI needs hidraw access for features such as Joy-Con motion. ID_INPUT_JOYSTICK is
-# normally attached to an input node, not to hidraw, so match Nintendo's USB and Bluetooth IDs.
+# HIDAPI needs hidraw access to the console's controllers for features such as Joy-Con motion.
+# ID_INPUT_JOYSTICK is normally attached to an input node, not to hidraw, so match their vendor ID over USB
+# and Bluetooth.
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="057e", TAG+="uaccess"
 SUBSYSTEM=="hidraw", KERNELS=="0005:057E:*", TAG+="uaccess"

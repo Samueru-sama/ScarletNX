@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors
    From Eden's blockedDomains (src/core/hle/service/sockets/sfdnsres.cpp, branch lizzie/refactor-networking-12):
      SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project, GPL-3.0-or-later */
-/* BLOCKED_HOST(domain): names sfdnsres doesn't resolve, the domain and its subdomains. They are Nintendo's servers
+/* BLOCKED_HOST(domain): names sfdnsres doesn't resolve, the domain and its subdomains. They are the console's servers
    and services that ban or break on an emulated console: the game gets EAI_AGAIN, as on a console that can't
    reach them. Eden matches any name containing one, here only the domain itself and names under it */
 BLOCKED_HOST("nintendo.net") /* Eden: srv.nintendo.net and sun.hac.lp1.d4c.nintendo.net */

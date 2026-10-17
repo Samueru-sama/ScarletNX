@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* pl:u shared fonts. We don't ship Nintendo's: use GAME_data/fonts/<Name>.bfttf|.ttf if there, else the stand-ins
+/* pl:u shared fonts. We don't ship the console's: use GAME_data/fonts/<Name>.bfttf|.ttf if there, else the stand-ins
    compiled in (cmake/shared_fonts.cmake), as Eden carries them: Open Sans for every slot but FontNintendoExtended,
    which takes the controller button glyphs yuzu drew. The shared memory holds each font as plain TTF behind the 8
    byte obfuscated header the SDK reads its size from (a .bfttf is decrypted into it). */

@@ -6,7 +6,7 @@
 
 Discord: https://discord.gg/tRTRXXbyjp (my god why don't we just use IRC like good people?)
 
-A GPLv3 static ARM64 to x86 recompiler with a Nintendo Switch translation layer for Linux, Windows, FreeBSD and Android.
+A GPLv3 static ARM64 to x86 recompiler with a Switch translation layer for Linux, Windows, FreeBSD and Android.
 
 Forked from MZLab's SwitchRecomp. SwitchRecomp is based off Nexium.
 
@@ -26,7 +26,7 @@ Keys and games must be dumped from your own console. Started with no arguments, 
 recompiles it and starts the game, which the **Games** tab lists from then on. See [Usage](docs/USAGE.md) for the
 command line and [Folders](docs/USAGE.md#folders) for where games, saves and settings go.
 
-The shared ARM64 recompiler lives under `src/common/`. Nintendo Switch Horizon HLE
+The shared ARM64 recompiler lives under `src/common/`. Switch Horizon HLE
 and Maxwell graphics live under `src/nx/`. The CPU-only Linux AArch64 runtime lives
 under `src/gnuabi/` and builds without the Switch graphics or media dependencies:
 

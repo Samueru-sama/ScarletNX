@@ -30,7 +30,7 @@ interface nn::socket::resolver::IResolver is sfdnsres {
     @stub [14] ResolverSetOptionRequest(u32 unknown, pid, buffer<u8, 5> options) -> (i32 ret, u32 bsd_errno);
 }
 
-# Resolve(Ex) returns the FQDN as it is, which serves every server but Nintendo's (Eden). The environment is the
+# Resolve(Ex) returns the FQDN as it is, which serves every server but the console's own (Eden). The environment is the
 # retail one, lp1
 interface nn::nsd::detail::IManager is nsd:u, nsd:a {
     [11] GetEnvironmentIdentifier(buffer<nn::nsd::EnvironmentIdentifier, 0x16> identifier);

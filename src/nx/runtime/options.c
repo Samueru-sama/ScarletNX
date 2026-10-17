@@ -164,7 +164,7 @@ static const IniOpt INI_PERF[] = {
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0}};
 static const IniOpt INI_NETWORK[] = {
     {"network", "0",
-     "1 = host networking. Known Nintendo service domains are blocked by the resolver, not by an IP firewall.\n;   0 = "
+     "1 = host networking. Known console service domains are blocked by the resolver, not by an IP firewall.\n;   0 = "
      "report offline and restrict outbound destinations to loopback. This is not a network sandbox",
      INI_INT, 0, &g_opt_network, 0, 1, NULL, NULL, NULL, 0, 0},
     {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0}};

@@ -4,7 +4,7 @@
      SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project, GPL-3.0-or-later
      SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project, GPL-2.0-or-later
    sfdnsres, the resolver behind the SDK's getaddrinfo and gethostbyname, on the host's resolver, and nsd, which
-   turns Nintendo's placeholder FQDNs into names. The console only resolves IPv4. The serialized hostent and
+   turns the console's placeholder FQDNs into names. The console only resolves IPv4. The serialized hostent and
    addrinfo are libnx's resolver.c layout, which Eden verified against the console: big-endian fields, except the
    address and port, which the console passes through htonl once more. */
 #include "nx/hle/services/network/network.h"
