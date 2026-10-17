@@ -31,7 +31,9 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_interp.inc"
 if(ANDROID)
     set(snx_rtlib_flags --target=${CMAKE_C_COMPILER_TARGET} --sysroot=${CMAKE_SYSROOT})
 elseif(APPLE) # the architecture, SDK and oldest system version (cmake/apple.cmake): iOS's are not this Mac's
-    set(snx_rtlib_flags ${SNX_APPLE_FLAGS})
+    # Apple's headers fortify an optimized compile on their own, which makes memcpy, memmove and memset macros for the
+    # __*_chk functions: libc.inc's definitions would not parse, and a module links no C library to have those
+    set(snx_rtlib_flags ${SNX_APPLE_FLAGS} -D_FORTIFY_SOURCE=0)
 else()
     set(snx_rtlib_flags "")
 endif()
