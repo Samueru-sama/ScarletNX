@@ -1732,7 +1732,9 @@ int main(int argc, char** argv) {
         shows(&app, "Folders", normal);
         shows(&app, "- Data", yellow);
         shows(&app, "default", yellow);
-        shows(&app, data, rgb(app.theme.soft)); /* the folder in use, whole, under the rows */
+        /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does) */
+        snprintf(line, sizeof line, "%.24s", data);
+        shows(&app, line, rgb(app.theme.soft));
         shows(&app, "- Extractions", normal);
         shows(&app, "- All back to the defaults", normal);
         assert(!strcmp(app.place_line[GUI_PLACE_GAMES], app.games_dir) && !strcmp(app.app_form.place[1], "default"));
