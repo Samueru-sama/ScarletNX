@@ -503,6 +503,13 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME vic_shader_current
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/build-vic-shader.py" --check)
     add_test(NAME generators_crlf COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/generators_crlf.py")
+    # no keys, dumps, stray binaries, piracy sites or the console maker's name in prose among the tracked files: the
+    # checks on planted ones (self test), then on the checkout. Skipped (77) without git or outside a checkout
+    add_test(NAME tracked_material_self_test
+             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tracked_material.py" --self-test)
+    add_test(NAME tracked_material
+             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tracked_material.py" "${PROJECT_SOURCE_DIR}")
+    set_tests_properties(tracked_material_self_test tracked_material PROPERTIES SKIP_RETURN_CODE 77)
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
     # the nightly release's title and notes (scripts/nightly-notes.py)
