@@ -5,7 +5,9 @@
 
 The --counts mode of snx-test-recompiler-backends writes one native object per op of the decoder: every sample word
 of the op, a RET after each, made by the back end. This reads those objects, counts the host instructions in each
-with llvm-objdump, and divides by the group's guest words. A group's mean must stay below its limit in
+with llvm-objdump, and divides by the group's guest words. The objects are made without the host's optional features
+(--without), so every x86-64 host counts the same code: with them a host with GFNI or AVX2 makes shorter code for some
+ops than one without. A group's mean must stay below its limit in
 x64_density_targets.txt. The limits leave room for a change of the toolchain, so the check catches a real growth of
 the generated code instead of every difference of a byte.
 
@@ -26,6 +28,7 @@ import tempfile
 from pathlib import Path
 
 NO_BACKEND = 'no x86-64 back end'
+NO_OPTIONAL = '0xFFFFFFFF'  # --without's mask: every feature the back end can go without
 HEADER = re.compile(r'^(.+):\s+file format\b')
 INSN = re.compile(r'^\s*[0-9a-fA-F]+:\s+\S')
 RECORD = re.compile(r'^OP\t([^\t]+)\t([0-9]+)$')
@@ -86,7 +89,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix='snx-x64-density-') as scratch:
         folder = Path(scratch)
         listing = folder / 'counts.txt'
-        run = subprocess.run([str(args.backend), '--counts', str(listing)], capture_output=True, text=True, check=False)
+        run = subprocess.run(
+            [str(args.backend), '--without', NO_OPTIONAL, '--counts', str(listing)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         if run.returncode == 77 or NO_BACKEND in run.stdout:
             print('SKIP: no x86-64 back end: nothing to count')
             return 77

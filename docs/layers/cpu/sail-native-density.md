@@ -26,7 +26,7 @@ build/tests/snx-test-recompiler-backends --counts objects.txt
 build/tests/snx-test-recompiler-backends --counts-blocks 16 objects16.txt
 ```
 
-Write each record's bytes to a file and count instructions with `llvm-objdump -d --no-show-raw-insn`. Pair the count with the op's guest words from `--coverage`. The checked-in `tests/x64_density.py` does this against limits in `tests/x64_density_targets.txt` and runs as the `recompiler_backends_density` ctest. `x64_density.py --limits` prints that file again from a build's counts.
+Write each record's bytes to a file and count instructions with `llvm-objdump -d --no-show-raw-insn`. Pair the count with the op's guest words from `--coverage`. The checked-in `tests/x64_density.py` does this against limits in `tests/x64_density_targets.txt` and runs as the `recompiler_backends_density` ctest. The ctest counts the code made without the host's optional features, so every host counts the same. `x64_density.py --limits` prints that file again from a build's counts.
 
 The baseline on this path has 7,776 switch target words and 586,859 host instructions in the native objects. The mean is 75.47 host instructions per guest word. The back end makes 6,370 words with its own instructions and 1,406 with an exact helper. It leaves no words to LLVM.
 ## Result
