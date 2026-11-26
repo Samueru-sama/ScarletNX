@@ -2559,11 +2559,12 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
                 goto out;
             }
         }
+        /* every word made: a failure from here on is of the function's finish, a jump's reach (MG_FAR_JUMPS) */
+        u->at = f->count;
         /* the last word left the function (a return, a branch, the tail call off its end): only a function of no
            word returns here */
         if (!f->count) {
             flush(u);
-            u->at = 0;
             leave(u);
         }
     }
