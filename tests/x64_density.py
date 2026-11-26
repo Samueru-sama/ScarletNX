@@ -11,10 +11,12 @@ ops than one without. A group's mean must stay below its limit in
 x64_density_targets.txt. The limits leave room for a change of the toolchain, so the check catches a real growth of
 the generated code instead of every difference of a byte.
 
-    x64_density.py --backend PROGRAM --objdump LLVM_OBJDUMP --targets FILE [--limits]
+    x64_density.py --backend PROGRAM --objdump LLVM_OBJDUMP --targets FILE [--limits [--also PROGRAM]]
 
 --limits holds nothing: it prints FILE again with each group's limit a quarter above this build's count, rounded up,
-the words FILE's. That is how the limits are made again after a change of the back end.
+the words FILE's. That is how the limits are made again after a change of the back end. --also names the program
+of the other calling convention (snx-test-recompiler-win64 beside snx-test-recompiler-backends on Linux): a group's
+limit is then of the larger count of the two, so the one file holds a Windows host too.
 
 Exit 77 says this host has no x86-64 back end. The program then writes no objects and says so on its standard output.
 """
@@ -78,53 +80,65 @@ def instructions(objdump, objects):
     return counts
 
 
+def counted(backend, objdump, folder):
+    """each op's host instructions in the objects backend --counts writes, in the order written; None with no back end"""
+    folder.mkdir()
+    listing = folder / 'counts.txt'
+    run = subprocess.run(
+        [str(backend), '--without', NO_OPTIONAL, '--counts', str(listing)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if run.returncode == 77 or NO_BACKEND in run.stdout:
+        return None
+    if run.returncode:
+        sys.exit(f'FAIL: {backend} --counts: {run.stderr.strip() or run.stdout.strip()}')
+    groups = records(listing)
+    if not groups:
+        sys.exit(f'FAIL: {backend} --counts wrote no objects')
+    objects = []
+    for op, size, data in groups:
+        if len(data) != size:
+            sys.exit(f'FAIL: {op}: {len(data)} bytes of object, not {size}')
+        path = folder / (op + '.o')
+        path.write_bytes(data)
+        objects.append(path)
+    count = instructions(objdump, objects)
+    return [(op, count[obj.name]) for (op, _, _), obj in zip(groups, objects)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--backend', type=Path, required=True, help='the test program that has --counts')
     parser.add_argument('--objdump', required=True, help="the build's llvm-objdump")
     parser.add_argument('--targets', type=Path, required=True, help='the checked-in limits')
     parser.add_argument('--limits', action='store_true', help="print the limits file of this build's counts")
+    parser.add_argument('--also', type=Path, help="with --limits, the other calling convention's program")
     args = parser.parse_args()
     allowed = limits(args.targets)
     with tempfile.TemporaryDirectory(prefix='snx-x64-density-') as scratch:
-        folder = Path(scratch)
-        listing = folder / 'counts.txt'
-        run = subprocess.run(
-            [str(args.backend), '--without', NO_OPTIONAL, '--counts', str(listing)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if run.returncode == 77 or NO_BACKEND in run.stdout:
+        groups = counted(args.backend, args.objdump, Path(scratch) / 'a')
+        if groups is None:
             print('SKIP: no x86-64 back end: nothing to count')
             return 77
-        if run.returncode:
-            sys.exit(f'FAIL: {args.backend} --counts: {run.stderr.strip() or run.stdout.strip()}')
-        groups = records(listing)
-        if not groups:
-            sys.exit(f'FAIL: {args.backend} --counts wrote no objects')
-        objects = []
-        for op, size, data in groups:
-            if len(data) != size:
-                sys.exit(f'FAIL: {op}: {len(data)} bytes of object, not {size}')
-            path = folder / (op + '.o')
-            path.write_bytes(data)
-            objects.append(path)
-        count = instructions(args.objdump, objects)
         if args.limits:
+            most = dict(groups)
+            for op, n in (counted(args.also, args.objdump, Path(scratch) / 'b') or []) if args.also else []:
+                most[op] = max(most.get(op, 0), n)
             for line in args.targets.read_text().splitlines():
                 if line.startswith('#'):
                     print(line)
-            for (op, _, _), obj in sorted(zip(groups, objects)):
+            for op in sorted(most):
                 if op not in allowed:
                     sys.exit(f'FAIL: {op}: no words in {args.targets}')
                 words = allowed[op][0]
-                print(f'{op}\t{words}\t{math.ceil(count[obj.name] * 1.25 / words)}')
+                print(f'{op}\t{words}\t{math.ceil(most[op] * 1.25 / words)}')
             return 0
         bad = 0
         total_insns = total_words = 0
         seen = set()
-        for (op, _, _), obj in zip(groups, objects):
+        for op, n in groups:
             if op in seen:
                 print(f'FAIL: {op}: two records', file=sys.stderr)
                 bad = 1
@@ -134,7 +148,6 @@ def main():
                 bad = 1
                 continue
             words, limit = allowed[op]
-            n = count[obj.name]
             total_insns += n
             total_words += words
             if n > limit * words:
