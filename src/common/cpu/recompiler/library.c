@@ -277,6 +277,10 @@ void snx_recompiler_set_verbose(struct snx_recompiler* r, int verbose) { r->verb
 
 int snx_recompiler_set_keep_ir(struct snx_recompiler* r, const char* folder) {
     char* copy = NULL;
+    if (folder && !snx_fallback_available()) {
+        fail(r, "the IR kept in %s is LLVM's, and this build has no LLVM (SNX_WITH_LLVM=OFF): no IR is kept", folder);
+        return -1;
+    }
     if (folder) {
         copy = snx_strdup(folder);
         if (!copy) {
@@ -1003,6 +1007,13 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     error[0] = 0;
     if (snx_fallback_start(error, sizeof(error))) {
         fail(r, "%s", error);
+        return -1;
+    }
+    if (!r->x64 && !snx_fallback_available()) {
+        fail(r,
+             "the code generator asked for is LLVM alone (snx_recompiler_set_backend 0), and this build has no LLVM "
+             "(SNX_WITH_LLVM=OFF): only the %s back end makes code here",
+             snx_native_name());
         return -1;
     }
     if (r->cache) {

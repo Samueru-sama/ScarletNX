@@ -81,7 +81,8 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
 SNX_RECOMPILER_API int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target);
 /* Code units compiled at once, on host threads; 0, the default, uses one per processor */
 SNX_RECOMPILER_API /* the code generator: 1 the x86-64 back end with LLVM making what it can't (the default where it is built:
-   x86-64), 0 LLVM alone. SNX_RECOMPILER_BACKEND=llvm in the environment is 0 too */
+   x86-64), 0 LLVM alone, which a build without LLVM refuses at the recompile. SNX_RECOMPILER_BACKEND=llvm in the
+   environment is 0 too */
 SNX_RECOMPILER_API void snx_recompiler_set_backend(struct snx_recompiler* r, int x64);
 void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
 /* How far a recompile is, for a caller's progress bar: called once with the totals and nothing done, then as each code
@@ -100,7 +101,7 @@ SNX_RECOMPILER_API void snx_recompiler_set_hook_direct_calls(struct snx_recompil
 /* Progress lines on stdout, as the scarletnx command prints them; off by default */
 SNX_RECOMPILER_API void snx_recompiler_set_verbose(struct snx_recompiler* r, int verbose);
 /* A folder the generated code's text (LLVM IR as .ll) is saved in, for inspection; NULL (the
-   default) saves nothing. The string is copied */
+   default) saves nothing. The string is copied. 0, or -1 out of memory or in a build without LLVM */
 SNX_RECOMPILER_API int snx_recompiler_set_keep_ir(struct snx_recompiler* r, const char* folder);
 /* A folder of linked modules (LLVM), made if missing, by a hash of everything a module is made from: the code and its
    addresses, the entries, the settings, SNX_ABI and the host CPU. A module found there is loaded instead of compiled,
