@@ -186,6 +186,9 @@ static void mg_brk(Unit* u, SnxU64 address, unsigned imm);
 /* the function's entry, after the prologue: its stale check (options->stale), then e != start going to
    u->mismatch_label */
 static void mg_entry(Unit* u, size_t index, SnxU64 start);
+#ifdef MG_ENTRY_STALE
+static void mg_entry_stale(Unit* u, size_t index);
+#endif
 /* at u->mismatch_label: c->pc = e and the dispatch block (several leaders), else CALLDYN(e) */
 static void mg_dispatch(Unit* u, int lab0);
 /* the frame's size in the prologue and every epilogue, and the labels' jumps since fixup fix0: 1, 0 where one isn't
@@ -1477,7 +1480,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         mg_undef(u, address, word);
         after_call(u);
         leave(u);
-        return 1;
+        return 2;
     case SNX_A64_FLOW_PLAIN:
         if (insn.op == SNX_A64_OP_SYS) {
             int k = sys(u, word);
@@ -1525,7 +1528,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             flush(u);
             after_call(u);
             leave(u);
-            return 1;
+            return 2;
         }
         break;
     case SNX_A64_FLOW_B:
@@ -1717,7 +1720,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         flush(u);
         call_target(u, next, 1);
     }
-    return 1;
+    return terminal ? 2 : 1; /* 2: the instruction ended the function, no fall-through's leave to make */
 }
 
 /* ---- liveness: which guest registers and flags an instruction reads and writes ----
@@ -2294,7 +2297,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
 /* the function's code, or 0 (the unit as it was) where an instruction isn't this back end's */
 static int function(Unit* u, const SnxFunction* f, size_t index) {
     size_t i, at0 = u->b.n, fix0 = u->nfixups, rel0 = u->nrelocs, sym0 = u->nsyms;
-    int lab0 = u->nlabels, ok = 1;
+    int lab0 = u->nlabels, ok = 1, single_entry = 0;
     SnxU64 pin_rest = 0;
     SnxU32 vpin_rest = 0;
     jmp_buf jb;
@@ -2345,11 +2348,20 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     prologue(u);
     pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
     u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
-    /* if (snx_stale[index]) { c->pc = e; return; } if (e != start) goto mismatch */
-    mg_entry(u, index, f->start);
+    /* a function of one leader, its start, is entered there alone (the table's entries and the direct calls are the
+       leaders'): no compare of the entry with it and no mismatch block. Its stale check stays, where the machine has
+       it apart from the compare (MG_ENTRY_STALE: mg_entry_stale); on the others such a function keeps both */
+    single_entry = f->leader_count == 1 && f->count && snx_function_address(f, 0) == f->start;
+#ifdef MG_ENTRY_STALE
+    if (single_entry && u->options->stale) mg_entry_stale(u, index);
+#else
+    if (u->options->stale) single_entry = 0;
+#endif
+    if (!single_entry) mg_entry(u, index, f->start);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
     {
         volatile size_t vi = 0;
+        int ended = 0;
         if (setjmp(jb)) {
             ok = 0;
             goto out;
@@ -2357,6 +2369,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         for (; vi < f->count; ++vi) {
             SnxU64 address = snx_function_address(f, vi);
             SnxU32 word = 0;
+            int made;
             if (f->leaders[vi]) {
                 flush_to(u, address);
                 bind(u, lab0 + (int)vi);
@@ -2364,25 +2377,31 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
             u->at = vi;
             if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
-            if (!instruction(u, vi, address, word)) {
+            made = instruction(u, vi, address, word);
+            if (!made) {
                 ok = 0;
                 goto out;
             }
+            ended = made == 2;
+        }
+        if (!ended) { /* an instruction that left the function made its own return: no fall-through's leave */
+            flush(u);
+            u->at = f->count;
+            leave(u); /* off the end */
         }
     }
-    flush(u);
-    u->at = f->count;
-    leave(u); /* off the end */
-    /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
-       leaders, else CALLDYN(c->pc) */
-    bind(u, u->mismatch_label);
-    u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
-    if (pin_rest || vpin_rest) {
-        u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
-        pins(u, 0);
-        u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+    if (!single_entry) {
+        /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
+           leaders, else CALLDYN(c->pc) */
+        bind(u, u->mismatch_label);
+        u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
+        if (pin_rest || vpin_rest) {
+            u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
+            pins(u, 0);
+            u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+        }
+        mg_dispatch(u, lab0);
     }
-    mg_dispatch(u, lab0);
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
         bind(u, s.label);
