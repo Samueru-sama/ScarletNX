@@ -849,9 +849,13 @@ i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
    pool map) checks it again at its next lookup, not only after the next submission. The descriptor the slot already
    holds is no write, unless a write before it is still queued (memory doesn't hold that one yet) */
 static void descriptor_write(u64 slot, const u32 desc[8]) {
-    if (!nvn_replay_writes_pending() && !memcmp(GP(slot), desc, NVN_DESCRIPTOR_SIZE)) return;
+    /* a queued copy over the slot that has not run lands its bytes after this write: the write still counts */
+    if (!nvn_replay_writes_pending() && !nvn_copy_queued_over(slot, NVN_DESCRIPTOR_SIZE) &&
+        !memcmp(GP(slot), desc, NVN_DESCRIPTOR_SIZE))
+        return;
     if (nvn_replay_write(slot, desc, NVN_DESCRIPTOR_SIZE)) return;
     kthread_host_wait_begin();
+    nvn_copy_wait_over(slot, NVN_DESCRIPTOR_SIZE); /* the queued copies over the slot, with no lane to order it */
     nvn_replay_finish_all();
     kthread_host_wait_end();
     memcpy(GP(slot), desc, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */

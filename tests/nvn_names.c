@@ -318,6 +318,15 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
     return 1;
 }
 u32 nvn_replay_writes_pending(void) { return 0; }
+int nvn_copy_queued_over(u64 gva, u64 len) { /* no DMA copy is queued here */
+    (void)gva;
+    (void)len;
+    return 0;
+}
+void nvn_copy_wait_over(u64 gva, u64 len) {
+    (void)gva;
+    (void)len;
+}
 void nvn_replay_wait(u32 queue, const NvnSync* sync) {
     (void)queue;
     (void)sync;

@@ -143,24 +143,58 @@ done:
     SNX_ZONE_TEXT(z, "copy dma bytes=%llu %s", (unsigned long long)o->line_out * o->lines, copy_skip(why));
 #endif
 }
+/* the ranges of the copies queued (launch) that the renderer thread has not run yet: copies head - done, the last
+   COPY_RING of them kept. The renderer thread runs them in order. The game's thread asks too (nvn_copy_queued_over) */
+#define COPY_RING 256u
+static struct {
+    PMutex lock;
+    u64 head, done;
+    _Atomic u32 done_word; /* done's low bits, for nvn_copy_wait_over's wait */
+    GqRange r[COPY_RING][2];
+} g_copy_ring = {.lock = PMUTEX_INIT};
+/* under the lock */
+static int ring_over(u64 gva, u64 len) {
+    int over = g_copy_ring.head - g_copy_ring.done > COPY_RING; /* the oldest ranges are gone: assume an overlap */
+    for (u64 s = g_copy_ring.done; !over && s != g_copy_ring.head; s++)
+        for (u32 k = 0; k < 2; k++) {
+            const GqRange* r = &g_copy_ring.r[s % COPY_RING][k];
+            if (r->size && gva < r->gva + r->size && r->gva < gva + len) over = 1;
+        }
+    return over;
+}
+int nvn_copy_queued_over(u64 gva, u64 len) {
+    pm_lock(&g_copy_ring.lock);
+    const int over = ring_over(gva, len);
+    pm_unlock(&g_copy_ring.lock);
+    return over;
+}
+void nvn_copy_wait_over(u64 gva, u64 len) {
+    for (;;) {
+        pm_lock(&g_copy_ring.lock);
+        const int over = ring_over(gva, len);
+        const u32 done = atomic_load_explicit(&g_copy_ring.done_word, memory_order_relaxed);
+        pm_unlock(&g_copy_ring.lock);
+        if (!over) return;
+        plat_wait_word(&g_copy_ring.done_word, done, -1);
+    }
+}
 static void launch_run(const void* arg, u64 bytes) {
     GpuDmaOp o;
     (void)bytes;
     memcpy(&o, arg, sizeof o);
     launch_now(&o);
+    pm_lock(&g_copy_ring.lock);
+    g_copy_ring.done++;
+    atomic_store_explicit(&g_copy_ring.done_word, (u32)g_copy_ring.done, memory_order_relaxed);
+    pm_unlock(&g_copy_ring.lock);
+    plat_wake_word(&g_copy_ring.done_word);
 }
-/* the bytes of guest memory a copy can write: a pitch linear destination's span, or a block linear one's surface up
-   to the depth block of its slice */
-static void dst_range(const GpuDmaOp* o, u64* at, u64* len) {
-    const GpuDmaSide* d = &o->dst;
-    if (!d->bl) {
-        *at = d->addr + (u64)gpu_dma_low(d, o->lines);
-        *len = gpu_dma_span(d, o->lines, o->line_out);
-        return;
-    }
+/* the bytes of guest memory a copy's side can touch, with line bytes a line: a pitch linear side's span, or a block
+   linear one's surface up to the depth block of its slice */
+static GqRange side_range(const GpuDmaSide* d, u32 lines, u32 line) {
+    if (!d->bl) return (GqRange){d->addr + (u64)gpu_dma_low(d, lines), gpu_dma_span(d, lines, line)};
     const u64 rows = snx_align_up(d->h ? d->h : 1, 8ull << d->bh), depth = ((u64)(d->z >> d->bd) + 1) << d->bd;
-    *at = d->addr;
-    *len = snx_align_up(d->wb ? d->wb : 1, 64) * rows * depth;
+    return (GqRange){d->addr, snx_align_up(d->wb ? d->wb : 1, 64) * rows * depth};
 }
 /* The copy in its place in the renderer thread's queue, as maxwell/dma.c's launches (Eden's MaxwellDMA::Launch does
    it in the command stream, with no wait). The copy waited for every queued record (gpu_renderer_now): with
@@ -172,9 +206,15 @@ static void launch(const GpuDmaOp* o) {
         launch_now(o);
         return;
     }
-    u64 at = 0, len = 0;
-    dst_range(o, &at, &len);
-    gq_call_writes(launch_run, o, sizeof *o, at, len);
+    /* the destination, and the source (a fill reads none): a write of the game's descriptors there lands after it */
+    const GqRange r[2] = {side_range(&o->dst, o->lines, o->line_out),
+                          o->fill ? (GqRange){0} : side_range(&o->src, o->lines, o->line_in)};
+    pm_lock(&g_copy_ring.lock);
+    g_copy_ring.r[g_copy_ring.head % COPY_RING][0] = r[0];
+    g_copy_ring.r[g_copy_ring.head % COPY_RING][1] = r[1];
+    g_copy_ring.head++;
+    pm_unlock(&g_copy_ring.lock);
+    gq_call_writes(launch_run, o, sizeof *o, r, 2);
 }
 /* lines of a region w texels wide and h high on the plane */
 static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {

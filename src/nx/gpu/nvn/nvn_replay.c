@@ -550,7 +550,12 @@ static void writes_land(void) {
         }
         const int whole = !st->wq_count || st->wq[st->wq_head].group != g;
         pm_unlock(&st->lock);
-        for (u32 k = 0; k < n; k++) write_land(at[k], data[k], len[k]);
+        /* a copy that this thread queued before the writes (nvn_copy.c's launch) and that reads or writes the same bytes
+           runs first, as the console's GPU ran it before the CPU's write landed */
+        for (u32 k = 0; k < n; k++) {
+            gq_read_wait(at[k], len[k]);
+            write_land(at[k], data[k], len[k]);
+        }
         atomic_fetch_sub_explicit(&st->writes, n, memory_order_release);
         if (whole) {
             pm_lock(&st->lock);
@@ -782,6 +787,16 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
         for (u32 k = 0; k < live && now; k++)
             if (!stop[lanes[k] + 1] && gpu_lane_busy(lanes[k])) now = 0;
     }
+    /* unless a queued copy that has not run (nvn_copy.c's launch) reads or writes these bytes: it runs first, so the
+       write waits in the queue for writes_land. Asked after the lanes, as a lane puts its copies in the ring before it
+       goes idle. With no live lane no JOB_WRITE would land it: the caller waits for those copies (nvn_copy_wait_over)
+       and writes it */
+    const int over = nvn_copy_queued_over(gva, len);
+    if (over && !live) {
+        pm_unlock(&st->lock);
+        return 0;
+    }
+    if (over) now = 0;
     if (now) {
         pm_unlock(&st->lock);
         write_land(gva, data, len);

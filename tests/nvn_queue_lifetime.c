@@ -249,6 +249,12 @@ void nvn_trace_flush(const NvnDraw* d) {
     assert(fixture.in_gpu && d);
     fixture.trace_flushes++;
 }
+/* no DMA copy is queued here */
+int nvn_copy_queued_over(u64 gva, u64 len) {
+    (void)gva;
+    (void)len;
+    return 0;
+}
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
     assert(op == OP_COPY_STRIDE);
