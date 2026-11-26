@@ -35,7 +35,6 @@
    --counts FILE: each target op's words with RETs, the native object's bytes: OP, name, size, then a line of hex
    --counts-blocks N FILE: the same records, but N guest words in each function before its RET, so the prologue and
    epilogue are shared; a word that ends its block (a branch out, a RET, a BRK or an UNDEF) ends the function there
-   --counts FILE: each target op's words with RETs, the native object's bytes: OP, name, size, then a line of hex
    --stale: --counts' and --counts-blocks' functions with the stale check a game's have (SnxNativeOptions.stale)
    On a host with no native back end it is skipped, saying so.
 

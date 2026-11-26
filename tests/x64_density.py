@@ -9,12 +9,16 @@ with llvm-objdump, and divides by the group's guest words. A group's mean must s
 x64_density_targets.txt. The limits leave room for a change of the toolchain, so the check catches a real growth of
 the generated code instead of every difference of a byte.
 
-    x64_density.py --backend PROGRAM --objdump LLVM_OBJDUMP --targets FILE
+    x64_density.py --backend PROGRAM --objdump LLVM_OBJDUMP --targets FILE [--limits]
+
+--limits holds nothing: it prints FILE again with each group's limit a quarter above this build's count, rounded up,
+the words FILE's. That is how the limits are made again after a change of the back end.
 
 Exit 77 says this host has no x86-64 back end. The program then writes no objects and says so on its standard output.
 """
 
 import argparse
+import math
 import re
 import subprocess
 import sys
@@ -76,6 +80,7 @@ def main():
     parser.add_argument('--backend', type=Path, required=True, help='the test program that has --counts')
     parser.add_argument('--objdump', required=True, help="the build's llvm-objdump")
     parser.add_argument('--targets', type=Path, required=True, help='the checked-in limits')
+    parser.add_argument('--limits', action='store_true', help="print the limits file of this build's counts")
     args = parser.parse_args()
     allowed = limits(args.targets)
     with tempfile.TemporaryDirectory(prefix='snx-x64-density-') as scratch:
@@ -98,6 +103,16 @@ def main():
             path.write_bytes(data)
             objects.append(path)
         count = instructions(args.objdump, objects)
+        if args.limits:
+            for line in args.targets.read_text().splitlines():
+                if line.startswith('#'):
+                    print(line)
+            for (op, _, _), obj in sorted(zip(groups, objects)):
+                if op not in allowed:
+                    sys.exit(f'FAIL: {op}: no words in {args.targets}')
+                words = allowed[op][0]
+                print(f'{op}\t{words}\t{math.ceil(count[obj.name] * 1.25 / words)}')
+            return 0
         bad = 0
         total_insns = total_words = 0
         seen = set()
