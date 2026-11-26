@@ -331,7 +331,7 @@ static void prologue(Unit* u) {
     if (pushed >> 7 & 1) byte(u, 0x57);                            /* push rdi */
     if (pushed >> 6 & 1) byte(u, 0x56);                            /* push rsi */
     byte(u, 0x48), byte(u, 0x89), byte(u, win64(u) ? 0xCB : 0xFB); /* mov rbx, rdi (rcx) */
-    if (u->again && win64(u)) {
+    if (u->again == 2) {
         /* a frame of a page or more: each page read first, nearest first (sgx_stack_probe) */
         sgx_stack_probe(&u->b);
         u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
@@ -643,7 +643,9 @@ static int mg_finish(Unit* u, size_t fix0) {
     int size = ((u->a.slots_max * 8 + 15) & ~15) + (int)snx_popcount64(pushed_pins(u)) % 2 * 8;
     int small = !u->again; /* the first make has four-byte frame instructions, the one again seven */
     if (small && size > 127) {
-        u->again = 1; /* an imm8 can't hold it: made again with imm32 ones, and a page's probe on Windows */
+        /* an imm8 can't hold it: made again with imm32 ones (1), and on Windows a frame of a page or more with the
+           prologue that reads each page first (2) */
+        u->again = win64(u) && size >= 4096 ? 2 : 1;
         return 0;
     }
     for (i = 0; i < u->nframe; ++i)
